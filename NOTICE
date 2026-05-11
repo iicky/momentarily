@@ -1,0 +1,54 @@
+Momentarily
+Copyright (c) 2026 iicky
+
+This product includes software developed by iicky and contributors and made
+available under the MIT License (see LICENSE).
+
+================================================================================
+DATA SOURCE: Metropolitan Transportation Authority (MTA)
+================================================================================
+
+The Momentarily publisher fetches data from MTA-operated APIs at
+https://api.mta.info, including:
+
+  - GTFS-Realtime Service Alerts (subway, LIRR, MNR, bus)
+  - NYCT elevator and escalator availability feeds
+  - GTFS static schedules and route metadata
+
+All such data is the property of the Metropolitan Transportation Authority.
+Use of MTA data is governed by the MTA developer agreement, which is separate
+from and not superseded by the MIT license that covers the publisher code:
+
+  https://api.mta.info/#/DataFeedAgreement
+
+================================================================================
+OBLIGATIONS FOR ANYONE RUNNING THIS CODE
+================================================================================
+
+If you run your own instance of the Momentarily publisher, you are responsible
+for your own compliance with the MTA developer agreement, including:
+
+  1. Obtaining your own MTA API key from https://api.mta.info
+  2. Hosting redistributed data on your own (non-MTA) infrastructure
+  3. Not implying that your service is licensed by, affiliated with, or
+     operated by the MTA
+  4. Indicating data accuracy disclaimers as required by the agreement
+  5. Following MTA's lag-time disclosure rules for cached data
+
+The MIT license on this code does NOT grant you any rights to MTA data; those
+rights come solely from accepting and complying with the MTA developer
+agreement linked above.
+
+================================================================================
+ABOUT THE PUBLISHED SNAPSHOT (feed.momentarily.nyc)
+================================================================================
+
+The snapshot served at https://feed.momentarily.nyc/v1/snapshot.json is a
+redistribution of MTA data from a non-MTA server (Cloudflare R2), per the
+provision in the MTA developer agreement that permits such redistribution.
+
+The Momentarily project is not affiliated with, endorsed by, or licensed by
+the Metropolitan Transportation Authority. All MTA names, route designations,
+and service marks are the property of the MTA.
+
+Data accuracy, timeliness, and completeness are not guaranteed.

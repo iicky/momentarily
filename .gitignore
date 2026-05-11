@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.coverage
+coverage.xml
+htmlcov/
+junit.xml
+dist/
+build/
+.DS_Store
+
+# Local secrets — never commit
+.env
+.env.local

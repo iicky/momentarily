@@ -1,0 +1,64 @@
+[project]
+name = "momentarily"
+version = "0.1.0"
+description = "Normalized snapshot of NYC MTA service status, alerts, and elevator/escalator state — published to a public URL for downstream consumers"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.13"
+authors = [{ name = "iicky" }]
+
+dependencies = [
+    "pydantic>=2.6",
+    "httpx>=0.27",
+    "boto3>=1.34",
+]
+
+[project.scripts]
+momentarily = "momentarily.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.7",
+    "pyright>=1.1.380",
+    "boto3-stubs[s3]>=1.34",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/momentarily"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PT", "PIE", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", ".venv"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q --cov=momentarily --cov-report=term"
+
+[tool.coverage.run]
+source = ["src/momentarily"]
+omit = ["tests/*"]

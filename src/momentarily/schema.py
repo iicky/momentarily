@@ -8,9 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "1"
 
-type AlertSource = Literal["subway", "lirr", "mnr", "bus"]
+# Open strings — adding new sources/modes/conditions doesn't break consumers.
+# Documented value sets:
+#   AlertSource:  "subway" | "lirr" | "mnr" | "bus" | "path" | "ferry" | ...
+#   Mode:         same as AlertSource
+#   Condition:    "normal" | "disrupted" | "suspended" (subject to future extension)
+type AlertSource = str
+type Mode = str
 type EquipmentType = Literal["elevator", "escalator"]
-type Mode = Literal["subway", "lirr", "mnr", "bus"]
 
 
 class TimeRange(BaseModel):
@@ -61,6 +66,23 @@ class Alert(BaseModel):
     source: AlertSource
 
 
+class Observation(BaseModel):
+    """Continuous / instantaneous measurement of an entity.
+
+    Peer to Alert. Empty in v1 of the publisher; populated when we wire upstream
+    sources for travel-time (bridges/tunnels), headway, ETAs, tolls, occupancy.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    entity_ref: str  # "<entity_type>:<id>" — e.g. "bridge:verrazano", "subway_route:1"
+    kind: str  # open: "travel_time" | "headway" | "eta" | "toll" | "occupancy" | ...
+    value: float | int | str
+    unit: str  # open: "seconds" | "minutes" | "dollars" | "percent" | ...
+    observed_at: int
+    source: str
+
+
 class DirectionLabels(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -80,6 +102,7 @@ class Route(BaseModel):
     color: str | None = None
     text_color: str | None = None
     direction_labels: DirectionLabels | None = None
+    agency: str | None = None  # e.g. "nyct_subway", "lirr", "mnr", "panynj_path"
 
 
 class DirectionStatus(BaseModel):
@@ -89,8 +112,44 @@ class DirectionStatus(BaseModel):
     primary_alert_type: str | None = None
 
 
+class Inference(BaseModel):
+    """HMM-derived state inference.
+
+    Per 5w0.6, populated only after the shadow review (Phase 3+). During Phase 1
+    this field stays None on every entity status object.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    # Primary user-facing fields (graduate to sensor entities at Phase 4)
+    condition: str  # "normal" | "disrupted" | "suspended" (open for future regimes)
+    recovery_minutes: int
+    is_disrupted: bool
+
+    # Probability vector (attribute-depth)
+    p_normal: float
+    p_disrupted: float
+    p_suspended: float
+
+    # Changepoint info
+    regime_entered_at: int
+    regime_age_seconds: int
+
+    # Recovery posterior bounds (attribute-depth)
+    recovery_minutes_low: int  # 25th percentile
+    recovery_minutes_high: int  # 75th percentile
+
+    # Forward predictions
+    p_normal_in_30min: float
+    p_normal_in_60min: float
+    p_normal_in_120min: float
+
+    # Cold-start flag — true when the model is still warming up for this entity
+    model_warming_up: bool = False
+
+
 class RouteStatus(BaseModel):
-    """Derived per-route view from alerts + route metadata."""
+    """Derived per-route view from alerts + route metadata + optional HMM inference."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -99,6 +158,7 @@ class RouteStatus(BaseModel):
     primary_alert_type: str | None = None
     label: str
     by_direction: dict[Literal["northbound", "southbound"], DirectionStatus] = {}
+    inference: Inference | None = None
 
 
 class Station(BaseModel):
@@ -138,7 +198,7 @@ class Equipment(BaseModel):
 
 
 class StationStatus(BaseModel):
-    """Derived per-station view from alerts + equipment + static metadata."""
+    """Derived per-station view from alerts + equipment + static + optional HMM inference."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -149,6 +209,38 @@ class StationStatus(BaseModel):
     elevators_out: int = 0
     escalators_total: int = 0
     escalators_out: int = 0
+    inference: Inference | None = None
+
+
+class Crossing(BaseModel):
+    """One direction or segment of a bridge/tunnel crossing."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: str  # e.g. "verrazano:upper:westbound"
+    name: str
+
+
+class Bridge(BaseModel):
+    """Infrastructure asset. Schema scaffold; populated when a data source is wired."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: str
+    name: str
+    operator: str  # "MTA-BT" | "PANYNJ" | "NYC-DOT" | ...
+    crossings: list[Crossing] = []
+
+
+class Tunnel(BaseModel):
+    """Infrastructure asset. Schema scaffold; populated when a data source is wired."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: str
+    name: str
+    operator: str
+    crossings: list[Crossing] = []
 
 
 class ModeRollup(BaseModel):
@@ -175,6 +267,11 @@ class SystemStatus(BaseModel):
     by_mode: dict[Mode, ModeRollup] = {}
     accessibility: Accessibility = Field(default_factory=Accessibility)
     overall_label: str = "All systems normal"
+    # Set in Phase 3+ by the HMM rollup; None during Phase 1 shadow
+    condition: str | None = None  # "normal" | "degraded" | "severe"
+    lines_disrupted_count: int = 0
+    most_degraded_line: str | None = None
+    most_recovered_line: str | None = None
 
 
 class Freshness(BaseModel):
@@ -186,6 +283,8 @@ class Freshness(BaseModel):
     lirr_alerts: int | None = None
     mnr_alerts: int | None = None
     bus_alerts: int | None = None
+    path_alerts: int | None = None
+    ferry_alerts: int | None = None
     ene: int | None = None
     stations_static: int | None = None
 
@@ -249,14 +348,24 @@ class Snapshot(BaseModel):
         "Published by Momentarily (https://feed.momentarily.nyc). "
         "Not affiliated with the MTA."
     )
+    # Declares which sources are populated this run.
+    # Lets consumers detect when LIRR/MNR/PATH/ferry/bridges land without schema bumps.
+    supported_modes: list[str] = []
     freshness: Freshness = Field(default_factory=Freshness)
 
+    # Atomic types
     alerts: list[Alert] = []
+    observations: list[Observation] = []
     routes: dict[str, Route] = Field(default_factory=dict)
-    route_status: dict[str, RouteStatus] = Field(default_factory=dict)
     stations: dict[str, Station] = Field(default_factory=dict)
-    station_status: dict[str, StationStatus] = Field(default_factory=dict)
     equipment: list[Equipment] = []
+    bridges: list[Bridge] = []
+    tunnels: list[Tunnel] = []
+
+    # Derived views
+    route_status: dict[str, RouteStatus] = Field(default_factory=dict)
+    station_status: dict[str, StationStatus] = Field(default_factory=dict)
     system: SystemStatus = Field(default_factory=SystemStatus)
 
+    # Legacy compat — preserves zero-breakage upgrade for HA 0.x consumers
     compat: Compat = Field(default_factory=Compat)

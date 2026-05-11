@@ -8,9 +8,23 @@ Three hidden states (normal, disrupted, suspended). Observations at each cron ti
 Hand-rolled — no extra deps. Forward algorithm for filtering, Baum-Welch for the
 weekly refit (training loop will live separately and call into here).
 
+Methodology
+-----------
+The regime-switching framing follows Cheng & Sun (2024), "Conditional forecasting
+of bus travel time and passenger occupancy with Bayesian Markov regime-switching
+VAR" (arXiv:2401.17387), adapted for the GTFS-RT Mercury alerts feed rather than
+travel-time signals. The recovery-prediction framing — modeling expected
+time-to-clear from the current regime — borrows from Liu et al. (2022),
+"Detecting metro service disruptions via large-scale vehicle location data"
+(Transportation Research Part C, 145), which used GMM on vehicle headways
+rather than alerts but established the recovery-aware probabilistic framing for
+metro state.
+
+See docs/papers.md for the full prior-art survey.
+
 This is the engine that backs the user-facing `condition` and `recovery_minutes`
 fields in the snapshot, per 5w0.4 and 5w0.5. Per 5w0.6, outputs are shadow-logged
-only during Phase 1.
+only during Phase 1 of the rollout.
 
 NOT yet wired into the publisher — this module is scaffolding so 5w0.5 implementation
 can flesh out the training loop and per-tick filter integration in a follow-up.

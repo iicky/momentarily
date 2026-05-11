@@ -19,14 +19,24 @@ Path-versioned. Breaking schema changes will publish to `/v2/`, `/v3/`, etc.
 ## What's in the snapshot
 
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata
+- **`observations`** — continuous measurements (travel times, headways, ETAs); empty in v1
 - **`routes`** — static per-route metadata (id, color, name)
-- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown
+- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, optional HMM-inferred `condition` + `recovery_minutes`
 - **`stations`**, **`station_status`** — per-station metadata + derived view (alerts affecting the stop, ADA status, equipment outage counts)
 - **`equipment`** — elevator/escalator outage state
+- **`bridges`**, **`tunnels`** — infrastructure scaffolds; populated when a travel-time data source is wired
 - **`system`** — top-of-dashboard rollup; one human-readable `overall_label`
 - **`compat.subwaynow_routes`** — legacy view matching homeassistant-mta-subway's pre-Momentarily `Route` shape, derived from canonical surfaces. Existing HA installs swap `API_URL` and read this view with zero code changes.
 
 Full schema in [`src/momentarily/schema.py`](src/momentarily/schema.py).
+
+## Method
+
+Momentarily applies a per-line **Hidden Markov Model** with three regimes (normal / disrupted / suspended) to the GTFS-Realtime Mercury alerts stream, producing a probabilistic estimate of each line's current operational state plus expected recovery time. The forward algorithm filters per cron tick; Baum-Welch re-estimates transition matrices and emission parameters weekly from rolling 90-day history.
+
+This builds on a small but established literature on probabilistic transit-state inference — most notably Liu et al. ([2022](https://www.sciencedirect.com/science/article/pii/S0968090X22002935)) on metro disruption detection with recovery analysis, and Cheng & Sun ([2024](https://arxiv.org/html/2401.17387v1)) on Bayesian Markov regime-switching for transit signals. Those methods have not been applied to the GTFS-RT Alerts feed specifically, and have not been deployed as public data products. Momentarily fills that gap. See [`docs/papers.md`](docs/papers.md) for the full intellectual lineage.
+
+User-facing fields graduate from a shadow-logging phase (where we validate calibration against real disruptions) to the published snapshot only after empirical validation. Calibration methodology uses standard probabilistic-forecasting tools — reliability diagrams, Brier scores, quantile bracketing — adapted from the broader Bayesian forecasting literature.
 
 ## Upstream sources
 

@@ -1,0 +1,19 @@
+services:
+  collector:
+    build: .
+    image: momentarily-collector:local
+    container_name: momentarily-collector
+    restart: unless-stopped
+    # .env is optional in v1 — the JSON feeds are public. The file becomes
+    # required when we later add protobuf trip-updates that need MTA_API_KEY.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /data
+      POLL_INTERVAL_SECONDS: "300"
+      ENE_POLL_INTERVAL_SECONDS: "3600"
+      LOG_LEVEL: INFO
+    volumes:
+      # Host: ../data/ → container: /data
+      - ../data:/data

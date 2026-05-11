@@ -1,0 +1,4 @@
+# All collector output is intentionally local-only — never commit
+*
+!.gitignore
+!README.md

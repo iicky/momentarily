@@ -2,7 +2,7 @@ Momentarily
 Copyright (c) 2026 iicky
 
 This product includes software developed by iicky and contributors and made
-available under the MIT License (see LICENSE).
+available under the Apache License, Version 2.0 (see LICENSE).
 
 ================================================================================
 DATA SOURCE: Metropolitan Transportation Authority (MTA)
@@ -17,7 +17,7 @@ https://api.mta.info, including:
 
 All such data is the property of the Metropolitan Transportation Authority.
 Use of MTA data is governed by the MTA developer agreement, which is separate
-from and not superseded by the MIT license that covers the publisher code:
+from and not superseded by the Apache 2.0 license that covers the publisher code:
 
   https://api.mta.info/#/DataFeedAgreement
 
@@ -35,8 +35,8 @@ for your own compliance with the MTA developer agreement, including:
   4. Indicating data accuracy disclaimers as required by the agreement
   5. Following MTA's lag-time disclosure rules for cached data
 
-The MIT license on this code does NOT grant you any rights to MTA data; those
-rights come solely from accepting and complying with the MTA developer
+The Apache 2.0 license on this code does NOT grant you any rights to MTA data;
+those rights come solely from accepting and complying with the MTA developer
 agreement linked above.
 
 ================================================================================

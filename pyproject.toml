@@ -3,7 +3,7 @@ name = "momentarily"
 version = "0.1.0"
 description = "Normalized snapshot of NYC MTA service status, alerts, and elevator/escalator state — published to a public URL for downstream consumers"
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 requires-python = ">=3.13"
 authors = [{ name = "iicky" }]
 

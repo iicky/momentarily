@@ -31,6 +31,14 @@ GATEWAY = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds"
 SUBWAY_ALERTS_URL = f"{GATEWAY}/camsys%2Fsubway-alerts.json"
 ENE_CURRENT_URL = f"{GATEWAY}/nyct%2Fnyct_ene.json"
 ENE_UPCOMING_URL = f"{GATEWAY}/nyct%2Fnyct_ene_upcoming.json"
+ENE_EQUIPMENTS_URL = f"{GATEWAY}/nyct%2Fnyct_ene_equipments.json"
+
+# Explicit v1 E&E source list. Add new feeds here and they're picked up by collect_ene().
+ENE_SOURCES: tuple[tuple[str, str], ...] = (
+    (ENE_CURRENT_URL, "nyct/nyct_ene.json"),
+    (ENE_UPCOMING_URL, "nyct/nyct_ene_upcoming.json"),
+    (ENE_EQUIPMENTS_URL, "nyct/nyct_ene_equipments.json"),
+)
 
 # Config — overridable via env
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -148,15 +156,17 @@ def collect_alerts() -> int:
 
 
 def collect_ene() -> int:
-    """Fetch all three E&E feeds and append observations."""
+    """Fetch every feed in ENE_SOURCES and append observations.
+
+    Returns 0 when *every* fetch in this cycle fails — the caller uses that to
+    leave state["ene"] stale, so the hourly retry doesn't get suppressed by a
+    success timestamp that wasn't earned.
+    """
     observed_at = _utc_now()
     poll_id = str(uuid.uuid4())
     daily = ENE_DIR / f"{_utc_today()}.jsonl"
     total = 0
-    for url, source in (
-        (ENE_CURRENT_URL, "nyct/nyct_ene.json"),
-        (ENE_UPCOMING_URL, "nyct/nyct_ene_upcoming.json"),
-    ):
+    for url, source in ENE_SOURCES:
         try:
             payload = _fetch(url)
         except (httpx.HTTPError, httpx.HTTPStatusError) as err:
@@ -174,8 +184,15 @@ def collect_ene() -> int:
         _log_poll(source, "ok", observed_at)
         total += 1
 
-    if total:
-        _LOGGER.info("ene: appended %s feeds to %s", total, daily.name)
+    if total == 0:
+        _LOGGER.error(
+            "ene: all %s feeds failed; leaving freshness stale", len(ENE_SOURCES)
+        )
+        return 0
+
+    _LOGGER.info(
+        "ene: appended %s/%s feeds to %s", total, len(ENE_SOURCES), daily.name
+    )
     return observed_at
 
 

@@ -73,6 +73,7 @@ docker compose -f collector/docker-compose.yml up -d
 | `camsys/subway-alerts.json` | every 5 min | Mercury alerts feed — primary signal for HMM training |
 | `nyct/nyct_ene.json` | every hour | Current elevator/escalator outages |
 | `nyct/nyct_ene_upcoming.json` | every hour | Upcoming scheduled E&E outages |
+| `nyct/nyct_ene_equipments.json` | every hour | Equipment registry (ADA pathway flags, location text) |
 
 All endpoints are JSON-only (no protobuf). The collector matches what the eventual public Momentarily publisher will pull in v1, so the corpus seeds the publisher's initial HMM training.
 

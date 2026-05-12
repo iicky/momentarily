@@ -79,28 +79,45 @@ def derive_route_status(route: Route, alerts: list[Alert], now: int) -> RouteSta
         alerts=[a.id for a in active],
         primary_alert_type=primary_type,
         label=coarse_status(primary_type),
-        by_direction=_split_by_direction(active),
+        by_direction=_split_by_direction(route.id, active),
     )
 
 
-def _split_by_direction(active: list[Alert]) -> dict[Direction, DirectionStatus]:
-    """Split active alerts into northbound/southbound buckets.
+def _alerts_by_direction(
+    route_id: str, active: list[Alert]
+) -> dict[Direction, list[Alert]]:
+    """Bucket alerts into northbound/southbound based on the direction_id of the
+    informed_entity that matches THIS route. Direction info attached to other
+    routes' entities on the same alert is ignored — otherwise a shared alert
+    bleeds direction across routes.
 
-    GTFS-RT direction_id: 0 = northbound (uptown for subway), 1 = southbound.
-    Alerts without a direction apply to both.
+    GTFS-RT direction_id: 0 = northbound, 1 = southbound. An alert reaching us
+    via a non-route entity (e.g. stop-only) or via a route entity with no
+    direction_id applies to both directions.
     """
     north: list[Alert] = []
     south: list[Alert] = []
     for alert in active:
-        dirs = {ie.direction_id for ie in alert.informed_entities}
-        if 0 in dirs or None in dirs:
+        dirs = {
+            ie.direction_id
+            for ie in alert.informed_entities
+            if ie.route_id == route_id
+        }
+        applies_both = not dirs or None in dirs
+        if applies_both or 0 in dirs:
             north.append(alert)
-        if 1 in dirs or None in dirs:
+        if applies_both or 1 in dirs:
             south.append(alert)
+    return {"northbound": north, "southbound": south}
 
+
+def _split_by_direction(
+    route_id: str, active: list[Alert]
+) -> dict[Direction, DirectionStatus]:
+    by_alerts = _alerts_by_direction(route_id, active)
     return {
-        "northbound": _direction_status(north),
-        "southbound": _direction_status(south),
+        "northbound": _direction_status(by_alerts["northbound"]),
+        "southbound": _direction_status(by_alerts["southbound"]),
     }
 
 
@@ -115,7 +132,7 @@ def _direction_status(alerts: list[Alert]) -> DirectionStatus:
 
 
 def derive_compat_route(
-    route: Route, status: RouteStatus, alerts: list[Alert]
+    route: Route, status: RouteStatus, alerts: list[Alert], now: int
 ) -> CompatRoute:
     """Project a derived RouteStatus into the legacy subwaynow_routes shape.
 
@@ -131,10 +148,17 @@ def derive_compat_route(
         south=coarse_status(south_dir.primary_alert_type) if south_dir else None,
     )
 
-    delays = _summary_texts(alerts, "Delay")
-    irreg = _summary_texts(alerts, "Slow", "Reroute", "Skip")
+    active = alerts_for_route(alerts, route.id, now)
+    by_alerts = _alerts_by_direction(route.id, active)
+    north_alerts = by_alerts["northbound"]
+    south_alerts = by_alerts["southbound"]
+
+    delays_north = _summary_texts(north_alerts, "Delay")
+    delays_south = _summary_texts(south_alerts, "Delay")
+    irreg_north = _summary_texts(north_alerts, "Slow", "Reroute", "Skip")
+    irreg_south = _summary_texts(south_alerts, "Slow", "Reroute", "Skip")
     changes_both = _summary_texts(
-        alerts, "Service Change", "Suspend", "Express", "Local"
+        active, "Service Change", "Suspend", "Express", "Local"
     )
 
     return CompatRoute(
@@ -145,12 +169,12 @@ def derive_compat_route(
         scheduled=True,
         direction_statuses=direction_statuses,
         delay_summaries=CompatRouteSummary(
-            north=delays[0] if delays else None,
-            south=delays[1] if len(delays) > 1 else None,
+            north=delays_north[0] if delays_north else None,
+            south=delays_south[0] if delays_south else None,
         ),
         service_irregularity_summaries=CompatRouteSummary(
-            north=irreg[0] if irreg else None,
-            south=irreg[1] if len(irreg) > 1 else None,
+            north=irreg_north[0] if irreg_north else None,
+            south=irreg_south[0] if irreg_south else None,
         ),
         service_change_summaries=CompatServiceChangeSummary(
             both=changes_both,
@@ -176,17 +200,20 @@ def _summary_texts(alerts: list[Alert], *keywords: str) -> list[str]:
 
 def derive_system_status(
     route_statuses: Iterable[RouteStatus],
+    alerts: Iterable[Alert],
     equipment: Iterable[Equipment],
 ) -> SystemStatus:
     """Build the top-level system rollup."""
     routes_with_alerts: list[str] = []
-    severity_max = 0
     alert_count = 0
 
     for rs in route_statuses:
         if rs.alerts:
             routes_with_alerts.append(rs.route_id)
             alert_count += len(rs.alerts)
+
+    subway_alerts = [a for a in alerts if a.source == "subway"]
+    severity_max = max((a.sort_order or 0 for a in subway_alerts), default=0)
 
     equipment_list = list(equipment)
     elevators_out = sum(

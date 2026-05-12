@@ -1,4 +1,4 @@
-"""Tests for the HMM forward filter, projection, and dwell prediction.
+"""Tests for the HMM forward filter, projection, dwell prediction, and EM training.
 
 Verifies the math against hand-constructed sequences where we know the answer.
 """
@@ -6,6 +6,7 @@ Verifies the math against hand-constructed sequences where we know the answer.
 from __future__ import annotations
 
 import math
+import random
 
 import pytest
 
@@ -16,6 +17,7 @@ from momentarily.hmm import (
     HMMParams,
     Observation,
     expected_dwell_ticks,
+    fit_em,
     forward_update,
     project_forward,
 )
@@ -173,3 +175,154 @@ def test_state_dimensionality() -> None:
     params = _default_params()
     assert len(params.transition) == N_STATES
     assert all(len(row) == N_STATES for row in params.transition)
+
+
+# ---------------------------------------------------------------------------
+# Baum-Welch EM
+# ---------------------------------------------------------------------------
+
+
+def _generate_synthetic_sequence(
+    true_params: HMMParams, length: int, seed: int = 42
+) -> list[Observation]:
+    """Sample a length-T observation sequence from a known HMM.
+
+    Deterministic given a seed so test failures are reproducible.
+    """
+    rng = random.Random(seed)
+    # Sample state sequence by transition Markov chain
+    states: list[int] = []
+    weights = list(true_params.initial)
+    states.append(rng.choices(range(N_STATES), weights=weights, k=1)[0])
+    for _ in range(length - 1):
+        prev = states[-1]
+        row = list(true_params.transition[prev])
+        states.append(rng.choices(range(N_STATES), weights=row, k=1)[0])
+
+    em = true_params.emissions
+    obs: list[Observation] = []
+    for s in states:
+        alert_count = _sample_poisson(rng, em.poisson_lambda[s])
+        severity = round(_sample_gamma(rng, em.gamma_alpha[s], em.gamma_beta[s]))
+        suspended = rng.random() < em.bernoulli_p[s]
+        obs.append(
+            Observation(
+                alert_count=alert_count,
+                severity_sum=max(0, int(severity)),
+                has_suspended_alert=suspended,
+            )
+        )
+    return obs
+
+
+def _sample_poisson(rng: random.Random, lam: float) -> int:
+    """Knuth's algorithm; fine for the small λ we use in tests."""
+    if lam <= 0:
+        return 0
+    L = math.exp(-lam)
+    k = 0
+    p = 1.0
+    while True:
+        k += 1
+        p *= rng.random()
+        if p < L:
+            return k - 1
+
+
+def _sample_gamma(rng: random.Random, alpha: float, beta: float) -> float:
+    """Marsaglia–Tsang for shape ≥ 1, Ahrens–Dieter for shape < 1.
+    Python's random.gammavariate uses shape & scale; we use shape & rate.
+    """
+    if alpha <= 0 or beta <= 0:
+        return 0.0
+    # gammavariate(alpha, scale) — scale = 1 / rate
+    return rng.gammavariate(alpha, 1.0 / beta)
+
+
+def test_em_likelihood_improves_overall() -> None:
+    """EM improves the model overall. Strict per-step monotonicity doesn't hold
+    because we use method-of-moments for Gamma (not the true MLE), making this
+    a generalized EM. Tiny step-to-step wiggles are expected; we assert overall
+    improvement and no catastrophic regression.
+    """
+    true_params = _default_params()
+    obs = _generate_synthetic_sequence(true_params, length=300, seed=0)
+    init = HMMParams(
+        transition=(
+            (0.5, 0.3, 0.2),
+            (0.3, 0.4, 0.3),
+            (0.2, 0.3, 0.5),
+        ),
+        initial=(1.0 / 3, 1.0 / 3, 1.0 / 3),
+        emissions=EmissionParams(
+            poisson_lambda=(1.0, 5.0, 10.0),
+            gamma_alpha=(2.0, 2.0, 2.0),
+            gamma_beta=(1.0, 1.0, 1.0),
+            bernoulli_p=(0.1, 0.3, 0.7),
+        ),
+    )
+    _fitted, log_liks = fit_em(obs, init, max_iterations=20, tolerance=1e-8)
+    assert log_liks[-1] > log_liks[0], (
+        f"EM did not improve likelihood: {log_liks[0]} → {log_liks[-1]}"
+    )
+    # No single step should regress by more than a tiny amount (Gamma MoM noise).
+    for prev, curr in zip(log_liks, log_liks[1:]):
+        assert curr >= prev - 1e-2, f"catastrophic regression: {prev} → {curr}"
+
+
+def test_em_recovers_state_ordering_on_synthetic_data() -> None:
+    """EM recovers the qualitative regime structure: quiet/medium/noisy ordering."""
+    true_params = _default_params()
+    obs = _generate_synthetic_sequence(true_params, length=2000, seed=7)
+    init = HMMParams(
+        transition=(
+            (0.8, 0.15, 0.05),
+            (0.15, 0.7, 0.15),
+            (0.05, 0.15, 0.8),
+        ),
+        initial=(0.6, 0.3, 0.1),
+        emissions=EmissionParams(
+            poisson_lambda=(1.0, 5.0, 10.0),
+            gamma_alpha=(1.5, 2.5, 4.0),
+            gamma_beta=(1.0, 0.5, 0.3),
+            bernoulli_p=(0.05, 0.2, 0.7),
+        ),
+    )
+    fitted, _ = fit_em(obs, init, max_iterations=40, tolerance=1e-5)
+
+    # After _sort_states_by_lambda, state 0 < state 1 < state 2 in poisson_lambda.
+    lam = fitted.emissions.poisson_lambda
+    assert lam[0] < lam[1] < lam[2], f"states not sorted by quietness: {lam}"
+
+    # Bernoulli p should increase with state index (suspended ↔ noisy regime).
+    p = fitted.emissions.bernoulli_p
+    assert p[0] < p[2], f"suspended probability not increasing: {p}"
+
+    # Transition rows must be valid stochastic — each sums to 1.
+    for row in fitted.transition:
+        assert math.isclose(sum(row), 1.0, abs_tol=1e-6)
+
+
+def test_em_converges_within_max_iterations() -> None:
+    """With a reasonable init, EM stops before hitting max_iterations."""
+    true_params = _default_params()
+    obs = _generate_synthetic_sequence(true_params, length=500, seed=3)
+    _fitted, log_liks = fit_em(obs, true_params, max_iterations=100, tolerance=1e-4)
+    assert len(log_liks) < 100, (
+        f"expected convergence well before max iter, took {len(log_liks)}"
+    )
+
+
+def test_em_single_observation_doesnt_crash() -> None:
+    """Edge case: training on one tick should still produce valid params."""
+    obs = [Observation(alert_count=5, severity_sum=30, has_suspended_alert=False)]
+    fitted, _ = fit_em(obs, _default_params(), max_iterations=5)
+    # Just verify shape integrity — no specific param values are meaningful.
+    assert math.isclose(sum(fitted.initial), 1.0, abs_tol=1e-6)
+    for row in fitted.transition:
+        assert math.isclose(sum(row), 1.0, abs_tol=1e-6)
+
+
+def test_em_empty_observations_rejected() -> None:
+    with pytest.raises(ValueError):
+        fit_em([], _default_params())

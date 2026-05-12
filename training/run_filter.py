@@ -20,6 +20,7 @@ from momentarily.hmm import (
     FilterState,
     HMMParams,
     expected_dwell_ticks,
+    fit_em,
     forward_update,
     project_forward,
 )
@@ -52,7 +53,21 @@ def _argmax_state(probs: tuple[float, float, float]) -> str:
     return states[max(range(3), key=lambda i: probs[i])]
 
 
-def run(route_id: str, data_dir: Path) -> int:
+def _fmt_params(params: HMMParams) -> str:
+    lam = params.emissions.poisson_lambda
+    gp = params.emissions.gamma_alpha, params.emissions.gamma_beta
+    p_sus = params.emissions.bernoulli_p
+    a = params.transition
+    return (
+        f"  poisson_lambda = ({lam[0]:.2f}, {lam[1]:.2f}, {lam[2]:.2f})\n"
+        f"  gamma_alpha    = ({gp[0][0]:.2f}, {gp[0][1]:.2f}, {gp[0][2]:.2f})\n"
+        f"  gamma_beta     = ({gp[1][0]:.3f}, {gp[1][1]:.3f}, {gp[1][2]:.3f})\n"
+        f"  bernoulli_p    = ({p_sus[0]:.3f}, {p_sus[1]:.3f}, {p_sus[2]:.3f})\n"
+        f"  self-loop diag = ({a[0][0]:.3f}, {a[1][1]:.3f}, {a[2][2]:.3f})"
+    )
+
+
+def run(route_id: str, data_dir: Path, train: bool = False) -> int:
     series = load_route_series(data_dir, route_id)
     if not series:
         print(f"No data for route {route_id!r} in {data_dir}")
@@ -62,6 +77,21 @@ def run(route_id: str, data_dir: Path) -> int:
         f"Route {route_id}: {len(series)} ticks "
         f"({_fmt_time(series[0].tick)} → {_fmt_time(series[-1].tick)})"
     )
+
+    params = BOOTSTRAP_PARAMS
+    if train:
+        print("\nBootstrap params:")
+        print(_fmt_params(params))
+        obs = [to.observation for to in series]
+        params, log_liks = fit_em(obs, params, max_iterations=50, tolerance=1e-4)
+        print(
+            f"\nBaum-Welch EM: {len(log_liks)} iterations, "
+            f"log-likelihood {log_liks[0]:.2f} → {log_liks[-1]:.2f}"
+        )
+        print("\nLearned params:")
+        print(_fmt_params(params))
+        print()
+
     print(
         f"{'tick':>20} {'alerts':>6} {'sev':>4} {'sus':>4}  "
         f"{'P(N)':>5} {'P(D)':>5} {'P(S)':>5}  {'state':<10} {'~recov':>8}"
@@ -69,7 +99,7 @@ def run(route_id: str, data_dir: Path) -> int:
     print("-" * 100)
 
     state = FilterState(
-        probabilities=BOOTSTRAP_PARAMS.initial,
+        probabilities=params.initial,
         regime_entered_at=series[0].tick,
         last_updated_at=series[0].tick,
     )
@@ -82,7 +112,7 @@ def run(route_id: str, data_dir: Path) -> int:
 
     for i, tick_obs in enumerate(series):
         state = forward_update(
-            state, tick_obs.observation, BOOTSTRAP_PARAMS, now=tick_obs.tick
+            state, tick_obs.observation, params, now=tick_obs.tick
         )
         argmax = _argmax_state(state.probabilities)
         if argmax != last_argmax:
@@ -90,7 +120,7 @@ def run(route_id: str, data_dir: Path) -> int:
             last_argmax = argmax
 
         if i % every == 0 or i == len(series) - 1:
-            recov, _, _ = expected_dwell_ticks(state, BOOTSTRAP_PARAMS)
+            recov, _, _ = expected_dwell_ticks(state, params)
             obs = tick_obs.observation
             print(
                 f"{_fmt_time(tick_obs.tick):>20} "
@@ -109,9 +139,9 @@ def run(route_id: str, data_dir: Path) -> int:
         print(f"  {_fmt_time(tick)}: {prev} → {curr}")
 
     # Projection from final state
-    p30 = project_forward(state, BOOTSTRAP_PARAMS, ticks_ahead=30 // 5)
-    p60 = project_forward(state, BOOTSTRAP_PARAMS, ticks_ahead=60 // 5)
-    p120 = project_forward(state, BOOTSTRAP_PARAMS, ticks_ahead=120 // 5)
+    p30 = project_forward(state, params, ticks_ahead=30 // 5)
+    p60 = project_forward(state, params, ticks_ahead=60 // 5)
+    p120 = project_forward(state, params, ticks_ahead=120 // 5)
     print()
     print("Forward projection from final state:")
     print(f"  P(normal in  30 min): {p30[0]:.3f}")
@@ -129,8 +159,14 @@ def main() -> int:
         default=Path("data"),
         help="Collector data directory (default: ./data)",
     )
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Run Baum-Welch EM on the data first to learn params, "
+        "then run the filter with the learned params.",
+    )
     args = parser.parse_args()
-    return run(args.route, args.data_dir)
+    return run(args.route, args.data_dir, train=args.train)
 
 
 if __name__ == "__main__":

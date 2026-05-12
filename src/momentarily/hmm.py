@@ -253,20 +253,238 @@ def expected_dwell_ticks(
 # -----------------------------------------------------------------------------
 
 
+def _per_tick_emissions(
+    obs_seq: list[Observation], emissions: EmissionParams
+) -> tuple[list[tuple[float, float, float]], list[float]]:
+    """For numerical stability, rescale emissions per tick so the max across
+    states is 1.0. The forward scaling absorbs the per-tick rescale; we just
+    have to add the rescale offsets back when computing log P(o | θ).
+    """
+    emis: list[tuple[float, float, float]] = []
+    offsets: list[float] = []
+    for obs in obs_seq:
+        log_e = _log_emission(obs, emissions)
+        max_log = max(log_e)
+        offsets.append(max_log)
+        emis.append(
+            (
+                math.exp(log_e[0] - max_log),
+                math.exp(log_e[1] - max_log),
+                math.exp(log_e[2] - max_log),
+            )
+        )
+    return emis, offsets
+
+
+def _forward_scaled(
+    emis: list[tuple[float, float, float]], params: HMMParams
+) -> tuple[list[list[float]], list[float]]:
+    """Scaled forward pass. Returns (alpha[t][s], scales[t]) where alpha sums to 1
+    across states at every t."""
+    t_max = len(emis)
+    alpha: list[list[float]] = [[0.0] * N_STATES for _ in range(t_max)]
+    scales: list[float] = [0.0] * t_max
+    a = params.transition
+
+    for s in range(N_STATES):
+        alpha[0][s] = params.initial[s] * emis[0][s]
+    s0 = sum(alpha[0]) or 1e-300
+    scales[0] = s0
+    for s in range(N_STATES):
+        alpha[0][s] /= s0
+
+    for t in range(1, t_max):
+        for s in range(N_STATES):
+            alpha[t][s] = (
+                sum(alpha[t - 1][sp] * a[sp][s] for sp in range(N_STATES))
+                * emis[t][s]
+            )
+        st = sum(alpha[t]) or 1e-300
+        scales[t] = st
+        for s in range(N_STATES):
+            alpha[t][s] /= st
+    return alpha, scales
+
+
+def _backward_scaled(
+    emis: list[tuple[float, float, float]],
+    scales: list[float],
+    params: HMMParams,
+) -> list[list[float]]:
+    """Scaled backward pass using the same per-tick scaling as the forward pass."""
+    t_max = len(emis)
+    beta: list[list[float]] = [[0.0] * N_STATES for _ in range(t_max)]
+    a = params.transition
+
+    for s in range(N_STATES):
+        beta[t_max - 1][s] = 1.0 / scales[t_max - 1]
+
+    for t in reversed(range(t_max - 1)):
+        for s in range(N_STATES):
+            beta[t][s] = (
+                sum(
+                    a[s][sp] * emis[t + 1][sp] * beta[t + 1][sp]
+                    for sp in range(N_STATES)
+                )
+                / scales[t]
+            )
+    return beta
+
+
+def _em_iteration(
+    observations: list[Observation], params: HMMParams
+) -> tuple[HMMParams, float]:
+    """One E-step + M-step. Returns (new_params, log_likelihood_under_old_params)."""
+    emis, offsets = _per_tick_emissions(observations, params.emissions)
+    alpha, scales = _forward_scaled(emis, params)
+    beta = _backward_scaled(emis, scales, params)
+    t_max = len(observations)
+    a = params.transition
+
+    gamma: list[list[float]] = [[0.0] * N_STATES for _ in range(t_max)]
+    for t in range(t_max):
+        z = sum(alpha[t][s] * beta[t][s] for s in range(N_STATES)) or 1e-300
+        for s in range(N_STATES):
+            gamma[t][s] = alpha[t][s] * beta[t][s] / z
+
+    xi_sum: list[list[float]] = [[0.0] * N_STATES for _ in range(N_STATES)]
+    for t in range(t_max - 1):
+        for s in range(N_STATES):
+            for sp in range(N_STATES):
+                xi_sum[s][sp] += (
+                    alpha[t][s] * a[s][sp] * emis[t + 1][sp] * beta[t + 1][sp]
+                )
+
+    # ----- M-step -----
+    new_pi = (gamma[0][0], gamma[0][1], gamma[0][2])
+
+    new_a_rows: list[tuple[float, float, float]] = []
+    for s in range(N_STATES):
+        denom = sum(gamma[t][s] for t in range(t_max - 1))
+        if denom <= 0:
+            new_a_rows.append(params.transition[s])
+            continue
+        row = [xi_sum[s][sp] / denom for sp in range(N_STATES)]
+        rsum = sum(row) or 1.0
+        row = [r / rsum for r in row]
+        new_a_rows.append((row[0], row[1], row[2]))
+    new_a = tuple(new_a_rows)
+
+    state_weight = [sum(gamma[t][s] for t in range(t_max)) for s in range(N_STATES)]
+
+    poisson_lambda: list[float] = []
+    bernoulli_p: list[float] = []
+    gamma_alpha: list[float] = []
+    gamma_beta: list[float] = []
+
+    for s in range(N_STATES):
+        w = state_weight[s]
+        if w <= 0:
+            poisson_lambda.append(params.emissions.poisson_lambda[s])
+            bernoulli_p.append(params.emissions.bernoulli_p[s])
+            gamma_alpha.append(params.emissions.gamma_alpha[s])
+            gamma_beta.append(params.emissions.gamma_beta[s])
+            continue
+
+        lam = sum(gamma[t][s] * observations[t].alert_count for t in range(t_max)) / w
+        poisson_lambda.append(max(lam, 1e-6))
+
+        p = (
+            sum(
+                gamma[t][s] * (1.0 if observations[t].has_suspended_alert else 0.0)
+                for t in range(t_max)
+            )
+            / w
+        )
+        bernoulli_p.append(min(max(p, 1e-6), 1 - 1e-6))
+
+        # Gamma method-of-moments. Shift by 0.5 to match _log_gamma's shift.
+        x = [obs.severity_sum + 0.5 for obs in observations]
+        mu = sum(gamma[t][s] * x[t] for t in range(t_max)) / w
+        var = sum(gamma[t][s] * (x[t] - mu) ** 2 for t in range(t_max)) / w
+        if var <= 0:
+            var = 1e-6
+        gamma_alpha.append(max(mu * mu / var, 1e-3))
+        gamma_beta.append(max(mu / var, 1e-6))
+
+    new_emissions = EmissionParams(
+        poisson_lambda=(poisson_lambda[0], poisson_lambda[1], poisson_lambda[2]),
+        gamma_alpha=(gamma_alpha[0], gamma_alpha[1], gamma_alpha[2]),
+        gamma_beta=(gamma_beta[0], gamma_beta[1], gamma_beta[2]),
+        bernoulli_p=(bernoulli_p[0], bernoulli_p[1], bernoulli_p[2]),
+    )
+
+    new_params = HMMParams(
+        transition=new_a, initial=new_pi, emissions=new_emissions
+    )
+
+    log_lik = sum(math.log(c) for c in scales) + sum(offsets)
+    return new_params, log_lik
+
+
+def _sort_states_by_lambda(params: HMMParams) -> HMMParams:
+    """Reorder states so poisson_lambda is ascending: state 0 = quietest.
+
+    EM is invariant to state labels (label-switching), so re-sort after fitting
+    to keep "normal/disrupted/suspended" semantically consistent across runs.
+    """
+    order = sorted(range(N_STATES), key=lambda s: params.emissions.poisson_lambda[s])
+    if order == [0, 1, 2]:
+        return params
+
+    def reorder3(t: tuple[float, ...]) -> tuple[float, float, float]:
+        return (t[order[0]], t[order[1]], t[order[2]])
+
+    em = params.emissions
+    new_emissions = EmissionParams(
+        poisson_lambda=reorder3(em.poisson_lambda),
+        gamma_alpha=reorder3(em.gamma_alpha),
+        gamma_beta=reorder3(em.gamma_beta),
+        bernoulli_p=reorder3(em.bernoulli_p),
+    )
+    new_initial = reorder3(params.initial)
+    new_transition = tuple(
+        reorder3(tuple(params.transition[order[s]])) for s in range(N_STATES)
+    )
+    return HMMParams(
+        transition=new_transition,
+        initial=new_initial,
+        emissions=new_emissions,
+    )
+
+
 def fit_em(
     observations: list[Observation],
+    initial_params: HMMParams,
     max_iterations: int = 50,
     tolerance: float = 1e-4,
-) -> HMMParams:
+) -> tuple[HMMParams, list[float]]:
     """Train per-entity HMM parameters from a sequence of observations.
 
-    NOT YET IMPLEMENTED — scaffold only.
+    Uses Baum-Welch: forward-backward (scaled for numerical stability) for the
+    E-step, weighted-MLE for the M-step. Converges when relative change in
+    log-likelihood drops below `tolerance` or `max_iterations` is reached.
 
-    Uses Baum-Welch (forward-backward + parameter re-estimation). Convergence
-    criterion: log-likelihood change below tolerance.
+    Returns (fitted_params, log_likelihoods) where log_likelihoods is the
+    sequence across iterations — useful for verifying monotonicity.
 
-    Cold-start (this entity has < N days of history) is handled at the caller:
-    publisher initializes with a weakly-informative prior and sets
-    `model_warming_up=True` in the published Inference object.
+    The output is re-sorted so state 0 has the smallest poisson_lambda, giving
+    stable "normal/disrupted/suspended" semantics across runs.
     """
-    raise NotImplementedError("fit_em is scaffold-only; implementation lands in 5w0.5")
+    if not observations:
+        raise ValueError("fit_em requires at least one observation")
+
+    params = initial_params
+    log_liks: list[float] = []
+    prev: float | None = None
+
+    for _ in range(max_iterations):
+        params, log_lik = _em_iteration(observations, params)
+        log_liks.append(log_lik)
+        if prev is not None:
+            denom = max(abs(prev), 1e-12)
+            if abs(log_lik - prev) / denom < tolerance:
+                break
+        prev = log_lik
+
+    return _sort_states_by_lambda(params), log_liks

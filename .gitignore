@@ -17,6 +17,12 @@ build/
 .env
 .env.local
 
+# Local tooling (not for upstream)
+AGENTS.md
+CLAUDE.md
+.claude/
+.beads/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

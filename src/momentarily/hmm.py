@@ -23,11 +23,13 @@ metro state.
 See docs/papers.md for the full prior-art survey.
 
 This is the engine that backs the user-facing `condition` and `recovery_minutes`
-fields in the snapshot, per 5w0.4 and 5w0.5. Per 5w0.6, outputs are shadow-logged
-only during Phase 1 of the rollout.
+fields in the snapshot. Outputs are shadow-logged only during Phase 1 of the
+rollout; they graduate to public snapshot fields after calibration review.
 
-NOT yet wired into the publisher — this module is scaffolding so 5w0.5 implementation
-can flesh out the training loop and per-tick filter integration in a follow-up.
+NOT yet wired into the publisher — this module is scaffolding. Under the Path 2
+architecture the forward filter is ported to TypeScript for the live Worker;
+this Python implementation becomes the reference for that port and the engine
+for offline Baum-Welch training.
 """
 
 from __future__ import annotations

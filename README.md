@@ -54,7 +54,7 @@ JSON-only for v1 — no protobuf parsing. Trip updates and vehicle positions (pr
 
 ## Running it
 
-### Local dev (without R2)
+### Local dev
 
 ```bash
 uv sync
@@ -63,21 +63,11 @@ uv run pytest
 
 Tests exercise the derivation logic against synthetic fixtures — no MTA key required.
 
-### Live publish (your own instance)
+### Live publish
 
-1. Get a free MTA API key at [api.mta.info](https://api.mta.info).
-2. Create a Cloudflare account, enable R2, create a bucket. Bind it to a custom domain via Cloudflare DNS.
-3. In this repo's GitHub Actions secrets, add:
-   - `MTA_API_KEY`
-   - `R2_ACCOUNT_ID`
-   - `R2_ACCESS_KEY_ID`
-   - `R2_SECRET_ACCESS_KEY`
-   - `R2_BUCKET`
-4. The publish workflow runs on cron (`.github/workflows/publish.yml`).
+The live publish path is a TypeScript Cloudflare Worker writing to R2 on a Workers Cron Trigger. The Worker is under active development; see the project tracker for status.
 
-### Self-host without GitHub Actions
-
-A Docker image is planned ([beads-1ct](https://github.com/iicky/homeassistant-mta-subway/issues)). For now, run `python -m momentarily` against any scheduler with the same env vars.
+This Python package is the offline toolkit — used for HMM training (Baum-Welch EM), calibration notebooks, and as the reference implementation for the Worker's derivation logic. It is not the live publisher.
 
 ## Status mapping
 

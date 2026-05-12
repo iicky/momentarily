@@ -1,7 +1,8 @@
-"""Upload the rendered snapshot JSON to Cloudflare R2.
+"""Reference-only: R2 upload via boto3.
 
-R2 is S3-compatible, so boto3 works as-is. Public read is configured at the
-bucket level (or via custom-domain CNAME → bucket), not per-object.
+The live publish path is the TypeScript Cloudflare Worker (see bead c72.8) using
+the R2 binding, not boto3. This module is kept as a comparison reference while
+the Worker is being built; remove once c72.8 ships.
 """
 
 from __future__ import annotations

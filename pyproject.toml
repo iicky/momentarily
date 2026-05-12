@@ -13,9 +13,6 @@ dependencies = [
     "boto3>=1.34",
 ]
 
-[project.scripts]
-momentarily = "momentarily.__main__:main"
-
 [dependency-groups]
 dev = [
     "pytest>=8.0",

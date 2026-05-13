@@ -31,9 +31,9 @@ from momentarily.hmm import (
 def _default_params() -> HMMParams:
     """Hand-picked parameters with the regime separation we expect from real data.
 
-    normal:    almost no alerts, severity ~0, suspended very rare
-    disrupted: a handful of alerts, moderate severity, suspended uncommon
-    suspended: many alerts, high severity, suspended-alert near-certain
+    normal:    almost no alerts, severity ~0, all flags rare
+    disrupted: a handful of alerts, moderate severity, delays/changes common
+    suspended: many alerts, high severity, suspended/no-service near-certain
     """
     return HMMParams(
         transition=(
@@ -47,6 +47,9 @@ def _default_params() -> HMMParams:
             gamma_alpha=(1.0, 3.0, 6.0),
             gamma_beta=(2.0, 0.4, 0.2),
             bernoulli_p=(0.001, 0.05, 0.95),
+            bernoulli_p_delays=(0.01, 0.45, 0.5),
+            bernoulli_p_service_change=(0.01, 0.5, 0.6),
+            bernoulli_p_planned=(0.05, 0.3, 0.4),
         ),
     )
 
@@ -471,3 +474,104 @@ def test_published_state_type_safety() -> None:
     p = initial_published_state(state)
     assert isinstance(p, PublishedState)
     assert p.label in ("normal", "disrupted", "suspended", PUBLISHED_UNKNOWN)
+
+
+# ---------------------------------------------------------------------------
+# Per-alert-type Bernoulli emissions
+# ---------------------------------------------------------------------------
+
+
+def test_planned_alerts_can_distinguish_overnight_from_real_disruption() -> None:
+    """Two routes with identical alert_count and severity but different alert
+    types — one planned, one real disruption — should produce different posteriors."""
+    params = _default_params()
+    state = _flat_state()
+
+    # Overnight planned work: lots of alerts but all Planned
+    planned = Observation(
+        alert_count=8,
+        severity_sum=60,
+        has_suspended_alert=False,
+        has_delays=False,
+        has_service_change=False,
+        has_planned=True,
+    )
+    p_state = forward_update(state, planned, params, now=300)
+
+    # Real-time disruption: same shape but no planned flag, with delays + suspension
+    real = Observation(
+        alert_count=8,
+        severity_sum=60,
+        has_suspended_alert=True,
+        has_delays=True,
+        has_service_change=True,
+        has_planned=False,
+    )
+    r_state = forward_update(state, real, params, now=300)
+
+    # Posteriors should differ — the channels carry signal
+    assert p_state.probabilities != r_state.probabilities
+
+    # Real disruption should pull harder toward suspended than planned does
+    assert r_state.probabilities[2] > p_state.probabilities[2]
+
+
+def test_em_recovers_distinct_alert_type_profiles() -> None:
+    """EM should learn distinct Bernoulli p's per state when synthetic data
+    encodes the asymmetry."""
+    true_params = HMMParams(
+        transition=(
+            (0.95, 0.04, 0.01),
+            (0.08, 0.90, 0.02),
+            (0.02, 0.10, 0.88),
+        ),
+        initial=(0.5, 0.3, 0.2),
+        emissions=EmissionParams(
+            poisson_lambda=(0.2, 3.0, 9.0),
+            gamma_alpha=(1.0, 3.0, 6.0),
+            gamma_beta=(2.0, 0.5, 0.3),
+            bernoulli_p=(0.01, 0.10, 0.80),         # suspended-alert
+            bernoulli_p_delays=(0.05, 0.60, 0.30),  # delays peak in disrupted
+            bernoulli_p_service_change=(0.02, 0.40, 0.20),
+            bernoulli_p_planned=(0.10, 0.20, 0.10),
+        ),
+    )
+    obs = _generate_synthetic_sequence(true_params, length=1500, seed=11)
+    init = HMMParams(
+        transition=(
+            (0.8, 0.15, 0.05),
+            (0.15, 0.7, 0.15),
+            (0.05, 0.15, 0.8),
+        ),
+        initial=(0.6, 0.3, 0.1),
+        emissions=EmissionParams(
+            poisson_lambda=(1.0, 4.0, 8.0),
+            gamma_alpha=(1.5, 2.5, 4.0),
+            gamma_beta=(1.0, 0.5, 0.3),
+            bernoulli_p=(0.1, 0.3, 0.7),
+            bernoulli_p_delays=(0.1, 0.4, 0.4),
+            bernoulli_p_service_change=(0.1, 0.4, 0.4),
+            bernoulli_p_planned=(0.1, 0.2, 0.2),
+        ),
+    )
+    fitted, _ = fit_em(obs, init, max_iterations=40, tolerance=1e-5)
+
+    # After sort-by-lambda, suspended-state probability should be highest in state 2
+    assert fitted.emissions.bernoulli_p[2] > fitted.emissions.bernoulli_p[0]
+    # Delays should peak in the disrupted state (highest in middle, not extremes)
+    # — at minimum, it shouldn't be lowest in state 1 (disrupted)
+    delays = fitted.emissions.bernoulli_p_delays
+    assert delays[1] >= delays[0] - 0.1, f"delays in disrupted dropped below normal: {delays}"
+
+
+def test_observation_defaults_back_compat() -> None:
+    """Old call sites without the new boolean flags still work."""
+    obs = Observation(alert_count=3, severity_sum=20, has_suspended_alert=False)
+    assert obs.has_delays is False
+    assert obs.has_service_change is False
+    assert obs.has_planned is False
+    # forward_update accepts it
+    params = _default_params()
+    state = _flat_state()
+    new_state = forward_update(state, obs, params, now=100)
+    assert math.isclose(sum(new_state.probabilities), 1.0, abs_tol=1e-9)

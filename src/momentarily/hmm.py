@@ -466,14 +466,32 @@ def _em_iteration(
 
     poisson_lambda: list[float] = []
     bernoulli_p: list[float] = []
+    bernoulli_p_delays: list[float] = []
+    bernoulli_p_service_change: list[float] = []
+    bernoulli_p_planned: list[float] = []
     gamma_alpha: list[float] = []
     gamma_beta: list[float] = []
+
+    def _weighted_bernoulli(s: int, indicator) -> float:
+        p = (
+            sum(
+                gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0)
+                for t in range(t_max)
+            )
+            / state_weight[s]
+        )
+        return min(max(p, 1e-6), 1 - 1e-6)
 
     for s in range(N_STATES):
         w = state_weight[s]
         if w <= 0:
             poisson_lambda.append(params.emissions.poisson_lambda[s])
             bernoulli_p.append(params.emissions.bernoulli_p[s])
+            bernoulli_p_delays.append(params.emissions.bernoulli_p_delays[s])
+            bernoulli_p_service_change.append(
+                params.emissions.bernoulli_p_service_change[s]
+            )
+            bernoulli_p_planned.append(params.emissions.bernoulli_p_planned[s])
             gamma_alpha.append(params.emissions.gamma_alpha[s])
             gamma_beta.append(params.emissions.gamma_beta[s])
             continue
@@ -481,14 +499,12 @@ def _em_iteration(
         lam = sum(gamma[t][s] * observations[t].alert_count for t in range(t_max)) / w
         poisson_lambda.append(max(lam, 1e-6))
 
-        p = (
-            sum(
-                gamma[t][s] * (1.0 if observations[t].has_suspended_alert else 0.0)
-                for t in range(t_max)
-            )
-            / w
+        bernoulli_p.append(_weighted_bernoulli(s, lambda o: o.has_suspended_alert))
+        bernoulli_p_delays.append(_weighted_bernoulli(s, lambda o: o.has_delays))
+        bernoulli_p_service_change.append(
+            _weighted_bernoulli(s, lambda o: o.has_service_change)
         )
-        bernoulli_p.append(min(max(p, 1e-6), 1 - 1e-6))
+        bernoulli_p_planned.append(_weighted_bernoulli(s, lambda o: o.has_planned))
 
         # Gamma method-of-moments. Shift by 0.5 to match _log_gamma's shift.
         x = [obs.severity_sum + 0.5 for obs in observations]
@@ -504,6 +520,21 @@ def _em_iteration(
         gamma_alpha=(gamma_alpha[0], gamma_alpha[1], gamma_alpha[2]),
         gamma_beta=(gamma_beta[0], gamma_beta[1], gamma_beta[2]),
         bernoulli_p=(bernoulli_p[0], bernoulli_p[1], bernoulli_p[2]),
+        bernoulli_p_delays=(
+            bernoulli_p_delays[0],
+            bernoulli_p_delays[1],
+            bernoulli_p_delays[2],
+        ),
+        bernoulli_p_service_change=(
+            bernoulli_p_service_change[0],
+            bernoulli_p_service_change[1],
+            bernoulli_p_service_change[2],
+        ),
+        bernoulli_p_planned=(
+            bernoulli_p_planned[0],
+            bernoulli_p_planned[1],
+            bernoulli_p_planned[2],
+        ),
     )
 
     new_params = HMMParams(
@@ -533,6 +564,9 @@ def _sort_states_by_lambda(params: HMMParams) -> HMMParams:
         gamma_alpha=reorder3(em.gamma_alpha),
         gamma_beta=reorder3(em.gamma_beta),
         bernoulli_p=reorder3(em.bernoulli_p),
+        bernoulli_p_delays=reorder3(em.bernoulli_p_delays),
+        bernoulli_p_service_change=reorder3(em.bernoulli_p_service_change),
+        bernoulli_p_planned=reorder3(em.bernoulli_p_planned),
     )
     new_initial = reorder3(params.initial)
     new_transition = tuple(

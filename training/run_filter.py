@@ -40,7 +40,10 @@ BOOTSTRAP_PARAMS = HMMParams(
         poisson_lambda=(0.3, 4.0, 12.0),
         gamma_alpha=(1.0, 3.0, 6.0),
         gamma_beta=(2.0, 0.4, 0.2),
-        bernoulli_p=(0.001, 0.05, 0.95),
+        bernoulli_p=(0.001, 0.05, 0.95),            # suspended
+        bernoulli_p_delays=(0.01, 0.4, 0.5),
+        bernoulli_p_service_change=(0.01, 0.5, 0.6),
+        bernoulli_p_planned=(0.05, 0.3, 0.4),
     ),
 )
 
@@ -55,16 +58,19 @@ def _argmax_state(probs: tuple[float, float, float]) -> str:
 
 
 def _fmt_params(params: HMMParams) -> str:
-    lam = params.emissions.poisson_lambda
-    gp = params.emissions.gamma_alpha, params.emissions.gamma_beta
-    p_sus = params.emissions.bernoulli_p
+    em = params.emissions
     a = params.transition
+    def t(p: tuple[float, float, float]) -> str:
+        return f"({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f})"
     return (
-        f"  poisson_lambda = ({lam[0]:.2f}, {lam[1]:.2f}, {lam[2]:.2f})\n"
-        f"  gamma_alpha    = ({gp[0][0]:.2f}, {gp[0][1]:.2f}, {gp[0][2]:.2f})\n"
-        f"  gamma_beta     = ({gp[1][0]:.3f}, {gp[1][1]:.3f}, {gp[1][2]:.3f})\n"
-        f"  bernoulli_p    = ({p_sus[0]:.3f}, {p_sus[1]:.3f}, {p_sus[2]:.3f})\n"
-        f"  self-loop diag = ({a[0][0]:.3f}, {a[1][1]:.3f}, {a[2][2]:.3f})"
+        f"  poisson_lambda      = {t(em.poisson_lambda)}\n"
+        f"  gamma_alpha         = {t(em.gamma_alpha)}\n"
+        f"  gamma_beta          = {t(em.gamma_beta)}\n"
+        f"  p(suspended)        = {t(em.bernoulli_p)}\n"
+        f"  p(delays)           = {t(em.bernoulli_p_delays)}\n"
+        f"  p(service_change)   = {t(em.bernoulli_p_service_change)}\n"
+        f"  p(planned)          = {t(em.bernoulli_p_planned)}\n"
+        f"  self-loop diag      = ({a[0][0]:.3f}, {a[1][1]:.3f}, {a[2][2]:.3f})"
     )
 
 

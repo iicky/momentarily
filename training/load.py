@@ -104,9 +104,7 @@ def build_observations(
         for route_id, alerts in bucket[tick].items():
             alert_count = len(alerts)
             severity_sum = sum(so for so, _at in alerts.values())
-            has_suspended = any(
-                "Suspend" in at or "No Trains" in at for _so, at in alerts.values()
-            )
+            types = [at for _so, at in alerts.values()]
             out.append(
                 TickObservation(
                     route_id=route_id,
@@ -114,11 +112,49 @@ def build_observations(
                     observation=Observation(
                         alert_count=alert_count,
                         severity_sum=severity_sum,
-                        has_suspended_alert=has_suspended,
+                        has_suspended_alert=_match(
+                            types, ("Suspend", "No Trains", "No Scheduled Service")
+                        ),
+                        has_delays=_match(types, ("Delays", "Severe Delays")),
+                        has_service_change=_match(
+                            types,
+                            (
+                                "Service Change",
+                                "Trains Rerouted",
+                                "Reroute",
+                                "Stops Skipped",
+                                "Express to Local",
+                                "Local to Express",
+                            ),
+                            exclude_prefix="Planned -",
+                        ),
+                        has_planned=any(
+                            at.startswith("Planned -") for at in types
+                        ),
                     ),
                 )
             )
     return out
+
+
+def _match(
+    types: list[str],
+    needles: tuple[str, ...],
+    *,
+    exclude_prefix: str | None = None,
+) -> bool:
+    """Whether any alert_type in `types` contains one of the needles.
+
+    If exclude_prefix is set, alert_types starting with that prefix are skipped
+    so that "Planned - Stops Skipped" doesn't double-count as a service change
+    when has_planned already captures it.
+    """
+    for at in types:
+        if exclude_prefix and at.startswith(exclude_prefix):
+            continue
+        if any(needle in at for needle in needles):
+            return True
+    return False
 
 
 def fill_quiet_ticks(

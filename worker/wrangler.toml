@@ -1,4 +1,4 @@
-name = "momentarily-publisher"
+name = "momentarily-held"
 main = "src/index.ts"
 compatibility_date = "2026-05-13"
 account_id = "REDACTED"

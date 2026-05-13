@@ -1,28 +1,40 @@
 /**
  * Momentarily publisher — Cloudflare Worker entry point.
  *
- * Fires on a Workers Cron Trigger every 5 minutes:
- *   1. Fetch MTA GTFS-RT feeds
- *   2. Read rolling HMM state from R2
- *   3. Run forward filter for each route
- *   4. Render snapshot.json + write to R2 (public via feed.momentarily.nyc)
- *   5. Write updated state.json + archive line to R2
+ * v0 scope: COLLECTION ONLY. Each cron tick:
+ *   1. Read state/last_seen.json from R2
+ *   2. Fetch the MTA alerts feed; for each new (alert_id, updated_at) pair,
+ *      write a per-change object to archive/alerts/...
+ *   3. Hourly: fetch the 3 E&E feeds, write a snapshot per source to
+ *      archive/ene/...
+ *   4. Write updated state/last_seen.json
  *
- * Step (1) only is wired up today — the rest land as separate commits as the
- * pieces port over from src/momentarily/*.py.
+ * Forward filter + snapshot publishing are intentionally not here yet — they
+ * land in follow-up iterations once enough corpus has accumulated to train
+ * against.
  */
+
+import { archiveEneSnapshot, archiveNewAlerts } from './archive';
+import { FEEDS, fetchJson } from './fetch';
+import { readLastSeen, writeLastSeen } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
 }
 
-const MTA_SUBWAY_ALERTS =
-  'https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts.json';
+// Hourly E&E cadence: the upstream feed itself doesn't change faster than that.
+const ENE_INTERVAL_SECONDS = 3600;
+
+const ENE_SOURCES = [
+  ['ene_current', FEEDS.ene_current],
+  ['ene_upcoming', FEEDS.ene_upcoming],
+  ['ene_equipments', FEEDS.ene_equipments],
+] as const;
 
 export default {
   async fetch(_request: Request, _env: Env): Promise<Response> {
     return new Response(
-      'Momentarily publisher Worker. Cron-driven; no HTTP surface.\n',
+      'Momentarily publisher Worker. Cron-driven; no HTTP surface yet.\n',
       { headers: { 'content-type': 'text/plain; charset=utf-8' } },
     );
   },
@@ -30,43 +42,45 @@ export default {
   async scheduled(
     event: ScheduledController,
     env: Env,
-    ctx: ExecutionContext,
+    _ctx: ExecutionContext,
   ): Promise<void> {
-    const startedAt = Math.floor(Date.now() / 1000);
-    console.log(`scheduled tick: cron=${event.cron} t=${startedAt}`);
+    const observedAt = Math.floor(Date.now() / 1000);
+    console.log(`tick cron=${event.cron} t=${observedAt}`);
+
+    const lastSeen = await readLastSeen(env.MOMENTARILY);
 
     try {
-      const response = await fetch(MTA_SUBWAY_ALERTS, {
-        cf: { cacheTtl: 0, cacheEverything: false },
-      });
-      if (!response.ok) {
-        console.error(`subway-alerts fetch failed: HTTP ${response.status}`);
-        return;
-      }
-      const payload = (await response.json()) as { entity?: unknown[] };
-      const count = payload.entity?.length ?? 0;
-      console.log(`subway-alerts: ${count} entities`);
-
-      // Smoke check: write a tiny status object so we can verify the R2
-      // binding end-to-end. Replaced by a real snapshot in the next iteration.
-      ctx.waitUntil(
-        env.MOMENTARILY.put(
-          'health/last_tick.json',
-          JSON.stringify({
-            started_at: startedAt,
-            cron: event.cron,
-            subway_alerts_count: count,
-          }),
-          {
-            httpMetadata: {
-              contentType: 'application/json',
-              cacheControl: 'no-store',
-            },
-          },
-        ),
+      const payload = await fetchJson(FEEDS.alerts);
+      const written = await archiveNewAlerts(
+        env.MOMENTARILY,
+        payload,
+        lastSeen,
+        observedAt,
       );
+      console.log(`alerts: ${written} new versions archived`);
     } catch (err) {
-      console.error('tick failed', err);
+      console.error('alerts pipeline failed:', err);
     }
+
+    if (observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
+      let eneOk = 0;
+      for (const [name, url] of ENE_SOURCES) {
+        try {
+          const payload = await fetchJson(url);
+          await archiveEneSnapshot(env.MOMENTARILY, name, payload, observedAt);
+          eneOk += 1;
+        } catch (err) {
+          console.error(`ene ${name} failed:`, err);
+        }
+      }
+      if (eneOk > 0) {
+        // Only advance freshness if at least one E&E feed succeeded; otherwise
+        // we want to retry on the next tick rather than wait another hour.
+        lastSeen.ene_at = observedAt;
+      }
+      console.log(`ene: ${eneOk}/${ENE_SOURCES.length} feeds archived`);
+    }
+
+    await writeLastSeen(env.MOMENTARILY, lastSeen);
   },
 } satisfies ExportedHandler<Env>;

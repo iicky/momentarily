@@ -88,6 +88,41 @@ class FilterState:
     last_updated_at: int  # epoch of the observation that produced this state
 
 
+# Published-state vocabulary — includes the HMM hidden states plus Unknown,
+# which is a publish-layer concept (used when upstream feed is unavailable).
+PUBLISHED_UNKNOWN = "unknown"
+PublishedLabel = Literal["normal", "disrupted", "suspended", "unknown"]
+
+# Consecutive ticks the argmax must hold before a state change is published.
+# 2 = 10 min at the 5-min cron cadence — kills single-tick blips while still
+# tracking real regime changes within one cron period.
+HYSTERESIS_TICKS = 2
+
+
+@dataclass(frozen=True)
+class PublishedState:
+    """What consumers see — lags raw argmax(alpha) via hysteresis, surfaces
+    Unknown for feed gaps. Independent from FilterState (the posterior is
+    always advanced honestly; PublishedState just decides what to expose).
+    """
+
+    label: PublishedLabel
+    pending_state: State  # current argmax candidate (or last published if unknown)
+    pending_streak: int  # consecutive ticks argmax has held at pending_state
+    last_updated_at: int
+
+
+def initial_published_state(state: FilterState) -> PublishedState:
+    """Seed a PublishedState aligned to the filter's current argmax."""
+    argmax_idx = max(range(N_STATES), key=lambda i: state.probabilities[i])
+    return PublishedState(
+        label=STATES[argmax_idx],
+        pending_state=STATES[argmax_idx],
+        pending_streak=HYSTERESIS_TICKS,  # start already-published
+        last_updated_at=state.last_updated_at,
+    )
+
+
 # -----------------------------------------------------------------------------
 # Forward algorithm (filtering) — per-tick update of FilterState
 # -----------------------------------------------------------------------------
@@ -175,6 +210,58 @@ def forward_update(
     return FilterState(
         probabilities=(post[0], post[1], post[2]),
         regime_entered_at=regime_entered_at,
+        last_updated_at=now,
+    )
+
+
+def forward_step(
+    state: FilterState,
+    published: PublishedState,
+    obs: Observation | None,
+    params: HMMParams,
+    now: int,
+) -> tuple[FilterState, PublishedState]:
+    """Advance one tick with hysteresis + Unknown handling.
+
+    obs=None signals an upstream feed gap (fetch failure, malformed payload,
+    etc.). In that case the posterior is preserved (no forward update) and the
+    published label flips to "unknown". When obs returns, hysteresis resumes
+    from the surviving posterior.
+    """
+    if obs is None:
+        # Feed gap: don't corrupt alpha; surface Unknown to consumers but keep
+        # pending_state where it was so the next real obs resumes normally.
+        return state, PublishedState(
+            label=PUBLISHED_UNKNOWN,
+            pending_state=published.pending_state,
+            pending_streak=published.pending_streak,
+            last_updated_at=now,
+        )
+
+    new_state = forward_update(state, obs, params, now)
+    new_argmax_idx = max(
+        range(N_STATES), key=lambda i: new_state.probabilities[i]
+    )
+    new_argmax = STATES[new_argmax_idx]
+
+    if new_argmax == published.pending_state:
+        streak = published.pending_streak + 1
+    else:
+        streak = 1
+
+    # Promote pending to published only when it's been stable long enough.
+    # Special case: when coming back from Unknown, the first real observation
+    # should publish immediately (we already lost ticks; don't compound the lag).
+    coming_from_unknown = published.label == PUBLISHED_UNKNOWN
+    if coming_from_unknown or streak >= HYSTERESIS_TICKS:
+        new_label: PublishedLabel = new_argmax
+    else:
+        new_label = published.label
+
+    return new_state, PublishedState(
+        label=new_label,
+        pending_state=new_argmax,
+        pending_streak=streak,
         last_updated_at=now,
     )
 

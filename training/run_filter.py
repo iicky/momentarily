@@ -21,7 +21,8 @@ from momentarily.hmm import (
     HMMParams,
     expected_dwell_ticks,
     fit_em,
-    forward_update,
+    forward_step,
+    initial_published_state,
     project_forward,
 )
 from training.load import TICK_SECONDS, load_route_series
@@ -103,21 +104,29 @@ def run(route_id: str, data_dir: Path, train: bool = False) -> int:
         regime_entered_at=series[0].tick,
         last_updated_at=series[0].tick,
     )
+    published = initial_published_state(state)
 
     # Print every Nth tick so a multi-hour history fits the terminal.
     every = max(1, len(series) // 60)
 
+    raw_transitions: list[tuple[int, str, str]] = []
+    published_transitions: list[tuple[int, str, str]] = []
     last_argmax = _argmax_state(state.probabilities)
-    transitions: list[tuple[int, str, str]] = []
+    last_published = published.label
 
     for i, tick_obs in enumerate(series):
-        state = forward_update(
-            state, tick_obs.observation, params, now=tick_obs.tick
+        state, published = forward_step(
+            state, published, tick_obs.observation, params, now=tick_obs.tick
         )
         argmax = _argmax_state(state.probabilities)
         if argmax != last_argmax:
-            transitions.append((tick_obs.tick, last_argmax, argmax))
+            raw_transitions.append((tick_obs.tick, last_argmax, argmax))
             last_argmax = argmax
+        if published.label != last_published:
+            published_transitions.append(
+                (tick_obs.tick, last_published, published.label)
+            )
+            last_published = published.label
 
         if i % every == 0 or i == len(series) - 1:
             recov, _, _ = expected_dwell_ticks(state, params)
@@ -129,13 +138,16 @@ def run(route_id: str, data_dir: Path, train: bool = False) -> int:
                 f"{state.probabilities[0]:>5.2f} "
                 f"{state.probabilities[1]:>5.2f} "
                 f"{state.probabilities[2]:>5.2f}  "
-                f"{argmax:<10} "
+                f"{published.label:<10} "
                 f"{recov * TICK_SECONDS // 60:>5}min"
             )
 
     print()
-    print(f"Regime transitions: {len(transitions)}")
-    for tick, prev, curr in transitions:
+    print(
+        f"Raw argmax transitions:       {len(raw_transitions)}\n"
+        f"Published (after hysteresis): {len(published_transitions)}"
+    )
+    for tick, prev, curr in published_transitions:
         print(f"  {_fmt_time(tick)}: {prev} → {curr}")
 
     # Projection from final state

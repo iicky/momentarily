@@ -11,14 +11,19 @@ import random
 import pytest
 
 from momentarily.hmm import (
+    HYSTERESIS_TICKS,
     N_STATES,
+    PUBLISHED_UNKNOWN,
     EmissionParams,
     FilterState,
     HMMParams,
     Observation,
+    PublishedState,
     expected_dwell_ticks,
     fit_em,
+    forward_step,
     forward_update,
+    initial_published_state,
     project_forward,
 )
 
@@ -326,3 +331,143 @@ def test_em_single_observation_doesnt_crash() -> None:
 def test_em_empty_observations_rejected() -> None:
     with pytest.raises(ValueError):
         fit_em([], _default_params())
+
+
+# ---------------------------------------------------------------------------
+# Hysteresis + Unknown (forward_step)
+# ---------------------------------------------------------------------------
+
+
+def _quiet_obs() -> Observation:
+    return Observation(alert_count=0, severity_sum=0, has_suspended_alert=False)
+
+
+def _suspended_obs() -> Observation:
+    return Observation(alert_count=15, severity_sum=80, has_suspended_alert=True)
+
+
+def test_hysteresis_suppresses_single_tick_flicker() -> None:
+    """A one-tick blip mid-quiet shouldn't bump the published state."""
+    params = _default_params()
+    state = FilterState(
+        probabilities=(0.95, 0.04, 0.01),
+        regime_entered_at=0,
+        last_updated_at=0,
+    )
+    published = initial_published_state(state)
+    assert published.label == "normal"
+
+    # Long quiet streak — published stays normal
+    for t in range(1, 5):
+        state, published = forward_step(
+            state, published, _quiet_obs(), params, now=t * 300
+        )
+    assert published.label == "normal"
+
+    # One-tick blip: looks suspended, but only one tick
+    state, published = forward_step(
+        state, published, _suspended_obs(), params, now=5 * 300
+    )
+    # Posterior almost certainly argmaxes to suspended now, but published stays
+    # normal because pending_streak just reset to 1
+    assert published.label == "normal", (
+        f"single-tick blip bumped published state: {published}"
+    )
+
+    # Back to quiet — pending resets to normal
+    state, published = forward_step(
+        state, published, _quiet_obs(), params, now=6 * 300
+    )
+    assert published.label == "normal"
+
+
+def test_hysteresis_publishes_after_sustained_change() -> None:
+    """Two consecutive suspended ticks should flip the published label."""
+    params = _default_params()
+    state = FilterState(
+        probabilities=(0.95, 0.04, 0.01),
+        regime_entered_at=0,
+        last_updated_at=0,
+    )
+    published = initial_published_state(state)
+
+    # First suspended tick — pending advances but published holds
+    state, published = forward_step(
+        state, published, _suspended_obs(), params, now=300
+    )
+    assert published.label == "normal"
+    assert published.pending_state == "suspended"
+    assert published.pending_streak == 1
+
+    # Second suspended tick — published flips
+    state, published = forward_step(
+        state, published, _suspended_obs(), params, now=600
+    )
+    assert published.label == "suspended"
+    assert published.pending_streak >= HYSTERESIS_TICKS
+
+
+def test_feed_gap_publishes_unknown_without_corrupting_alpha() -> None:
+    """obs=None preserves the posterior and surfaces Unknown."""
+    params = _default_params()
+    state = FilterState(
+        probabilities=(0.95, 0.04, 0.01),
+        regime_entered_at=0,
+        last_updated_at=0,
+    )
+    published = initial_published_state(state)
+
+    pre_alpha = state.probabilities
+    new_state, published = forward_step(state, published, None, params, now=300)
+
+    assert published.label == PUBLISHED_UNKNOWN
+    assert new_state.probabilities == pre_alpha, "alpha was modified during gap"
+
+
+def test_publish_immediately_after_unknown() -> None:
+    """First real obs after a gap publishes immediately (no extra hysteresis lag)."""
+    params = _default_params()
+    state = FilterState(
+        probabilities=(0.95, 0.04, 0.01),
+        regime_entered_at=0,
+        last_updated_at=0,
+    )
+    published = initial_published_state(state)
+
+    # Feed gap
+    state, published = forward_step(state, published, None, params, now=300)
+    assert published.label == PUBLISHED_UNKNOWN
+
+    # Real suspended observation — should publish "suspended" right away
+    state, published = forward_step(
+        state, published, _suspended_obs(), params, now=600
+    )
+    assert published.label == "suspended"
+
+
+def test_published_state_does_not_mutate_filter_math() -> None:
+    """forward_step on a normal observation produces same FilterState as forward_update."""
+    params = _default_params()
+    state = FilterState(
+        probabilities=(0.95, 0.04, 0.01),
+        regime_entered_at=0,
+        last_updated_at=0,
+    )
+    obs = _suspended_obs()
+
+    direct = forward_update(state, obs, params, now=300)
+    via_step, _published = forward_step(
+        state, initial_published_state(state), obs, params, now=300
+    )
+
+    assert direct.probabilities == via_step.probabilities
+    assert direct.regime_entered_at == via_step.regime_entered_at
+    assert direct.last_updated_at == via_step.last_updated_at
+
+
+def test_published_state_type_safety() -> None:
+    """Initial PublishedState has the right shape."""
+    state = _flat_state()
+    p = initial_published_state(state)
+    assert isinstance(p, PublishedState)
+    assert p.label in ("normal", "disrupted", "suspended", PUBLISHED_UNKNOWN)

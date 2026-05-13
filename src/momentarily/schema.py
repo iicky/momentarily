@@ -209,6 +209,13 @@ class StationStatus(BaseModel):
     elevators_out: int = 0
     escalators_total: int = 0
     escalators_out: int = 0
+    # Pass-through of MTA-provided estimated return time across all currently-out
+    # equipment at this station. None when no equipment is out, or when none of
+    # the active outages report an est_return.
+    earliest_elevator_return: int | None = None
+    # Epoch seconds of the longest-running equipment outage at this station.
+    # Useful to surface "out for 6 months" indicators.
+    oldest_outage_since: int | None = None
     inference: Inference | None = None
 
 

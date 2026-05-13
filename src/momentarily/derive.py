@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
+from momentarily.ene import is_active_outage
 from momentarily.mapping import NO_ALERTS_FALLBACK, coarse_status
 from momentarily.schema import (
     Accessibility,
@@ -22,6 +23,8 @@ from momentarily.schema import (
     ModeRollup,
     Route,
     RouteStatus,
+    Station,
+    StationStatus,
     SystemStatus,
 )
 
@@ -196,6 +199,77 @@ def _summary_texts(alerts: list[Alert], *keywords: str) -> list[str]:
                     out.append(t.text)
                     break
     return out
+
+
+def derive_station_status(
+    station: Station,
+    equipment_at_station: list[Equipment],
+    alerts: list[Alert],
+    now: int,
+) -> StationStatus:
+    """Build per-station derived status from equipment outages + active alerts.
+
+    State is observable here — no HMM, no inference. We just count what's out,
+    surface the earliest reported est_return as a "back at X" hint, and flag
+    the longest-running outage so UIs can distinguish "out for an hour" from
+    "out for six months."
+    """
+    # Alerts mentioning any of the station's stop_ids (or the station_complex_id
+    # directly) and currently in their active_period.
+    station_stops = {station.gtfs_stop_id}
+    if station.station_complex_id:
+        station_stops.add(station.station_complex_id)
+
+    active_alerts = [
+        a
+        for a in alerts
+        if _active_at(a, now)
+        and any(
+            (e.stop_id and e.stop_id in station_stops) for e in a.informed_entities
+        )
+    ]
+
+    elevators = [e for e in equipment_at_station if e.type == "elevator"]
+    escalators = [e for e in equipment_at_station if e.type == "escalator"]
+    elevators_out = [e for e in elevators if is_active_outage(e.outage, now=now)]
+    escalators_out = [e for e in escalators if is_active_outage(e.outage, now=now)]
+    ada_pathway_degraded = any(e.ada_pathway for e in elevators_out)
+
+    # ada_status: operational vs degraded vs non_ada (station has no ADA path).
+    if not any(e.ada_pathway for e in elevators):
+        ada_status = "non_ada"
+    elif ada_pathway_degraded:
+        ada_status = "ada_degraded"
+    else:
+        ada_status = "operational"
+
+    out_equipment = elevators_out + escalators_out
+
+    est_returns = [
+        e.outage.est_return
+        for e in out_equipment
+        if e.outage is not None and e.outage.est_return is not None
+    ]
+    earliest_return = min(est_returns) if est_returns else None
+
+    sinces = [
+        e.outage.since
+        for e in out_equipment
+        if e.outage is not None and e.outage.since is not None
+    ]
+    oldest_since = min(sinces) if sinces else None
+
+    return StationStatus(
+        station_complex_id=station.station_complex_id or station.gtfs_stop_id,
+        alerts=[a.id for a in active_alerts],
+        ada_status=ada_status,
+        elevators_total=len(elevators),
+        elevators_out=len(elevators_out),
+        escalators_total=len(escalators),
+        escalators_out=len(escalators_out),
+        earliest_elevator_return=earliest_return,
+        oldest_outage_since=oldest_since,
+    )
 
 
 def derive_system_status(

@@ -13,6 +13,7 @@ import pytest
 from momentarily.hmm import (
     HYSTERESIS_TICKS,
     N_STATES,
+    N_TOD_BINS,
     PUBLISHED_UNKNOWN,
     EmissionParams,
     FilterState,
@@ -25,6 +26,7 @@ from momentarily.hmm import (
     forward_update,
     initial_published_state,
     project_forward,
+    tod_bin,
 )
 
 
@@ -562,6 +564,117 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
     # — at minimum, it shouldn't be lowest in state 1 (disrupted)
     delays = fitted.emissions.bernoulli_p_delays
     assert delays[1] >= delays[0] - 0.1, f"delays in disrupted dropped below normal: {delays}"
+
+
+# ---------------------------------------------------------------------------
+# Time-of-day conditioning
+# ---------------------------------------------------------------------------
+
+
+def test_tod_bin_covers_full_24_hours() -> None:
+    """Every UTC hour maps to some valid bin in [0, N_TOD_BINS)."""
+    seen: set[int] = set()
+    for hour in range(24):
+        epoch = hour * 3600  # midnight + N hours UTC
+        b = tod_bin(epoch)
+        assert 0 <= b < N_TOD_BINS
+        seen.add(b)
+    # All bins should be exercised across the 24 hours
+    assert seen == set(range(N_TOD_BINS))
+
+
+def test_emissions_by_bin_path_routes_correctly() -> None:
+    """Forward filter uses the bin's EmissionParams when emissions_by_bin is set."""
+    quiet = EmissionParams(
+        poisson_lambda=(0.1, 0.2, 0.3),
+        gamma_alpha=(1.0, 1.0, 1.0),
+        gamma_beta=(2.0, 2.0, 2.0),
+        bernoulli_p=(0.01, 0.05, 0.10),
+    )
+    busy = EmissionParams(
+        poisson_lambda=(5.0, 8.0, 12.0),
+        gamma_alpha=(2.0, 4.0, 6.0),
+        gamma_beta=(0.5, 0.3, 0.2),
+        bernoulli_p=(0.10, 0.50, 0.95),
+    )
+    per_bin = tuple([quiet] + [busy] * (N_TOD_BINS - 1))
+    params = HMMParams(
+        transition=(
+            (0.95, 0.04, 0.01),
+            (0.08, 0.90, 0.02),
+            (0.02, 0.10, 0.88),
+        ),
+        initial=(1 / 3, 1 / 3, 1 / 3),
+        emissions=quiet,
+        emissions_by_bin=per_bin,
+    )
+
+    # bin=0 (quiet emissions) — many alerts should look anomalous → pull to non-normal
+    obs_busy_in_quiet_bin = Observation(
+        alert_count=10, severity_sum=80, has_suspended_alert=True, tod_bin=0
+    )
+    s = forward_update(_flat_state(), obs_busy_in_quiet_bin, params, now=100)
+    # bin=1 (busy emissions) — same observation should look normal-for-bin → less extreme
+    obs_busy_in_busy_bin = Observation(
+        alert_count=10, severity_sum=80, has_suspended_alert=True, tod_bin=1
+    )
+    t = forward_update(_flat_state(), obs_busy_in_busy_bin, params, now=100)
+
+    # Posteriors must differ — confirms the bin lookup actually changes behavior
+    assert s.probabilities != t.probabilities
+
+
+def test_em_learns_per_bin_emissions() -> None:
+    """EM with emissions_by_bin re-estimates each bin from the observations it saw."""
+    # Synthetic data: TOD 0 is dominated by state 2 (busy), TOD 1 by state 0 (quiet)
+    rng = random.Random(42)
+    obs: list[Observation] = []
+    for _ in range(800):
+        bin_idx = rng.choice([0, 1])
+        if bin_idx == 0:
+            obs.append(
+                Observation(
+                    alert_count=rng.randint(8, 15),
+                    severity_sum=rng.randint(50, 150),
+                    has_suspended_alert=True,
+                    has_planned=True,
+                    tod_bin=0,
+                )
+            )
+        else:
+            obs.append(
+                Observation(
+                    alert_count=0,
+                    severity_sum=0,
+                    has_suspended_alert=False,
+                    tod_bin=1,
+                )
+            )
+
+    seed_em = EmissionParams(
+        poisson_lambda=(1.0, 4.0, 8.0),
+        gamma_alpha=(1.5, 2.5, 4.0),
+        gamma_beta=(1.0, 0.5, 0.3),
+        bernoulli_p=(0.1, 0.3, 0.7),
+    )
+    init = HMMParams(
+        transition=(
+            (0.8, 0.15, 0.05),
+            (0.15, 0.7, 0.15),
+            (0.05, 0.15, 0.8),
+        ),
+        initial=(1 / 3, 1 / 3, 1 / 3),
+        emissions=seed_em,
+        emissions_by_bin=tuple([seed_em] * N_TOD_BINS),
+    )
+    fitted, _ = fit_em(obs, init, max_iterations=30, tolerance=1e-5)
+
+    assert fitted.emissions_by_bin is not None
+    bin0 = fitted.emissions_by_bin[0]
+    bin1 = fitted.emissions_by_bin[1]
+    # Bin 0 saw busy data → its high-lambda state should be MUCH higher than
+    # bin 1's, because bin 1 saw only quiet observations.
+    assert bin0.poisson_lambda[2] > bin1.poisson_lambda[2] + 5.0
 
 
 def test_observation_defaults_back_compat() -> None:

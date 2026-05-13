@@ -32,6 +32,30 @@ State = Literal["normal", "disrupted", "suspended"]
 STATES: tuple[State, ...] = ("normal", "disrupted", "suspended")
 N_STATES = len(STATES)
 
+# Time-of-day bins for emission conditioning. UTC-based for simplicity (no DST
+# branching in the loader). NYC subway operational rhythms broadly align with
+# ET, which is UTC-4/5 — these bins approximate (UTC-4):
+#   0 overnight     00-05 UTC  ≈ 20-01 ET — late-night planned work peak
+#   1 morning_rush  05-13 UTC  ≈ 01-09 ET — wind-down + morning ramp
+#   2 midday        13-17 UTC  ≈ 09-13 ET — morning peak into midday
+#   3 evening_rush  17-23 UTC  ≈ 13-19 ET — midday through evening peak
+#   4 late          23-24 UTC  ≈ 19-20 ET — evening into overnight
+N_TOD_BINS = 5
+
+
+def tod_bin(epoch_seconds: int) -> int:
+    """Map UTC epoch seconds to a TOD bin index in [0, N_TOD_BINS)."""
+    hour = (epoch_seconds // 3600) % 24
+    if hour < 5:
+        return 0
+    if hour < 13:
+        return 1
+    if hour < 17:
+        return 2
+    if hour < 23:
+        return 3
+    return 4
+
 
 @dataclass(frozen=True)
 class Observation:
@@ -43,6 +67,7 @@ class Observation:
     has_delays: bool = False
     has_service_change: bool = False
     has_planned: bool = False
+    tod_bin: int = 0  # TOD bin index; if HMMParams.emissions_by_bin unset, ignored
 
 
 @dataclass(frozen=True)
@@ -66,11 +91,26 @@ class EmissionParams:
 
 @dataclass(frozen=True)
 class HMMParams:
-    """Trained per-entity HMM parameters."""
+    """Trained per-entity HMM parameters.
+
+    `emissions` is the unconditioned (single) emission set — used when
+    `emissions_by_bin` is None. When `emissions_by_bin` is provided (length
+    N_TOD_BINS), forward/EM look up per-bin emissions via obs.tod_bin and
+    `emissions` is ignored.
+    """
 
     transition: tuple[tuple[float, float, float], ...]  # 3x3 matrix
     initial: tuple[float, float, float]
     emissions: EmissionParams
+    emissions_by_bin: tuple[EmissionParams, ...] | None = None
+
+
+def _emissions_for(params: HMMParams, obs: Observation) -> EmissionParams:
+    """Pick the right EmissionParams for this observation's TOD bin."""
+    if params.emissions_by_bin is None:
+        return params.emissions
+    bin_idx = max(0, min(N_TOD_BINS - 1, obs.tod_bin))
+    return params.emissions_by_bin[bin_idx]
 
 
 @dataclass(frozen=True)
@@ -191,7 +231,7 @@ def forward_update(
         sum(prior[sp] * a[sp][s] for sp in range(N_STATES)) for s in range(N_STATES)
     ]
 
-    log_emis = _log_emission(obs, params.emissions)
+    log_emis = _log_emission(obs, _emissions_for(params, obs))
     log_post_unnorm = [
         (math.log(predicted[s]) if predicted[s] > 0 else -math.inf) + log_emis[s]
         for s in range(N_STATES)
@@ -346,16 +386,19 @@ def expected_dwell_ticks(
 
 
 def _per_tick_emissions(
-    obs_seq: list[Observation], emissions: EmissionParams
+    obs_seq: list[Observation], params: HMMParams
 ) -> tuple[list[tuple[float, float, float]], list[float]]:
     """For numerical stability, rescale emissions per tick so the max across
     states is 1.0. The forward scaling absorbs the per-tick rescale; we just
     have to add the rescale offsets back when computing log P(o | θ).
+
+    Each tick looks up its TOD-bin's emissions via _emissions_for; with
+    emissions_by_bin=None this collapses to a single emission set everywhere.
     """
     emis: list[tuple[float, float, float]] = []
     offsets: list[float] = []
     for obs in obs_seq:
-        log_e = _log_emission(obs, emissions)
+        log_e = _log_emission(obs, _emissions_for(params, obs))
         max_log = max(log_e)
         offsets.append(max_log)
         emis.append(
@@ -423,11 +466,106 @@ def _backward_scaled(
     return beta
 
 
+def _estimate_emissions(
+    gamma: list[list[float]],
+    observations: list[Observation],
+    indices,
+    fallback: EmissionParams,
+) -> EmissionParams:
+    """Weighted-MLE M-step over a subset of tick indices. When a subset has too
+    little posterior mass for a given state, fall back to that state's existing
+    params (don't overwrite with noise from 1-2 observations).
+    """
+    idx_list = list(indices)
+    state_weight = [
+        sum(gamma[t][s] for t in idx_list) for s in range(N_STATES)
+    ]
+
+    poisson_lambda: list[float] = []
+    bernoulli_p: list[float] = []
+    bernoulli_p_delays: list[float] = []
+    bernoulli_p_service_change: list[float] = []
+    bernoulli_p_planned: list[float] = []
+    gamma_alpha: list[float] = []
+    gamma_beta: list[float] = []
+
+    def weighted_bernoulli(s: int, w: float, indicator) -> float:
+        p = (
+            sum(
+                gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0)
+                for t in idx_list
+            )
+            / w
+        )
+        return min(max(p, 1e-6), 1 - 1e-6)
+
+    # If the whole subset has < this many effective observations across all
+    # states, the slice is too thin to fit reliably — keep the fallback.
+    MIN_EFFECTIVE_OBS = 5
+    total_weight = sum(state_weight)
+    if total_weight < MIN_EFFECTIVE_OBS:
+        return fallback
+
+    for s in range(N_STATES):
+        w = state_weight[s]
+        if w <= 0:
+            poisson_lambda.append(fallback.poisson_lambda[s])
+            bernoulli_p.append(fallback.bernoulli_p[s])
+            bernoulli_p_delays.append(fallback.bernoulli_p_delays[s])
+            bernoulli_p_service_change.append(fallback.bernoulli_p_service_change[s])
+            bernoulli_p_planned.append(fallback.bernoulli_p_planned[s])
+            gamma_alpha.append(fallback.gamma_alpha[s])
+            gamma_beta.append(fallback.gamma_beta[s])
+            continue
+
+        lam = (
+            sum(gamma[t][s] * observations[t].alert_count for t in idx_list) / w
+        )
+        poisson_lambda.append(max(lam, 1e-6))
+
+        bernoulli_p.append(weighted_bernoulli(s, w, lambda o: o.has_suspended_alert))
+        bernoulli_p_delays.append(weighted_bernoulli(s, w, lambda o: o.has_delays))
+        bernoulli_p_service_change.append(
+            weighted_bernoulli(s, w, lambda o: o.has_service_change)
+        )
+        bernoulli_p_planned.append(weighted_bernoulli(s, w, lambda o: o.has_planned))
+
+        x = [observations[t].severity_sum + 0.5 for t in idx_list]
+        mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x)) / w
+        var = sum(gamma[t][s] * (xt - mu) ** 2 for t, xt in zip(idx_list, x)) / w
+        if var <= 0:
+            var = 1e-6
+        gamma_alpha.append(max(mu * mu / var, 1e-3))
+        gamma_beta.append(max(mu / var, 1e-6))
+
+    return EmissionParams(
+        poisson_lambda=(poisson_lambda[0], poisson_lambda[1], poisson_lambda[2]),
+        gamma_alpha=(gamma_alpha[0], gamma_alpha[1], gamma_alpha[2]),
+        gamma_beta=(gamma_beta[0], gamma_beta[1], gamma_beta[2]),
+        bernoulli_p=(bernoulli_p[0], bernoulli_p[1], bernoulli_p[2]),
+        bernoulli_p_delays=(
+            bernoulli_p_delays[0],
+            bernoulli_p_delays[1],
+            bernoulli_p_delays[2],
+        ),
+        bernoulli_p_service_change=(
+            bernoulli_p_service_change[0],
+            bernoulli_p_service_change[1],
+            bernoulli_p_service_change[2],
+        ),
+        bernoulli_p_planned=(
+            bernoulli_p_planned[0],
+            bernoulli_p_planned[1],
+            bernoulli_p_planned[2],
+        ),
+    )
+
+
 def _em_iteration(
     observations: list[Observation], params: HMMParams
 ) -> tuple[HMMParams, float]:
     """One E-step + M-step. Returns (new_params, log_likelihood_under_old_params)."""
-    emis, offsets = _per_tick_emissions(observations, params.emissions)
+    emis, offsets = _per_tick_emissions(observations, params)
     alpha, scales = _forward_scaled(emis, params)
     beta = _backward_scaled(emis, scales, params)
     t_max = len(observations)
@@ -462,83 +600,32 @@ def _em_iteration(
         new_a_rows.append((row[0], row[1], row[2]))
     new_a = tuple(new_a_rows)
 
-    state_weight = [sum(gamma[t][s] for t in range(t_max)) for s in range(N_STATES)]
-
-    poisson_lambda: list[float] = []
-    bernoulli_p: list[float] = []
-    bernoulli_p_delays: list[float] = []
-    bernoulli_p_service_change: list[float] = []
-    bernoulli_p_planned: list[float] = []
-    gamma_alpha: list[float] = []
-    gamma_beta: list[float] = []
-
-    def _weighted_bernoulli(s: int, indicator) -> float:
-        p = (
-            sum(
-                gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0)
-                for t in range(t_max)
-            )
-            / state_weight[s]
+    if params.emissions_by_bin is None:
+        new_emissions = _estimate_emissions(
+            gamma, observations, range(t_max), params.emissions
         )
-        return min(max(p, 1e-6), 1 - 1e-6)
-
-    for s in range(N_STATES):
-        w = state_weight[s]
-        if w <= 0:
-            poisson_lambda.append(params.emissions.poisson_lambda[s])
-            bernoulli_p.append(params.emissions.bernoulli_p[s])
-            bernoulli_p_delays.append(params.emissions.bernoulli_p_delays[s])
-            bernoulli_p_service_change.append(
-                params.emissions.bernoulli_p_service_change[s]
+        new_emissions_by_bin = None
+    else:
+        # Bucket tick indices by tod_bin
+        buckets: dict[int, list[int]] = {b: [] for b in range(N_TOD_BINS)}
+        for t, obs in enumerate(observations):
+            bin_idx = max(0, min(N_TOD_BINS - 1, obs.tod_bin))
+            buckets[bin_idx].append(t)
+        # Re-estimate emissions per bin against its existing prior
+        new_emissions_by_bin = tuple(
+            _estimate_emissions(
+                gamma, observations, buckets[b], params.emissions_by_bin[b]
             )
-            bernoulli_p_planned.append(params.emissions.bernoulli_p_planned[s])
-            gamma_alpha.append(params.emissions.gamma_alpha[s])
-            gamma_beta.append(params.emissions.gamma_beta[s])
-            continue
-
-        lam = sum(gamma[t][s] * observations[t].alert_count for t in range(t_max)) / w
-        poisson_lambda.append(max(lam, 1e-6))
-
-        bernoulli_p.append(_weighted_bernoulli(s, lambda o: o.has_suspended_alert))
-        bernoulli_p_delays.append(_weighted_bernoulli(s, lambda o: o.has_delays))
-        bernoulli_p_service_change.append(
-            _weighted_bernoulli(s, lambda o: o.has_service_change)
+            for b in range(N_TOD_BINS)
         )
-        bernoulli_p_planned.append(_weighted_bernoulli(s, lambda o: o.has_planned))
-
-        # Gamma method-of-moments. Shift by 0.5 to match _log_gamma's shift.
-        x = [obs.severity_sum + 0.5 for obs in observations]
-        mu = sum(gamma[t][s] * x[t] for t in range(t_max)) / w
-        var = sum(gamma[t][s] * (x[t] - mu) ** 2 for t in range(t_max)) / w
-        if var <= 0:
-            var = 1e-6
-        gamma_alpha.append(max(mu * mu / var, 1e-3))
-        gamma_beta.append(max(mu / var, 1e-6))
-
-    new_emissions = EmissionParams(
-        poisson_lambda=(poisson_lambda[0], poisson_lambda[1], poisson_lambda[2]),
-        gamma_alpha=(gamma_alpha[0], gamma_alpha[1], gamma_alpha[2]),
-        gamma_beta=(gamma_beta[0], gamma_beta[1], gamma_beta[2]),
-        bernoulli_p=(bernoulli_p[0], bernoulli_p[1], bernoulli_p[2]),
-        bernoulli_p_delays=(
-            bernoulli_p_delays[0],
-            bernoulli_p_delays[1],
-            bernoulli_p_delays[2],
-        ),
-        bernoulli_p_service_change=(
-            bernoulli_p_service_change[0],
-            bernoulli_p_service_change[1],
-            bernoulli_p_service_change[2],
-        ),
-        bernoulli_p_planned=(
-            bernoulli_p_planned[0],
-            bernoulli_p_planned[1],
-            bernoulli_p_planned[2],
-        ),
-    )
+        # Keep .emissions in sync with bin 0 so legacy consumers don't see stale data
+        new_emissions = new_emissions_by_bin[0]
 
     new_params = HMMParams(
-        transition=new_a, initial=new_pi, emissions=new_emissions
+        transition=new_a,
+        initial=new_pi,
+        emissions=new_emissions,
+        emissions_by_bin=new_emissions_by_bin,
     )
 
     log_lik = sum(math.log(c) for c in scales) + sum(offsets)
@@ -550,23 +637,40 @@ def _sort_states_by_lambda(params: HMMParams) -> HMMParams:
 
     EM is invariant to state labels (label-switching), so re-sort after fitting
     to keep "normal/disrupted/suspended" semantically consistent across runs.
+    With emissions_by_bin set, ordering is by the SUM of poisson_lambda across
+    bins — a state that's quietest overall stays state 0 even if its rank
+    flips in one bin.
     """
-    order = sorted(range(N_STATES), key=lambda s: params.emissions.poisson_lambda[s])
+    if params.emissions_by_bin is None:
+        rank_lambda = params.emissions.poisson_lambda
+    else:
+        rank_lambda = tuple(
+            sum(em.poisson_lambda[s] for em in params.emissions_by_bin)
+            for s in range(N_STATES)
+        )
+    order = sorted(range(N_STATES), key=lambda s: rank_lambda[s])
     if order == [0, 1, 2]:
         return params
 
     def reorder3(t: tuple[float, ...]) -> tuple[float, float, float]:
         return (t[order[0]], t[order[1]], t[order[2]])
 
-    em = params.emissions
-    new_emissions = EmissionParams(
-        poisson_lambda=reorder3(em.poisson_lambda),
-        gamma_alpha=reorder3(em.gamma_alpha),
-        gamma_beta=reorder3(em.gamma_beta),
-        bernoulli_p=reorder3(em.bernoulli_p),
-        bernoulli_p_delays=reorder3(em.bernoulli_p_delays),
-        bernoulli_p_service_change=reorder3(em.bernoulli_p_service_change),
-        bernoulli_p_planned=reorder3(em.bernoulli_p_planned),
+    def reorder_emissions(em: EmissionParams) -> EmissionParams:
+        return EmissionParams(
+            poisson_lambda=reorder3(em.poisson_lambda),
+            gamma_alpha=reorder3(em.gamma_alpha),
+            gamma_beta=reorder3(em.gamma_beta),
+            bernoulli_p=reorder3(em.bernoulli_p),
+            bernoulli_p_delays=reorder3(em.bernoulli_p_delays),
+            bernoulli_p_service_change=reorder3(em.bernoulli_p_service_change),
+            bernoulli_p_planned=reorder3(em.bernoulli_p_planned),
+        )
+
+    new_emissions = reorder_emissions(params.emissions)
+    new_emissions_by_bin = (
+        tuple(reorder_emissions(em) for em in params.emissions_by_bin)
+        if params.emissions_by_bin is not None
+        else None
     )
     new_initial = reorder3(params.initial)
     new_transition = tuple(
@@ -576,6 +680,7 @@ def _sort_states_by_lambda(params: HMMParams) -> HMMParams:
         transition=new_transition,
         initial=new_initial,
         emissions=new_emissions,
+        emissions_by_bin=new_emissions_by_bin,
     )
 
 

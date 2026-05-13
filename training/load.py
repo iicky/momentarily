@@ -15,7 +15,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from momentarily.hmm import Observation
+from momentarily.hmm import Observation, tod_bin
 
 # Cron cadence — collector polls every 5 min, ticks align on this boundary.
 TICK_SECONDS = 300
@@ -131,6 +131,7 @@ def build_observations(
                         has_planned=any(
                             at.startswith("Planned -") for at in types
                         ),
+                        tod_bin=tod_bin(tick),
                     ),
                 )
             )
@@ -189,7 +190,10 @@ def fill_quiet_ticks(
                     route_id=route_id,
                     tick=tick,
                     observation=Observation(
-                        alert_count=0, severity_sum=0, has_suspended_alert=False
+                        alert_count=0,
+                        severity_sum=0,
+                        has_suspended_alert=False,
+                        tod_bin=tod_bin(tick),
                     ),
                 )
             )

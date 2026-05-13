@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from momentarily.hmm import (
+    N_TOD_BINS,
     EmissionParams,
     FilterState,
     HMMParams,
@@ -74,7 +75,9 @@ def _fmt_params(params: HMMParams) -> str:
     )
 
 
-def run(route_id: str, data_dir: Path, train: bool = False) -> int:
+def run(
+    route_id: str, data_dir: Path, train: bool = False, tod: bool = False
+) -> int:
     series = load_route_series(data_dir, route_id)
     if not series:
         print(f"No data for route {route_id!r} in {data_dir}")
@@ -86,6 +89,15 @@ def run(route_id: str, data_dir: Path, train: bool = False) -> int:
     )
 
     params = BOOTSTRAP_PARAMS
+    if tod:
+        # Seed per-bin emissions from the bootstrap so EM has somewhere to start
+        params = HMMParams(
+            transition=params.transition,
+            initial=params.initial,
+            emissions=params.emissions,
+            emissions_by_bin=tuple([params.emissions] * N_TOD_BINS),
+        )
+
     if train:
         print("\nBootstrap params:")
         print(_fmt_params(params))
@@ -97,6 +109,15 @@ def run(route_id: str, data_dir: Path, train: bool = False) -> int:
         )
         print("\nLearned params:")
         print(_fmt_params(params))
+        if params.emissions_by_bin is not None:
+            print("\nPer-TOD-bin Poisson λ (state 0 / state 1 / state 2):")
+            bin_names = ["overnight", "morning_rush", "midday", "evening_rush", "late"]
+            for b, em in enumerate(params.emissions_by_bin):
+                lam = em.poisson_lambda
+                print(
+                    f"  bin {b} {bin_names[b]:<14} "
+                    f"({lam[0]:>6.2f}, {lam[1]:>6.2f}, {lam[2]:>6.2f})"
+                )
         print()
 
     print(
@@ -183,8 +204,14 @@ def main() -> int:
         help="Run Baum-Welch EM on the data first to learn params, "
         "then run the filter with the learned params.",
     )
+    parser.add_argument(
+        "--tod",
+        action="store_true",
+        help="Condition emissions on time-of-day bin (5 bins). Requires --train "
+        "for the per-bin emissions to be learned.",
+    )
     args = parser.parse_args()
-    return run(args.route, args.data_dir, train=args.train)
+    return run(args.route, args.data_dir, train=args.train, tod=args.tod)
 
 
 if __name__ == "__main__":

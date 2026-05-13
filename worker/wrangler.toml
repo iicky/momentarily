@@ -1,0 +1,20 @@
+name = "momentarily-publisher"
+main = "src/index.ts"
+compatibility_date = "2026-05-13"
+account_id = "REDACTED"
+
+# Cron trigger — fires every 5 min, matching the MTA alerts feed cadence.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Public R2 bucket. Object writes here are publicly readable at
+# https://feed.momentarily.nyc/<key>. The Worker uses the binding to write;
+# public reads go through the custom domain (no auth path through the Worker).
+[[r2_buckets]]
+binding = "MOMENTARILY"
+bucket_name = "momentarily"
+
+# Observability — keep logs available for tail/inspect during early iterations.
+[observability]
+enabled = true
+head_sampling_rate = 1

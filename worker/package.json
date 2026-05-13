@@ -1,0 +1,26 @@
+{
+  "name": "momentarily-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that fetches MTA feeds, runs the HMM forward filter, and publishes snapshot.json to R2",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "types": "wrangler types ./worker-configuration.d.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.0",
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^4.76.0"
+  }
+}

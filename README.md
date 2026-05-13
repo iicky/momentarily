@@ -32,11 +32,9 @@ Full schema in [`src/momentarily/schema.py`](src/momentarily/schema.py).
 
 ## Method
 
-Momentarily applies a per-line **Hidden Markov Model** with three regimes (normal / disrupted / suspended) to the GTFS-Realtime Mercury alerts stream, producing a probabilistic estimate of each line's current operational state plus expected recovery time. The forward algorithm filters per cron tick; Baum-Welch re-estimates transition matrices and emission parameters weekly from rolling 90-day history.
+Momentarily applies a per-line **Hidden Markov Model** with three regimes (normal / disrupted / suspended) to the GTFS-Realtime Mercury alerts stream, producing a probabilistic estimate of each line's current operational state plus expected recovery time. The forward algorithm filters per cron tick; Baum-Welch re-estimates transition matrices and emission parameters weekly from rolling history.
 
-This builds on a small but established literature on probabilistic transit-state inference — most notably Liu et al. ([2022](https://www.sciencedirect.com/science/article/pii/S0968090X22002935)) on metro disruption detection with recovery analysis, and Cheng & Sun ([2024](https://arxiv.org/html/2401.17387v1)) on Bayesian Markov regime-switching for transit signals. Those methods have not been applied to the GTFS-RT Alerts feed specifically, and have not been deployed as public data products. Momentarily fills that gap. See [`docs/papers.md`](docs/papers.md) for the full intellectual lineage.
-
-User-facing fields graduate from a shadow-logging phase (where we validate calibration against real disruptions) to the published snapshot only after empirical validation. Calibration methodology uses standard probabilistic-forecasting tools — reliability diagrams, Brier scores, quantile bracketing — adapted from the broader Bayesian forecasting literature.
+User-facing fields graduate from a shadow-logging phase (where we validate calibration against real disruptions) to the published snapshot only after empirical validation. Calibration uses standard probabilistic-forecast tools — reliability diagrams, Brier scores, quantile bracketing.
 
 ## Upstream sources
 

@@ -1,29 +1,19 @@
 """Per-line Hidden Markov Model over transit service state.
 
 Three hidden states (normal, disrupted, suspended). Observations at each cron tick:
-  - alert_count        (Poisson per state)
-  - severity_sum       (Gamma per state)  — sum of sort_order across active alerts
-  - has_suspended_alert (Bernoulli per state)
+  - alert_count          (Poisson per state)
+  - severity_sum         (Gamma per state)  — sum of sort_order across active alerts
+  - has_suspended_alert  (Bernoulli per state) — any "Suspended" / "No Trains"
+  - has_delays           (Bernoulli per state) — any "Delays" / "Severe Delays"
+  - has_service_change   (Bernoulli per state) — any non-planned "Service Change" /
+                                                 "Trains Rerouted" / "Stops Skipped"
+  - has_planned          (Bernoulli per state) — any alert_type starting "Planned -"
 
 Hand-rolled — no extra deps. Forward algorithm for filtering, Baum-Welch for the
 weekly refit (training loop will live separately and call into here).
 
-Methodology
------------
-The regime-switching framing follows Cheng & Sun (2024), "Conditional forecasting
-of bus travel time and passenger occupancy with Bayesian Markov regime-switching
-VAR" (arXiv:2401.17387), adapted for the GTFS-RT Mercury alerts feed rather than
-travel-time signals. The recovery-prediction framing — modeling expected
-time-to-clear from the current regime — borrows from Liu et al. (2022),
-"Detecting metro service disruptions via large-scale vehicle location data"
-(Transportation Research Part C, 145), which used GMM on vehicle headways
-rather than alerts but established the recovery-aware probabilistic framing for
-metro state.
-
-See docs/papers.md for the full prior-art survey.
-
-This is the engine that backs the user-facing `condition` and `recovery_minutes`
-fields in the snapshot. Outputs are shadow-logged only during Phase 1 of the
+This implementation backs the user-facing `condition` and `recovery_minutes`
+fields in the snapshot. Outputs are shadow-logged during Phase 1 of the
 rollout; they graduate to public snapshot fields after calibration review.
 
 NOT yet wired into the publisher — this module is scaffolding. Under the Path 2
@@ -50,6 +40,9 @@ class Observation:
     alert_count: int
     severity_sum: int  # sum of sort_order across active alerts
     has_suspended_alert: bool
+    has_delays: bool = False
+    has_service_change: bool = False
+    has_planned: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,14 +50,18 @@ class EmissionParams:
     """Per-state emission parameters for one entity.
 
     Each state has its own Poisson rate for alert count, Gamma shape/rate for
-    severity sum, and Bernoulli probability for the has-suspended flag.
+    severity sum, and Bernoulli probabilities for each alert-family indicator.
     """
 
     # Indexed parallel to STATES (normal, disrupted, suspended)
     poisson_lambda: tuple[float, float, float]
     gamma_alpha: tuple[float, float, float]
     gamma_beta: tuple[float, float, float]
+    # bernoulli_p is the "suspended-alert present" channel; kept name-stable.
     bernoulli_p: tuple[float, float, float]
+    bernoulli_p_delays: tuple[float, float, float] = (0.01, 0.3, 0.5)
+    bernoulli_p_service_change: tuple[float, float, float] = (0.01, 0.4, 0.6)
+    bernoulli_p_planned: tuple[float, float, float] = (0.05, 0.3, 0.5)
 
 
 @dataclass(frozen=True)
@@ -154,13 +151,21 @@ def _log_bernoulli(value: bool, p: float) -> float:
 def _log_emission(
     obs: Observation, params: EmissionParams
 ) -> tuple[float, float, float]:
-    """Per-state log P(obs | state)."""
+    """Per-state log P(obs | state).
+
+    Channels treated as conditionally independent given state. Real-world
+    independence is imperfect (planned + delays correlate), but with 3 states
+    the bias is small relative to the signal gain from the extra channels.
+    """
     out = [
         _log_poisson(obs.alert_count, params.poisson_lambda[i])
         + _log_gamma(
             float(obs.severity_sum), params.gamma_alpha[i], params.gamma_beta[i]
         )
         + _log_bernoulli(obs.has_suspended_alert, params.bernoulli_p[i])
+        + _log_bernoulli(obs.has_delays, params.bernoulli_p_delays[i])
+        + _log_bernoulli(obs.has_service_change, params.bernoulli_p_service_change[i])
+        + _log_bernoulli(obs.has_planned, params.bernoulli_p_planned[i])
         for i in range(N_STATES)
     ]
     return (out[0], out[1], out[2])

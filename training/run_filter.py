@@ -27,7 +27,7 @@ from momentarily.hmm import (
 )
 from training.load import TICK_SECONDS, load_route_series
 
-# Bootstrap HMM parameters — values from the methodology spec (c72.5 / papers.md).
+# Bootstrap HMM parameters — hand-picked initial values.
 # Tuned for the alerts feed: normal = quiet, disrupted = elevated, suspended = severe.
 BOOTSTRAP_PARAMS = HMMParams(
     transition=(

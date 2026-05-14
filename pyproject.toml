@@ -46,7 +46,7 @@ ignore = ["E501"]
 quote-style = "double"
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "training"]
 exclude = ["**/__pycache__", ".venv"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
@@ -55,7 +55,7 @@ venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["collector"]
+pythonpath = ["collector", "."]
 addopts = "-ra -q --cov=momentarily --cov-report=term"
 
 [tool.coverage.run]

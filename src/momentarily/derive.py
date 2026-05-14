@@ -10,7 +10,12 @@ from collections.abc import Iterable
 from typing import Literal
 
 from momentarily.ene import is_active_outage
-from momentarily.mapping import NO_ALERTS_FALLBACK, coarse_status
+from momentarily.mapping import (
+    NO_ALERTS_FALLBACK,
+    category_for_label,
+    coarse_condition,
+    coarse_status,
+)
 from momentarily.schema import (
     Accessibility,
     Alert,
@@ -69,6 +74,8 @@ def derive_route_status(route: Route, alerts: list[Alert], now: int) -> RouteSta
         return RouteStatus(
             route_id=route.id,
             alerts=[],
+            condition="normal",
+            category="none",
             primary_alert_type=None,
             label=NO_ALERTS_FALLBACK,
             by_direction={},
@@ -76,12 +83,16 @@ def derive_route_status(route: Route, alerts: list[Alert], now: int) -> RouteSta
 
     primary = _primary(active)
     primary_type = primary.alert_type if primary else None
+    label = coarse_status(primary_type)
+    category = category_for_label(label)
 
     return RouteStatus(
         route_id=route.id,
         alerts=[a.id for a in active],
+        condition=coarse_condition(category),
+        category=category,
         primary_alert_type=primary_type,
-        label=coarse_status(primary_type),
+        label=label,
         by_direction=_split_by_direction(route.id, active),
     )
 

@@ -81,6 +81,40 @@ def coarse_status(alert_type: str | None) -> str:
     return alert_type
 
 
+# The `category` axis — cause/kind of disruption in our own stable vocabulary,
+# orthogonal to `condition` (severity). Derived from the coarse label so there's
+# one mapping table to maintain, not two.
+LABEL_TO_CATEGORY: dict[str, str] = {
+    "Good Service": "none",
+    "Planned Work": "planned_work",
+    "Delays": "delays",
+    "Service Change": "service_change",
+    "Suspended": "service_suspension",
+    "Slow Speeds": "slow_speeds",
+    "Information": "information",
+}
+
+
+def category_for_label(label: str) -> str:
+    """Coarse status label → stable category token. Unknown → 'other'."""
+    return LABEL_TO_CATEGORY.get(label, "other")
+
+
+def coarse_condition(category: str) -> str:
+    """Non-model severity fallback for the Python publisher.
+
+    The live (Worker) publisher sets `condition` from the HMM's hysteresis-stable
+    published label. The Python path has no model, so it derives a coarse
+    severity from the category: no alert → normal, an unplanned suspension →
+    suspended, anything else → disrupted.
+    """
+    if category == "none":
+        return "normal"
+    if category == "service_suspension":
+        return "suspended"
+    return "disrupted"
+
+
 def is_known_alert_type(alert_type: str) -> bool:
     """True if we have an explicit mapping for this alert_type.
 

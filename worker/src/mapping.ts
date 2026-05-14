@@ -36,3 +36,32 @@ export function coarseStatus(alertType: string | null | undefined): string {
   }
   return alertType;
 }
+
+/**
+ * The `category` axis — the cause/kind of disruption, in our own stable
+ * vocabulary. Orthogonal to `condition` (severity). Derived from the coarse
+ * label so there's one mapping table to maintain, not two.
+ */
+export type AlertCategory =
+  | 'none'
+  | 'planned_work'
+  | 'delays'
+  | 'service_change'
+  | 'service_suspension'
+  | 'slow_speeds'
+  | 'information'
+  | 'other';
+
+const LABEL_TO_CATEGORY: Readonly<Record<string, AlertCategory>> = {
+  'Good Service': 'none',
+  'Planned Work': 'planned_work',
+  Delays: 'delays',
+  'Service Change': 'service_change',
+  Suspended: 'service_suspension',
+  'Slow Speeds': 'slow_speeds',
+  Information: 'information',
+};
+
+export function categoryForLabel(label: string): AlertCategory {
+  return LABEL_TO_CATEGORY[label] ?? 'other';
+}

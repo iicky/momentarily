@@ -14,7 +14,7 @@ import type { RouteRoll } from './alpha';
 import type { AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
 import { metaForRoute } from './derive';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
-import { NO_ALERTS_FALLBACK, coarseStatus } from './mapping';
+import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { paramsForRoute } from './params';
 
@@ -56,7 +56,13 @@ interface Inference {
 interface RouteStatusOut {
   route_id: string;
   alerts: string[];
+  // Severity axis — hysteresis-stable HMM published label.
+  condition: string;
+  // Cause axis — our vocabulary, derived from the MTA alert_type.
+  category: string;
   primary_alert_type: string | null;
+  // Soft-deprecated: now derivable from condition + category. Kept for
+  // existing consumers and the compat layer.
   label: string;
   by_direction: {
     northbound: DirectionAlerts;
@@ -169,11 +175,14 @@ export function buildSnapshot(args: {
       ? buildInference(roll, args.generatedAt, args.tickSeconds, routeId, args.trainedParams)
       : null;
 
+    const label = snap?.coarse_label ?? NO_ALERTS_FALLBACK;
     route_status[routeId] = {
       route_id: routeId,
       alerts: snap?.active_alert_ids ?? [],
+      condition: roll?.published.label ?? 'unknown',
+      category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
-      label: snap?.coarse_label ?? NO_ALERTS_FALLBACK,
+      label,
       by_direction: snap?.by_direction ?? {
         northbound: { alerts: [], primary_alert_type: null },
         southbound: { alerts: [], primary_alert_type: null },

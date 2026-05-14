@@ -160,7 +160,18 @@ class RouteStatus(BaseModel):
 
     route_id: str
     alerts: list[str] = []
+    # Severity axis. The Worker publisher sets this from the HMM's
+    # hysteresis-stable published label; the Python path uses a coarse
+    # alert-derived fallback (mapping.coarse_condition).
+    #   "normal" | "disrupted" | "suspended" | "unknown"
+    condition: str = "unknown"
+    # Cause axis — our stable vocabulary, derived from the MTA alert_type.
+    #   "none" | "planned_work" | "delays" | "service_change" |
+    #   "service_suspension" | "slow_speeds" | "information" | "other"
+    category: str = "none"
     primary_alert_type: str | None = None
+    # Soft-deprecated: derivable from condition + category. Kept for existing
+    # consumers and the compat layer.
     label: str
     by_direction: dict[Literal["northbound", "southbound"], DirectionStatus] = {}
     inference: Inference | None = None

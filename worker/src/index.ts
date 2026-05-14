@@ -117,10 +117,24 @@ export default {
     }
 
     // --- Step 4: derive per-route observations + advance filter ---
+    // A params change (retrain or rollback) invalidates the accumulated
+    // posteriors in alpha.json — they were filtered under the old emission/
+    // transition params, so carrying them forward pins routes to stale
+    // regimes. On a version mismatch, drop the filter state and re-seed from
+    // params.initial. See momentarily-x5b.
+    const paramsVersion = trainedParams?.trained_at ?? 0;
+    const paramsChanged = alphaState.params_version !== paramsVersion;
+    if (paramsChanged) {
+      console.log(
+        `params version ${alphaState.params_version} -> ${paramsVersion}; resetting alpha filter state`,
+      );
+    }
+    const carriedRoutes = paramsChanged ? {} : alphaState.routes;
+
     const newAlphaState: AlphaState = {
-      params_version: trainedParams?.trained_at ?? 0,
+      params_version: paramsVersion,
       updated_at: observedAt,
-      routes: { ...alphaState.routes },
+      routes: { ...carriedRoutes },
     };
 
     let routeSnapshots = new Map<string, RouteSnapshot>();
@@ -134,7 +148,7 @@ export default {
     //   - alertsPayload present + route not in routeSnapshots → quiet obs (good service)
     //   - alertsPayload null → obs=null for every route (true feed gap)
     const observedRouteIds = new Set(routeSnapshots.keys());
-    const knownRouteIds = new Set(Object.keys(alphaState.routes));
+    const knownRouteIds = new Set(Object.keys(carriedRoutes));
     const allRoutes = new Set<string>([
       ...observedRouteIds,
       ...knownRouteIds,
@@ -144,7 +158,7 @@ export default {
       alertsPayload !== null ? quietObservation(observedAt) : null;
 
     for (const routeId of allRoutes) {
-      const prevRoll: RouteRoll | undefined = alphaState.routes[routeId];
+      const prevRoll: RouteRoll | undefined = carriedRoutes[routeId];
       const params = paramsForRoute(trainedParams, routeId);
 
       const baseFilter: FilterState = prevRoll?.filter ?? {
@@ -217,7 +231,7 @@ export default {
     }
 
     const transitions = detectTransitions(
-      alphaState.routes,
+      carriedRoutes,
       newAlphaState.routes,
       observedAt,
     );

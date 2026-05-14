@@ -11,9 +11,10 @@
  */
 
 import type { RouteRoll } from './alpha';
-import type { DirectionAlerts, RouteSnapshot } from './derive';
+import type { AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
+import { metaForRoute } from './derive';
 import { N_STATES, STATES, projectForward } from './hmm';
-import { NO_ALERTS_FALLBACK } from './mapping';
+import { NO_ALERTS_FALLBACK, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { paramsForRoute } from './params';
 
@@ -72,8 +73,14 @@ interface Accessibility {
   ada_pathways_degraded: number;
 }
 
+interface ModeRollup {
+  routes_with_alerts: string[];
+  alert_count: number;
+  severity_max: number;
+}
+
 interface SystemStatus {
-  by_mode: Record<string, unknown>;
+  by_mode: Record<string, ModeRollup>;
   accessibility: Accessibility;
   overall_label: string;
   condition: string | null;
@@ -82,8 +89,31 @@ interface SystemStatus {
   most_recovered_line: string | null;
 }
 
+interface CompatRouteSummary {
+  north: string | null;
+  south: string | null;
+}
+
+interface CompatServiceChangeSummary {
+  both: string[];
+  north: string[];
+  south: string[];
+}
+
+interface CompatRoute {
+  id: string;
+  name: string;
+  color: string;
+  status: string;
+  scheduled: boolean;
+  direction_statuses: CompatRouteSummary | null;
+  delay_summaries: CompatRouteSummary | null;
+  service_irregularity_summaries: CompatRouteSummary | null;
+  service_change_summaries: CompatServiceChangeSummary | null;
+}
+
 interface Compat {
-  subwaynow_routes: Record<string, unknown>;
+  subwaynow_routes: Record<string, CompatRoute>;
 }
 
 interface Snapshot {
@@ -143,6 +173,9 @@ export function buildSnapshot(args: {
     };
   }
 
+  const system = buildSystemStatus(route_status, args.routeSnapshots);
+  const compat = buildCompat(route_status, args.routeSnapshots);
+
   return {
     schema_version: SCHEMA_VERSION,
     generated_at: args.generatedAt,
@@ -167,17 +200,141 @@ export function buildSnapshot(args: {
     tunnels: [],
     route_status,
     station_status: {},
-    system: {
-      by_mode: {},
-      accessibility: { elevators_out: 0, escalators_out: 0, ada_pathways_degraded: 0 },
-      overall_label: 'All systems normal',
-      condition: null,
-      lines_disrupted_count: 0,
-      most_degraded_line: null,
-      most_recovered_line: null,
-    },
-    compat: { subwaynow_routes: {} },
+    system,
+    compat,
   };
+}
+
+function buildSystemStatus(
+  routeStatuses: Record<string, RouteStatusOut>,
+  routeSnapshots: Map<string, RouteSnapshot>,
+): SystemStatus {
+  const routes_with_alerts: string[] = [];
+  let alert_count = 0;
+  let severity_max = 0;
+  for (const [routeId, rs] of Object.entries(routeStatuses)) {
+    if (rs.alerts.length > 0) {
+      routes_with_alerts.push(routeId);
+      alert_count += rs.alerts.length;
+    }
+    const snap = routeSnapshots.get(routeId);
+    if (snap && snap.severity_max > severity_max) severity_max = snap.severity_max;
+  }
+  routes_with_alerts.sort();
+
+  let lines_disrupted_count = 0;
+  let most_degraded_line: string | null = null;
+  let mostDegradedScore = -1;
+  let most_recovered_line: string | null = null;
+  let mostRecoveredEnteredAt = -1;
+  for (const [routeId, rs] of Object.entries(routeStatuses)) {
+    const inf = rs.inference;
+    if (!inf) continue;
+    if (inf.is_disrupted) {
+      lines_disrupted_count += 1;
+      const score = inf.p_disrupted + inf.p_suspended;
+      if (score > mostDegradedScore) {
+        mostDegradedScore = score;
+        most_degraded_line = routeId;
+      }
+    } else if (inf.condition === 'normal' && inf.regime_entered_at > mostRecoveredEnteredAt) {
+      mostRecoveredEnteredAt = inf.regime_entered_at;
+      most_recovered_line = routeId;
+    }
+  }
+
+  return {
+    by_mode: {
+      subway: { routes_with_alerts, alert_count, severity_max },
+    },
+    accessibility: { elevators_out: 0, escalators_out: 0, ada_pathways_degraded: 0 },
+    overall_label:
+      routes_with_alerts.length === 0
+        ? 'All systems normal'
+        : `Alerts on ${routes_with_alerts.length} subway lines`,
+    condition: null,
+    lines_disrupted_count,
+    most_degraded_line,
+    most_recovered_line,
+  };
+}
+
+function buildCompat(
+  routeStatuses: Record<string, RouteStatusOut>,
+  routeSnapshots: Map<string, RouteSnapshot>,
+): Compat {
+  const subwaynow_routes: Record<string, CompatRoute> = {};
+  for (const [routeId, rs] of Object.entries(routeStatuses)) {
+    const meta = metaForRoute(routeId);
+    const snap = routeSnapshots.get(routeId);
+    const refs = snap?.alerts ?? [];
+
+    const direction_statuses: CompatRouteSummary = {
+      north: rs.by_direction.northbound.primary_alert_type
+        ? coarseStatus(rs.by_direction.northbound.primary_alert_type)
+        : null,
+      south: rs.by_direction.southbound.primary_alert_type
+        ? coarseStatus(rs.by_direction.southbound.primary_alert_type)
+        : null,
+    };
+
+    const northRefs = refs.filter((r) => r.direction_id === 0 || r.direction_id === null);
+    const southRefs = refs.filter((r) => r.direction_id === 1 || r.direction_id === null);
+
+    const delayKeywords = ['delay'];
+    const irregularityKeywords = ['slow', 'reroute', 'skip'];
+    const changeKeywords = ['service change', 'suspend', 'express', 'local'];
+
+    const delay_summaries: CompatRouteSummary = {
+      north: firstHeaderMatching(northRefs, delayKeywords),
+      south: firstHeaderMatching(southRefs, delayKeywords),
+    };
+    const service_irregularity_summaries: CompatRouteSummary = {
+      north: firstHeaderMatching(northRefs, irregularityKeywords),
+      south: firstHeaderMatching(southRefs, irregularityKeywords),
+    };
+    const service_change_summaries: CompatServiceChangeSummary = {
+      both: headersMatching(refs, changeKeywords),
+      north: [],
+      south: [],
+    };
+
+    subwaynow_routes[routeId] = {
+      id: routeId,
+      name: meta.name,
+      color: meta.color,
+      status: rs.label,
+      scheduled: true,
+      direction_statuses,
+      delay_summaries,
+      service_irregularity_summaries,
+      service_change_summaries,
+    };
+  }
+  return { subwaynow_routes };
+}
+
+function firstHeaderMatching(refs: AlertRef[], keywords: string[]): string | null {
+  for (const r of refs) {
+    if (!r.header_text) continue;
+    const typeLower = r.alert_type.toLowerCase();
+    if (keywords.some((k) => typeLower.includes(k))) return r.header_text;
+  }
+  return null;
+}
+
+function headersMatching(refs: AlertRef[], keywords: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of refs) {
+    if (!r.header_text) continue;
+    const typeLower = r.alert_type.toLowerCase();
+    if (!keywords.some((k) => typeLower.includes(k))) continue;
+    if (seen.has(r.header_text)) continue;
+    seen.add(r.header_text);
+    out.push(r.header_text);
+  }
+  return out;
 }
 
 function buildInference(

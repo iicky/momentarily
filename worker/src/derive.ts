@@ -24,6 +24,51 @@ export const SUBWAY_ROUTES: readonly string[] = [
   'SI',
 ] as const;
 
+/**
+ * Subway route metadata for compat.subwaynow_routes. Colors are MTA's official
+ * bullet colors. Express variants and one-offs (7X, FX, etc.) inherit from the
+ * base route via lookup fallback.
+ */
+export const SUBWAY_ROUTE_META: Readonly<Record<string, { name: string; color: string }>> = {
+  '1': { name: '1', color: '#EE352E' },
+  '2': { name: '2', color: '#EE352E' },
+  '3': { name: '3', color: '#EE352E' },
+  '4': { name: '4', color: '#00933C' },
+  '5': { name: '5', color: '#00933C' },
+  '6': { name: '6', color: '#00933C' },
+  '7': { name: '7', color: '#B933AD' },
+  A: { name: 'A', color: '#2850AD' },
+  B: { name: 'B', color: '#FF6319' },
+  C: { name: 'C', color: '#2850AD' },
+  D: { name: 'D', color: '#FF6319' },
+  E: { name: 'E', color: '#2850AD' },
+  F: { name: 'F', color: '#FF6319' },
+  G: { name: 'G', color: '#6CBE45' },
+  J: { name: 'J', color: '#996633' },
+  L: { name: 'L', color: '#A7A9AC' },
+  M: { name: 'M', color: '#FF6319' },
+  N: { name: 'N', color: '#FCCC0A' },
+  Q: { name: 'Q', color: '#FCCC0A' },
+  R: { name: 'R', color: '#FCCC0A' },
+  W: { name: 'W', color: '#FCCC0A' },
+  Z: { name: 'Z', color: '#996633' },
+  GS: { name: 'S', color: '#808183' },
+  FS: { name: 'S', color: '#808183' },
+  H: { name: 'S', color: '#808183' },
+  SI: { name: 'SIR', color: '#1F4F9F' },
+};
+
+/** Resolve metadata for a route_id, falling back to the base route for express
+ * variants like 7X, FX. Returns a generic black if no match. */
+export function metaForRoute(routeId: string): { name: string; color: string } {
+  const direct = SUBWAY_ROUTE_META[routeId];
+  if (direct) return direct;
+  const base = routeId.replace(/X$/, '');
+  const fallback = SUBWAY_ROUTE_META[base];
+  if (fallback) return { name: routeId, color: fallback.color };
+  return { name: routeId, color: '#000000' };
+}
+
 /** Quiet (no-alerts) observation for a route at this tick's tod_bin. */
 export function quietObservation(observedAt: number): Observation {
   return {
@@ -37,11 +82,16 @@ export function quietObservation(observedAt: number): Observation {
   };
 }
 
-interface RouteEntityRef {
+export interface AlertRef {
   alert_id: string;
   alert_type: string;
+  /** English header_text if present in the alert payload, else null */
+  header_text: string | null;
   sort_order: number;
   direction_id: number | null;
+}
+
+interface RouteEntityRef extends AlertRef {
   active_period: ReadonlyArray<{ start?: number; end?: number }>;
 }
 
@@ -55,6 +105,10 @@ export interface RouteSnapshot {
   observation: Observation;
   /** alert_ids active for this route at this tick (deduped) */
   active_alert_ids: string[];
+  /** Full alert refs incl. header text, for compat-layer summaries */
+  alerts: AlertRef[];
+  /** Highest sort_order among active alerts on this route (0 if none) */
+  severity_max: number;
   /** Highest-severity alert_type active on this route, or null if none */
   primary_alert_type: string | null;
   /** coarseStatus(primary_alert_type) — short human label */
@@ -83,9 +137,10 @@ export function deriveRouteSnapshots(
 
     for (const route of ref.routes) {
       const arr = byRoute.get(route.route_id);
-      const item = {
+      const item: RouteEntityRef = {
         alert_id: ref.alert_id,
         alert_type: ref.alert_type,
+        header_text: ref.header_text,
         sort_order: route.sort_order,
         direction_id: route.direction_id,
         active_period: ref.active_period,
@@ -137,10 +192,29 @@ function buildRouteSnapshot(
     route_id: routeId,
     observation,
     active_alert_ids: dedupeIds(alerts),
+    alerts: dedupeRefs(alerts),
+    severity_max: primary?.sort_order ?? 0,
     primary_alert_type: primary?.alert_type ?? null,
     coarse_label: primary ? coarseStatus(primary.alert_type) : NO_ALERTS_FALLBACK,
     by_direction: splitByDirection(alerts),
   };
+}
+
+function dedupeRefs(refs: RouteEntityRef[]): AlertRef[] {
+  const seen = new Set<string>();
+  const out: AlertRef[] = [];
+  for (const r of refs) {
+    if (seen.has(r.alert_id)) continue;
+    seen.add(r.alert_id);
+    out.push({
+      alert_id: r.alert_id,
+      alert_type: r.alert_type,
+      header_text: r.header_text,
+      sort_order: r.sort_order,
+      direction_id: r.direction_id,
+    });
+  }
+  return out;
 }
 
 function splitByDirection(alerts: RouteEntityRef[]): {
@@ -223,6 +297,7 @@ const SORT_ORDER_RE = /:(\d+)$/;
 function parseAlertEntity(entity: unknown): {
   alert_id: string;
   alert_type: string;
+  header_text: string | null;
   active_period: ReadonlyArray<{ start?: number; end?: number }>;
   routes: Array<{ route_id: string; sort_order: number; direction_id: number | null }>;
 } | null {
@@ -240,6 +315,8 @@ function parseAlertEntity(entity: unknown): {
       ? ((mercury as { alert_type?: unknown }).alert_type as string | undefined)
       : undefined;
   if (typeof alertType !== 'string') return null;
+
+  const headerText = extractEnglishHeader((inner as { header_text?: unknown }).header_text);
 
   const periodsRaw = (inner as { active_period?: unknown }).active_period;
   const active_period: Array<{ start?: number; end?: number }> = [];
@@ -288,5 +365,21 @@ function parseAlertEntity(entity: unknown): {
   }
   if (routes.length === 0) return null;
 
-  return { alert_id: id, alert_type: alertType, active_period, routes };
+  return { alert_id: id, alert_type: alertType, header_text: headerText, active_period, routes };
+}
+
+function extractEnglishHeader(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const translation = (raw as { translation?: unknown }).translation;
+  if (!Array.isArray(translation)) return null;
+  let fallback: string | null = null;
+  for (const t of translation) {
+    if (!t || typeof t !== 'object') continue;
+    const text = (t as { text?: unknown }).text;
+    if (typeof text !== 'string') continue;
+    const lang = (t as { language?: unknown }).language;
+    if (lang === 'en' || lang === undefined || lang === null) return text;
+    if (fallback === null) fallback = text;
+  }
+  return fallback;
 }

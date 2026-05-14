@@ -1,0 +1,405 @@
+{
+  "description": "Canonical Python<->TS parity fixture for the HMM forward filter. Regenerate with: uv run python -m scripts.gen_parity_fixture",
+  "tick_seconds": 300,
+  "start_now": 1700000000,
+  "params": {
+    "transition": [
+      [
+        0.94,
+        0.05,
+        0.01
+      ],
+      [
+        0.1,
+        0.85,
+        0.05
+      ],
+      [
+        0.03,
+        0.12,
+        0.85
+      ]
+    ],
+    "initial": [
+      0.9,
+      0.08,
+      0.02
+    ],
+    "emissions": {
+      "poisson_lambda": [
+        0.3,
+        4.0,
+        12.0
+      ],
+      "gamma_alpha": [
+        1.0,
+        3.0,
+        6.0
+      ],
+      "gamma_beta": [
+        2.0,
+        0.4,
+        0.2
+      ],
+      "bernoulli_p": [
+        0.001,
+        0.05,
+        0.95
+      ],
+      "bernoulli_p_delays": [
+        0.02,
+        0.6,
+        0.35
+      ],
+      "bernoulli_p_service_change": [
+        0.02,
+        0.6,
+        0.4
+      ],
+      "bernoulli_p_planned": [
+        0.05,
+        0.6,
+        0.35
+      ]
+    }
+  },
+  "initial_filter": {
+    "probabilities": [
+      0.9,
+      0.08,
+      0.02
+    ],
+    "regime_entered_at": 1700000000,
+    "last_updated_at": 1700000000
+  },
+  "observations": [
+    {
+      "alert_count": 0,
+      "severity_sum": 0,
+      "has_suspended_alert": false,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 0,
+      "severity_sum": 0,
+      "has_suspended_alert": false,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 6,
+      "severity_sum": 30,
+      "has_suspended_alert": false,
+      "has_delays": true,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 6,
+      "severity_sum": 30,
+      "has_suspended_alert": false,
+      "has_delays": true,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 6,
+      "severity_sum": 30,
+      "has_suspended_alert": false,
+      "has_delays": true,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 14,
+      "severity_sum": 75,
+      "has_suspended_alert": true,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 2
+    },
+    {
+      "alert_count": 14,
+      "severity_sum": 75,
+      "has_suspended_alert": true,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 2
+    },
+    null,
+    {
+      "alert_count": 14,
+      "severity_sum": 75,
+      "has_suspended_alert": true,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 2
+    },
+    {
+      "alert_count": 0,
+      "severity_sum": 0,
+      "has_suspended_alert": false,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 0,
+      "severity_sum": 0,
+      "has_suspended_alert": false,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    },
+    {
+      "alert_count": 0,
+      "severity_sum": 0,
+      "has_suspended_alert": false,
+      "has_delays": false,
+      "has_service_change": false,
+      "has_planned": false,
+      "tod_bin": 1
+    }
+  ],
+  "expected_steps": [
+    {
+      "filter": {
+        "probabilities": [
+          0.9999980175128201,
+          1.9824871798012723e-06,
+          8.298556931126751e-17
+        ],
+        "regime_entered_at": 1700000000,
+        "last_updated_at": 1700000300
+      },
+      "published": {
+        "label": "normal",
+        "pending_state": "normal",
+        "pending_streak": 3,
+        "last_updated_at": 1700000300
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          0.9999992190473829,
+          7.80952617136084e-07,
+          2.5149021551549893e-17
+        ],
+        "regime_entered_at": 1700000000,
+        "last_updated_at": 1700000600
+      },
+      "published": {
+        "label": "normal",
+        "pending_state": "normal",
+        "pending_streak": 4,
+        "last_updated_at": 1700000600
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          6.7031414294563915e-28,
+          0.5644287815640058,
+          0.43557121843599417
+        ],
+        "regime_entered_at": 1700000900,
+        "last_updated_at": 1700000900
+      },
+      "published": {
+        "label": "normal",
+        "pending_state": "disrupted",
+        "pending_streak": 1,
+        "last_updated_at": 1700000900
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          2.121774673438121e-30,
+          0.2570829936047491,
+          0.7429170063952508
+        ],
+        "regime_entered_at": 1700001200,
+        "last_updated_at": 1700001200
+      },
+      "published": {
+        "label": "normal",
+        "pending_state": "suspended",
+        "pending_streak": 1,
+        "last_updated_at": 1700001200
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          1.085213529406066e-30,
+          0.11012368719954713,
+          0.8898763128004529
+        ],
+        "regime_entered_at": 1700001200,
+        "last_updated_at": 1700001500
+      },
+      "published": {
+        "label": "suspended",
+        "pending_state": "suspended",
+        "pending_streak": 2,
+        "last_updated_at": 1700001500
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          1.2277181379295553e-83,
+          8.405209107081719e-14,
+          0.9999999999999158
+        ],
+        "regime_entered_at": 1700001200,
+        "last_updated_at": 1700001800
+      },
+      "published": {
+        "label": "suspended",
+        "pending_state": "suspended",
+        "pending_streak": 3,
+        "last_updated_at": 1700001800
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          8.755047271439988e-84,
+          4.511622331027064e-14,
+          0.9999999999999549
+        ],
+        "regime_entered_at": 1700001200,
+        "last_updated_at": 1700002100
+      },
+      "published": {
+        "label": "suspended",
+        "pending_state": "suspended",
+        "pending_streak": 4,
+        "last_updated_at": 1700002100
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          8.755047271439988e-84,
+          4.511622331027064e-14,
+          0.9999999999999549
+        ],
+        "regime_entered_at": 1700001200,
+        "last_updated_at": 1700002100
+      },
+      "published": {
+        "label": "unknown",
+        "pending_state": "suspended",
+        "pending_streak": 4,
+        "last_updated_at": 1700002400
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          8.755047271438993e-84,
+          4.511622331025846e-14,
+          0.9999999999999549
+        ],
+        "regime_entered_at": 1700001200,
+        "last_updated_at": 1700002700
+      },
+      "published": {
+        "label": "suspended",
+        "pending_state": "suspended",
+        "pending_streak": 5,
+        "last_updated_at": 1700002700
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          0.9999412777325768,
+          5.8722267356288324e-05,
+          6.697569670539522e-14
+        ],
+        "regime_entered_at": 1700003000,
+        "last_updated_at": 1700003000
+      },
+      "published": {
+        "label": "suspended",
+        "pending_state": "normal",
+        "pending_streak": 1,
+        "last_updated_at": 1700003000
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          0.9999992182987936,
+          7.817012065019381e-07,
+          2.5156004790521105e-17
+        ],
+        "regime_entered_at": 1700003000,
+        "last_updated_at": 1700003300
+      },
+      "published": {
+        "label": "normal",
+        "pending_state": "normal",
+        "pending_streak": 2,
+        "last_updated_at": 1700003300
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          0.9999992190632244,
+          7.809367755331346e-07,
+          2.5148873772671285e-17
+        ],
+        "regime_entered_at": 1700003000,
+        "last_updated_at": 1700003600
+      },
+      "published": {
+        "label": "normal",
+        "pending_state": "normal",
+        "pending_streak": 3,
+        "last_updated_at": 1700003600
+      }
+    }
+  ],
+  "expected_projections": {
+    "10": [
+      0.6703588273112497,
+      0.24159161976146815,
+      0.08804955292728148
+    ],
+    "50": [
+      0.5655910332251055,
+      0.2976955202732386,
+      0.1367134465016538
+    ],
+    "200": [
+      0.5650684931520473,
+      0.2979452054787964,
+      0.13698630136914744
+    ]
+  },
+  "expected_dwell": {
+    "median": 12,
+    "q25": 5,
+    "q75": 23
+  }
+}

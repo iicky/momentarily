@@ -1,0 +1,1423 @@
+{
+  "$defs": {
+    "Accessibility": {
+      "properties": {
+        "ada_pathways_degraded": {
+          "default": 0,
+          "title": "Ada Pathways Degraded",
+          "type": "integer"
+        },
+        "elevators_out": {
+          "default": 0,
+          "title": "Elevators Out",
+          "type": "integer"
+        },
+        "escalators_out": {
+          "default": 0,
+          "title": "Escalators Out",
+          "type": "integer"
+        }
+      },
+      "title": "Accessibility",
+      "type": "object"
+    },
+    "Alert": {
+      "description": "The atomic unit. Everything else is derived from these.",
+      "properties": {
+        "active_period": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TimeRange"
+          },
+          "title": "Active Period",
+          "type": "array"
+        },
+        "alert_type": {
+          "title": "Alert Type",
+          "type": "string"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "description_text": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TranslatedString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "display_before_active": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Before Active"
+        },
+        "header_text": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TranslatedString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "informed_entities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/InformedEntity"
+          },
+          "title": "Informed Entities",
+          "type": "array"
+        },
+        "sort_order": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort Order"
+        },
+        "source": {
+          "$ref": "#/$defs/AlertSource"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "id",
+        "alert_type",
+        "source"
+      ],
+      "title": "Alert",
+      "type": "object"
+    },
+    "AlertSource": {
+      "type": "string"
+    },
+    "Bridge": {
+      "description": "Infrastructure asset. Schema scaffold; populated when a data source is wired.",
+      "properties": {
+        "crossings": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Crossing"
+          },
+          "title": "Crossings",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "operator"
+      ],
+      "title": "Bridge",
+      "type": "object"
+    },
+    "Compat": {
+      "description": "Legacy surfaces, derived from canonical types above.",
+      "properties": {
+        "subwaynow_routes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CompatRoute"
+          },
+          "title": "Subwaynow Routes",
+          "type": "object"
+        }
+      },
+      "title": "Compat",
+      "type": "object"
+    },
+    "CompatRoute": {
+      "description": "Legacy compat: matches homeassistant-mta-subway's Route exactly.\n\nProduced so existing HA installs can swap API_URL with zero code change\nand continue reading subway state from this snapshot.",
+      "properties": {
+        "color": {
+          "title": "Color",
+          "type": "string"
+        },
+        "delay_summaries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompatRouteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "direction_statuses": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompatRouteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "scheduled": {
+          "default": true,
+          "title": "Scheduled",
+          "type": "boolean"
+        },
+        "service_change_summaries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompatServiceChangeSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "service_irregularity_summaries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompatRouteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "color",
+        "status"
+      ],
+      "title": "CompatRoute",
+      "type": "object"
+    },
+    "CompatRouteSummary": {
+      "description": "Legacy compat: matches homeassistant-mta-subway's DirectionalStatus.",
+      "properties": {
+        "north": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "North"
+        },
+        "south": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "South"
+        }
+      },
+      "title": "CompatRouteSummary",
+      "type": "object"
+    },
+    "CompatServiceChangeSummary": {
+      "description": "Legacy compat: matches homeassistant-mta-subway's ServiceChangeSummary.",
+      "properties": {
+        "both": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Both",
+          "type": "array"
+        },
+        "north": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "North",
+          "type": "array"
+        },
+        "south": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "South",
+          "type": "array"
+        }
+      },
+      "title": "CompatServiceChangeSummary",
+      "type": "object"
+    },
+    "Crossing": {
+      "description": "One direction or segment of a bridge/tunnel crossing.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "Crossing",
+      "type": "object"
+    },
+    "DirectionLabels": {
+      "properties": {
+        "north": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "North"
+        },
+        "south": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "South"
+        }
+      },
+      "title": "DirectionLabels",
+      "type": "object"
+    },
+    "DirectionStatus": {
+      "properties": {
+        "alerts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Alerts",
+          "type": "array"
+        },
+        "primary_alert_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Alert Type"
+        }
+      },
+      "title": "DirectionStatus",
+      "type": "object"
+    },
+    "Equipment": {
+      "description": "Elevator or escalator with optional active outage.",
+      "properties": {
+        "ada_pathway": {
+          "default": false,
+          "title": "Ada Pathway",
+          "type": "boolean"
+        },
+        "equipment_id": {
+          "title": "Equipment Id",
+          "type": "string"
+        },
+        "location_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location Text"
+        },
+        "outage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EquipmentOutage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "station_complex_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Station Complex Id"
+        },
+        "type": {
+          "$ref": "#/$defs/EquipmentType"
+        }
+      },
+      "required": [
+        "equipment_id",
+        "type"
+      ],
+      "title": "Equipment",
+      "type": "object"
+    },
+    "EquipmentOutage": {
+      "properties": {
+        "est_return": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Est Return"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        }
+      },
+      "title": "EquipmentOutage",
+      "type": "object"
+    },
+    "EquipmentType": {
+      "enum": [
+        "elevator",
+        "escalator"
+      ],
+      "type": "string"
+    },
+    "Freshness": {
+      "description": "When each upstream source was last successfully fetched (epoch seconds).",
+      "properties": {
+        "bus_alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bus Alerts"
+        },
+        "ene": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ene"
+        },
+        "ferry_alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ferry Alerts"
+        },
+        "lirr_alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lirr Alerts"
+        },
+        "mnr_alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mnr Alerts"
+        },
+        "path_alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path Alerts"
+        },
+        "stations_static": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stations Static"
+        },
+        "subway_alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subway Alerts"
+        }
+      },
+      "title": "Freshness",
+      "type": "object"
+    },
+    "Inference": {
+      "description": "HMM-derived state inference.\n\nPer 5w0.6, populated only after the shadow review (Phase 3+). During Phase 1\nthis field stays None on every entity status object.",
+      "properties": {
+        "condition": {
+          "title": "Condition",
+          "type": "string"
+        },
+        "is_disrupted": {
+          "title": "Is Disrupted",
+          "type": "boolean"
+        },
+        "model_warming_up": {
+          "default": false,
+          "title": "Model Warming Up",
+          "type": "boolean"
+        },
+        "p_disrupted": {
+          "title": "P Disrupted",
+          "type": "number"
+        },
+        "p_normal": {
+          "title": "P Normal",
+          "type": "number"
+        },
+        "p_normal_in_120min": {
+          "title": "P Normal In 120Min",
+          "type": "number"
+        },
+        "p_normal_in_30min": {
+          "title": "P Normal In 30Min",
+          "type": "number"
+        },
+        "p_normal_in_60min": {
+          "title": "P Normal In 60Min",
+          "type": "number"
+        },
+        "p_suspended": {
+          "title": "P Suspended",
+          "type": "number"
+        },
+        "recovery_indeterminate": {
+          "default": false,
+          "title": "Recovery Indeterminate",
+          "type": "boolean"
+        },
+        "recovery_minutes": {
+          "title": "Recovery Minutes",
+          "type": "integer"
+        },
+        "recovery_minutes_high": {
+          "title": "Recovery Minutes High",
+          "type": "integer"
+        },
+        "recovery_minutes_low": {
+          "title": "Recovery Minutes Low",
+          "type": "integer"
+        },
+        "regime_age_seconds": {
+          "title": "Regime Age Seconds",
+          "type": "integer"
+        },
+        "regime_entered_at": {
+          "title": "Regime Entered At",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "condition",
+        "recovery_minutes",
+        "is_disrupted",
+        "p_normal",
+        "p_disrupted",
+        "p_suspended",
+        "regime_entered_at",
+        "regime_age_seconds",
+        "recovery_minutes_low",
+        "recovery_minutes_high",
+        "p_normal_in_30min",
+        "p_normal_in_60min",
+        "p_normal_in_120min"
+      ],
+      "title": "Inference",
+      "type": "object"
+    },
+    "InformedEntity": {
+      "properties": {
+        "agency_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agency Id"
+        },
+        "direction_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Direction Id"
+        },
+        "route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Route Id"
+        },
+        "stop_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Id"
+        },
+        "trip_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trip Id"
+        }
+      },
+      "title": "InformedEntity",
+      "type": "object"
+    },
+    "Mode": {
+      "type": "string"
+    },
+    "ModeRollup": {
+      "properties": {
+        "alert_count": {
+          "default": 0,
+          "title": "Alert Count",
+          "type": "integer"
+        },
+        "routes_with_alerts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Routes With Alerts",
+          "type": "array"
+        },
+        "severity_max": {
+          "default": 0,
+          "title": "Severity Max",
+          "type": "integer"
+        }
+      },
+      "title": "ModeRollup",
+      "type": "object"
+    },
+    "Observation": {
+      "description": "Continuous / instantaneous measurement of an entity.\n\nPeer to Alert. Empty in v1 of the publisher; populated when we wire upstream\nsources for travel-time (bridges/tunnels), headway, ETAs, tolls, occupancy.",
+      "properties": {
+        "entity_ref": {
+          "title": "Entity Ref",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "observed_at": {
+          "title": "Observed At",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "unit": {
+          "title": "Unit",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "entity_ref",
+        "kind",
+        "value",
+        "unit",
+        "observed_at",
+        "source"
+      ],
+      "title": "Observation",
+      "type": "object"
+    },
+    "Route": {
+      "description": "Static-ish per-route metadata. From GTFS static + canonical lists.",
+      "properties": {
+        "agency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agency"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Color"
+        },
+        "direction_labels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectionLabels"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "long_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Long Name"
+        },
+        "mode": {
+          "$ref": "#/$defs/Mode"
+        },
+        "short_name": {
+          "title": "Short Name",
+          "type": "string"
+        },
+        "text_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text Color"
+        }
+      },
+      "required": [
+        "id",
+        "mode",
+        "short_name"
+      ],
+      "title": "Route",
+      "type": "object"
+    },
+    "RouteStatus": {
+      "description": "Derived per-route view from alerts + route metadata + optional HMM inference.",
+      "properties": {
+        "alerts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Alerts",
+          "type": "array"
+        },
+        "by_direction": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DirectionStatus"
+          },
+          "default": {},
+          "propertyNames": {
+            "enum": [
+              "northbound",
+              "southbound"
+            ]
+          },
+          "title": "By Direction",
+          "type": "object"
+        },
+        "category": {
+          "default": "none",
+          "title": "Category",
+          "type": "string"
+        },
+        "condition": {
+          "default": "unknown",
+          "title": "Condition",
+          "type": "string"
+        },
+        "inference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "primary_alert_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Alert Type"
+        },
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "label"
+      ],
+      "title": "RouteStatus",
+      "type": "object"
+    },
+    "Station": {
+      "description": "Static-ish per-station metadata. From GTFS + NYS Open Data 39hk-dx4f.",
+      "properties": {
+        "ada": {
+          "default": 0,
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "title": "Ada",
+          "type": "integer"
+        },
+        "ada_northbound": {
+          "default": false,
+          "title": "Ada Northbound",
+          "type": "boolean"
+        },
+        "ada_southbound": {
+          "default": false,
+          "title": "Ada Southbound",
+          "type": "boolean"
+        },
+        "borough": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Borough"
+        },
+        "gtfs_stop_id": {
+          "title": "Gtfs Stop Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "routes_served": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Routes Served",
+          "type": "array"
+        },
+        "station_complex_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Station Complex Id"
+        }
+      },
+      "required": [
+        "gtfs_stop_id",
+        "name"
+      ],
+      "title": "Station",
+      "type": "object"
+    },
+    "StationStatus": {
+      "description": "Derived per-station view from alerts + equipment + static + optional HMM inference.",
+      "properties": {
+        "ada_status": {
+          "default": "operational",
+          "enum": [
+            "operational",
+            "ada_degraded",
+            "non_ada"
+          ],
+          "title": "Ada Status",
+          "type": "string"
+        },
+        "alerts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Alerts",
+          "type": "array"
+        },
+        "earliest_elevator_return": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Earliest Elevator Return"
+        },
+        "elevators_out": {
+          "default": 0,
+          "title": "Elevators Out",
+          "type": "integer"
+        },
+        "elevators_total": {
+          "default": 0,
+          "title": "Elevators Total",
+          "type": "integer"
+        },
+        "escalators_out": {
+          "default": 0,
+          "title": "Escalators Out",
+          "type": "integer"
+        },
+        "escalators_total": {
+          "default": 0,
+          "title": "Escalators Total",
+          "type": "integer"
+        },
+        "inference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "oldest_outage_since": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Oldest Outage Since"
+        },
+        "station_complex_id": {
+          "title": "Station Complex Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "station_complex_id"
+      ],
+      "title": "StationStatus",
+      "type": "object"
+    },
+    "SystemStatus": {
+      "description": "Top-of-dashboard rollup. The one-liner sensor.",
+      "properties": {
+        "accessibility": {
+          "$ref": "#/$defs/Accessibility"
+        },
+        "by_mode": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ModeRollup"
+          },
+          "default": {},
+          "propertyNames": {
+            "$ref": "#/$defs/Mode"
+          },
+          "title": "By Mode",
+          "type": "object"
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Condition"
+        },
+        "lines_disrupted_count": {
+          "default": 0,
+          "title": "Lines Disrupted Count",
+          "type": "integer"
+        },
+        "most_degraded_line": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Most Degraded Line"
+        },
+        "most_recovered_line": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Most Recovered Line"
+        },
+        "overall_label": {
+          "default": "All systems normal",
+          "title": "Overall Label",
+          "type": "string"
+        }
+      },
+      "title": "SystemStatus",
+      "type": "object"
+    },
+    "TimeRange": {
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        }
+      },
+      "title": "TimeRange",
+      "type": "object"
+    },
+    "TranslatedString": {
+      "properties": {
+        "translation": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TranslatedText"
+          },
+          "title": "Translation",
+          "type": "array"
+        }
+      },
+      "title": "TranslatedString",
+      "type": "object"
+    },
+    "TranslatedText": {
+      "properties": {
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TranslatedText",
+      "type": "object"
+    },
+    "Tunnel": {
+      "description": "Infrastructure asset. Schema scaffold; populated when a data source is wired.",
+      "properties": {
+        "crossings": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Crossing"
+          },
+          "title": "Crossings",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "operator"
+      ],
+      "title": "Tunnel",
+      "type": "object"
+    }
+  },
+  "description": "The full published snapshot. The contract.",
+  "properties": {
+    "alerts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Alert"
+      },
+      "title": "Alerts",
+      "type": "array"
+    },
+    "attribution": {
+      "default": "Snapshot built from MTA GTFS-RT feeds via api.mta.info. Published by Momentarily (https://feed.momentarily.nyc). Not affiliated with the MTA.",
+      "title": "Attribution",
+      "type": "string"
+    },
+    "bridges": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Bridge"
+      },
+      "title": "Bridges",
+      "type": "array"
+    },
+    "compat": {
+      "$ref": "#/$defs/Compat"
+    },
+    "equipment": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Equipment"
+      },
+      "title": "Equipment",
+      "type": "array"
+    },
+    "freshness": {
+      "$ref": "#/$defs/Freshness"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "integer"
+    },
+    "observations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Observation"
+      },
+      "title": "Observations",
+      "type": "array"
+    },
+    "route_status": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RouteStatus"
+      },
+      "title": "Route Status",
+      "type": "object"
+    },
+    "routes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Route"
+      },
+      "title": "Routes",
+      "type": "object"
+    },
+    "schema_version": {
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "station_status": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StationStatus"
+      },
+      "title": "Station Status",
+      "type": "object"
+    },
+    "stations": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Station"
+      },
+      "title": "Stations",
+      "type": "object"
+    },
+    "supported_modes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Supported Modes",
+      "type": "array"
+    },
+    "system": {
+      "$ref": "#/$defs/SystemStatus"
+    },
+    "tunnels": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Tunnel"
+      },
+      "title": "Tunnels",
+      "type": "array"
+    }
+  },
+  "required": [
+    "generated_at"
+  ],
+  "title": "Snapshot",
+  "type": "object"
+}

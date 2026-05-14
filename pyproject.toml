@@ -46,7 +46,7 @@ ignore = ["E501"]
 quote-style = "double"
 
 [tool.pyright]
-include = ["src", "tests", "training"]
+include = ["src", "tests", "training", "scripts"]
 exclude = ["**/__pycache__", ".venv"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"

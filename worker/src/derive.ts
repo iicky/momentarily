@@ -18,19 +18,24 @@ interface RouteEntityRef {
   active_period: ReadonlyArray<{ start?: number; end?: number }>;
 }
 
+export interface DirectionAlerts {
+  alerts: string[];
+  primary_alert_type: string | null;
+}
+
 export interface RouteSnapshot {
   route_id: string;
   observation: Observation;
-  /** alert_ids active for this route at this tick */
+  /** alert_ids active for this route at this tick (deduped) */
   active_alert_ids: string[];
   /** Highest-severity alert_type active on this route, or null if none */
   primary_alert_type: string | null;
   /** coarseStatus(primary_alert_type) — short human label */
   coarse_label: string;
-  /** by_direction: northbound/southbound primary types */
+  /** by_direction: northbound/southbound deduped alert IDs + primary type */
   by_direction: {
-    northbound: string | null;
-    southbound: string | null;
+    northbound: DirectionAlerts;
+    southbound: DirectionAlerts;
   };
 }
 
@@ -104,7 +109,7 @@ function buildRouteSnapshot(
   return {
     route_id: routeId,
     observation,
-    active_alert_ids: alerts.map((a) => a.alert_id),
+    active_alert_ids: dedupeIds(alerts),
     primary_alert_type: primary?.alert_type ?? null,
     coarse_label: primary ? coarseStatus(primary.alert_type) : NO_ALERTS_FALLBACK,
     by_direction: splitByDirection(alerts),
@@ -112,8 +117,8 @@ function buildRouteSnapshot(
 }
 
 function splitByDirection(alerts: RouteEntityRef[]): {
-  northbound: string | null;
-  southbound: string | null;
+  northbound: DirectionAlerts;
+  southbound: DirectionAlerts;
 } {
   const north: RouteEntityRef[] = [];
   const south: RouteEntityRef[] = [];
@@ -123,9 +128,26 @@ function splitByDirection(alerts: RouteEntityRef[]): {
     if (d === 1 || d === null) south.push(a);
   }
   return {
-    northbound: pickPrimary(north)?.alert_type ?? null,
-    southbound: pickPrimary(south)?.alert_type ?? null,
+    northbound: {
+      alerts: dedupeIds(north),
+      primary_alert_type: pickPrimary(north)?.alert_type ?? null,
+    },
+    southbound: {
+      alerts: dedupeIds(south),
+      primary_alert_type: pickPrimary(south)?.alert_type ?? null,
+    },
   };
+}
+
+function dedupeIds(refs: RouteEntityRef[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of refs) {
+    if (seen.has(r.alert_id)) continue;
+    seen.add(r.alert_id);
+    out.push(r.alert_id);
+  }
+  return out;
 }
 
 function pickPrimary(alerts: RouteEntityRef[]): RouteEntityRef | null {

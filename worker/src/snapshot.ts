@@ -1,21 +1,19 @@
 /**
  * Render and publish the public snapshot.
  *
- * Shape matches src/momentarily/schema.py's Snapshot (subset for v0):
- *   - schema_version, generated_at, attribution, supported_modes, freshness
- *   - route_status: per-route alerts, primary type, label, per-direction,
- *     HMM-derived condition + recovery_minutes
- *
- * Stations/equipment/compat/system rollup land in the next iteration.
+ * Shape matches src/momentarily/schema.py's Snapshot. Top-level fields whose
+ * data sources aren't wired up yet (alerts, observations, routes, stations,
+ * equipment, bridges, tunnels, station_status, compat) are emitted as empty
+ * placeholders so the schema_version=1 contract stays honored.
  *
  * Output is publicly readable at https://feed.momentarily.nyc/v1/snapshot.json
  * via the R2 custom domain. Cache headers per ADR (max-age=60, s-maxage=300).
  */
 
 import type { RouteRoll } from './alpha';
-import type { RouteSnapshot } from './derive';
+import type { DirectionAlerts, RouteSnapshot } from './derive';
 import { N_STATES, STATES, projectForward } from './hmm';
-import { coarseStatus, NO_ALERTS_FALLBACK } from './mapping';
+import { NO_ALERTS_FALLBACK } from './mapping';
 import type { TrainedParams } from './params';
 import { paramsForRoute } from './params';
 
@@ -27,11 +25,6 @@ export const ATTRIBUTION =
   'Snapshot built from MTA GTFS-RT feeds via api.mta.info. '
   + 'Published by Momentarily (https://feed.momentarily.nyc). '
   + 'Not affiliated with the MTA.';
-
-interface DirectionStatus {
-  primary_alert_type: string | null;
-  label: string | null;
-}
 
 interface Inference {
   condition: string;
@@ -47,6 +40,7 @@ interface Inference {
   p_normal_in_30min: number;
   p_normal_in_60min: number;
   p_normal_in_120min: number;
+  model_warming_up: boolean;
 }
 
 interface RouteStatusOut {
@@ -55,10 +49,41 @@ interface RouteStatusOut {
   primary_alert_type: string | null;
   label: string;
   by_direction: {
-    northbound: DirectionStatus;
-    southbound: DirectionStatus;
+    northbound: DirectionAlerts;
+    southbound: DirectionAlerts;
   };
   inference: Inference | null;
+}
+
+interface Freshness {
+  subway_alerts: number | null;
+  lirr_alerts: number | null;
+  mnr_alerts: number | null;
+  bus_alerts: number | null;
+  path_alerts: number | null;
+  ferry_alerts: number | null;
+  ene: number | null;
+  stations_static: number | null;
+}
+
+interface Accessibility {
+  elevators_out: number;
+  escalators_out: number;
+  ada_pathways_degraded: number;
+}
+
+interface SystemStatus {
+  by_mode: Record<string, unknown>;
+  accessibility: Accessibility;
+  overall_label: string;
+  condition: string | null;
+  lines_disrupted_count: number;
+  most_degraded_line: string | null;
+  most_recovered_line: string | null;
+}
+
+interface Compat {
+  subwaynow_routes: Record<string, unknown>;
 }
 
 interface Snapshot {
@@ -66,10 +91,18 @@ interface Snapshot {
   generated_at: number;
   attribution: string;
   supported_modes: string[];
-  freshness: {
-    subway_alerts: number;
-  };
+  freshness: Freshness;
+  alerts: unknown[];
+  observations: unknown[];
+  routes: Record<string, unknown>;
+  stations: Record<string, unknown>;
+  equipment: unknown[];
+  bridges: unknown[];
+  tunnels: unknown[];
   route_status: Record<string, RouteStatusOut>;
+  station_status: Record<string, unknown>;
+  system: SystemStatus;
+  compat: Compat;
 }
 
 export function buildSnapshot(args: {
@@ -94,35 +127,45 @@ export function buildSnapshot(args: {
       alerts: snap.active_alert_ids,
       primary_alert_type: snap.primary_alert_type,
       label: snap.coarse_label,
-      by_direction: {
-        northbound: {
-          primary_alert_type: snap.by_direction.northbound,
-          label: snap.by_direction.northbound
-            ? coarseStatus(snap.by_direction.northbound)
-            : null,
-        },
-        southbound: {
-          primary_alert_type: snap.by_direction.southbound,
-          label: snap.by_direction.southbound
-            ? coarseStatus(snap.by_direction.southbound)
-            : null,
-        },
-      },
+      by_direction: snap.by_direction,
       inference,
     };
   }
-
-  // Also include routes we have an alpha for but no current alerts — they
-  // exist and are presumably "normal." Skip these for v0 to keep output tight;
-  // they can be added when we have a real route registry.
 
   return {
     schema_version: SCHEMA_VERSION,
     generated_at: args.generatedAt,
     attribution: ATTRIBUTION,
     supported_modes: ['subway'],
-    freshness: { subway_alerts: args.alertsFreshness },
+    freshness: {
+      subway_alerts: args.alertsFreshness,
+      lirr_alerts: null,
+      mnr_alerts: null,
+      bus_alerts: null,
+      path_alerts: null,
+      ferry_alerts: null,
+      ene: null,
+      stations_static: null,
+    },
+    alerts: [],
+    observations: [],
+    routes: {},
+    stations: {},
+    equipment: [],
+    bridges: [],
+    tunnels: [],
     route_status,
+    station_status: {},
+    system: {
+      by_mode: {},
+      accessibility: { elevators_out: 0, escalators_out: 0, ada_pathways_degraded: 0 },
+      overall_label: 'All systems normal',
+      condition: null,
+      lines_disrupted_count: 0,
+      most_degraded_line: null,
+      most_recovered_line: null,
+    },
+    compat: { subwaynow_routes: {} },
   };
 }
 
@@ -169,6 +212,7 @@ function buildInference(
     p_normal_in_30min: p30[0],
     p_normal_in_60min: p60[0],
     p_normal_in_120min: p120[0],
+    model_warming_up: false,
   };
 }
 

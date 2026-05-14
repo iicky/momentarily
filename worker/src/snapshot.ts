@@ -363,25 +363,35 @@ function buildInference(
   const p60 = projectForward(roll.filter, params, ticksFor(60));
   const p120 = projectForward(roll.filter, params, ticksFor(120));
 
-  // Dwell math, using the same percentile geometry as Python's expected_dwell_ticks
   const argmaxIdx = argmaxOf(probs);
-  const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
-  const dwellTicks = dwellQuantiles(selfLoop);
-  const dwellToMinutes = (t: number): number => Math.round((t * tickSeconds) / 60);
-
-  // Clamp dwell estimates: a trained self-loop ≈ 1 produces dwell in the
-  // thousands of minutes, which is noise, not signal. Flag indeterminate.
-  const rawMedian = dwellToMinutes(dwellTicks.median);
-  const rawLow = dwellToMinutes(dwellTicks.q25);
-  const rawHigh = dwellToMinutes(dwellTicks.q75);
-  const recovery_indeterminate = rawMedian >= MAX_RECOVERY_MINUTES;
-  const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
 
   // Use the published label (hysteresis-stable) for `condition`. If still
   // "unknown" from a feed gap, fall back to argmax — Inference itself isn't
   // gated on hysteresis, that's the publish layer's job.
   const condition =
     roll.published.label === 'unknown' ? STATES[argmaxIdx]! : roll.published.label;
+
+  // Dwell math, using the same percentile geometry as Python's expected_dwell_ticks.
+  // Only meaningful when the route is in a disruption — `recovery_minutes` is
+  // "time until back to normal." For a normal route there's nothing to recover
+  // from, so it's 0 and never indeterminate.
+  let recovery_minutes = 0;
+  let recovery_minutes_low = 0;
+  let recovery_minutes_high = 0;
+  let recovery_indeterminate = false;
+  if (condition !== 'normal') {
+    const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
+    const dwellTicks = dwellQuantiles(selfLoop);
+    const dwellToMinutes = (t: number): number => Math.round((t * tickSeconds) / 60);
+    const rawMedian = dwellToMinutes(dwellTicks.median);
+    // A trained self-loop ≈ 1 produces dwell in the thousands of minutes, which
+    // is noise, not signal. Clamp and flag indeterminate.
+    const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
+    recovery_indeterminate = rawMedian >= MAX_RECOVERY_MINUTES;
+    recovery_minutes = clamp(rawMedian);
+    recovery_minutes_low = clamp(dwellToMinutes(dwellTicks.q25));
+    recovery_minutes_high = clamp(dwellToMinutes(dwellTicks.q75));
+  }
 
   // The filter is still settling when: the route just appeared (regime younger
   // than the hysteresis window), the published label hasn't cleared hysteresis,
@@ -393,15 +403,15 @@ function buildInference(
 
   return {
     condition,
-    recovery_minutes: clamp(rawMedian),
+    recovery_minutes,
     is_disrupted: probs[1] + probs[2] > 0.7,
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],
     regime_entered_at: roll.filter.regime_entered_at,
     regime_age_seconds: Math.max(0, now - roll.filter.regime_entered_at),
-    recovery_minutes_low: clamp(rawLow),
-    recovery_minutes_high: clamp(rawHigh),
+    recovery_minutes_low,
+    recovery_minutes_high,
     recovery_indeterminate,
     p_normal_in_30min: p30[0],
     p_normal_in_60min: p60[0],

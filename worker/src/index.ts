@@ -93,10 +93,13 @@ export default {
 
     // --- Step 2: fetch alerts feed ---
     let alertsPayload: unknown = null;
-    let alertsFeedFresh = lastSeen.ene_at; // placeholder before we set it
+    // On failure, fall back to the last successful alerts fetch so the
+    // snapshot reports the feed gap honestly. See momentarily-g24.
+    let alertsFeedFresh = lastSeen.alerts_at;
     try {
       alertsPayload = await fetchJson(FEEDS.alerts);
       alertsFeedFresh = observedAt;
+      lastSeen.alerts_at = observedAt;
     } catch (err) {
       console.error('alerts fetch failed; feed gap this tick:', err);
     }

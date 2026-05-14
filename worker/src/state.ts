@@ -8,6 +8,10 @@
  * version we've already archived. New (alert_id, updated_at) pairs trigger a
  * write into `archive/alerts/...`.
  *
+ * `alerts_at` is the epoch of the last *successful* alerts fetch. Tracked
+ * separately from `ene_at` so the snapshot can report alerts-feed freshness
+ * honestly when a fetch fails, instead of borrowing the E&E timestamp.
+ *
  * `ene_at` is the epoch of the last hourly E&E snapshot we wrote. Compared
  * against `now` to decide whether to fetch the E&E feeds this tick.
  */
@@ -18,12 +22,13 @@ export const STATE_KEY = 'state/last_seen.json';
 
 export const LastSeenSchema = z.object({
   alerts: z.record(z.string(), z.number()),
+  alerts_at: z.number().default(0),
   ene_at: z.number(),
 });
 export type LastSeen = z.infer<typeof LastSeenSchema>;
 
 export function emptyLastSeen(): LastSeen {
-  return { alerts: {}, ene_at: 0 };
+  return { alerts: {}, alerts_at: 0, ene_at: 0 };
 }
 
 export async function readLastSeen(bucket: R2Bucket): Promise<LastSeen> {

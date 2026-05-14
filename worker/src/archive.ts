@@ -47,13 +47,18 @@ export async function archiveNewAlerts(
   const timePrefix = utcTime(observedAt);
   let written = 0;
 
+  // Rebuilt from this tick's feed only. Replaces lastSeen.alerts at the end so
+  // the dedupe map stays bounded to the live alert set instead of growing
+  // forever with ids that will never appear again. See momentarily-wuq.
+  const seen: Record<string, number> = {};
+
   for (const entity of entities) {
     const parsed = parseAlertEntity(entity);
     if (!parsed) continue;
     const { id, updatedAt } = parsed;
+    seen[id] = updatedAt;
 
     if (lastSeen.alerts[id] === updatedAt) continue;
-    lastSeen.alerts[id] = updatedAt;
 
     const key = `archive/alerts/${datePrefix}/${timePrefix}-${safeKey(id)}.json`;
     await bucket.put(
@@ -63,6 +68,8 @@ export async function archiveNewAlerts(
     );
     written += 1;
   }
+
+  lastSeen.alerts = seen;
   return written;
 }
 

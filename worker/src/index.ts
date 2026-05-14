@@ -19,6 +19,8 @@ import { archiveEneSnapshot, archiveNewAlerts } from './archive';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, deriveRouteSnapshots, quietObservation } from './derive';
 import { FEEDS, fetchJson } from './fetch';
+import type { PredictionRecord } from './grading';
+import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState } from './hmm';
 import { loadParams, paramsForRoute } from './params';
@@ -152,11 +154,51 @@ export default {
       console.error('snapshot publish failed:', err);
     }
 
-    // --- Step 6: persist state ---
+    // --- Step 6: persist state + grading streams ---
     try {
       await writeAlphaState(env.MOMENTARILY, newAlphaState);
     } catch (err) {
       console.error('alpha write failed:', err);
+    }
+
+    const predictions: PredictionRecord[] = [];
+    for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
+      const inf = rs.inference;
+      if (!inf) continue;
+      predictions.push({
+        ts: observedAt,
+        route: routeId,
+        condition: inf.condition,
+        regime_entered_at: inf.regime_entered_at,
+        p_normal: inf.p_normal,
+        p_disrupted: inf.p_disrupted,
+        p_suspended: inf.p_suspended,
+        p_normal_in_30min: inf.p_normal_in_30min,
+        p_normal_in_60min: inf.p_normal_in_60min,
+        p_normal_in_120min: inf.p_normal_in_120min,
+        recovery_minutes: inf.recovery_minutes,
+        recovery_minutes_low: inf.recovery_minutes_low,
+        recovery_minutes_high: inf.recovery_minutes_high,
+      });
+    }
+    try {
+      await writePredictions(env.MOMENTARILY, observedAt, predictions);
+    } catch (err) {
+      console.error('predictions write failed:', err);
+    }
+
+    const transitions = detectTransitions(
+      alphaState.routes,
+      newAlphaState.routes,
+      observedAt,
+    );
+    if (transitions.length > 0) {
+      try {
+        await writeTransitions(env.MOMENTARILY, observedAt, transitions);
+        console.log(`transitions: ${transitions.length} regime flips this tick`);
+      } catch (err) {
+        console.error('transitions write failed:', err);
+      }
     }
 
     // --- Step 7: E&E (hourly) ---

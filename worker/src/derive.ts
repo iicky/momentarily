@@ -170,8 +170,12 @@ function buildRouteSnapshot(
   const observation: Observation = {
     alert_count: alerts.length,
     severity_sum: alerts.reduce((acc, a) => acc + a.sort_order, 0),
-    has_suspended_alert: anyMatch(types, ['Suspend', 'No Trains', 'No Scheduled Service']),
-    has_delays: anyMatch(types, ['Delays', 'Severe Delays']),
+    has_suspended_alert: anyMatch(
+      types,
+      ['Suspend', 'No Trains', 'No Scheduled Service'],
+      'Planned -',
+    ),
+    has_delays: anyMatch(types, ['Delays', 'Severe Delays'], 'Planned -'),
     has_service_change: anyMatch(
       types,
       [

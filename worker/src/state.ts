@@ -18,6 +18,9 @@
 
 import { z } from 'zod';
 
+import { conditionalPut } from './r2';
+import type { VersionedRead } from './r2';
+
 export const STATE_KEY = 'state/last_seen.json';
 
 export const LastSeenSchema = z.object({
@@ -31,26 +34,31 @@ export function emptyLastSeen(): LastSeen {
   return { alerts: {}, alerts_at: 0, ene_at: 0 };
 }
 
-export async function readLastSeen(bucket: R2Bucket): Promise<LastSeen> {
+export async function readLastSeen(
+  bucket: R2Bucket,
+): Promise<VersionedRead<LastSeen>> {
   const obj = await bucket.get(STATE_KEY);
-  if (!obj) return emptyLastSeen();
+  if (!obj) return { state: emptyLastSeen(), etag: null };
   try {
     const data = await obj.json();
-    return LastSeenSchema.parse(data);
+    return { state: LastSeenSchema.parse(data), etag: obj.etag };
   } catch (err) {
     console.error('last_seen.json corrupt; resetting:', err);
-    return emptyLastSeen();
+    return { state: emptyLastSeen(), etag: obj.etag };
   }
 }
 
+/**
+ * Write last_seen.json with compare-and-swap on `etag` (from readLastSeen).
+ * Returns false when a concurrent tick already advanced the object.
+ */
 export async function writeLastSeen(
   bucket: R2Bucket,
   state: LastSeen,
-): Promise<void> {
-  await bucket.put(STATE_KEY, JSON.stringify(state), {
-    httpMetadata: {
-      contentType: 'application/json',
-      cacheControl: 'no-store',
-    },
+  etag: string | null,
+): Promise<boolean> {
+  return conditionalPut(bucket, STATE_KEY, JSON.stringify(state), etag, {
+    contentType: 'application/json',
+    cacheControl: 'no-store',
   });
 }

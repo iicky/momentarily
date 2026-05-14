@@ -85,11 +85,15 @@ export default {
     console.log(`tick cron=${event.cron} t=${observedAt}`);
 
     // --- Step 1: read state ---
-    const [lastSeen, alphaState, trainedParams] = await Promise.all([
+    // Capture etags so the write-back is a compare-and-swap — overlapping or
+    // retried cron runs can't silently clobber each other. See momentarily-j0c.
+    const [lastSeenRead, alphaRead, trainedParams] = await Promise.all([
       readLastSeen(env.MOMENTARILY),
       readAlphaState(env.MOMENTARILY),
       loadParams(env.MOMENTARILY),
     ]);
+    const lastSeen = lastSeenRead.state;
+    const alphaState = alphaRead.state;
 
     // --- Step 2: fetch alerts feed ---
     let alertsPayload: unknown = null;
@@ -202,7 +206,14 @@ export default {
 
     // --- Step 6: persist state + grading streams ---
     try {
-      await writeAlphaState(env.MOMENTARILY, newAlphaState);
+      const written = await writeAlphaState(
+        env.MOMENTARILY,
+        newAlphaState,
+        alphaRead.etag,
+      );
+      if (!written) {
+        console.warn('alpha.json write conflict; a concurrent run won this tick');
+      }
     } catch (err) {
       console.error('alpha write failed:', err);
     }
@@ -263,7 +274,18 @@ export default {
       console.log(`ene: ${eneOk}/${ENE_SOURCES.length} feeds archived`);
     }
 
-    await writeLastSeen(env.MOMENTARILY, lastSeen);
+    try {
+      const written = await writeLastSeen(
+        env.MOMENTARILY,
+        lastSeen,
+        lastSeenRead.etag,
+      );
+      if (!written) {
+        console.warn('last_seen.json write conflict; a concurrent run won this tick');
+      }
+    } catch (err) {
+      console.error('last_seen write failed:', err);
+    }
   },
 } satisfies ExportedHandler<Env>;
 

@@ -4,12 +4,18 @@
  * One R2 object per change. Sortable keys let downstream consumers (training
  * runs, calibration notebooks) reconstruct the corpus by listing prefixes.
  *
- *   archive/alerts/YYYY-MM-DD/HHMMSS-<alert_id>.json
- *   archive/ene/YYYY-MM-DD/HHMMSS-<source>.json
+ *   archive/alerts/YYYY-MM-DD/<updated_at>-<alert_id>.json
+ *   archive/ene/YYYY-MM-DD/HH0000-<source>.json
  *
  * We dedupe alerts by (alert_id, updated_at) — an alert that persists for hours
  * occupies one R2 object until its `updated_at` changes, not 72 copies of the
  * same payload like the legacy Python collector did.
+ *
+ * Object keys are deterministic (alert version / hour bucket, not wall-clock
+ * tick time) so an overlapping or retried scheduled run overwrites the same
+ * key instead of producing a duplicate object. See momentarily-j0c. The date
+ * folder still tracks the observation date so the Python loader's date-prefix
+ * listing keeps working.
  *
  * E&E is written as a full snapshot per hourly tick (per feed). Volume is low
  * (~3 PUTs/hour × 24 = 72/day) so no dedupe needed yet.
@@ -44,7 +50,6 @@ export async function archiveNewAlerts(
   if (!entities) return 0;
 
   const datePrefix = utcDate(observedAt);
-  const timePrefix = utcTime(observedAt);
   let written = 0;
 
   // Rebuilt from this tick's feed only. Replaces lastSeen.alerts at the end so
@@ -60,7 +65,9 @@ export async function archiveNewAlerts(
 
     if (lastSeen.alerts[id] === updatedAt) continue;
 
-    const key = `archive/alerts/${datePrefix}/${timePrefix}-${safeKey(id)}.json`;
+    // Key on the alert version (updated_at), not the tick wall-clock, so a
+    // retried/overlapping run writes the same object instead of a duplicate.
+    const key = `archive/alerts/${datePrefix}/${updatedAt}-${safeKey(id)}.json`;
     await bucket.put(
       key,
       JSON.stringify({ observed_at: observedAt, alert: entity }),
@@ -79,9 +86,10 @@ export async function archiveEneSnapshot(
   payload: unknown,
   observedAt: number,
 ): Promise<void> {
-  const datePrefix = utcDate(observedAt);
-  const timePrefix = utcTime(observedAt);
-  const key = `archive/ene/${datePrefix}/${timePrefix}-${safeKey(source)}.json`;
+  // Bucket to the top of the hour so two runs in the same hourly window write
+  // the same key rather than two near-identical snapshots.
+  const hourEpoch = Math.floor(observedAt / 3600) * 3600;
+  const key = `archive/ene/${utcDate(observedAt)}/${utcTime(hourEpoch)}-${safeKey(source)}.json`;
   await bucket.put(
     key,
     JSON.stringify({ observed_at: observedAt, source, payload }),

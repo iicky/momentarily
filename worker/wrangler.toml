@@ -7,9 +7,17 @@ account_id = "REDACTED"
 [triggers]
 crons = ["*/5 * * * *"]
 
-# Public R2 bucket. Object writes here are publicly readable at
-# https://feed.momentarily.nyc/<key>. The Worker uses the binding to write;
-# public reads go through the custom domain (no auth path through the Worker).
+# feed.momentarily.nyc is served BY the Worker, not bound directly to R2.
+# The Worker's fetch handler gates reads to the v1/ prefix; state/ and archive/
+# stay private. Provisioning this requires the R2 bucket's direct custom-domain
+# binding to be removed first (Cloudflare dashboard) — otherwise the deploy
+# fails on a hostname conflict.
+[[routes]]
+pattern = "feed.momentarily.nyc"
+custom_domain = true
+
+# R2 bucket — the Worker uses this binding to read (public v1/) and write
+# (all keys). The bucket is NOT publicly exposed; only the Worker route is.
 [[r2_buckets]]
 binding = "MOMENTARILY"
 bucket_name = "momentarily"

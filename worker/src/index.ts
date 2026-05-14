@@ -31,7 +31,39 @@ export interface Env {
   MOMENTARILY: R2Bucket;
 }
 
+// Only this prefix is served publicly. Everything else in the bucket (state/,
+// archive/) stays private — the Worker is the auth boundary, the R2 custom
+// domain must NOT be bound directly to the bucket.
+const PUBLIC_PREFIX = 'v1/';
+
 const ENE_INTERVAL_SECONDS = 3600;
+
+async function handlePublicRead(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+  // `new URL` normalizes "..", so a key derived from pathname can't escape the
+  // prefix — but the explicit startsWith check below is the real guard.
+  const key = new URL(request.url).pathname.replace(/^\/+/, '');
+  if (key === '') {
+    return new Response(
+      'Momentarily publisher. Public snapshot: https://feed.momentarily.nyc/v1/snapshot.json\n',
+      { headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
+  }
+  if (!key.startsWith(PUBLIC_PREFIX)) {
+    return new Response('Not Found', { status: 404 });
+  }
+  const obj = await env.MOMENTARILY.get(key);
+  if (obj === null) {
+    return new Response('Not Found', { status: 404 });
+  }
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers); // content-type + cache-control as stored on write
+  headers.set('etag', obj.httpEtag);
+  headers.set('access-control-allow-origin', '*');
+  return new Response(request.method === 'HEAD' ? null : obj.body, { headers });
+}
 
 const ENE_SOURCES = [
   ['ene_current', FEEDS.ene_current],
@@ -40,11 +72,8 @@ const ENE_SOURCES = [
 ] as const;
 
 export default {
-  async fetch(_request: Request, _env: Env): Promise<Response> {
-    return new Response(
-      'Momentarily publisher Worker. Cron-driven. Snapshot at https://feed.momentarily.nyc/v1/snapshot.json\n',
-      { headers: { 'content-type': 'text/plain; charset=utf-8' } },
-    );
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return handlePublicRead(request, env);
   },
 
   async scheduled(

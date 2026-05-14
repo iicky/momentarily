@@ -113,9 +113,15 @@ def build_observations(
                         alert_count=alert_count,
                         severity_sum=severity_sum,
                         has_suspended_alert=_match(
-                            types, ("Suspend", "No Trains", "No Scheduled Service")
+                            types,
+                            ("Suspend", "No Trains", "No Scheduled Service"),
+                            exclude_prefix="Planned -",
                         ),
-                        has_delays=_match(types, ("Delays", "Severe Delays")),
+                        has_delays=_match(
+                            types,
+                            ("Delays", "Severe Delays"),
+                            exclude_prefix="Planned -",
+                        ),
                         has_service_change=_match(
                             types,
                             (

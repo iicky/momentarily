@@ -207,9 +207,13 @@ def build_tick_observations(
                 alert_count=len(alerts),
                 severity_sum=sum(so for so, _at in alerts.values()),
                 has_suspended_alert=_match(
-                    types, ("Suspend", "No Trains", "No Scheduled Service")
+                    types,
+                    ("Suspend", "No Trains", "No Scheduled Service"),
+                    exclude_prefix="Planned -",
                 ),
-                has_delays=_match(types, ("Delays", "Severe Delays")),
+                has_delays=_match(
+                    types, ("Delays", "Severe Delays"), exclude_prefix="Planned -"
+                ),
                 has_service_change=_match(
                     types,
                     (

@@ -13,10 +13,15 @@
 import type { RouteRoll } from './alpha';
 import type { AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
 import { metaForRoute } from './derive';
-import { N_STATES, STATES, projectForward } from './hmm';
+import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
 import { NO_ALERTS_FALLBACK, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { paramsForRoute } from './params';
+
+// Above this, the geometric dwell estimate is uninformative — a trained
+// self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
+// of open-ended planned work). Clamp + flag rather than publish "34 days".
+const MAX_RECOVERY_MINUTES = 1440;
 
 const SNAPSHOT_KEY = 'v1/snapshot.json';
 
@@ -38,6 +43,10 @@ interface Inference {
   regime_age_seconds: number;
   recovery_minutes_low: number;
   recovery_minutes_high: number;
+  // True when the dwell estimate saturated MAX_RECOVERY_MINUTES — the regime
+  // is so persistent the model can't bound when it ends. recovery_minutes and
+  // its bounds are clamped to the ceiling in that case.
+  recovery_indeterminate: boolean;
   p_normal_in_30min: number;
   p_normal_in_60min: number;
   p_normal_in_120min: number;
@@ -360,27 +369,44 @@ function buildInference(
   const dwellTicks = dwellQuantiles(selfLoop);
   const dwellToMinutes = (t: number): number => Math.round((t * tickSeconds) / 60);
 
+  // Clamp dwell estimates: a trained self-loop ≈ 1 produces dwell in the
+  // thousands of minutes, which is noise, not signal. Flag indeterminate.
+  const rawMedian = dwellToMinutes(dwellTicks.median);
+  const rawLow = dwellToMinutes(dwellTicks.q25);
+  const rawHigh = dwellToMinutes(dwellTicks.q75);
+  const recovery_indeterminate = rawMedian >= MAX_RECOVERY_MINUTES;
+  const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
+
   // Use the published label (hysteresis-stable) for `condition`. If still
   // "unknown" from a feed gap, fall back to argmax — Inference itself isn't
   // gated on hysteresis, that's the publish layer's job.
   const condition =
     roll.published.label === 'unknown' ? STATES[argmaxIdx]! : roll.published.label;
 
+  // The filter is still settling when: the route just appeared (regime younger
+  // than the hysteresis window), the published label hasn't cleared hysteresis,
+  // or we're recovering from a feed gap ("unknown").
+  const model_warming_up =
+    roll.published.label === PUBLISHED_UNKNOWN
+    || roll.published.pending_streak < HYSTERESIS_TICKS
+    || now - roll.filter.regime_entered_at < HYSTERESIS_TICKS * tickSeconds;
+
   return {
     condition,
-    recovery_minutes: dwellToMinutes(dwellTicks.median),
+    recovery_minutes: clamp(rawMedian),
     is_disrupted: probs[1] + probs[2] > 0.7,
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],
     regime_entered_at: roll.filter.regime_entered_at,
     regime_age_seconds: Math.max(0, now - roll.filter.regime_entered_at),
-    recovery_minutes_low: dwellToMinutes(dwellTicks.q25),
-    recovery_minutes_high: dwellToMinutes(dwellTicks.q75),
+    recovery_minutes_low: clamp(rawLow),
+    recovery_minutes_high: clamp(rawHigh),
+    recovery_indeterminate,
     p_normal_in_30min: p30[0],
     p_normal_in_60min: p60[0],
     p_normal_in_120min: p120[0],
-    model_warming_up: false,
+    model_warming_up,
   };
 }
 

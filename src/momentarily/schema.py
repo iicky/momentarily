@@ -139,6 +139,11 @@ class Inference(BaseModel):
     recovery_minutes_low: int  # 25th percentile
     recovery_minutes_high: int  # 75th percentile
 
+    # True when the dwell estimate saturated its ceiling — the regime is so
+    # persistent (self-loop ≈ 1, typical of open-ended planned work) that the
+    # model can't bound when it ends. recovery_minutes is clamped in that case.
+    recovery_indeterminate: bool = False
+
     # Forward predictions
     p_normal_in_30min: float
     p_normal_in_60min: float

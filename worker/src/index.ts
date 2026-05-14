@@ -17,9 +17,9 @@ import type { AlphaState, RouteRoll } from './alpha';
 import { readAlphaState, writeAlphaState } from './alpha';
 import { archiveEneSnapshot, archiveNewAlerts } from './archive';
 import type { RouteSnapshot } from './derive';
-import { deriveRouteSnapshots } from './derive';
+import { SUBWAY_ROUTES, deriveRouteSnapshots, quietObservation } from './derive';
 import { FEEDS, fetchJson } from './fetch';
-import type { FilterState, PublishedState } from './hmm';
+import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState } from './hmm';
 import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
@@ -97,12 +97,20 @@ export default {
       routeSnapshots = deriveRouteSnapshots(alertsPayload, observedAt);
     }
 
-    // For routes with current-tick observations: forward_step normally.
-    // For routes we have alpha for but no observation this tick: feed null
-    // (treat as feed gap → "unknown" published label, alpha preserved).
+    // Routes to run inference for: union of (observed this tick, previously
+    // known via alpha, canonical subway list when we have a payload).
+    //   - alertsPayload present + route in routeSnapshots → use that observation
+    //   - alertsPayload present + route not in routeSnapshots → quiet obs (good service)
+    //   - alertsPayload null → obs=null for every route (true feed gap)
     const observedRouteIds = new Set(routeSnapshots.keys());
     const knownRouteIds = new Set(Object.keys(alphaState.routes));
-    const allRoutes = new Set([...observedRouteIds, ...knownRouteIds]);
+    const allRoutes = new Set<string>([
+      ...observedRouteIds,
+      ...knownRouteIds,
+      ...(alertsPayload !== null ? SUBWAY_ROUTES : []),
+    ]);
+    const quietObs: Observation | null =
+      alertsPayload !== null ? quietObservation(observedAt) : null;
 
     for (const routeId of allRoutes) {
       const prevRoll: RouteRoll | undefined = alphaState.routes[routeId];
@@ -117,11 +125,7 @@ export default {
         prevRoll?.published ?? initialPublishedState(baseFilter);
 
       const routeSnap = routeSnapshots.get(routeId);
-      const obs = routeSnap?.observation ?? null;
-      // Routes we've seen before but with no observation this tick: pass null
-      // (treat as a transient gap, keep alpha).
-      // Routes seen for the first time with an observation: forward_step
-      // promotes them into alphaState immediately.
+      const obs: Observation | null = routeSnap ? routeSnap.observation : quietObs;
       const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
       newAlphaState.routes[routeId] = {

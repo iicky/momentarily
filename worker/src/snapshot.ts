@@ -115,19 +115,30 @@ export function buildSnapshot(args: {
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
-  for (const [routeId, snap] of args.routeSnapshots) {
+  // Publish every route we have alpha for — good-service lines get their
+  // inference too. Union with current routeSnapshots in case a route just got
+  // its first alert this tick (alpha entry written after buildSnapshot reads).
+  const allRouteIds = new Set<string>([
+    ...Object.keys(args.rolls),
+    ...args.routeSnapshots.keys(),
+  ]);
+
+  for (const routeId of allRouteIds) {
+    const snap = args.routeSnapshots.get(routeId);
     const roll = args.rolls[routeId];
-    let inference: Inference | null = null;
-    if (roll) {
-      inference = buildInference(roll, args.generatedAt, args.tickSeconds, routeId, args.trainedParams);
-    }
+    const inference: Inference | null = roll
+      ? buildInference(roll, args.generatedAt, args.tickSeconds, routeId, args.trainedParams)
+      : null;
 
     route_status[routeId] = {
       route_id: routeId,
-      alerts: snap.active_alert_ids,
-      primary_alert_type: snap.primary_alert_type,
-      label: snap.coarse_label,
-      by_direction: snap.by_direction,
+      alerts: snap?.active_alert_ids ?? [],
+      primary_alert_type: snap?.primary_alert_type ?? null,
+      label: snap?.coarse_label ?? NO_ALERTS_FALLBACK,
+      by_direction: snap?.by_direction ?? {
+        northbound: { alerts: [], primary_alert_type: null },
+        southbound: { alerts: [], primary_alert_type: null },
+      },
       inference,
     };
   }

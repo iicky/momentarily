@@ -10,6 +10,33 @@ import type { Observation } from './hmm';
 import { tod_bin } from './hmm';
 import { coarseStatus, NO_ALERTS_FALLBACK } from './mapping';
 
+/**
+ * Canonical NYC subway service route IDs as they appear in MTA GTFS-RT.
+ * Inference runs for every route in this set each tick, so good-service lines
+ * get a continuous history. New IDs observed in alerts auto-add to alpha state
+ * regardless — this list is the lower bound, not the ceiling.
+ */
+export const SUBWAY_ROUTES: readonly string[] = [
+  '1', '2', '3', '4', '5', '6', '7',
+  'A', 'B', 'C', 'D', 'E', 'F', 'G',
+  'J', 'L', 'M', 'N', 'Q', 'R', 'W', 'Z',
+  'GS', 'FS', 'H',
+  'SI',
+] as const;
+
+/** Quiet (no-alerts) observation for a route at this tick's tod_bin. */
+export function quietObservation(observedAt: number): Observation {
+  return {
+    alert_count: 0,
+    severity_sum: 0,
+    has_suspended_alert: false,
+    has_delays: false,
+    has_service_change: false,
+    has_planned: false,
+    tod_bin: tod_bin(observedAt),
+  };
+}
+
 interface RouteEntityRef {
   alert_id: string;
   alert_type: string;

@@ -1,28 +1,34 @@
 /**
  * Momentarily publisher — Cloudflare Worker entry point.
  *
- * v0 scope: COLLECTION ONLY. Each cron tick:
- *   1. Read state/last_seen.json from R2
- *   2. Fetch the MTA alerts feed; for each new (alert_id, updated_at) pair,
- *      write a per-change object to archive/alerts/...
- *   3. Hourly: fetch the 3 E&E feeds, write a snapshot per source to
- *      archive/ene/...
- *   4. Write updated state/last_seen.json
+ * Each cron tick:
+ *   1. Fetch the MTA alerts feed; archive new (alert_id, updated_at) versions
+ *   2. Derive per-route observations from currently-active alerts
+ *   3. Read trained HMM params (from R2; bootstrap fallback) and rolling alpha
+ *   4. Advance the forward filter per route, with hysteresis + Unknown
+ *   5. Render snapshot.json and publish to R2 (public via feed.momentarily.nyc)
+ *   6. Write alpha.json + last_seen.json back to R2
  *
- * Forward filter + snapshot publishing are intentionally not here yet — they
- * land in follow-up iterations once enough corpus has accumulated to train
- * against.
+ * Hourly: fetch the 3 E&E feeds and archive snapshots. Station status
+ * derivation for the snapshot lands in a follow-up iteration.
  */
 
+import type { AlphaState, RouteRoll } from './alpha';
+import { readAlphaState, writeAlphaState } from './alpha';
 import { archiveEneSnapshot, archiveNewAlerts } from './archive';
+import type { RouteSnapshot } from './derive';
+import { deriveRouteSnapshots } from './derive';
 import { FEEDS, fetchJson } from './fetch';
+import type { FilterState, PublishedState } from './hmm';
+import { forwardStep, initialPublishedState } from './hmm';
+import { loadParams, paramsForRoute } from './params';
+import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { readLastSeen, writeLastSeen } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
 }
 
-// Hourly E&E cadence: the upstream feed itself doesn't change faster than that.
 const ENE_INTERVAL_SECONDS = 3600;
 
 const ENE_SOURCES = [
@@ -34,7 +40,7 @@ const ENE_SOURCES = [
 export default {
   async fetch(_request: Request, _env: Env): Promise<Response> {
     return new Response(
-      'Momentarily publisher Worker. Cron-driven; no HTTP surface yet.\n',
+      'Momentarily publisher Worker. Cron-driven. Snapshot at https://feed.momentarily.nyc/v1/snapshot.json\n',
       { headers: { 'content-type': 'text/plain; charset=utf-8' } },
     );
   },
@@ -47,21 +53,109 @@ export default {
     const observedAt = Math.floor(Date.now() / 1000);
     console.log(`tick cron=${event.cron} t=${observedAt}`);
 
-    const lastSeen = await readLastSeen(env.MOMENTARILY);
+    // --- Step 1: read state ---
+    const [lastSeen, alphaState, trainedParams] = await Promise.all([
+      readLastSeen(env.MOMENTARILY),
+      readAlphaState(env.MOMENTARILY),
+      loadParams(env.MOMENTARILY),
+    ]);
 
+    // --- Step 2: fetch alerts feed ---
+    let alertsPayload: unknown = null;
+    let alertsFeedFresh = lastSeen.ene_at; // placeholder before we set it
     try {
-      const payload = await fetchJson(FEEDS.alerts);
-      const written = await archiveNewAlerts(
-        env.MOMENTARILY,
-        payload,
-        lastSeen,
-        observedAt,
-      );
-      console.log(`alerts: ${written} new versions archived`);
+      alertsPayload = await fetchJson(FEEDS.alerts);
+      alertsFeedFresh = observedAt;
     } catch (err) {
-      console.error('alerts pipeline failed:', err);
+      console.error('alerts fetch failed; feed gap this tick:', err);
     }
 
+    // --- Step 3: archive new versions ---
+    if (alertsPayload !== null) {
+      try {
+        const written = await archiveNewAlerts(
+          env.MOMENTARILY,
+          alertsPayload,
+          lastSeen,
+          observedAt,
+        );
+        console.log(`archive: ${written} new alert versions`);
+      } catch (err) {
+        console.error('archive failed:', err);
+      }
+    }
+
+    // --- Step 4: derive per-route observations + advance filter ---
+    const newAlphaState: AlphaState = {
+      params_version: trainedParams?.trained_at ?? 0,
+      updated_at: observedAt,
+      routes: { ...alphaState.routes },
+    };
+
+    let routeSnapshots = new Map<string, RouteSnapshot>();
+    if (alertsPayload !== null) {
+      routeSnapshots = deriveRouteSnapshots(alertsPayload, observedAt);
+    }
+
+    // For routes with current-tick observations: forward_step normally.
+    // For routes we have alpha for but no observation this tick: feed null
+    // (treat as feed gap → "unknown" published label, alpha preserved).
+    const observedRouteIds = new Set(routeSnapshots.keys());
+    const knownRouteIds = new Set(Object.keys(alphaState.routes));
+    const allRoutes = new Set([...observedRouteIds, ...knownRouteIds]);
+
+    for (const routeId of allRoutes) {
+      const prevRoll: RouteRoll | undefined = alphaState.routes[routeId];
+      const params = paramsForRoute(trainedParams, routeId);
+
+      const baseFilter: FilterState = prevRoll?.filter ?? {
+        probabilities: params.initial,
+        regime_entered_at: observedAt,
+        last_updated_at: observedAt,
+      };
+      const basePublished: PublishedState =
+        prevRoll?.published ?? initialPublishedState(baseFilter);
+
+      const routeSnap = routeSnapshots.get(routeId);
+      const obs = routeSnap?.observation ?? null;
+      // Routes we've seen before but with no observation this tick: pass null
+      // (treat as a transient gap, keep alpha).
+      // Routes seen for the first time with an observation: forward_step
+      // promotes them into alphaState immediately.
+      const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
+
+      newAlphaState.routes[routeId] = {
+        filter: result.state,
+        published: result.published,
+      };
+    }
+
+    // --- Step 5: render + publish snapshot ---
+    const snapshot = buildSnapshot({
+      generatedAt: observedAt,
+      alertsFreshness: alertsFeedFresh,
+      routeSnapshots,
+      rolls: newAlphaState.routes,
+      trainedParams,
+      tickSeconds: TICK_SECONDS,
+    });
+    try {
+      await publishSnapshot(env.MOMENTARILY, snapshot);
+      console.log(
+        `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
+      );
+    } catch (err) {
+      console.error('snapshot publish failed:', err);
+    }
+
+    // --- Step 6: persist state ---
+    try {
+      await writeAlphaState(env.MOMENTARILY, newAlphaState);
+    } catch (err) {
+      console.error('alpha write failed:', err);
+    }
+
+    // --- Step 7: E&E (hourly) ---
     if (observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
       let eneOk = 0;
       for (const [name, url] of ENE_SOURCES) {
@@ -73,14 +167,11 @@ export default {
           console.error(`ene ${name} failed:`, err);
         }
       }
-      if (eneOk > 0) {
-        // Only advance freshness if at least one E&E feed succeeded; otherwise
-        // we want to retry on the next tick rather than wait another hour.
-        lastSeen.ene_at = observedAt;
-      }
+      if (eneOk > 0) lastSeen.ene_at = observedAt;
       console.log(`ene: ${eneOk}/${ENE_SOURCES.length} feeds archived`);
     }
 
     await writeLastSeen(env.MOMENTARILY, lastSeen);
   },
 } satisfies ExportedHandler<Env>;
+

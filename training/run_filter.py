@@ -42,10 +42,12 @@ BOOTSTRAP_PARAMS = HMMParams(
         poisson_lambda=(0.3, 4.0, 12.0),
         gamma_alpha=(1.0, 3.0, 6.0),
         gamma_beta=(2.0, 0.4, 0.2),
-        bernoulli_p=(0.001, 0.05, 0.95),            # suspended
-        bernoulli_p_delays=(0.01, 0.4, 0.5),
-        bernoulli_p_service_change=(0.01, 0.5, 0.6),
-        bernoulli_p_planned=(0.05, 0.3, 0.4),
+        # has_suspended_alert is the only flag that should pull toward
+        # suspended; delays/service_change/planned all indicate disrupted.
+        bernoulli_p=(0.001, 0.05, 0.95),
+        bernoulli_p_delays=(0.02, 0.6, 0.35),
+        bernoulli_p_service_change=(0.02, 0.6, 0.4),
+        bernoulli_p_planned=(0.05, 0.6, 0.35),
     ),
 )
 

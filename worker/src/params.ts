@@ -11,14 +11,19 @@ import type { EmissionParams, HMMParams } from './hmm';
 
 const PARAMS_KEY = 'state/params.json';
 
+// The three "kind of disruption" flags (delays/service_change/planned) all
+// indicate `disrupted`, not `suspended` — only has_suspended_alert
+// (bernoulli_p) should pull hard toward suspended. Before this, all three
+// leaned suspended, so any persistent planned-work/delay alert drifted routes
+// into `suspended`. See momentarily-x5b.
 const BOOTSTRAP_EMISSIONS: EmissionParams = {
   poisson_lambda: [0.3, 4.0, 12.0],
   gamma_alpha: [1.0, 3.0, 6.0],
   gamma_beta: [2.0, 0.4, 0.2],
   bernoulli_p: [0.001, 0.05, 0.95],
-  bernoulli_p_delays: [0.01, 0.45, 0.5],
-  bernoulli_p_service_change: [0.01, 0.5, 0.6],
-  bernoulli_p_planned: [0.05, 0.3, 0.4],
+  bernoulli_p_delays: [0.02, 0.6, 0.35],
+  bernoulli_p_service_change: [0.02, 0.6, 0.4],
+  bernoulli_p_planned: [0.05, 0.6, 0.35],
 };
 
 export const BOOTSTRAP_PARAMS: HMMParams = {

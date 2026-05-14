@@ -5,8 +5,10 @@ Pure math — no R2. Verifies pooling + prior anchoring behave as advertised.
 
 from __future__ import annotations
 
+import pytest
+
 from momentarily.hmm import EmissionParams, HMMParams, Observation
-from training.train_em import _params_to_json, train
+from training.train_em import MAX_SELF_LOOP, _cap_self_loops, _params_to_json, train
 
 
 def _quiet(n: int) -> list[Observation]:
@@ -58,6 +60,48 @@ def test_train_pools_observations_for_global() -> None:
     # and pure noisy (~8) — i.e. it actually learned from both.
     active_lams = sorted(global_prior.emissions.poisson_lambda)
     assert active_lams[-1] > 1.0, f"top λ unrealistically low: {active_lams}"
+
+
+def _params_with_transition(
+    transition: tuple[tuple[float, float, float], ...],
+) -> HMMParams:
+    return HMMParams(
+        transition=transition,
+        initial=(0.9, 0.08, 0.02),
+        emissions=EmissionParams(
+            poisson_lambda=(0.3, 4.0, 12.0),
+            gamma_alpha=(1.0, 3.0, 6.0),
+            gamma_beta=(2.0, 0.4, 0.2),
+            bernoulli_p=(0.001, 0.05, 0.95),
+        ),
+    )
+
+
+def test_cap_self_loops_clamps_and_renormalizes() -> None:
+    params = _params_with_transition(
+        ((0.999, 0.0008, 0.0002), (0.08, 0.9, 0.02), (0.003, 0.002, 0.995))
+    )
+    capped = _cap_self_loops(params)
+    for s in range(3):
+        row = capped.transition[s]
+        assert row[s] <= MAX_SELF_LOOP + 1e-9, f"row {s} self-loop not capped: {row}"
+        assert abs(sum(row) - 1.0) < 1e-9, f"row {s} not normalized: {row}"
+    # Untouched row passes through unchanged.
+    assert capped.transition[1] == (0.08, 0.9, 0.02)
+    # Off-diagonal proportions are preserved when redistributing freed mass.
+    assert capped.transition[0][1] / capped.transition[0][2] == pytest.approx(4.0)
+
+
+def test_cap_self_loops_handles_zero_off_diagonal() -> None:
+    # A degenerate row [0, 0, 1] has no off-diagonal mass to scale — freed mass
+    # must spread evenly instead of dividing by zero.
+    capped = _cap_self_loops(_params_with_transition(
+        ((0.95, 0.03, 0.02), (0.05, 0.93, 0.02), (0.0, 0.0, 1.0))
+    ))
+    row = capped.transition[2]
+    assert row[2] == pytest.approx(MAX_SELF_LOOP)
+    assert row[0] == pytest.approx((1.0 - MAX_SELF_LOOP) / 2)
+    assert row[1] == pytest.approx((1.0 - MAX_SELF_LOOP) / 2)
 
 
 def test_params_to_json_round_trip_shape() -> None:

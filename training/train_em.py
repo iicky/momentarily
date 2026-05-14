@@ -39,6 +39,39 @@ SCHEMA_VERSION = "1"
 # we fall back to the global prior.
 MIN_TICKS_PER_ROUTE = 288  # one day at the 5-min grid
 
+# EM on a thin or mostly-quiet corpus drives transition self-loops toward 1.0,
+# which pins the forward filter so a route can never leave a regime. Cap the
+# diagonal, and refuse to publish at all under two weeks of archive. See
+# momentarily-625.
+MAX_SELF_LOOP = 0.97
+MIN_DATA_DAYS = 14
+
+
+def _cap_self_loops(params: HMMParams, max_self: float = MAX_SELF_LOOP) -> HMMParams:
+    """Clamp each transition row's diagonal to `max_self`, redistributing the
+    freed mass across that row's off-diagonal entries (proportionally, or
+    evenly when they're all zero)."""
+    rows: list[tuple[float, float, float]] = []
+    for s in range(3):
+        row = list(params.transition[s])
+        if row[s] <= max_self:
+            rows.append((row[0], row[1], row[2]))
+            continue
+        freed = row[s] - max_self
+        row[s] = max_self
+        off = [j for j in range(3) if j != s]
+        off_sum = sum(row[j] for j in off)
+        for j in off:
+            share = row[j] / off_sum if off_sum > 0 else 1.0 / len(off)
+            row[j] += freed * share
+        rows.append((row[0], row[1], row[2]))
+    return HMMParams(
+        transition=tuple(rows),
+        initial=params.initial,
+        emissions=params.emissions,
+        emissions_by_bin=params.emissions_by_bin,
+    )
+
 
 def _aligned_window(start: date, end: date) -> tuple[int, int]:
     """Tick-aligned UTC window covering [start, end+1day)."""
@@ -53,12 +86,21 @@ def load_series_by_route(
     cfg: R2Config,
     start: date,
     end: date,
-) -> dict[str, list[Observation]]:
-    """Single R2 pass: fetch alerts, build per-route quiet-filled series."""
+) -> tuple[dict[str, list[Observation]], int]:
+    """Single R2 pass: fetch alerts, build per-route quiet-filled series.
+
+    Returns (by_route, data_span_seconds). `data_span_seconds` is the span of
+    *actual* observed ticks before quiet-filling — fill_quiet_ticks pads every
+    series to the requested window, so series length can't tell us how much
+    real archive we have. The publish gate needs the unpadded span.
+    """
     bodies = fetch_alert_versions(cfg, start_date=start, end_date=end)
     all_ticks = build_tick_observations(bodies)
     if not all_ticks:
-        return {}
+        return {}, 0
+
+    ticks = [t.tick for t in all_ticks]
+    data_span = max(ticks) - min(ticks)
 
     start_tick, end_tick_excl = _aligned_window(start, end)
     last_tick = end_tick_excl - TICK_SECONDS
@@ -70,7 +112,7 @@ def load_series_by_route(
             all_ticks, route, start_tick=start_tick, end_tick=last_tick
         )
         by_route[route] = [t.observation for t in filled]
-    return by_route
+    return by_route, data_span
 
 
 def train(
@@ -87,6 +129,7 @@ def train(
     for series in series_by_route.values():
         pooled.extend(series)
     global_prior, _ = fit_em(pooled, BOOTSTRAP_PARAMS, max_iterations=50)
+    global_prior = _cap_self_loops(global_prior)
 
     out: dict[str, HMMParams] = {}
     for route, series in series_by_route.items():
@@ -100,7 +143,7 @@ def train(
             prior_params=global_prior,
             prior_strength=prior_strength,
         )
-        out[route] = fitted
+        out[route] = _cap_self_loops(fitted)
     return global_prior, out
 
 
@@ -154,7 +197,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     cfg = load_config()
     today = datetime.now(UTC).date()
     start = today - timedelta(days=args.days - 1)
-    series = load_series_by_route(cfg, start, today)
+    series, data_span = load_series_by_route(cfg, start, today)
     if not series:
         print("no observations in archive — skipping training", file=sys.stderr)
         return 1
@@ -172,6 +215,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
         )
         return 0
+
+    if data_span < MIN_DATA_DAYS * 86_400:
+        print(
+            f"archive spans {data_span / 86_400:.1f}d (< {MIN_DATA_DAYS}d minimum) — "
+            "refusing to publish; thin data overfits transition self-loops",
+            file=sys.stderr,
+        )
+        return 1
 
     client = make_client(cfg)
     write_params(client, cfg.bucket, per_route)

@@ -25,6 +25,7 @@ for offline Baum-Welch training.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -471,10 +472,18 @@ def _estimate_emissions(
     observations: list[Observation],
     indices,
     fallback: EmissionParams,
+    *,
+    prior: EmissionParams | None = None,
+    prior_strength: float = 0.0,
 ) -> EmissionParams:
     """Weighted-MLE M-step over a subset of tick indices. When a subset has too
     little posterior mass for a given state, fall back to that state's existing
     params (don't overwrite with noise from 1-2 observations).
+
+    With `prior` and `prior_strength > 0`, blend MLE with the prior using
+    conjugate posteriors (Gamma/Beta pseudo-counts; convex combo for the Gamma
+    α/β where there's no clean conjugate). `prior_strength` is in units of
+    effective observations.
     """
     idx_list = list(indices)
     state_weight = [
@@ -489,26 +498,39 @@ def _estimate_emissions(
     gamma_alpha: list[float] = []
     gamma_beta: list[float] = []
 
-    def weighted_bernoulli(s: int, w: float, indicator) -> float:
-        p = (
-            sum(
-                gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0)
-                for t in idx_list
-            )
-            / w
+    kappa = max(prior_strength, 0.0)
+    use_prior = prior is not None and kappa > 0.0
+
+    def posterior_bernoulli(
+        s: int,
+        w: float,
+        indicator: Callable[[Observation], bool],
+        prior_p: float,
+    ) -> float:
+        successes = sum(
+            gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0)
+            for t in idx_list
         )
+        if use_prior:
+            p = (kappa * prior_p + successes) / (kappa + w)
+        else:
+            p = successes / w
         return min(max(p, 1e-6), 1 - 1e-6)
 
     # If the whole subset has < this many effective observations across all
-    # states, the slice is too thin to fit reliably — keep the fallback.
+    # states, the slice is too thin to fit reliably — keep the fallback (or
+    # the prior, when one is set).
     MIN_EFFECTIVE_OBS = 5
     total_weight = sum(state_weight)
     if total_weight < MIN_EFFECTIVE_OBS:
+        if use_prior:
+            assert prior is not None
+            return prior
         return fallback
 
     for s in range(N_STATES):
         w = state_weight[s]
-        if w <= 0:
+        if w <= 0 and not use_prior:
             poisson_lambda.append(fallback.poisson_lambda[s])
             bernoulli_p.append(fallback.bernoulli_p[s])
             bernoulli_p_delays.append(fallback.bernoulli_p_delays[s])
@@ -518,25 +540,65 @@ def _estimate_emissions(
             gamma_beta.append(fallback.gamma_beta[s])
             continue
 
-        lam = (
-            sum(gamma[t][s] * observations[t].alert_count for t in idx_list) / w
+        # Poisson λ: Gamma(κ·λ_prior, κ) prior → posterior mean below.
+        sum_alerts = sum(
+            gamma[t][s] * observations[t].alert_count for t in idx_list
         )
+        if use_prior:
+            assert prior is not None
+            lam = (kappa * prior.poisson_lambda[s] + sum_alerts) / (kappa + w)
+        else:
+            lam = sum_alerts / w
         poisson_lambda.append(max(lam, 1e-6))
 
-        bernoulli_p.append(weighted_bernoulli(s, w, lambda o: o.has_suspended_alert))
-        bernoulli_p_delays.append(weighted_bernoulli(s, w, lambda o: o.has_delays))
-        bernoulli_p_service_change.append(
-            weighted_bernoulli(s, w, lambda o: o.has_service_change)
-        )
-        bernoulli_p_planned.append(weighted_bernoulli(s, w, lambda o: o.has_planned))
+        if use_prior:
+            assert prior is not None
+            bernoulli_p.append(
+                posterior_bernoulli(s, w, lambda o: o.has_suspended_alert, prior.bernoulli_p[s])
+            )
+            bernoulli_p_delays.append(
+                posterior_bernoulli(s, w, lambda o: o.has_delays, prior.bernoulli_p_delays[s])
+            )
+            bernoulli_p_service_change.append(
+                posterior_bernoulli(
+                    s, w, lambda o: o.has_service_change, prior.bernoulli_p_service_change[s]
+                )
+            )
+            bernoulli_p_planned.append(
+                posterior_bernoulli(s, w, lambda o: o.has_planned, prior.bernoulli_p_planned[s])
+            )
+        else:
+            bernoulli_p.append(posterior_bernoulli(s, w, lambda o: o.has_suspended_alert, 0.0))
+            bernoulli_p_delays.append(posterior_bernoulli(s, w, lambda o: o.has_delays, 0.0))
+            bernoulli_p_service_change.append(
+                posterior_bernoulli(s, w, lambda o: o.has_service_change, 0.0)
+            )
+            bernoulli_p_planned.append(posterior_bernoulli(s, w, lambda o: o.has_planned, 0.0))
 
-        x = [observations[t].severity_sum + 0.5 for t in idx_list]
-        mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x)) / w
-        var = sum(gamma[t][s] * (xt - mu) ** 2 for t, xt in zip(idx_list, x)) / w
-        if var <= 0:
-            var = 1e-6
-        gamma_alpha.append(max(mu * mu / var, 1e-3))
-        gamma_beta.append(max(mu / var, 1e-6))
+        # Gamma α/β over severity: method-of-moments, optionally shrunk
+        # toward prior by convex combination (weight w MLE vs κ prior).
+        if w > 0:
+            x = [observations[t].severity_sum + 0.5 for t in idx_list]
+            mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x)) / w
+            var = sum(gamma[t][s] * (xt - mu) ** 2 for t, xt in zip(idx_list, x)) / w
+            if var <= 0:
+                var = 1e-6
+            alpha_mle = max(mu * mu / var, 1e-3)
+            beta_mle = max(mu / var, 1e-6)
+        else:
+            # no data for this state; will be replaced by prior below.
+            alpha_mle = 1e-3
+            beta_mle = 1e-6
+        if use_prior:
+            assert prior is not None
+            denom = w + kappa
+            new_alpha = (w * alpha_mle + kappa * prior.gamma_alpha[s]) / denom
+            new_beta = (w * beta_mle + kappa * prior.gamma_beta[s]) / denom
+        else:
+            new_alpha = alpha_mle
+            new_beta = beta_mle
+        gamma_alpha.append(max(new_alpha, 1e-3))
+        gamma_beta.append(max(new_beta, 1e-6))
 
     return EmissionParams(
         poisson_lambda=(poisson_lambda[0], poisson_lambda[1], poisson_lambda[2]),
@@ -562,9 +624,18 @@ def _estimate_emissions(
 
 
 def _em_iteration(
-    observations: list[Observation], params: HMMParams
+    observations: list[Observation],
+    params: HMMParams,
+    *,
+    prior_params: HMMParams | None = None,
+    prior_strength: float = 0.0,
 ) -> tuple[HMMParams, float]:
-    """One E-step + M-step. Returns (new_params, log_likelihood_under_old_params)."""
+    """One E-step + M-step. Returns (new_params, log_likelihood_under_old_params).
+
+    With `prior_params` and `prior_strength > 0`, the M-step uses Dirichlet
+    pseudo-counts for the transition matrix + initial distribution, and the
+    same prior threads into `_estimate_emissions`. Pure MLE when off.
+    """
     emis, offsets = _per_tick_emissions(observations, params)
     alpha, scales = _forward_scaled(emis, params)
     beta = _backward_scaled(emis, scales, params)
@@ -586,23 +657,52 @@ def _em_iteration(
                 )
 
     # ----- M-step -----
-    new_pi = (gamma[0][0], gamma[0][1], gamma[0][2])
+    kappa = max(prior_strength, 0.0)
+    use_prior = prior_params is not None and kappa > 0.0
 
+    # Initial distribution. With prior: π = (κ·prior_π + γ[0]) / (κ + 1).
+    if use_prior:
+        assert prior_params is not None
+        pi_prior = prior_params.initial
+        denom_pi = kappa + 1.0
+        new_pi = (
+            (kappa * pi_prior[0] + gamma[0][0]) / denom_pi,
+            (kappa * pi_prior[1] + gamma[0][1]) / denom_pi,
+            (kappa * pi_prior[2] + gamma[0][2]) / denom_pi,
+        )
+    else:
+        new_pi = (gamma[0][0], gamma[0][1], gamma[0][2])
+
+    # Transition rows. With prior: a[s][sp] = (κ·a_prior[s][sp] + ξ_sum[s][sp]) / (κ + Σ_t γ[t][s]).
     new_a_rows: list[tuple[float, float, float]] = []
     for s in range(N_STATES):
         denom = sum(gamma[t][s] for t in range(t_max - 1))
-        if denom <= 0:
+        if use_prior:
+            assert prior_params is not None
+            prior_row = prior_params.transition[s]
+            total = kappa + denom
+            row = [
+                (kappa * prior_row[sp] + xi_sum[s][sp]) / total
+                for sp in range(N_STATES)
+            ]
+        elif denom <= 0:
             new_a_rows.append(params.transition[s])
             continue
-        row = [xi_sum[s][sp] / denom for sp in range(N_STATES)]
-        rsum = sum(row) or 1.0
-        row = [r / rsum for r in row]
+        else:
+            row = [xi_sum[s][sp] / denom for sp in range(N_STATES)]
+            rsum = sum(row) or 1.0
+            row = [r / rsum for r in row]
         new_a_rows.append((row[0], row[1], row[2]))
     new_a = tuple(new_a_rows)
 
     if params.emissions_by_bin is None:
         new_emissions = _estimate_emissions(
-            gamma, observations, range(t_max), params.emissions
+            gamma,
+            observations,
+            range(t_max),
+            params.emissions,
+            prior=prior_params.emissions if prior_params else None,
+            prior_strength=kappa,
         )
         new_emissions_by_bin = None
     else:
@@ -614,7 +714,12 @@ def _em_iteration(
         # Re-estimate emissions per bin against its existing prior
         new_emissions_by_bin = tuple(
             _estimate_emissions(
-                gamma, observations, buckets[b], params.emissions_by_bin[b]
+                gamma,
+                observations,
+                buckets[b],
+                params.emissions_by_bin[b],
+                prior=prior_params.emissions_by_bin[b] if (prior_params and prior_params.emissions_by_bin) else None,
+                prior_strength=kappa,
             )
             for b in range(N_TOD_BINS)
         )
@@ -689,6 +794,9 @@ def fit_em(
     initial_params: HMMParams,
     max_iterations: int = 50,
     tolerance: float = 1e-4,
+    *,
+    prior_params: HMMParams | None = None,
+    prior_strength: float = 0.0,
 ) -> tuple[HMMParams, list[float]]:
     """Train per-entity HMM parameters from a sequence of observations.
 
@@ -698,6 +806,12 @@ def fit_em(
 
     Returns (fitted_params, log_likelihoods) where log_likelihoods is the
     sequence across iterations — useful for verifying monotonicity.
+
+    When `prior_params` + `prior_strength > 0` are supplied, the M-step runs
+    MAP estimation with conjugate priors (Dirichlet/Gamma/Beta pseudo-counts).
+    Useful for empirical-Bayes per-entity training where a global fit acts as
+    a regularizer for thin-data entities. `prior_strength` is in units of
+    effective observations — `~100` is a sensible default for a daily corpus.
 
     The output is re-sorted so state 0 has the smallest poisson_lambda, giving
     stable "normal/disrupted/suspended" semantics across runs.
@@ -710,7 +824,12 @@ def fit_em(
     prev: float | None = None
 
     for _ in range(max_iterations):
-        params, log_lik = _em_iteration(observations, params)
+        params, log_lik = _em_iteration(
+            observations,
+            params,
+            prior_params=prior_params,
+            prior_strength=prior_strength,
+        )
         log_liks.append(log_lik)
         if prev is not None:
             denom = max(abs(prev), 1e-12)

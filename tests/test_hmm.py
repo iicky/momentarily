@@ -339,6 +339,91 @@ def test_em_empty_observations_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Prior-anchored EM (empirical-Bayes)
+# ---------------------------------------------------------------------------
+
+
+def test_em_prior_strength_zero_matches_pure_mle() -> None:
+    """prior_strength=0 must give identical result to no-prior call."""
+    true_params = _default_params()
+    obs = _generate_synthetic_sequence(true_params, length=200, seed=42)
+    no_prior, _ = fit_em(obs, true_params, max_iterations=10, tolerance=1e-9)
+    with_prior_strength_zero, _ = fit_em(
+        obs,
+        true_params,
+        max_iterations=10,
+        tolerance=1e-9,
+        prior_params=true_params,
+        prior_strength=0.0,
+    )
+    for s in range(3):
+        assert math.isclose(
+            no_prior.emissions.poisson_lambda[s],
+            with_prior_strength_zero.emissions.poisson_lambda[s],
+            rel_tol=1e-9,
+        )
+        for sp in range(3):
+            assert math.isclose(
+                no_prior.transition[s][sp],
+                with_prior_strength_zero.transition[s][sp],
+                rel_tol=1e-9,
+            )
+
+
+def test_em_strong_prior_pulls_emissions_toward_prior() -> None:
+    """Heavy prior strength on a short series should leave emissions close to
+    the prior — the prior's pseudo-counts dominate the data's actual counts."""
+    prior = _default_params()
+    # Generate a sequence from a *different* true model so MLE drifts away.
+    drift = HMMParams(
+        transition=prior.transition,
+        initial=prior.initial,
+        emissions=EmissionParams(
+            poisson_lambda=(0.05, 1.0, 3.0),  # all states quieter than prior
+            gamma_alpha=prior.emissions.gamma_alpha,
+            gamma_beta=prior.emissions.gamma_beta,
+            bernoulli_p=prior.emissions.bernoulli_p,
+        ),
+    )
+    obs = _generate_synthetic_sequence(drift, length=50, seed=1)
+
+    no_prior_fit, _ = fit_em(obs, prior, max_iterations=20, tolerance=1e-6)
+    heavy_prior_fit, _ = fit_em(
+        obs,
+        prior,
+        max_iterations=20,
+        tolerance=1e-6,
+        prior_params=prior,
+        prior_strength=10_000.0,
+    )
+
+    # Distance from prior in λ space — heavy prior should be much closer.
+    def lam_dist(p: HMMParams) -> float:
+        return sum(
+            abs(p.emissions.poisson_lambda[s] - prior.emissions.poisson_lambda[s])
+            for s in range(3)
+        )
+
+    assert lam_dist(heavy_prior_fit) < lam_dist(no_prior_fit) * 0.1, (
+        f"heavy prior didn't anchor: heavy={lam_dist(heavy_prior_fit)}, "
+        f"none={lam_dist(no_prior_fit)}"
+    )
+
+
+def test_em_prior_returns_prior_when_data_thin() -> None:
+    """One observation with prior → emissions stay at the prior (MIN_EFFECTIVE_OBS guard)."""
+    prior = _default_params()
+    obs = [Observation(alert_count=0, severity_sum=0, has_suspended_alert=False)]
+    fitted, _ = fit_em(
+        obs, prior, max_iterations=5, prior_params=prior, prior_strength=100.0
+    )
+    # _sort_states_by_lambda may reorder; just compare the sorted tuples.
+    assert sorted(fitted.emissions.poisson_lambda) == sorted(
+        prior.emissions.poisson_lambda
+    )
+
+
+# ---------------------------------------------------------------------------
 # Hysteresis + Unknown (forward_step)
 # ---------------------------------------------------------------------------
 

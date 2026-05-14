@@ -239,6 +239,7 @@ source = { editable = "." }
 dependencies = [
     { name = "boto3" },
     { name = "httpx" },
+    { name = "murk-secrets" },
     { name = "pydantic" },
 ]
 
@@ -255,6 +256,7 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "murk-secrets", specifier = ">=0.6.2" },
     { name = "pydantic", specifier = ">=2.6" },
 ]
 
@@ -266,6 +268,12 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.7" },
 ]
+
+[[package]]
+name = "murk-secrets"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/1b/562cd9ad968b8eff7cd28b1da4727c705e5fc1ea63889c639d3a846ddf70/murk_secrets-0.6.2.tar.gz", hash = "sha256:7fd91ce79457c7305eb767f8721fcb029adfaa66e155762395217df900f4fe1b", size = 5097949, upload-time = "2026-05-03T18:39:13.069Z" }
 
 [[package]]
 name = "mypy-boto3-s3"

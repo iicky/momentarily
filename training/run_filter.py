@@ -27,6 +27,7 @@ from momentarily.hmm import (
     project_forward,
 )
 from training.load import TICK_SECONDS, load_route_series
+from training.load_r2 import load_route_series_r2
 
 # Bootstrap HMM parameters — hand-picked initial values.
 # Tuned for the alerts feed: normal = quiet, disrupted = elevated, suspended = severe.
@@ -76,9 +77,16 @@ def _fmt_params(params: HMMParams) -> str:
 
 
 def run(
-    route_id: str, data_dir: Path, train: bool = False, tod: bool = False
+    route_id: str,
+    data_dir: Path,
+    train: bool = False,
+    tod: bool = False,
+    use_r2: bool = False,
 ) -> int:
-    series = load_route_series(data_dir, route_id)
+    if use_r2:
+        series = load_route_series_r2(route_id)
+    else:
+        series = load_route_series(data_dir, route_id)
     if not series:
         print(f"No data for route {route_id!r} in {data_dir}")
         return 1
@@ -210,8 +218,19 @@ def main() -> int:
         help="Condition emissions on time-of-day bin (5 bins). Requires --train "
         "for the per-bin emissions to be learned.",
     )
+    parser.add_argument(
+        "--r2",
+        action="store_true",
+        help="Load observations from the R2 archive instead of the local data dir.",
+    )
     args = parser.parse_args()
-    return run(args.route, args.data_dir, train=args.train, tod=args.tod)
+    return run(
+        args.route,
+        args.data_dir,
+        train=args.train,
+        tod=args.tod,
+        use_r2=args.r2,
+    )
 
 
 if __name__ == "__main__":

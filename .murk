@@ -1,0 +1,67 @@
+{
+  "version": "2.0",
+  "created": "2026-05-13T23:12:19Z",
+  "vault_name": ".murk",
+  "recipients": [
+    "age1630syy6c0mv25ehuc89jpsnhh9arsm8p8ymsynewvn5d4g74rp7q94mwnr"
+  ],
+  "schema": {
+    "R2_ACCESS_KEY_ID": {
+      "description": "R2 API token Access Key ID for the 'momentarily-training' token. Object Read & Write scoped to the momentarily bucket only. Rotate via Cloudflare dashboard if exposed.",
+      "example": "00000000000000000000000000000000",
+      "tags": [
+        "r2",
+        "cloudflare",
+        "credentials"
+      ],
+      "created": "2026-05-13T23:19:09Z",
+      "updated": "2026-05-13T23:19:09Z"
+    },
+    "R2_ACCOUNT_ID": {
+      "description": "Cloudflare account ID (32-char hex). Used as the host prefix for the R2 S3 endpoint: https://<account_id>.r2.cloudflarestorage.com. Same across all R2 buckets in this account.",
+      "example": "00000000000000000000000000000000",
+      "tags": [
+        "r2",
+        "cloudflare"
+      ],
+      "created": "2026-05-13T23:20:14Z",
+      "updated": "2026-05-13T23:20:14Z"
+    },
+    "R2_BUCKET": {
+      "description": "R2 bucket name for Momentarily's archive and snapshot publishing. Publicly readable via the feed.momentarily.nyc custom domain; the Worker writes via R2 binding (no credentials needed there). Python training uses these credentials to read the archive and write trained params.",
+      "example": "momentarily",
+      "tags": [
+        "r2",
+        "cloudflare"
+      ],
+      "created": "2026-05-13T23:18:55Z",
+      "updated": "2026-05-13T23:18:55Z"
+    },
+    "R2_SECRET_ACCESS_KEY": {
+      "description": "R2 API token Secret Access Key paired with R2_ACCESS_KEY_ID. Hex string, ~64 chars. Consumed by the boto3 S3 client config in training/r2_client.py. Never logged, never committed.",
+      "example": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tags": [
+        "r2",
+        "cloudflare",
+        "credentials"
+      ],
+      "created": "2026-05-13T23:19:28Z",
+      "updated": "2026-05-13T23:19:28Z"
+    }
+  },
+  "secrets": {
+    "R2_ACCESS_KEY_ID": {
+      "shared": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAxUlVOcjNJcWN3b28xL1kyemtnNElhVGluV3VyNkk3bmM2K1l1NnBtWjBFCjZTVUh6ZnBXNHlKbUR4d2UxUllmelF6bE53eFMzQTNXS09lTHJEMlk4cWMKLT4gV20tZ3JlYXNlIHZBPyhmXyBQVApUWmY5dVFSNytWc1UyN1VMWWxoOTRzc3hVbmJUT1BUWkNaYmNHbVpMa1dZeWFUTXFVZEYxNDNTOFdDNDlRbllzCityM1dLcjRLdTV1Vk1sYll4VzRzbXlTek1wRkg2TjJvZzVsSWN0OWd5SjlVVzNwS1p3cXpwWGgvREtCbysybEoKOWcKLS0tIEJIVFZVZmZqdUEvTUlqMTJVZ3lkaUNpRkFJWU5UcnhrR2kyZDgwSm82UW8Kq3/2fWzbbmWsnR07p/HXteU7Oo2dN4c3gWkIVjfzFAXT0ypLCy5xRNrais/tBMpmVKsKXgCND9CE3rbH/VwQXw=="
+    },
+    "R2_ACCOUNT_ID": {
+      "shared": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAySktsK09qbUpqTTFscjdSQWEzQStQd2FQbTFBRmdydmtNNjMrWUp3cUJzCityQzFLUExNa3ZRQmVmT3hRbGlUODYwVWg4NWdrTVQ0NUtGZDRibUJPYncKLT4gYypjUmQ2LWdyZWFzZSBfPC8gZApQdlhIczl6bm80bjgKLS0tIDZ2MUtyYmk5bnpFeTdzMk9GYTFJOWFveHZOMXhlVkxLRjBpYjB3NzNpakUKHw5MSzpy5MjpfKHtJf6WfBRTgRNQrWDB1VEoo/Mt7TvXgdaVQtXlm4aN1gRROGCBZvaUPKp2/qjgJzhLDWX25g=="
+    },
+    "R2_BUCKET": {
+      "shared": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBMWVYxK1F3TjZiYm9PanJScjNwMk1qdkdjenpvbmh2WnBoNkkzL0lUMDMwCllMdGJmOG41UUJoUjczYUdHaHZoUENvTG96UnBhTFZRbnhwWU0yOG0rM3MKLT4gWTBVaFVSLWdyZWFzZSAxIFRBClB4TVVuQ1dITWdxdkxxTkRJZFhyL1BsN0pqbjFjZXh6QjFlcmQ5VzlqYzEzcjBNZExXbDRwZXlhCi0tLSBmZjhqMnplVDZJOExyL2QvMEZXeXlSTk1LTFZ4eXpLUnRmZTNwK2hxS0Z3Cg2KZrXXMWZubMyeAis6S4WBVGDf6xDpR6arUqjBu0KeEePJYic367p/z2s="
+    },
+    "R2_SECRET_ACCESS_KEY": {
+      "shared": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBqQVdEdXRwSVpTdEh6c1FiY3U3UW9oVWUrbEdia2RoMUtjemljbFA3d3pvCjUvdWFyVjRLL3hkS0E3MFRZWjRFM2VPeG9lUm83L1FzREVLMitOYlkwejgKLT4ga1Ilezc6WS1ncmVhc2UgVGsgMFdHYzUgNy1LRGYhIH1gUzBGbgo1NFVDNXlscmh3SHYKLS0tIGQ5cG51Mk4za0lXOVJyUjRCUGt1MytJR0VTMGRzR01JYlN0THd0L1M2YmsKkYCusvNCH+r7S/DE1UkITbp+x07CxmEpS4bDltqiJ8JH8OLFZyYSR2nlvA7IXdwxz4+8LFMBQhhEs2vQrEn+uwMlt+TlgE3L6DD57u0o/2d7HnKLqXAtAAanRxrm441r"
+    }
+  },
+  "meta": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzcHRkNEpIcUUwSFRrVnAzb2RHSk1NbEZ3RmgzUUlmeWRCM3hMeXptWWdBClpiVVVHd1R1NXpNeG5RUVlndXVMOHM0VmFNeVpDRTE1RjZvL2RMVzRtajAKLT4gQyQ8VUc3OC1ncmVhc2UgOCwlUD1nIEs3ZmRWIVEKM3FEdlVQNTByVnpoeWFjSjNLWWU2YU9FdGFOOENGb3hWUQotLS0gZVBZSW9kMHpLc1U5NkhqaG45bm5UWVVSZmk2enI4YTQvWHlYNTA1aThPSQqlCEF5MOwSKiQpkqdiCQ4TexennPVG2EgVHB1YMwZtpTd35JBUJmcLtNd0WtqhIfKyZsA7yM3jqf77cCt/JbETzhVngpzQqjb1mYzC1h8zilbV2dAvmF9PtOHCdBwyiZuw0HdKFIk9ySTsp+qoAb9SD9p+eDHBZseeHHn3bvgwm9sHoBdK9GY/ffTYeFKMge6/A1FcddMkZ+fCRLjrCkyMLQ7ueJG2PL9Omy/PJzlrc9oKakUJagumOv7MbH3nSIP2WbAeSToVPugtEA6k5r1NKaWQGJgf6FBcLjNG2lOUq6T7QD1PJVY+s1lbTXMZZd/vFnvE8paempGc9BIpEGZ+nhIXj/AHJschGF4REhgyBXvkDankRLkxfMZHy0ojyMUxaqlUeDs="
+}

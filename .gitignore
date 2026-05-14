@@ -17,6 +17,12 @@ build/
 .env
 .env.local
 
+# murk runtime lock (encrypted vault .murk IS committed; lockfile is local-only)
+.murk.lock
+
+# wrangler local cache
+.wrangler/
+
 # Local tooling (not for upstream)
 AGENTS.md
 CLAUDE.md

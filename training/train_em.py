@@ -6,10 +6,13 @@ Each run:
   3. For each route with enough data, fit again with `prior_params=global`
      and Dirichlet/Gamma/Beta pseudo-counts (`prior_strength`).
   4. Routes with thin data inherit the global prior as-is.
-  5. Write state/params.json — the Worker picks it up on its next cron tick.
+  5. Write state/params.json (live pointer) + state/params/v<epoch>.json
+     (immutable per-run snapshot) — the Worker picks up params.json on its
+     next cron tick; the versioned copies are the rollback trail.
 
 Run with:
-    murk exec -- python -m training.train_em [--days 14] [--prior-strength 100]
+    murk exec -- python -m training.train_em [--days 14] [--start/--end DATE]
+        [--routes A,C,E] [--min-ticks N] [--prior-strength 100] [--dry-run]
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -33,11 +36,26 @@ if TYPE_CHECKING:
 
 
 PARAMS_KEY = "state/params.json"
+# Immutable per-run snapshots live under this prefix as v<trained_at>.json.
+VERSIONED_PARAMS_PREFIX = "state/params/"
 SCHEMA_VERSION = "1"
 
 # A route needs at least this many ticks of data to fit per-route — under that,
 # we fall back to the global prior.
 MIN_TICKS_PER_ROUTE = 288  # one day at the 5-min grid
+
+
+@dataclass(frozen=True)
+class CorpusStats:
+    """Audit metadata about the archive window a run actually trained on."""
+
+    start_tick: int
+    end_tick: int
+    n_observations: int  # real (alert-bearing) tick-observations, pre-quiet-fill
+
+    @property
+    def span_seconds(self) -> int:
+        return self.end_tick - self.start_tick
 
 # EM on a thin or mostly-quiet corpus drives transition self-loops toward 1.0,
 # which pins the forward filter so a route can never leave a regime. Cap the
@@ -86,21 +104,25 @@ def load_series_by_route(
     cfg: R2Config,
     start: date,
     end: date,
-) -> tuple[dict[str, list[Observation]], int]:
+) -> tuple[dict[str, list[Observation]], CorpusStats]:
     """Single R2 pass: fetch alerts, build per-route quiet-filled series.
 
-    Returns (by_route, data_span_seconds). `data_span_seconds` is the span of
-    *actual* observed ticks before quiet-filling — fill_quiet_ticks pads every
-    series to the requested window, so series length can't tell us how much
-    real archive we have. The publish gate needs the unpadded span.
+    Returns (by_route, corpus). `corpus` describes the *actual* observed ticks
+    before quiet-filling — fill_quiet_ticks pads every series to the requested
+    window, so series length can't tell us how much real archive we have. The
+    publish gate and the params.json audit block both need the unpadded view.
     """
     bodies = fetch_alert_versions(cfg, start_date=start, end_date=end)
     all_ticks = build_tick_observations(bodies)
     if not all_ticks:
-        return {}, 0
+        return {}, CorpusStats(start_tick=0, end_tick=0, n_observations=0)
 
     ticks = [t.tick for t in all_ticks]
-    data_span = max(ticks) - min(ticks)
+    corpus = CorpusStats(
+        start_tick=min(ticks),
+        end_tick=max(ticks),
+        n_observations=len(all_ticks),
+    )
 
     start_tick, end_tick_excl = _aligned_window(start, end)
     last_tick = end_tick_excl - TICK_SECONDS
@@ -112,7 +134,7 @@ def load_series_by_route(
             all_ticks, route, start_tick=start_tick, end_tick=last_tick
         )
         by_route[route] = [t.observation for t in filled]
-    return by_route, data_span
+    return by_route, corpus
 
 
 def train(
@@ -161,50 +183,102 @@ def _params_to_json(params: HMMParams) -> dict[str, Any]:
 
 
 def write_params(
-    client: "S3Client",
+    client: S3Client,
     bucket: str,
     per_route: dict[str, HMMParams],
     *,
+    corpus: CorpusStats,
+    n_routes_trained: int,
     trained_at: int | None = None,
-) -> None:
+) -> str:
+    """Write the live params pointer plus an immutable versioned snapshot.
+
+    The Worker reads state/params.json; the state/params/v<epoch>.json copies
+    give us a per-run rollback trail. Returns the versioned key.
+    """
     trained_at = trained_at or int(datetime.now(UTC).timestamp())
     doc = {
         "schema_version": SCHEMA_VERSION,
         "trained_at": trained_at,
+        "training_corpus": {
+            "start_tick": corpus.start_tick,
+            "end_tick": corpus.end_tick,
+            "n_routes_trained": n_routes_trained,
+            "n_observations": corpus.n_observations,
+        },
         "routes": {r: _params_to_json(p) for r, p in per_route.items()},
     }
-    client.put_object(
-        Bucket=bucket,
-        Key=PARAMS_KEY,
-        Body=json.dumps(doc).encode(),
-        ContentType="application/json",
-        CacheControl="public, max-age=300, s-maxage=900",
-    )
+    body = json.dumps(doc).encode()
+    versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
+    for key in (PARAMS_KEY, versioned_key):
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+            CacheControl="public, max-age=300, s-maxage=900",
+        )
+    return versioned_key
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-route EM trainer")
-    parser.add_argument("--days", type=int, default=14)
+    parser.add_argument(
+        "--days", type=int, default=14, help="trailing-window size when --start is unset"
+    )
+    parser.add_argument(
+        "--start", help="window start date YYYY-MM-DD (overrides --days)"
+    )
+    parser.add_argument("--end", help="window end date YYYY-MM-DD (default: today UTC)")
+    parser.add_argument(
+        "--routes", help="comma-separated route whitelist (default: all observed)"
+    )
+    parser.add_argument(
+        "--min-ticks",
+        type=int,
+        default=MIN_TICKS_PER_ROUTE,
+        help="routes with fewer observations inherit the global prior",
+    )
     parser.add_argument(
         "--prior-strength",
         type=float,
         default=100.0,
         help="pseudo-counts strength for per-route prior anchor (in tick units)",
     )
-    parser.add_argument("--no-publish", action="store_true")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print learned params instead of writing to R2",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
-    today = datetime.now(UTC).date()
-    start = today - timedelta(days=args.days - 1)
-    series, data_span = load_series_by_route(cfg, start, today)
+    end_date = date.fromisoformat(args.end) if args.end else datetime.now(UTC).date()
+    start_date = (
+        date.fromisoformat(args.start)
+        if args.start
+        else end_date - timedelta(days=args.days - 1)
+    )
+    series, corpus = load_series_by_route(cfg, start_date, end_date)
     if not series:
         print("no observations in archive — skipping training", file=sys.stderr)
         return 1
 
-    global_prior, per_route = train(series, prior_strength=args.prior_strength)
+    if args.routes:
+        whitelist = {r.strip() for r in args.routes.split(",") if r.strip()}
+        series = {r: s for r, s in series.items() if r in whitelist}
+        if not series:
+            print(
+                f"none of --routes {sorted(whitelist)} present in archive",
+                file=sys.stderr,
+            )
+            return 1
 
-    if args.no_publish:
+    global_prior, per_route = train(
+        series, prior_strength=args.prior_strength, min_ticks=args.min_ticks
+    )
+
+    if args.dry_run:
         print(
             json.dumps(
                 {
@@ -216,19 +290,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
         return 0
 
-    if data_span < MIN_DATA_DAYS * 86_400:
+    if corpus.span_seconds < MIN_DATA_DAYS * 86_400:
         print(
-            f"archive spans {data_span / 86_400:.1f}d (< {MIN_DATA_DAYS}d minimum) — "
-            "refusing to publish; thin data overfits transition self-loops",
+            f"archive spans {corpus.span_seconds / 86_400:.1f}d "
+            f"(< {MIN_DATA_DAYS}d minimum) — refusing to publish; thin data "
+            "overfits transition self-loops",
             file=sys.stderr,
         )
         return 1
 
+    n_routes_trained = sum(1 for p in per_route.values() if p is not global_prior)
     client = make_client(cfg)
-    write_params(client, cfg.bucket, per_route)
+    versioned_key = write_params(
+        client,
+        cfg.bucket,
+        per_route,
+        corpus=corpus,
+        n_routes_trained=n_routes_trained,
+    )
     print(
-        f"published {PARAMS_KEY}: {len(per_route)} routes fitted "
-        f"(prior_strength={args.prior_strength}, window={args.days}d)"
+        f"published {PARAMS_KEY} + {versioned_key}: "
+        f"{n_routes_trained}/{len(per_route)} routes fitted "
+        f"(prior_strength={args.prior_strength})"
     )
     return 0
 

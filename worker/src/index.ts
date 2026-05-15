@@ -236,6 +236,7 @@ export default {
         recovery_minutes: inf.recovery_minutes,
         recovery_minutes_low: inf.recovery_minutes_low,
         recovery_minutes_high: inf.recovery_minutes_high,
+        recovery_indeterminate: inf.recovery_indeterminate,
       });
     }
     try {

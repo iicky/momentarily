@@ -28,6 +28,7 @@ def _pred(
     recovery_minutes: int = 30,
     recovery_minutes_low: int = 15,
     recovery_minutes_high: int = 60,
+    recovery_indeterminate: bool = False,
 ) -> PredictionRecord:
     return PredictionRecord(
         ts=ts,
@@ -43,6 +44,7 @@ def _pred(
         recovery_minutes=recovery_minutes,
         recovery_minutes_low=recovery_minutes_low,
         recovery_minutes_high=recovery_minutes_high,
+        recovery_indeterminate=recovery_indeterminate,
     )
 
 
@@ -161,6 +163,77 @@ def test_recovery_skips_ongoing_regimes():
     preds = [_pred(ts=t0, regime_entered_at=t0)]
     r = recovery_metrics(preds, [])
     assert r.overall.n == 0
+
+
+def test_recovery_skips_indeterminate_predictions():
+    """Indeterminate rows are clamps, not predictions — including them would
+    bias MAE toward the recovery_minutes ceiling. See momentarily-x25."""
+    t0 = 1_700_000_000
+    preds = [
+        _pred(
+            ts=t0,
+            regime_entered_at=t0,
+            recovery_minutes=1440,  # clamped at ceiling
+            recovery_minutes_low=1440,
+            recovery_minutes_high=1440,
+            recovery_indeterminate=True,
+        ),
+        _pred(
+            ts=t0 + 100,
+            route="2",
+            regime_entered_at=t0 + 100,
+            recovery_minutes=30,
+            recovery_minutes_low=15,
+            recovery_minutes_high=60,
+        ),
+    ]
+    transitions = [
+        TransitionRecord(
+            ts=t0 + 2700,
+            route="1",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=t0,
+            exited_at=t0 + 2700,  # actual 45 min — would be a huge error if scored
+            dwell_sec=2700,
+        ),
+        TransitionRecord(
+            ts=t0 + 1900,
+            route="2",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=t0 + 100,
+            exited_at=t0 + 1900,
+            dwell_sec=1800,
+        ),
+    ]
+    r = recovery_metrics(preds, transitions)
+    # Only route 2's prediction is graded.
+    assert r.overall.n == 1
+    assert "1" not in r.by_route
+    assert "2" in r.by_route
+
+
+def test_prediction_record_from_json_defaults_indeterminate() -> None:
+    """Predictions written before momentarily-x25 didn't carry the field;
+    from_json must default it to False so old archives still parse."""
+    raw = {
+        "ts": 1_700_000_000,
+        "route": "1",
+        "condition": "normal",
+        "regime_entered_at": 1_700_000_000,
+        "p_normal": 0.95,
+        "p_disrupted": 0.04,
+        "p_suspended": 0.01,
+        "p_normal_in_30min": 0.9,
+        "p_normal_in_60min": 0.8,
+        "p_normal_in_120min": 0.7,
+        "recovery_minutes": 30,
+        "recovery_minutes_low": 15,
+        "recovery_minutes_high": 60,
+    }
+    p = PredictionRecord.from_json(raw)
+    assert p.recovery_indeterminate is False
 
 
 def test_recovery_iqr_coverage():

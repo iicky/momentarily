@@ -59,6 +59,10 @@ class PredictionRecord:
     recovery_minutes: int
     recovery_minutes_low: int
     recovery_minutes_high: int
+    # True when the dwell estimate saturated the clamp; recovery_minutes is not
+    # a real prediction for these rows. Defaults False so JSONL written before
+    # momentarily-x25 still parses.
+    recovery_indeterminate: bool = False
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -76,6 +80,7 @@ class PredictionRecord:
             recovery_minutes=int(raw["recovery_minutes"]),
             recovery_minutes_low=int(raw["recovery_minutes_low"]),
             recovery_minutes_high=int(raw["recovery_minutes_high"]),
+            recovery_indeterminate=bool(raw.get("recovery_indeterminate", False)),
         )
 
 
@@ -283,6 +288,10 @@ def recovery_metrics(
     by_route_cov: dict[str, list[int]] = {}
 
     for p in predictions:
+        # Indeterminate rows are clamped, not predicted — including them would
+        # bias MAE toward the clamp ceiling. See momentarily-x25.
+        if p.recovery_indeterminate:
+            continue
         exited_at = exits.get((p.route, p.regime_entered_at))
         if exited_at is None or exited_at <= p.ts:
             continue

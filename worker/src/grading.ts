@@ -33,6 +33,11 @@ export interface PredictionRecord {
   recovery_minutes: number;
   recovery_minutes_low: number;
   recovery_minutes_high: number;
+  // True when the dwell estimate saturated MAX_RECOVERY_MINUTES — the geometric
+  // self-loop projection is uninformative and the recovery_minutes value is a
+  // clamp, not a real prediction. The grader must skip these rows so they don't
+  // drag MAE around. See momentarily-x25.
+  recovery_indeterminate: boolean;
 }
 
 export interface TransitionRecord {

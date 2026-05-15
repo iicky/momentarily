@@ -2,15 +2,15 @@
  * Momentarily publisher — Cloudflare Worker entry point.
  *
  * Each cron tick:
- *   1. Fetch the MTA alerts feed; archive new (alert_id, updated_at) versions
- *   2. Derive per-route observations from currently-active alerts
- *   3. Read trained HMM params (from R2; bootstrap fallback) and rolling alpha
- *   4. Advance the forward filter per route, with hysteresis + Unknown
- *   5. Render snapshot.json and publish to R2 (public via feed.momentarily.nyc)
- *   6. Write alpha.json + last_seen.json back to R2
- *
- * Hourly: fetch the 3 E&E feeds and archive snapshots. Station status
- * derivation for the snapshot lands in a follow-up iteration.
+ *   1. Read rolling state (last_seen, alpha) + trained params from R2
+ *   2. Fetch the MTA alerts feed
+ *   3. Archive new (alert_id, updated_at) versions
+ *   4. Derive per-route observations + advance the forward filter
+ *   5. Persist alpha.json via etag CAS — a losing run yields the tick here
+ *   6. (Only if alpha persisted) Render + publish snapshot.json to R2
+ *   7. (Only if alpha persisted) Write predictions + transitions grading streams
+ *   8. Hourly: fetch the 3 E&E feeds and archive snapshots
+ *   9. Persist last_seen.json via etag CAS
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
@@ -186,80 +186,89 @@ export default {
       };
     }
 
-    // --- Step 5: render + publish snapshot ---
-    const snapshot = buildSnapshot({
-      generatedAt: observedAt,
-      alertsFreshness: alertsFeedFresh,
-      routeSnapshots,
-      rolls: newAlphaState.routes,
-      trainedParams,
-      tickSeconds: TICK_SECONDS,
-    });
+    // --- Step 5: persist new alpha state (CAS) ---
+    // Write before publishing so a concurrent tick that loses the etag race
+    // doesn't ship snapshot.json / predictions / transitions derived from
+    // state that never landed in R2. See momentarily-uc4.
+    let alphaWritten = false;
     try {
-      await publishSnapshot(env.MOMENTARILY, snapshot);
-      console.log(
-        `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
-      );
-    } catch (err) {
-      console.error('snapshot publish failed:', err);
-    }
-
-    // --- Step 6: persist state + grading streams ---
-    try {
-      const written = await writeAlphaState(
+      alphaWritten = await writeAlphaState(
         env.MOMENTARILY,
         newAlphaState,
         alphaRead.etag,
       );
-      if (!written) {
-        console.warn('alpha.json write conflict; a concurrent run won this tick');
+      if (!alphaWritten) {
+        console.warn(
+          'alpha.json write conflict; skipping snapshot/predictions/transitions this tick',
+        );
       }
     } catch (err) {
-      console.error('alpha write failed:', err);
+      console.error('alpha write failed; skipping outputs this tick:', err);
     }
 
-    const predictions: PredictionRecord[] = [];
-    for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
-      const inf = rs.inference;
-      if (!inf) continue;
-      predictions.push({
-        ts: observedAt,
-        route: routeId,
-        condition: inf.condition,
-        regime_entered_at: inf.regime_entered_at,
-        p_normal: inf.p_normal,
-        p_disrupted: inf.p_disrupted,
-        p_suspended: inf.p_suspended,
-        p_normal_in_30min: inf.p_normal_in_30min,
-        p_normal_in_60min: inf.p_normal_in_60min,
-        p_normal_in_120min: inf.p_normal_in_120min,
-        recovery_minutes: inf.recovery_minutes,
-        recovery_minutes_low: inf.recovery_minutes_low,
-        recovery_minutes_high: inf.recovery_minutes_high,
-        recovery_indeterminate: inf.recovery_indeterminate,
+    if (alphaWritten) {
+      // --- Step 6: render + publish snapshot ---
+      const snapshot = buildSnapshot({
+        generatedAt: observedAt,
+        alertsFreshness: alertsFeedFresh,
+        routeSnapshots,
+        rolls: newAlphaState.routes,
+        trainedParams,
+        tickSeconds: TICK_SECONDS,
       });
-    }
-    try {
-      await writePredictions(env.MOMENTARILY, observedAt, predictions);
-    } catch (err) {
-      console.error('predictions write failed:', err);
-    }
-
-    const transitions = detectTransitions(
-      carriedRoutes,
-      newAlphaState.routes,
-      observedAt,
-    );
-    if (transitions.length > 0) {
       try {
-        await writeTransitions(env.MOMENTARILY, observedAt, transitions);
-        console.log(`transitions: ${transitions.length} regime flips this tick`);
+        await publishSnapshot(env.MOMENTARILY, snapshot);
+        console.log(
+          `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
+        );
       } catch (err) {
-        console.error('transitions write failed:', err);
+        console.error('snapshot publish failed:', err);
+      }
+
+      // --- Step 7: grading streams ---
+      const predictions: PredictionRecord[] = [];
+      for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
+        const inf = rs.inference;
+        if (!inf) continue;
+        predictions.push({
+          ts: observedAt,
+          route: routeId,
+          condition: inf.condition,
+          regime_entered_at: inf.regime_entered_at,
+          p_normal: inf.p_normal,
+          p_disrupted: inf.p_disrupted,
+          p_suspended: inf.p_suspended,
+          p_normal_in_30min: inf.p_normal_in_30min,
+          p_normal_in_60min: inf.p_normal_in_60min,
+          p_normal_in_120min: inf.p_normal_in_120min,
+          recovery_minutes: inf.recovery_minutes,
+          recovery_minutes_low: inf.recovery_minutes_low,
+          recovery_minutes_high: inf.recovery_minutes_high,
+          recovery_indeterminate: inf.recovery_indeterminate,
+        });
+      }
+      try {
+        await writePredictions(env.MOMENTARILY, observedAt, predictions);
+      } catch (err) {
+        console.error('predictions write failed:', err);
+      }
+
+      const transitions = detectTransitions(
+        carriedRoutes,
+        newAlphaState.routes,
+        observedAt,
+      );
+      if (transitions.length > 0) {
+        try {
+          await writeTransitions(env.MOMENTARILY, observedAt, transitions);
+          console.log(`transitions: ${transitions.length} regime flips this tick`);
+        } catch (err) {
+          console.error('transitions write failed:', err);
+        }
       }
     }
 
-    // --- Step 7: E&E (hourly) ---
+    // --- Step 8: E&E (hourly) ---
     if (observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
       let eneOk = 0;
       for (const [name, url] of ENE_SOURCES) {

@@ -7,9 +7,43 @@
  * sensible output.
  */
 
+import { z } from 'zod';
+
 import type { EmissionParams, HMMParams } from './hmm';
+import { N_TOD_BINS } from './hmm';
 
 const PARAMS_KEY = 'state/params.json';
+
+const Vec3Schema = z.tuple([
+  z.number().finite(),
+  z.number().finite(),
+  z.number().finite(),
+]);
+
+const EmissionParamsSchema = z.object({
+  poisson_lambda: Vec3Schema,
+  gamma_alpha: Vec3Schema,
+  gamma_beta: Vec3Schema,
+  bernoulli_p: Vec3Schema,
+  bernoulli_p_delays: Vec3Schema,
+  bernoulli_p_service_change: Vec3Schema,
+  bernoulli_p_planned: Vec3Schema,
+});
+
+const HMMParamsSchema = z.object({
+  transition: z.tuple([Vec3Schema, Vec3Schema, Vec3Schema]),
+  initial: Vec3Schema,
+  emissions: EmissionParamsSchema,
+  emissions_by_bin: z.array(EmissionParamsSchema).length(N_TOD_BINS).optional(),
+});
+
+const TrainedParamsWrapperSchema = z.object({
+  schema_version: z.string(),
+  trained_at: z.number().finite(),
+  // Validate each route separately (below) so one bad route doesn't drop the
+  // whole upload — the others should still apply.
+  routes: z.record(z.string(), z.unknown()),
+});
 
 // The three "kind of disruption" flags (delays/service_change/planned) all
 // indicate `disrupted`, not `suspended` — only has_suspended_alert
@@ -37,12 +71,8 @@ export const BOOTSTRAP_PARAMS: HMMParams = {
 };
 
 /**
- * Per-route trained params from Python. When a route is missing, the Worker
- * uses the global bootstrap params.
- *
- * Schema is intentionally loose — Python is the producer, we accept what it
- * sends and validate the shape minimally. Adding a JSON Schema artifact and
- * Zod-validating is a follow-up.
+ * Per-route trained params from Python. When a route is missing — or its
+ * entry failed shape validation — the Worker uses the global bootstrap.
  */
 export interface TrainedParams {
   schema_version: string;
@@ -51,19 +81,71 @@ export interface TrainedParams {
 }
 
 /**
+ * Strip optional emissions_by_bin when absent so the result is assignable to
+ * HMMParams under exactOptionalPropertyTypes.
+ */
+function toHMMParams(p: z.infer<typeof HMMParamsSchema>): HMMParams {
+  if (p.emissions_by_bin !== undefined) {
+    return {
+      transition: p.transition,
+      initial: p.initial,
+      emissions: p.emissions,
+      emissions_by_bin: p.emissions_by_bin,
+    };
+  }
+  return {
+    transition: p.transition,
+    initial: p.initial,
+    emissions: p.emissions,
+  };
+}
+
+/**
+ * Validate the trained-params document. A failed wrapper (wrong top-level
+ * shape) returns null and the Worker falls back to bootstrap for every route.
+ * A failed *route* is dropped from the returned map and that single route
+ * falls back to bootstrap via paramsForRoute, so one bad upload row can't
+ * NaN-poison the rest of the fleet. See momentarily-30o.
+ */
+export function parseTrainedParams(data: unknown): TrainedParams | null {
+  const wrapper = TrainedParamsWrapperSchema.safeParse(data);
+  if (!wrapper.success) {
+    console.error('params.json wrapper invalid; using bootstrap:', wrapper.error.issues);
+    return null;
+  }
+  const routes: Record<string, HMMParams> = {};
+  let dropped = 0;
+  for (const [routeId, raw] of Object.entries(wrapper.data.routes)) {
+    const parsed = HMMParamsSchema.safeParse(raw);
+    if (parsed.success) {
+      routes[routeId] = toHMMParams(parsed.data);
+    } else {
+      dropped += 1;
+      console.warn(
+        `params.json route ${routeId} failed validation; falling back to bootstrap:`,
+        parsed.error.issues,
+      );
+    }
+  }
+  if (dropped > 0) {
+    console.warn(`params.json: ${dropped} route(s) dropped; bootstrap will fill in`);
+  }
+  return {
+    schema_version: wrapper.data.schema_version,
+    trained_at: wrapper.data.trained_at,
+    routes,
+  };
+}
+
+/**
  * Load trained params from R2. Returns null if not yet present (first deploy
- * before Python EM has written anything).
+ * before Python EM has written anything) or if the document is malformed.
  */
 export async function loadParams(bucket: R2Bucket): Promise<TrainedParams | null> {
   const obj = await bucket.get(PARAMS_KEY);
   if (!obj) return null;
   try {
-    const data = (await obj.json()) as TrainedParams;
-    if (!data || typeof data !== 'object' || !data.routes) {
-      console.error('params.json shape invalid; using bootstrap');
-      return null;
-    }
-    return data;
+    return parseTrainedParams(await obj.json());
   } catch (err) {
     console.error('params.json parse failed; using bootstrap:', err);
     return null;

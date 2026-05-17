@@ -22,7 +22,7 @@ import { FEEDS, fetchJson } from './fetch';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
-import { forwardStep, initialPublishedState } from './hmm';
+import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
 import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { readLastSeen, writeLastSeen } from './state';
@@ -176,8 +176,13 @@ export default {
       const prevRoll: RouteRoll | undefined = carriedRoutes[routeId];
       const params = paramsForRoute(trainedParams, routeId);
 
+      // Fresh-reset seed: the trained params.initial often collapses to a
+      // one-hot vector (training corpus starts in normal). Use the stationary
+      // distribution of the transition matrix instead — a single tick of
+      // evidence then settles smoothly rather than snapping to one-hot. See
+      // momentarily-d78.
       const baseFilter: FilterState = prevRoll?.filter ?? {
-        probabilities: params.initial,
+        probabilities: stationaryDistribution(params),
         regime_entered_at: observedAt,
         last_updated_at: observedAt,
       };

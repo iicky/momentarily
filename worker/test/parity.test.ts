@@ -14,6 +14,7 @@ import {
   expectedDwellTicks,
   forwardUpdate,
   projectForward,
+  stationaryDistribution,
   tod_bin,
 } from '../src/hmm';
 
@@ -136,6 +137,44 @@ describe('projectForward', () => {
 
   test('rejects negative ticksAhead', () => {
     expect(() => projectForward(FLAT, DEFAULT_PARAMS, -1)).toThrow();
+  });
+});
+
+describe('stationaryDistribution', () => {
+  test('is a left eigenvector of the transition matrix (π · T = π)', () => {
+    const pi = stationaryDistribution(DEFAULT_PARAMS);
+    const t = DEFAULT_PARAMS.transition;
+    const piT: [number, number, number] = [0, 1, 2].map((s) =>
+      [0, 1, 2].reduce((acc, sp) => acc + pi[sp]! * t[sp]![s]!, 0),
+    ) as unknown as [number, number, number];
+    for (let s = 0; s < 3; s += 1) {
+      expect(piT[s]!).toBeCloseTo(pi[s]!, 6);
+    }
+  });
+
+  test('sums to 1', () => {
+    const pi = stationaryDistribution(DEFAULT_PARAMS);
+    expect(pi[0] + pi[1] + pi[2]).toBeCloseTo(1.0, 6);
+  });
+
+  test('all entries positive for an irreducible chain', () => {
+    const pi = stationaryDistribution(DEFAULT_PARAMS);
+    for (const p of pi) {
+      expect(p).toBeGreaterThan(0);
+    }
+  });
+
+  test('softer than params.initial when initial is one-hot', () => {
+    const peakedInit: HMMParams = {
+      ...DEFAULT_PARAMS,
+      initial: [1, 0, 0],
+    };
+    const pi = stationaryDistribution(peakedInit);
+    // π[0] must be strictly less than 1 — stationary respects the off-diagonal
+    // transition mass that one-hot initial ignores.
+    expect(pi[0]).toBeLessThan(1);
+    expect(pi[1]).toBeGreaterThan(0);
+    expect(pi[2]).toBeGreaterThan(0);
   });
 });
 

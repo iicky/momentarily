@@ -136,6 +136,36 @@ export function forwardUpdate(
 // Projection + dwell
 // ---------------------------------------------------------------------------
 
+/**
+ * Approximate the stationary distribution π of the row-stochastic transition
+ * matrix via power iteration: π_{k+1} = π_k · T, starting from uniform. For
+ * the 3×3 matrices we use this converges in ~50 iterations to ~1e-12 error.
+ *
+ * Used as the "fresh reset" seed for routes after a params version change.
+ * params.initial often collapses to [1, 0, 0] in trained EM (training corpus
+ * starts in normal), so a single tick of evidence after reset throws the
+ * filter all the way to one-hot in some other state. The stationary
+ * distribution gives a smoother prior that reflects the route's long-run
+ * regime mix, so the first post-reset tick converges less violently. See
+ * momentarily-d78.
+ */
+export function stationaryDistribution(params: HMMParams): Vec3 {
+  const a = params.transition;
+  let pi: Vec3 = [1 / N_STATES, 1 / N_STATES, 1 / N_STATES];
+  for (let iter = 0; iter < 100; iter += 1) {
+    const next = [0, 1, 2].map((s) =>
+      [0, 1, 2].reduce((acc, sp) => acc + pi[sp]! * a[sp]![s]!, 0),
+    ) as unknown as Vec3;
+    const delta =
+      Math.abs(next[0]! - pi[0]!) +
+      Math.abs(next[1]! - pi[1]!) +
+      Math.abs(next[2]! - pi[2]!);
+    pi = next;
+    if (delta < 1e-12) break;
+  }
+  return pi;
+}
+
 export function projectForward(
   state: FilterState,
   params: HMMParams,

@@ -16,7 +16,7 @@ import { metaForRoute } from './derive';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
-import { paramsForRoute } from './params';
+import { dwellForRouteState, paramsForRoute } from './params';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -380,26 +380,38 @@ function buildInference(
   const condition =
     roll.published.label === 'unknown' ? STATES[argmaxIdx]! : roll.published.label;
 
-  // Dwell math, using the same percentile geometry as Python's expected_dwell_ticks.
-  // Only meaningful when the route is in a disruption — `recovery_minutes` is
-  // "time until back to normal." For a normal route there's nothing to recover
-  // from, so it's 0 and never indeterminate.
+  // Recovery_minutes is "time until back to normal." Two sources, in order
+  // of preference:
+  //   1. Empirical dwell quantiles for (route, current_condition) from the
+  //      regime_transitions stream — heavy-tailed reality, not a geometric
+  //      approximation. Only used when the trainer included this cell
+  //      (sample size above its floor).
+  //   2. Geometric dwell from the trained transition self-loop — works
+  //      everywhere but saturates at the clamp ceiling for any route with
+  //      sustained planned-work alerts. See momentarily-w97.
   let recovery_minutes = 0;
   let recovery_minutes_low = 0;
   let recovery_minutes_high = 0;
   let recovery_indeterminate = false;
   if (condition !== 'normal') {
-    const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
-    const dwellTicks = dwellQuantiles(selfLoop);
-    const dwellToMinutes = (t: number): number => Math.round((t * tickSeconds) / 60);
-    const rawMedian = dwellToMinutes(dwellTicks.median);
-    // A trained self-loop ≈ 1 produces dwell in the thousands of minutes, which
-    // is noise, not signal. Clamp and flag indeterminate.
     const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
-    recovery_indeterminate = rawMedian >= MAX_RECOVERY_MINUTES;
-    recovery_minutes = clamp(rawMedian);
-    recovery_minutes_low = clamp(dwellToMinutes(dwellTicks.q25));
-    recovery_minutes_high = clamp(dwellToMinutes(dwellTicks.q75));
+    const empirical = dwellForRouteState(trained, routeId, condition);
+    if (empirical !== null) {
+      const secToMin = (s: number): number => Math.round(s / 60);
+      recovery_minutes = clamp(secToMin(empirical.median_sec));
+      recovery_minutes_low = clamp(secToMin(empirical.q25_sec));
+      recovery_minutes_high = clamp(secToMin(empirical.q75_sec));
+      recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
+    } else {
+      const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
+      const dwellTicks = dwellQuantiles(selfLoop);
+      const dwellToMinutes = (t: number): number => Math.round((t * tickSeconds) / 60);
+      const rawMedian = dwellToMinutes(dwellTicks.median);
+      recovery_indeterminate = rawMedian >= MAX_RECOVERY_MINUTES;
+      recovery_minutes = clamp(rawMedian);
+      recovery_minutes_low = clamp(dwellToMinutes(dwellTicks.q25));
+      recovery_minutes_high = clamp(dwellToMinutes(dwellTicks.q75));
+    }
   }
 
   // The filter is still settling when: the route just appeared (regime younger

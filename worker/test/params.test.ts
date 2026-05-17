@@ -8,7 +8,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 
-import { parseTrainedParams, paramsForRoute, BOOTSTRAP_PARAMS } from '../src/params';
+import { parseTrainedParams, paramsForRoute, dwellForRouteState, BOOTSTRAP_PARAMS } from '../src/params';
 
 function wellFormedEmissions(): Record<string, unknown> {
   return {
@@ -103,6 +103,37 @@ describe('parseTrainedParams', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = parseTrainedParams(wrapper({ '1': route }));
     warn.mockRestore();
+    expect(Object.keys(result!.routes)).toEqual([]);
+  });
+
+  test('parses optional dwell_quantiles sidecar and exposes via dwellForRouteState', () => {
+    const route = wellFormedRoute();
+    route.dwell_quantiles = {
+      disrupted: { n: 12, q25_sec: 1200, median_sec: 2400, q75_sec: 4800 },
+      suspended: { n: 7, q25_sec: 600, median_sec: 1800, q75_sec: 3600 },
+    };
+    const result = parseTrainedParams(wrapper({ A: route, B: wellFormedRoute() }));
+    expect(dwellForRouteState(result, 'A', 'disrupted')).toEqual({
+      n: 12, q25_sec: 1200, median_sec: 2400, q75_sec: 4800,
+    });
+    expect(dwellForRouteState(result, 'A', 'suspended')).not.toBeNull();
+    // Cell absent: falls through to null
+    expect(dwellForRouteState(result, 'A', 'normal')).toBeNull();
+    // Route without sidecar: null
+    expect(dwellForRouteState(result, 'B', 'disrupted')).toBeNull();
+    // No trained params at all: null
+    expect(dwellForRouteState(null, 'A', 'disrupted')).toBeNull();
+  });
+
+  test('drops dwell entry with malformed quantile shape but keeps the route', () => {
+    const route = wellFormedRoute();
+    route.dwell_quantiles = {
+      disrupted: { n: 'not-a-number', q25_sec: 1200, median_sec: 2400, q75_sec: 4800 },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseTrainedParams(wrapper({ A: route }));
+    warn.mockRestore();
+    // Whole route is dropped (sidecar is part of the route schema)
     expect(Object.keys(result!.routes)).toEqual([]);
   });
 });

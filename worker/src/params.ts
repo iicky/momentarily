@@ -30,12 +30,36 @@ const EmissionParamsSchema = z.object({
   bernoulli_p_planned: Vec3Schema,
 });
 
+const DwellQuantilesSchema = z.object({
+  n: z.number().int().nonnegative(),
+  q25_sec: z.number().int().nonnegative(),
+  median_sec: z.number().int().nonnegative(),
+  q75_sec: z.number().int().nonnegative(),
+});
+
+// Per-route, per-prev-state empirical dwell quantiles from the trainer.
+// Keys are the same state names the worker uses: "normal" / "disrupted" /
+// "suspended". Cells the trainer didn't include (sample size below its
+// floor) simply aren't here and the worker falls back to its geometric
+// estimate. See momentarily-w97.
+const DwellByStateSchema = z.record(z.string(), DwellQuantilesSchema).optional();
+
 const HMMParamsSchema = z.object({
   transition: z.tuple([Vec3Schema, Vec3Schema, Vec3Schema]),
   initial: Vec3Schema,
   emissions: EmissionParamsSchema,
   emissions_by_bin: z.array(EmissionParamsSchema).length(N_TOD_BINS).optional(),
+  dwell_quantiles: DwellByStateSchema,
 });
+
+export interface DwellQuantiles {
+  n: number;
+  q25_sec: number;
+  median_sec: number;
+  q75_sec: number;
+}
+
+export type DwellByState = Record<string, DwellQuantiles>;
 
 const TrainedParamsWrapperSchema = z.object({
   schema_version: z.string(),
@@ -73,11 +97,17 @@ export const BOOTSTRAP_PARAMS: HMMParams = {
 /**
  * Per-route trained params from Python. When a route is missing — or its
  * entry failed shape validation — the Worker uses the global bootstrap.
+ *
+ * `dwell` carries the optional empirical regime-dwell quantiles sidecar
+ * (sample-based, computed from v1/regime_transitions). The Worker uses these
+ * to set recovery_minutes when present; absent cells fall back to the
+ * geometric dwell from the trained transition self-loop.
  */
 export interface TrainedParams {
   schema_version: string;
   trained_at: number;
   routes: Record<string, HMMParams>;
+  dwell: Record<string, DwellByState>;
 }
 
 /**
@@ -114,11 +144,15 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     return null;
   }
   const routes: Record<string, HMMParams> = {};
+  const dwell: Record<string, DwellByState> = {};
   let dropped = 0;
   for (const [routeId, raw] of Object.entries(wrapper.data.routes)) {
     const parsed = HMMParamsSchema.safeParse(raw);
     if (parsed.success) {
       routes[routeId] = toHMMParams(parsed.data);
+      if (parsed.data.dwell_quantiles) {
+        dwell[routeId] = parsed.data.dwell_quantiles;
+      }
     } else {
       dropped += 1;
       console.warn(
@@ -134,6 +168,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     schema_version: wrapper.data.schema_version,
     trained_at: wrapper.data.trained_at,
     routes,
+    dwell,
   };
 }
 
@@ -161,4 +196,17 @@ export function paramsForRoute(
   routeId: string,
 ): HMMParams {
   return trained?.routes?.[routeId] ?? BOOTSTRAP_PARAMS;
+}
+
+/**
+ * Empirical dwell quantiles for a (route, state) cell. Returns null when the
+ * trainer didn't include one — caller should fall back to its analytic
+ * (geometric self-loop) estimate.
+ */
+export function dwellForRouteState(
+  trained: TrainedParams | null,
+  routeId: string,
+  state: string,
+): DwellQuantiles | null {
+  return trained?.dwell?.[routeId]?.[state] ?? null;
 }

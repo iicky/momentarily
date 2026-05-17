@@ -26,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from momentarily.hmm import HMMParams, Observation, fit_em
+from training.dwell import DwellQuantiles, compute_dwell_quantiles
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import build_tick_observations, fetch_alert_versions
 from training.r2_client import R2Config, load_config, make_client
@@ -192,6 +193,7 @@ def write_params(
     *,
     corpus: CorpusStats,
     n_routes_trained: int,
+    dwell_quantiles: dict[str, dict[str, DwellQuantiles]] | None = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -200,6 +202,13 @@ def write_params(
     give us a per-run rollback trail. Returns the versioned key.
     """
     trained_at = trained_at or int(datetime.now(UTC).timestamp())
+    routes_doc = {r: _params_to_json(p) for r, p in per_route.items()}
+    if dwell_quantiles:
+        # Merge per-route empirical dwell into the same per-route subdoc — the
+        # Worker reads it as an optional sibling of `emissions`/`transition`.
+        for r, by_state in dwell_quantiles.items():
+            if r in routes_doc:
+                routes_doc[r]["dwell_quantiles"] = by_state
     doc = {
         "schema_version": SCHEMA_VERSION,
         "trained_at": trained_at,
@@ -209,7 +218,7 @@ def write_params(
             "n_routes_trained": n_routes_trained,
             "n_observations": corpus.n_observations,
         },
-        "routes": {r: _params_to_json(p) for r, p in per_route.items()},
+        "routes": routes_doc,
     }
     body = json.dumps(doc).encode()
     versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
@@ -281,12 +290,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         series, prior_strength=args.prior_strength, min_ticks=args.min_ticks
     )
 
+    # Empirical dwell quantiles from the regime_transitions stream over the
+    # same window. Cells below MIN_SAMPLES_FOR_EMPIRICAL fall back to the
+    # geometric dwell in the Worker — no-op if the stream is empty.
+    client = make_client(cfg)
+    from training.eval import load_transitions  # noqa: PLC0415
+
+    transitions = load_transitions(client, cfg.bucket, start_date, end_date)
+    dwell_q = compute_dwell_quantiles(transitions)
+    n_dwell_cells = sum(len(by_state) for by_state in dwell_q.values())
+
     if args.dry_run:
+        dry_routes = {r: _params_to_json(p) for r, p in per_route.items()}
+        for r, by_state in dwell_q.items():
+            if r in dry_routes:
+                dry_routes[r]["dwell_quantiles"] = by_state
         print(
             json.dumps(
                 {
                     "global_prior": _params_to_json(global_prior),
-                    "routes": {r: _params_to_json(p) for r, p in per_route.items()},
+                    "routes": dry_routes,
+                    "dwell_cells": n_dwell_cells,
                 },
                 indent=2,
             )
@@ -303,18 +327,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 1
 
     n_routes_trained = sum(1 for p in per_route.values() if p is not global_prior)
-    client = make_client(cfg)
     versioned_key = write_params(
         client,
         cfg.bucket,
         per_route,
         corpus=corpus,
         n_routes_trained=n_routes_trained,
+        dwell_quantiles=dwell_q,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
-        f"(prior_strength={args.prior_strength})"
+        f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells})"
     )
     return 0
 

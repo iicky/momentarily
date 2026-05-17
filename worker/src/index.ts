@@ -82,6 +82,10 @@ export default {
     _ctx: ExecutionContext,
   ): Promise<void> {
     const observedAt = Math.floor(Date.now() / 1000);
+    const t0 = Date.now();
+    const step = (label: string): void => {
+      console.log(`step ${label} t+${Date.now() - t0}ms`);
+    };
     console.log(`tick cron=${event.cron} t=${observedAt}`);
 
     // --- Step 1: read state ---
@@ -94,6 +98,7 @@ export default {
     ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
+    step('1-read-state');
 
     // --- Step 2: fetch alerts feed ---
     let alertsPayload: unknown = null;
@@ -107,6 +112,7 @@ export default {
     } catch (err) {
       console.error('alerts fetch failed; feed gap this tick:', err);
     }
+    step('2-fetch-alerts');
 
     // --- Step 3: archive new versions ---
     if (alertsPayload !== null) {
@@ -122,6 +128,7 @@ export default {
         console.error('archive failed:', err);
       }
     }
+    step('3-archive');
 
     // --- Step 4: derive per-route observations + advance filter ---
     // A params change (retrain or rollback) invalidates the accumulated
@@ -148,6 +155,7 @@ export default {
     if (alertsPayload !== null) {
       routeSnapshots = deriveRouteSnapshots(alertsPayload, observedAt);
     }
+    step('4a-derive');
 
     // Routes to run inference for: union of (observed this tick, previously
     // known via alpha, canonical subway list when we have a payload).
@@ -185,6 +193,7 @@ export default {
         published: result.published,
       };
     }
+    step(`4b-forward(${allRoutes.size}r)`);
 
     // --- Step 5: persist new alpha state (CAS) ---
     // Write before publishing so a concurrent tick that loses the etag race
@@ -205,6 +214,7 @@ export default {
     } catch (err) {
       console.error('alpha write failed; skipping outputs this tick:', err);
     }
+    step('5-alpha-write');
 
     if (alphaWritten) {
       // --- Step 6: render + publish snapshot ---
@@ -216,6 +226,7 @@ export default {
         trainedParams,
         tickSeconds: TICK_SECONDS,
       });
+      step('6a-build-snapshot');
       try {
         await publishSnapshot(env.MOMENTARILY, snapshot);
         console.log(
@@ -224,6 +235,7 @@ export default {
       } catch (err) {
         console.error('snapshot publish failed:', err);
       }
+      step('6b-publish-snapshot');
 
       // --- Step 7: grading streams ---
       const predictions: PredictionRecord[] = [];
@@ -266,6 +278,7 @@ export default {
           console.error('transitions write failed:', err);
         }
       }
+      step('7-grading-writes');
     }
 
     // --- Step 8: E&E (hourly) ---
@@ -296,6 +309,7 @@ export default {
     } catch (err) {
       console.error('last_seen write failed:', err);
     }
+    step('9-last-seen-write');
   },
 } satisfies ExportedHandler<Env>;
 

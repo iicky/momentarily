@@ -59,10 +59,13 @@ class CorpusStats:
 
 # EM on a thin or mostly-quiet corpus drives transition self-loops toward 1.0,
 # which pins the forward filter so a route can never leave a regime. Cap the
-# diagonal, and refuse to publish at all under two weeks of archive. See
-# momentarily-625.
+# diagonal, and refuse to publish at all under a week of archive. The original
+# bound was two weeks; once the EM variance/Bernoulli floors landed (momentarily-p8y)
+# the dominant risk of thin data — degenerate emissions — was no longer in
+# play, so we relaxed the gate. _cap_self_loops still bounds the transition
+# self-loops independently. See momentarily-625.
 MAX_SELF_LOOP = 0.97
-MIN_DATA_DAYS = 14
+MIN_DATA_DAYS = 5
 
 
 def _cap_self_loops(params: HMMParams, max_self: float = MAX_SELF_LOOP) -> HMMParams:

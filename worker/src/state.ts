@@ -23,15 +23,32 @@ import type { VersionedRead } from './r2';
 
 export const STATE_KEY = 'state/last_seen.json';
 
+// Cached station_status derivations, refreshed when E&E fetches succeed.
+// Stored here (vs recomputed each tick) because E&E only updates hourly while
+// snapshot.json publishes every 5 min — recomputing across 700 catalog entries
+// + 80 outages each tick would burn CPU for no new information.
+const StationStatusEntrySchema = z.object({
+  station_complex_id: z.string(),
+  alerts: z.array(z.string()).default([]),
+  ada_status: z.enum(['operational', 'ada_degraded', 'non_ada']),
+  elevators_total: z.number().int().nonnegative(),
+  elevators_out: z.number().int().nonnegative(),
+  escalators_total: z.number().int().nonnegative(),
+  escalators_out: z.number().int().nonnegative(),
+  earliest_elevator_return: z.number().nullable(),
+  oldest_outage_since: z.number().nullable(),
+});
+
 export const LastSeenSchema = z.object({
   alerts: z.record(z.string(), z.number()),
   alerts_at: z.number().default(0),
   ene_at: z.number(),
+  station_statuses: z.record(z.string(), StationStatusEntrySchema).default({}),
 });
 export type LastSeen = z.infer<typeof LastSeenSchema>;
 
 export function emptyLastSeen(): LastSeen {
-  return { alerts: {}, alerts_at: 0, ene_at: 0 };
+  return { alerts: {}, alerts_at: 0, ene_at: 0, station_statuses: {} };
 }
 
 export async function readLastSeen(

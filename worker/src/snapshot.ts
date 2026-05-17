@@ -17,6 +17,7 @@ import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward }
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { dwellForRouteState, paramsForRoute } from './params';
+import type { StationStatus } from './stations';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -157,6 +158,11 @@ export function buildSnapshot(args: {
   rolls: Record<string, RouteRoll>;
   trainedParams: TrainedParams | null;
   tickSeconds: number;
+  /** Cached station_status, refreshed on hourly E&E fetches. Empty when
+   * E&E hasn't been parsed yet (e.g. before the first hourly tick after
+   * deploy). */
+  stationStatuses?: Record<string, StationStatus>;
+  eneFreshness?: number | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -206,7 +212,7 @@ export function buildSnapshot(args: {
       bus_alerts: null,
       path_alerts: null,
       ferry_alerts: null,
-      ene: null,
+      ene: args.eneFreshness ?? null,
       stations_static: null,
     },
     alerts: [],
@@ -217,7 +223,7 @@ export function buildSnapshot(args: {
     bridges: [],
     tunnels: [],
     route_status,
-    station_status: {},
+    station_status: args.stationStatuses ?? {},
     system,
     compat,
   };

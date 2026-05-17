@@ -18,6 +18,7 @@ import { readAlphaState, writeAlphaState } from './alpha';
 import { archiveEneSnapshot, archiveNewAlerts } from './archive';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, deriveRouteSnapshots, quietObservation } from './derive';
+import { parseEquipmentFeed, parseOutageFeed } from './ene';
 import { FEEDS, fetchJson } from './fetch';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
@@ -25,6 +26,7 @@ import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
 import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
+import { deriveStationStatuses } from './stations';
 import { readLastSeen, writeLastSeen } from './state';
 
 export interface Env {
@@ -230,6 +232,8 @@ export default {
         rolls: newAlphaState.routes,
         trainedParams,
         tickSeconds: TICK_SECONDS,
+        stationStatuses: lastSeen.station_statuses,
+        eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,
       });
       step('6a-build-snapshot');
       try {
@@ -289,9 +293,11 @@ export default {
     // --- Step 8: E&E (hourly) ---
     if (observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
       let eneOk = 0;
+      const enePayloads: Record<string, unknown> = {};
       for (const [name, url] of ENE_SOURCES) {
         try {
           const payload = await fetchJson(url);
+          enePayloads[name] = payload;
           await archiveEneSnapshot(env.MOMENTARILY, name, payload, observedAt);
           eneOk += 1;
         } catch (err) {
@@ -299,7 +305,24 @@ export default {
         }
       }
       if (eneOk > 0) lastSeen.ene_at = observedAt;
-      console.log(`ene: ${eneOk}/${ENE_SOURCES.length} feeds archived`);
+
+      // Refresh derived station_statuses when both feeds we need landed.
+      // Skip silently if only one came back — keep the prior status snapshot
+      // rather than emit a half-populated set.
+      const catalogPayload = enePayloads.ene_equipments;
+      const outagesPayload = enePayloads.ene_current;
+      if (catalogPayload !== undefined && outagesPayload !== undefined) {
+        const catalog = parseEquipmentFeed(catalogPayload);
+        const outages = parseOutageFeed(outagesPayload);
+        const statuses = deriveStationStatuses(catalog, outages, observedAt);
+        lastSeen.station_statuses = Object.fromEntries(statuses);
+        console.log(
+          `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived, `
+          + `${statuses.size} station_status entries derived`,
+        );
+      } else {
+        console.log(`ene: ${eneOk}/${ENE_SOURCES.length} feeds archived`);
+      }
     }
 
     try {

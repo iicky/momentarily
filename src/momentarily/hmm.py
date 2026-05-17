@@ -467,6 +467,21 @@ def _backward_scaled(
     return beta
 
 
+# Cap on the Gamma α we'll fit by method-of-moments. α = μ²/var, so a state
+# with near-constant severity has μ² >> var and α blows up — pinning the
+# emission to a delta. GAMMA_ALPHA_MAX=100 implies the floored σ/μ is at
+# least 0.1 (variance ≥ μ²/100), enough spread to keep neighbouring
+# observations from getting zero likelihood.
+GAMMA_ALPHA_MAX = 100.0
+
+# Floor and ceiling on Bernoulli emissions. 1e-6 was too aggressive: an EM
+# fit that drove a flag's normal-state probability to ~1e-6 made the normal
+# state reject any observation where that flag was True, even briefly, so
+# the forward filter never recovered to "normal" once it had ever been
+# tripped. 1e-3 still says "rare" without being numerically degenerate.
+BERNOULLI_FLOOR = 1e-3
+
+
 def _estimate_emissions(
     gamma: list[list[float]],
     observations: list[Observation],
@@ -515,7 +530,7 @@ def _estimate_emissions(
             p = (kappa * prior_p + successes) / (kappa + w)
         else:
             p = successes / w
-        return min(max(p, 1e-6), 1 - 1e-6)
+        return min(max(p, BERNOULLI_FLOOR), 1.0 - BERNOULLI_FLOOR)
 
     # If the whole subset has < this many effective observations across all
     # states, the slice is too thin to fit reliably — keep the fallback (or
@@ -577,12 +592,16 @@ def _estimate_emissions(
 
         # Gamma α/β over severity: method-of-moments, optionally shrunk
         # toward prior by convex combination (weight w MLE vs κ prior).
+        # Floor variance proportional to mean^2 so α = μ²/var stays ≤ GAMMA_ALPHA_MAX.
+        # Without this, a state whose observed severities are nearly constant
+        # (typical of quiet ticks: severity_sum=0) collapses var → 1e-6 and α
+        # explodes to ~250k, turning the emission into a delta function that
+        # rejects any observation drifting from the mean. See momentarily-p8y.
         if w > 0:
             x = [observations[t].severity_sum + 0.5 for t in idx_list]
             mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x)) / w
             var = sum(gamma[t][s] * (xt - mu) ** 2 for t, xt in zip(idx_list, x)) / w
-            if var <= 0:
-                var = 1e-6
+            var = max(var, mu * mu / GAMMA_ALPHA_MAX, 1e-6)
             alpha_mle = max(mu * mu / var, 1e-3)
             beta_mle = max(mu / var, 1e-6)
         else:
@@ -738,22 +757,32 @@ def _em_iteration(
 
 
 def _sort_states_by_lambda(params: HMMParams) -> HMMParams:
-    """Reorder states so poisson_lambda is ascending: state 0 = quietest.
+    """Reorder states so they line up with the normal/disrupted/suspended labels.
 
     EM is invariant to state labels (label-switching), so re-sort after fitting
-    to keep "normal/disrupted/suspended" semantically consistent across runs.
-    With emissions_by_bin set, ordering is by the SUM of poisson_lambda across
-    bins — a state that's quietest overall stays state 0 even if its rank
-    flips in one bin.
+    to keep semantics consistent across runs. We rank by a composite key:
+      (bernoulli_p_suspended_flag, poisson_lambda)
+    so the state with highest P(has_suspended_alert | state) is always
+    "suspended". Without this, EM sometimes lands "suspended" on the highest-
+    Poisson cluster (planned-work alert spam) which doesn't actually carry the
+    has_suspended_alert signal — producing the flipped bernoulli_p we saw on
+    route Z. Poisson lambda is the secondary key so ties (e.g. quiet routes
+    where everything is near-zero) still break in a stable direction. See
+    momentarily-p8y.
     """
     if params.emissions_by_bin is None:
+        rank_p = params.emissions.bernoulli_p
         rank_lambda = params.emissions.poisson_lambda
     else:
+        rank_p = tuple(
+            sum(em.bernoulli_p[s] for em in params.emissions_by_bin)
+            for s in range(N_STATES)
+        )
         rank_lambda = tuple(
             sum(em.poisson_lambda[s] for em in params.emissions_by_bin)
             for s in range(N_STATES)
         )
-    order = sorted(range(N_STATES), key=lambda s: rank_lambda[s])
+    order = sorted(range(N_STATES), key=lambda s: (rank_p[s], rank_lambda[s]))
     if order == [0, 1, 2]:
         return params
 

@@ -338,6 +338,40 @@ def test_em_empty_observations_rejected() -> None:
         fit_em([], _default_params())
 
 
+def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
+    """Regression: a quiet corpus (severity_sum=0 in most ticks) used to
+    drive var → 0 and gamma_alpha → 250k, turning the normal state into a
+    delta function. The forward filter then refused any deviating
+    observation. The variance + Bernoulli floors must keep both bounded.
+    See momentarily-p8y.
+    """
+    quiet = Observation(
+        alert_count=0,
+        severity_sum=0,
+        has_suspended_alert=False,
+        has_delays=False,
+        has_service_change=False,
+        has_planned=False,
+    )
+    burst = Observation(
+        alert_count=5,
+        severity_sum=120,
+        has_suspended_alert=True,
+        has_delays=True,
+        has_service_change=False,
+        has_planned=False,
+    )
+    obs = [quiet] * 280 + [burst] * 8 + [quiet] * 280
+    fitted, _ = fit_em(obs, _default_params(), max_iterations=30)
+
+    em = fitted.emissions
+    assert max(em.gamma_alpha) <= 100.0 + 1e-6, f"gamma_alpha unbounded: {em.gamma_alpha}"
+    for p in (em.bernoulli_p, em.bernoulli_p_delays,
+              em.bernoulli_p_service_change, em.bernoulli_p_planned):
+        assert min(p) >= 1e-3 - 1e-9, f"Bernoulli below floor: {p}"
+        assert max(p) <= 1.0 - 1e-3 + 1e-9, f"Bernoulli above ceiling: {p}"
+
+
 # ---------------------------------------------------------------------------
 # Prior-anchored EM (empirical-Bayes)
 # ---------------------------------------------------------------------------

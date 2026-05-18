@@ -197,7 +197,7 @@ export function buildSnapshot(args: {
     };
   }
 
-  const system = buildSystemStatus(route_status, args.routeSnapshots);
+  const system = buildSystemStatus(route_status, args.routeSnapshots, args.stationStatuses ?? {});
   const compat = buildCompat(route_status, args.routeSnapshots);
 
   return {
@@ -232,6 +232,7 @@ export function buildSnapshot(args: {
 function buildSystemStatus(
   routeStatuses: Record<string, RouteStatusOut>,
   routeSnapshots: Map<string, RouteSnapshot>,
+  stationStatuses: Record<string, StationStatus>,
 ): SystemStatus {
   const routes_with_alerts: string[] = [];
   let alert_count = 0;
@@ -271,7 +272,7 @@ function buildSystemStatus(
     by_mode: {
       subway: { routes_with_alerts, alert_count, severity_max },
     },
-    accessibility: { elevators_out: 0, escalators_out: 0, ada_pathways_degraded: 0 },
+    accessibility: buildAccessibility(stationStatuses),
     overall_label:
       routes_with_alerts.length === 0
         ? 'All systems normal'
@@ -281,6 +282,20 @@ function buildSystemStatus(
     most_degraded_line,
     most_recovered_line,
   };
+}
+
+function buildAccessibility(
+  stationStatuses: Record<string, StationStatus>,
+): Accessibility {
+  let elevators_out = 0;
+  let escalators_out = 0;
+  let ada_pathways_degraded = 0;
+  for (const s of Object.values(stationStatuses)) {
+    elevators_out += s.elevators_out;
+    escalators_out += s.escalators_out;
+    if (s.ada_status === 'ada_degraded') ada_pathways_degraded += 1;
+  }
+  return { elevators_out, escalators_out, ada_pathways_degraded };
 }
 
 function buildCompat(

@@ -39,6 +39,47 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     );
   });
 
+  test('system.accessibility sums elevators/escalators across station_status', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      stationStatuses: {
+        '601': {
+          station_complex_id: '601',
+          alerts: [],
+          ada_status: 'ada_degraded',
+          elevators_total: 3,
+          elevators_out: 2,
+          escalators_total: 1,
+          escalators_out: 1,
+          earliest_elevator_return: null,
+          oldest_outage_since: null,
+        },
+        '602': {
+          station_complex_id: '602',
+          alerts: [],
+          ada_status: 'operational',
+          elevators_total: 2,
+          elevators_out: 1,
+          escalators_total: 0,
+          escalators_out: 0,
+          earliest_elevator_return: null,
+          oldest_outage_since: null,
+        },
+      },
+    });
+    check(snap);
+    expect(snap.system.accessibility).toEqual({
+      elevators_out: 3,
+      escalators_out: 1,
+      ada_pathways_degraded: 1,
+    });
+  });
+
   test('snapshot with an inferred route validates', () => {
     const roll: RouteRoll = {
       filter: {

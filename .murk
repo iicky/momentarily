@@ -7,7 +7,7 @@
   ],
   "schema": {
     "R2_ACCESS_KEY_ID": {
-      "description": "R2 API token Access Key ID for the 'momentarily-training' token. Object Read & Write scoped to the momentarily bucket only. Rotate via Cloudflare dashboard if exposed.",
+      "description": "Access Key ID for the 'momentarily-training' R2 token",
       "example": "00000000000000000000000000000000",
       "tags": [
         "r2",
@@ -18,7 +18,7 @@
       "updated": "2026-05-13T23:19:09Z"
     },
     "R2_ACCOUNT_ID": {
-      "description": "Cloudflare account ID (32-char hex). Used as the host prefix for the R2 S3 endpoint: https://<account_id>.r2.cloudflarestorage.com. Same across all R2 buckets in this account.",
+      "description": "Cloudflare account ID; R2 S3 endpoint host prefix",
       "example": "00000000000000000000000000000000",
       "tags": [
         "r2",
@@ -28,7 +28,7 @@
       "updated": "2026-05-13T23:20:14Z"
     },
     "R2_BUCKET": {
-      "description": "R2 bucket name for Momentarily's archive and snapshot publishing. Publicly readable via the feed.momentarily.nyc custom domain; the Worker writes via R2 binding (no credentials needed there). Python training uses these credentials to read the archive and write trained params.",
+      "description": "R2 bucket for archive + snapshot publishing",
       "example": "momentarily",
       "tags": [
         "r2",
@@ -38,7 +38,7 @@
       "updated": "2026-05-13T23:18:55Z"
     },
     "R2_SECRET_ACCESS_KEY": {
-      "description": "R2 API token Secret Access Key paired with R2_ACCESS_KEY_ID. Hex string, ~64 chars. Consumed by the boto3 S3 client config in training/r2_client.py. Never logged, never committed.",
+      "description": "Secret Access Key paired with R2_ACCESS_KEY_ID",
       "example": "0000000000000000000000000000000000000000000000000000000000000000",
       "tags": [
         "r2",
@@ -63,5 +63,5 @@
       "shared": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBqQVdEdXRwSVpTdEh6c1FiY3U3UW9oVWUrbEdia2RoMUtjemljbFA3d3pvCjUvdWFyVjRLL3hkS0E3MFRZWjRFM2VPeG9lUm83L1FzREVLMitOYlkwejgKLT4ga1Ilezc6WS1ncmVhc2UgVGsgMFdHYzUgNy1LRGYhIH1gUzBGbgo1NFVDNXlscmh3SHYKLS0tIGQ5cG51Mk4za0lXOVJyUjRCUGt1MytJR0VTMGRzR01JYlN0THd0L1M2YmsKkYCusvNCH+r7S/DE1UkITbp+x07CxmEpS4bDltqiJ8JH8OLFZyYSR2nlvA7IXdwxz4+8LFMBQhhEs2vQrEn+uwMlt+TlgE3L6DD57u0o/2d7HnKLqXAtAAanRxrm441r"
     }
   },
-  "meta": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzcHRkNEpIcUUwSFRrVnAzb2RHSk1NbEZ3RmgzUUlmeWRCM3hMeXptWWdBClpiVVVHd1R1NXpNeG5RUVlndXVMOHM0VmFNeVpDRTE1RjZvL2RMVzRtajAKLT4gQyQ8VUc3OC1ncmVhc2UgOCwlUD1nIEs3ZmRWIVEKM3FEdlVQNTByVnpoeWFjSjNLWWU2YU9FdGFOOENGb3hWUQotLS0gZVBZSW9kMHpLc1U5NkhqaG45bm5UWVVSZmk2enI4YTQvWHlYNTA1aThPSQqlCEF5MOwSKiQpkqdiCQ4TexennPVG2EgVHB1YMwZtpTd35JBUJmcLtNd0WtqhIfKyZsA7yM3jqf77cCt/JbETzhVngpzQqjb1mYzC1h8zilbV2dAvmF9PtOHCdBwyiZuw0HdKFIk9ySTsp+qoAb9SD9p+eDHBZseeHHn3bvgwm9sHoBdK9GY/ffTYeFKMge6/A1FcddMkZ+fCRLjrCkyMLQ7ueJG2PL9Omy/PJzlrc9oKakUJagumOv7MbH3nSIP2WbAeSToVPugtEA6k5r1NKaWQGJgf6FBcLjNG2lOUq6T7QD1PJVY+s1lbTXMZZd/vFnvE8paempGc9BIpEGZ+nhIXj/AHJschGF4REhgyBXvkDankRLkxfMZHy0ojyMUxaqlUeDs="
+  "meta": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBTOWJmMEFyRXFZNnJ5dTAvTHdZNXUzU0ZtTHdGQXpKYWp3cy9mM3o4SHpNCjdpTXFlV1U4TVBkcWNZcnJxZk1uWCtHanVEeUR6S1lGbXVacktZUittV0UKLT4gVystZ3JlYXNlIGw9UD8gaD1ZIGx8Q0wiIEhvCmxOOXBnb0xBdmFhM3NwY0xnamNBaEVTcEdRQWZ6OWNweC9Sc3B0b25DeTE5VjdDWWV4QVFVYXM5QnFTYXRHVWsKNTE2d2RvOWFBZDdkQnFsTDNMazdBMDJ0QmVjazZYUzcvanhBbDQrN0ErbGpEVmlTVHR1RDRZSXlYbHAwMVZiRwp6NGcKLS0tIERRK21hMXd1MTY0Z1FNemhCblhpZHdVblVKdGJHeEJGQU1OcUEyVytFREkKzIKPvTio4qh70IICSZDzkzW4ZMrdBZLwAMm1mzooX6g8OioxLQ2lHEpVwbXafPf1ZX5XOvjRt+8QWWrfUpc5jkcTclwg6CVSEM1uI8oHtbLu5T0MLk6wXkdABhFgiWsWBpb+vK6DI2tDy58LRUKJHQSrwMiZ48wDm6fnGQMS8j2AuXU9lDATTFpcwr7TKdxLdta+EWtH+7DGzkCIbV4fA0uCiNj3AaDJH4/ajgD+mDbdRDZcVt98K11e3pA6GvXQ5uRp9rU0VlcDJ8Tg5/rq2QKqgl6g4N1q/mWalOgsIH+Od/D/UAy7pU0CWArd3u88TLbnKLBDVzjqTzUmyUVIFas9qmcaSOyr1JotwJpkvkGKn1x3NowNueNWf0yKsIyJdvh6CiFc"
 }

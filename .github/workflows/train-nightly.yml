@@ -11,6 +11,11 @@ on:
   schedule:
     - cron: '0 5 * * *'  # 05:00 UTC daily (~midnight EST). GHA cron is best-effort.
   workflow_dispatch:      # manual trigger for testing / one-off retrains
+    inputs:
+      dry_run:
+        description: "Print learned params instead of writing to R2"
+        type: boolean
+        default: false
 
 concurrency:
   group: train-em
@@ -28,6 +33,6 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - name: Run EM trainer
-        run: uv run python -m training.train_em --days 14
+        run: uv run python -m training.train_em --days 14 ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           MURK_KEY: ${{ secrets.MURK_KEY }}

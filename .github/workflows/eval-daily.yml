@@ -1,0 +1,36 @@
+name: Eval (daily)
+
+# Self-grade the live publisher: read trailing 7 days of v1/predictions/ +
+# v1/regime_transitions/ from R2, compute reliability + recovery accuracy,
+# publish v1/eval.json. Public, max-age=300. Independent of the nightly
+# trainer — they run as separate jobs with their own concurrency groups.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 06:00 UTC. GHA cron is best-effort.
+  workflow_dispatch:
+    inputs:
+      no_publish:
+        description: "Print eval doc instead of writing v1/eval.json"
+        type: boolean
+        default: false
+
+concurrency:
+  group: eval-daily
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Run eval
+        run: uv run python -m training.eval --days 7 ${{ inputs.no_publish && '--no-publish' || '' }}
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}

@@ -105,4 +105,110 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       }),
     );
   });
+
+  test('effectiveCondition: ambiguous filter (max p < 0.9) keeps hysteresis label', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {
+        '1': {
+          filter: {
+            probabilities: [0.35, 0.6, 0.05],  // disrupted leading but < 0.9
+            regime_entered_at: 1_699_999_700,
+            last_updated_at: 1_700_000_000,
+          },
+          published: {
+            label: 'normal',
+            pending_state: 'disrupted',
+            pending_streak: 1,
+            last_updated_at: 1_700_000_000,
+          },
+        },
+      },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    expect(snap.route_status['1']!.condition).toBe('normal');
+    expect(snap.route_status['1']!.inference!.condition).toBe('normal');
+  });
+
+  test('effectiveCondition: confident filter (max p >= 0.9) overrides stale label', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {
+        '1': {
+          filter: {
+            probabilities: [0.05, 0.94, 0.01],  // disrupted at 0.94 >= FAST_ATTACK_PROB
+            regime_entered_at: 1_700_000_000,
+            last_updated_at: 1_700_000_000,
+          },
+          published: {
+            label: 'normal',           // hysteresis-lagged
+            pending_state: 'disrupted',
+            pending_streak: 1,
+            last_updated_at: 1_700_000_000,
+          },
+        },
+      },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    expect(snap.route_status['1']!.condition).toBe('disrupted');
+    expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
+  });
+
+  test('effectiveCondition: confident filter agreeing with label is a no-op', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {
+        '1': {
+          filter: {
+            probabilities: [0.05, 0.94, 0.01],
+            regime_entered_at: 1_699_999_000,
+            last_updated_at: 1_700_000_000,
+          },
+          published: {
+            label: 'disrupted',
+            pending_state: 'disrupted',
+            pending_streak: 5,
+            last_updated_at: 1_700_000_000,
+          },
+        },
+      },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    expect(snap.route_status['1']!.condition).toBe('disrupted');
+  });
+
+  test('effectiveCondition: unknown label falls back to filter argmax', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {
+        '1': {
+          filter: {
+            probabilities: [0.5, 0.3, 0.2],  // normal leads, NOT above FAST_ATTACK
+            regime_entered_at: 1_699_999_000,
+            last_updated_at: 1_700_000_000,
+          },
+          published: {
+            label: 'unknown',           // post-feed-gap
+            pending_state: 'normal',
+            pending_streak: 1,
+            last_updated_at: 1_700_000_000,
+          },
+        },
+      },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    expect(snap.route_status['1']!.condition).toBe('normal');
+  });
 });

@@ -14,6 +14,7 @@ import type { RouteRoll } from './alpha';
 import type { AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
 import { metaForRoute } from './derive';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
+import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { dwellForRouteState, paramsForRoute } from './params';
@@ -23,6 +24,14 @@ import type { StationStatus } from './stations';
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
 // of open-ended planned work). Clamp + flag rather than publish "34 days".
 const MAX_RECOVERY_MINUTES = 1440;
+
+// Fast-attack threshold for surfacing `condition`. When the filter is
+// highly confident in a state that disagrees with the hysteresis-gated
+// published label, we surface the filter's view instead of the lagged
+// label. Hysteresis still protects the underlying publish state machine
+// from flapping on ambiguous evidence; this only governs what consumers
+// see. See momentarily-8ga.
+const FAST_ATTACK_PROB = 0.9;
 
 const SNAPSHOT_KEY = 'v1/snapshot.json';
 
@@ -185,7 +194,7 @@ export function buildSnapshot(args: {
     route_status[routeId] = {
       route_id: routeId,
       alerts: snap?.active_alert_ids ?? [],
-      condition: roll?.published.label ?? 'unknown',
+      condition: roll ? effectiveCondition(roll) : 'unknown',
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,
@@ -395,11 +404,7 @@ function buildInference(
 
   const argmaxIdx = argmaxOf(probs);
 
-  // Use the published label (hysteresis-stable) for `condition`. If still
-  // "unknown" from a feed gap, fall back to argmax — Inference itself isn't
-  // gated on hysteresis, that's the publish layer's job.
-  const condition =
-    roll.published.label === 'unknown' ? STATES[argmaxIdx]! : roll.published.label;
+  const condition = effectiveCondition(roll);
 
   // Recovery_minutes is "time until back to normal." Two sources, in order
   // of preference:
@@ -466,6 +471,27 @@ function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {
   if (v[0] >= v[1] && v[0] >= v[2]) return 0;
   if (v[1] >= v[2]) return 1;
   return 2;
+}
+
+/**
+ * Decide which label to surface to consumers as `condition`.
+ *
+ *   - "unknown" published label (post-feed-gap) → use filter argmax
+ *   - filter very confident (max p ≥ FAST_ATTACK_PROB) and disagrees with
+ *     published.label → use filter argmax (skip the hysteresis lag)
+ *   - otherwise → use the hysteresis-gated published.label
+ *
+ * The underlying publish state machine still respects HYSTERESIS_TICKS;
+ * this only governs what we render. See momentarily-8ga.
+ */
+function effectiveCondition(roll: RouteRoll): PublishedLabel {
+  const argmaxState = STATES[argmaxOf(roll.filter.probabilities)]!;
+  if (roll.published.label === PUBLISHED_UNKNOWN) return argmaxState;
+  const peakProb = roll.filter.probabilities[argmaxOf(roll.filter.probabilities)];
+  if (peakProb >= FAST_ATTACK_PROB && argmaxState !== roll.published.label) {
+    return argmaxState;
+  }
+  return roll.published.label;
 }
 
 function dwellQuantiles(selfLoop: number): {

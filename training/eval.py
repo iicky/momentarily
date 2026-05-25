@@ -63,6 +63,9 @@ class PredictionRecord:
     # a real prediction for these rows. Defaults False so JSONL written before
     # momentarily-x25 still parses.
     recovery_indeterminate: bool = False
+    # primary_alert_type at this tick. Defaults None for JSONL written before
+    # momentarily-22k. Lets the grader segment calibration by cause.
+    primary_alert_type: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -81,6 +84,7 @@ class PredictionRecord:
             recovery_minutes_low=int(raw["recovery_minutes_low"]),
             recovery_minutes_high=int(raw["recovery_minutes_high"]),
             recovery_indeterminate=bool(raw.get("recovery_indeterminate", False)),
+            primary_alert_type=raw.get("primary_alert_type"),
         )
 
 
@@ -93,6 +97,10 @@ class TransitionRecord:
     regime_entered_at: int
     exited_at: int
     dwell_sec: int
+    # primary_alert_type when prev_state began. None for records written before
+    # momentarily-22k or when no alert was active at regime start. Phase 2
+    # (momentarily-alu) segments dwell quantiles on this.
+    alert_type_at_entry: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> TransitionRecord:
@@ -104,6 +112,7 @@ class TransitionRecord:
             regime_entered_at=int(raw["regime_entered_at"]),
             exited_at=int(raw["exited_at"]),
             dwell_sec=int(raw["dwell_sec"]),
+            alert_type_at_entry=raw.get("alert_type_at_entry"),
         )
 
 

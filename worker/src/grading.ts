@@ -38,6 +38,10 @@ export interface PredictionRecord {
   // clamp, not a real prediction. The grader must skip these rows so they don't
   // drag MAE around. See momentarily-x25.
   recovery_indeterminate: boolean;
+  // primary_alert_type at this tick (the cause label currently associated with
+  // the route). null when no alert is active. Lets the grader segment
+  // calibration by cause. See momentarily-22k.
+  primary_alert_type: string | null;
 }
 
 export interface TransitionRecord {
@@ -48,6 +52,10 @@ export interface TransitionRecord {
   regime_entered_at: number;
   exited_at: number;
   dwell_sec: number;
+  // primary_alert_type when the prev_state regime *began*. Together with
+  // (route, prev_state) this is the cell the trainer keys empirical dwell
+  // quantiles on once enough data accumulates. See momentarily-alu.
+  alert_type_at_entry: string | null;
 }
 
 function utcDate(epoch: number): string {
@@ -103,6 +111,7 @@ export function detectTransitions(
       regime_entered_at: prevRoll.filter.regime_entered_at,
       exited_at: newRoll.filter.regime_entered_at,
       dwell_sec: newRoll.filter.regime_entered_at - prevRoll.filter.regime_entered_at,
+      alert_type_at_entry: prevRoll.alert_type_at_entry ?? null,
     });
   }
   return out;

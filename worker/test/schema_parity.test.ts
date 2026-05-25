@@ -93,6 +93,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         pending_streak: 3,
         last_updated_at: 1_700_000_000,
       },
+      alert_type_at_entry: null,
     };
     check(
       buildSnapshot({
@@ -124,6 +125,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
             pending_streak: 1,
             last_updated_at: 1_700_000_000,
           },
+          alert_type_at_entry: null,
         },
       },
       trainedParams: null,
@@ -151,6 +153,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
             pending_streak: 1,
             last_updated_at: 1_700_000_000,
           },
+          alert_type_at_entry: null,
         },
       },
       trainedParams: null,
@@ -178,6 +181,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
             pending_streak: 5,
             last_updated_at: 1_700_000_000,
           },
+          alert_type_at_entry: null,
         },
       },
       trainedParams: null,
@@ -204,6 +208,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
             pending_streak: 1,
             last_updated_at: 1_700_000_000,
           },
+          alert_type_at_entry: null,
         },
       },
       trainedParams: null,

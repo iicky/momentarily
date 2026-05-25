@@ -15,6 +15,10 @@ const ALPHA_KEY = 'state/alpha.json';
 export interface RouteRoll {
   filter: FilterState;
   published: PublishedState;
+  // primary_alert_type observed at the moment filter.regime_entered_at was last
+  // advanced. null when no alert was active then. Threaded into TransitionRecord
+  // so the trainer can segment dwell distributions by cause. See momentarily-22k.
+  alert_type_at_entry: string | null;
 }
 
 export interface AlphaState {

@@ -195,9 +195,19 @@ export default {
       const obs: Observation | null = routeSnap ? routeSnap.observation : quietObs;
       const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
+      // Carry alert_type_at_entry forward while the regime persists; refresh it
+      // when the regime just advanced (or on fresh reset). See momentarily-22k.
+      const regimeAdvanced =
+        result.state.regime_entered_at > baseFilter.regime_entered_at;
+      const alertTypeAtEntry =
+        !prevRoll || regimeAdvanced
+          ? (routeSnap?.primary_alert_type ?? null)
+          : (prevRoll.alert_type_at_entry ?? null);
+
       newAlphaState.routes[routeId] = {
         filter: result.state,
         published: result.published,
+        alert_type_at_entry: alertTypeAtEntry,
       };
     }
     step(`4b-forward(${allRoutes.size}r)`);
@@ -266,6 +276,7 @@ export default {
           recovery_minutes_low: inf.recovery_minutes_low,
           recovery_minutes_high: inf.recovery_minutes_high,
           recovery_indeterminate: inf.recovery_indeterminate,
+          primary_alert_type: rs.primary_alert_type,
         });
       }
       try {

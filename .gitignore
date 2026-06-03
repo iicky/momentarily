@@ -23,6 +23,9 @@ build/
 # wrangler local cache
 .wrangler/
 
+# Shadow-review artifacts (generated locally by training.review; not for upstream)
+docs/review/
+
 # Local tooling (not for upstream)
 AGENTS.md
 CLAUDE.md

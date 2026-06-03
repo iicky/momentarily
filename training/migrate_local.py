@@ -23,7 +23,7 @@ import re
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from training.r2_client import R2Config, load_config, make_client
 
@@ -57,7 +57,7 @@ def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                yield cast(dict[str, Any], json.loads(line))
             except json.JSONDecodeError:
                 continue
 
@@ -73,12 +73,14 @@ def collect_alert_uploads(
 
     for path in sorted(paths):
         for record in _iter_jsonl(path):
-            alert_envelope = record.get("alert") or {}
+            alert_envelope = cast(dict[str, Any], record.get("alert") or {})
             alert_id = alert_envelope.get("id")
             if not isinstance(alert_id, str):
                 continue
-            inner = alert_envelope.get("alert") or {}
-            mercury = inner.get("transit_realtime.mercury_alert") or {}
+            inner = cast(dict[str, Any], alert_envelope.get("alert") or {})
+            mercury = cast(
+                dict[str, Any], inner.get("transit_realtime.mercury_alert") or {}
+            )
             updated_at = mercury.get("updated_at")
             if not isinstance(updated_at, int):
                 continue

@@ -18,14 +18,23 @@ from training.train_em import (
     SCHEMA_VERSION,
     VERSIONED_PARAMS_PREFIX,
     CorpusStats,
-    _cap_self_loops,
-    _params_to_json,
+    _cap_self_loops,  # pyright: ignore[reportPrivateUsage]
+    _params_to_json,  # pyright: ignore[reportPrivateUsage]
     train,
     write_params,
 )
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
+
+
+def _approx(expected: float) -> object:
+    """Typed wrapper around ``pytest.approx``.
+
+    pytest's ``approx`` leaks ``Unknown`` through its ``ApproxBase`` return type
+    under strict mode, so we pin the boundary to ``object`` once here.
+    """
+    return pytest.approx(expected)  # pyright: ignore[reportUnknownMemberType]
 
 
 def _quiet(n: int) -> list[Observation]:
@@ -106,19 +115,21 @@ def test_cap_self_loops_clamps_and_renormalizes() -> None:
     # Untouched row passes through unchanged.
     assert capped.transition[1] == (0.08, 0.9, 0.02)
     # Off-diagonal proportions are preserved when redistributing freed mass.
-    assert capped.transition[0][1] / capped.transition[0][2] == pytest.approx(4.0)
+    assert capped.transition[0][1] / capped.transition[0][2] == _approx(4.0)
 
 
 def test_cap_self_loops_handles_zero_off_diagonal() -> None:
     # A degenerate row [0, 0, 1] has no off-diagonal mass to scale — freed mass
     # must spread evenly instead of dividing by zero.
-    capped = _cap_self_loops(_params_with_transition(
-        ((0.95, 0.03, 0.02), (0.05, 0.93, 0.02), (0.0, 0.0, 1.0))
-    ))
+    capped = _cap_self_loops(
+        _params_with_transition(
+            ((0.95, 0.03, 0.02), (0.05, 0.93, 0.02), (0.0, 0.0, 1.0))
+        )
+    )
     row = capped.transition[2]
-    assert row[2] == pytest.approx(MAX_SELF_LOOP)
-    assert row[0] == pytest.approx((1.0 - MAX_SELF_LOOP) / 2)
-    assert row[1] == pytest.approx((1.0 - MAX_SELF_LOOP) / 2)
+    assert row[2] == _approx(MAX_SELF_LOOP)
+    assert row[0] == _approx((1.0 - MAX_SELF_LOOP) / 2)
+    assert row[1] == _approx((1.0 - MAX_SELF_LOOP) / 2)
 
 
 def test_params_to_json_round_trip_shape() -> None:
@@ -133,7 +144,11 @@ def test_params_to_json_round_trip_shape() -> None:
         ),
     )
     body = _params_to_json(params)
-    assert body["transition"] == [[0.9, 0.08, 0.02], [0.1, 0.85, 0.05], [0.02, 0.13, 0.85]]
+    assert body["transition"] == [
+        [0.9, 0.08, 0.02],
+        [0.1, 0.85, 0.05],
+        [0.02, 0.13, 0.85],
+    ]
     assert body["initial"] == [0.8, 0.15, 0.05]
     assert body["emissions"]["poisson_lambda"] == (0.3, 4.0, 12.0)
     # emissions_by_bin omitted when params.emissions_by_bin is None

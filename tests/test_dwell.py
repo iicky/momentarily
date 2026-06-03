@@ -22,7 +22,9 @@ def _tr(route: str, prev: str, dwell_sec: int, ts: int = 0) -> TransitionRecord:
 
 
 def test_cell_below_floor_is_omitted() -> None:
-    transitions = [_tr("A", "disrupted", 600) for _ in range(MIN_SAMPLES_FOR_EMPIRICAL - 1)]
+    transitions = [
+        _tr("A", "disrupted", 600) for _ in range(MIN_SAMPLES_FOR_EMPIRICAL - 1)
+    ]
     out = compute_dwell_quantiles(transitions)
     assert out == {}, f"thin cell should be omitted, got {out}"
 

@@ -31,7 +31,10 @@ from momentarily.hmm import (
 )
 
 FIXTURE_PATH = (
-    Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "parity_forward.json"
+    Path(__file__).resolve().parent.parent
+    / "tests"
+    / "fixtures"
+    / "parity_forward.json"
 )
 
 TICK_SECONDS = 300

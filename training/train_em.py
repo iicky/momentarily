@@ -58,6 +58,7 @@ class CorpusStats:
     def span_seconds(self) -> int:
         return self.end_tick - self.start_tick
 
+
 # EM on a thin or mostly-quiet corpus drives transition self-loops toward 1.0,
 # which pins the forward filter so a route can never leave a regime. Cap the
 # diagonal, and refuse to publish at all under a week of archive. The original
@@ -236,7 +237,10 @@ def write_params(
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-route EM trainer")
     parser.add_argument(
-        "--days", type=int, default=14, help="trailing-window size when --start is unset"
+        "--days",
+        type=int,
+        default=14,
+        help="trailing-window size when --start is unset",
     )
     parser.add_argument(
         "--start", help="window start date YYYY-MM-DD (overrides --days)"
@@ -294,7 +298,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     # same window. Cells below MIN_SAMPLES_FOR_EMPIRICAL fall back to the
     # geometric dwell in the Worker — no-op if the stream is empty.
     client = make_client(cfg)
-    from training.eval import load_transitions  # noqa: PLC0415
+    from training.eval import load_transitions
 
     transitions = load_transitions(client, cfg.bucket, start_date, end_date)
     dwell_q = compute_dwell_quantiles(transitions)

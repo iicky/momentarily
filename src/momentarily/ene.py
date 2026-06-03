@@ -91,11 +91,12 @@ def parse_feed_payload(payload: Any) -> list[Equipment]:
     """Parse a full nyct_ene.json payload (a list of outage records)."""
     if not isinstance(payload, list):
         return []
+    records = cast(list[Any], payload)
     out: list[Equipment] = []
-    for record in payload:
+    for record in records:
         if not isinstance(record, dict):
             continue
-        eq = parse_outage_record(record)
+        eq = parse_outage_record(cast(dict[str, Any], record))
         if eq is not None:
             out.append(eq)
     return out
@@ -105,12 +106,10 @@ def is_active_outage(outage: EquipmentOutage | None, *, now: int) -> bool:
     """Whether this outage should currently count against the station."""
     if outage is None or outage.since is None:
         return False
-    if outage.est_return is not None and outage.est_return < now:
-        # Estimated return has already passed; treat as resolved until feed
-        # confirms otherwise. Adds a small forgive-window so a stuck feed
-        # doesn't keep flagging "out" for hours past the ETA.
-        return False
-    return True
+    # If the estimated return has already passed, treat as resolved until the
+    # feed confirms otherwise. A small forgive-window so a stuck feed doesn't
+    # keep flagging "out" for hours past the ETA.
+    return not (outage.est_return is not None and outage.est_return < now)
 
 
 # Long-running outages (e.g. capital replacement) carry est_return values years
@@ -122,4 +121,6 @@ LONG_RUNNING_DAYS = 30
 def is_long_running(outage: EquipmentOutage, *, now: int) -> bool:
     if outage.since is None:
         return False
-    return (now - outage.since) >= int(timedelta(days=LONG_RUNNING_DAYS).total_seconds())
+    return (now - outage.since) >= int(
+        timedelta(days=LONG_RUNNING_DAYS).total_seconds()
+    )

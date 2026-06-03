@@ -25,7 +25,7 @@ for offline Baum-Welch training.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -249,9 +249,7 @@ def forward_update(
 
     prev_argmax = max(range(N_STATES), key=lambda i: prior[i])
     new_argmax = max(range(N_STATES), key=lambda i: post[i])
-    regime_entered_at = (
-        now if new_argmax != prev_argmax else state.regime_entered_at
-    )
+    regime_entered_at = now if new_argmax != prev_argmax else state.regime_entered_at
 
     return FilterState(
         probabilities=(post[0], post[1], post[2]),
@@ -285,9 +283,7 @@ def forward_step(
         )
 
     new_state = forward_update(state, obs, params, now)
-    new_argmax_idx = max(
-        range(N_STATES), key=lambda i: new_state.probabilities[i]
-    )
+    new_argmax_idx = max(range(N_STATES), key=lambda i: new_state.probabilities[i])
     new_argmax = STATES[new_argmax_idx]
 
     if new_argmax == published.pending_state:
@@ -348,9 +344,7 @@ def project_forward(
 # -----------------------------------------------------------------------------
 
 
-def expected_dwell_ticks(
-    state: FilterState, params: HMMParams
-) -> tuple[int, int, int]:
+def expected_dwell_ticks(state: FilterState, params: HMMParams) -> tuple[int, int, int]:
     """Expected remaining dwell in the most-likely state, plus low/high bounds.
 
     Treats remaining dwell as geometric with leave-probability (1 − A[s*, s*])
@@ -432,8 +426,7 @@ def _forward_scaled(
     for t in range(1, t_max):
         for s in range(N_STATES):
             alpha[t][s] = (
-                sum(alpha[t - 1][sp] * a[sp][s] for sp in range(N_STATES))
-                * emis[t][s]
+                sum(alpha[t - 1][sp] * a[sp][s] for sp in range(N_STATES)) * emis[t][s]
             )
         st = sum(alpha[t]) or 1e-300
         scales[t] = st
@@ -485,7 +478,7 @@ BERNOULLI_FLOOR = 1e-3
 def _estimate_emissions(
     gamma: list[list[float]],
     observations: list[Observation],
-    indices,
+    indices: Iterable[int],
     fallback: EmissionParams,
     *,
     prior: EmissionParams | None = None,
@@ -501,9 +494,7 @@ def _estimate_emissions(
     effective observations.
     """
     idx_list = list(indices)
-    state_weight = [
-        sum(gamma[t][s] for t in idx_list) for s in range(N_STATES)
-    ]
+    state_weight = [sum(gamma[t][s] for t in idx_list) for s in range(N_STATES)]
 
     poisson_lambda: list[float] = []
     bernoulli_p: list[float] = []
@@ -523,13 +514,9 @@ def _estimate_emissions(
         prior_p: float,
     ) -> float:
         successes = sum(
-            gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0)
-            for t in idx_list
+            gamma[t][s] * (1.0 if indicator(observations[t]) else 0.0) for t in idx_list
         )
-        if use_prior:
-            p = (kappa * prior_p + successes) / (kappa + w)
-        else:
-            p = successes / w
+        p = (kappa * prior_p + successes) / (kappa + w) if use_prior else successes / w
         return min(max(p, BERNOULLI_FLOOR), 1.0 - BERNOULLI_FLOOR)
 
     # If the whole subset has < this many effective observations across all
@@ -556,9 +543,7 @@ def _estimate_emissions(
             continue
 
         # Poisson λ: Gamma(κ·λ_prior, κ) prior → posterior mean below.
-        sum_alerts = sum(
-            gamma[t][s] * observations[t].alert_count for t in idx_list
-        )
+        sum_alerts = sum(gamma[t][s] * observations[t].alert_count for t in idx_list)
         if use_prior:
             assert prior is not None
             lam = (kappa * prior.poisson_lambda[s] + sum_alerts) / (kappa + w)
@@ -569,26 +554,41 @@ def _estimate_emissions(
         if use_prior:
             assert prior is not None
             bernoulli_p.append(
-                posterior_bernoulli(s, w, lambda o: o.has_suspended_alert, prior.bernoulli_p[s])
+                posterior_bernoulli(
+                    s, w, lambda o: o.has_suspended_alert, prior.bernoulli_p[s]
+                )
             )
             bernoulli_p_delays.append(
-                posterior_bernoulli(s, w, lambda o: o.has_delays, prior.bernoulli_p_delays[s])
+                posterior_bernoulli(
+                    s, w, lambda o: o.has_delays, prior.bernoulli_p_delays[s]
+                )
             )
             bernoulli_p_service_change.append(
                 posterior_bernoulli(
-                    s, w, lambda o: o.has_service_change, prior.bernoulli_p_service_change[s]
+                    s,
+                    w,
+                    lambda o: o.has_service_change,
+                    prior.bernoulli_p_service_change[s],
                 )
             )
             bernoulli_p_planned.append(
-                posterior_bernoulli(s, w, lambda o: o.has_planned, prior.bernoulli_p_planned[s])
+                posterior_bernoulli(
+                    s, w, lambda o: o.has_planned, prior.bernoulli_p_planned[s]
+                )
             )
         else:
-            bernoulli_p.append(posterior_bernoulli(s, w, lambda o: o.has_suspended_alert, 0.0))
-            bernoulli_p_delays.append(posterior_bernoulli(s, w, lambda o: o.has_delays, 0.0))
+            bernoulli_p.append(
+                posterior_bernoulli(s, w, lambda o: o.has_suspended_alert, 0.0)
+            )
+            bernoulli_p_delays.append(
+                posterior_bernoulli(s, w, lambda o: o.has_delays, 0.0)
+            )
             bernoulli_p_service_change.append(
                 posterior_bernoulli(s, w, lambda o: o.has_service_change, 0.0)
             )
-            bernoulli_p_planned.append(posterior_bernoulli(s, w, lambda o: o.has_planned, 0.0))
+            bernoulli_p_planned.append(
+                posterior_bernoulli(s, w, lambda o: o.has_planned, 0.0)
+            )
 
         # Gamma α/β over severity: method-of-moments, optionally shrunk
         # toward prior by convex combination (weight w MLE vs κ prior).
@@ -599,8 +599,14 @@ def _estimate_emissions(
         # rejects any observation drifting from the mean. See momentarily-p8y.
         if w > 0:
             x = [observations[t].severity_sum + 0.5 for t in idx_list]
-            mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x)) / w
-            var = sum(gamma[t][s] * (xt - mu) ** 2 for t, xt in zip(idx_list, x)) / w
+            mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x, strict=True)) / w
+            var = (
+                sum(
+                    gamma[t][s] * (xt - mu) ** 2
+                    for t, xt in zip(idx_list, x, strict=True)
+                )
+                / w
+            )
             var = max(var, mu * mu / GAMMA_ALPHA_MAX, 1e-6)
             alpha_mle = max(mu * mu / var, 1e-3)
             beta_mle = max(mu / var, 1e-6)
@@ -737,7 +743,9 @@ def _em_iteration(
                 observations,
                 buckets[b],
                 params.emissions_by_bin[b],
-                prior=prior_params.emissions_by_bin[b] if (prior_params and prior_params.emissions_by_bin) else None,
+                prior=prior_params.emissions_by_bin[b]
+                if (prior_params and prior_params.emissions_by_bin)
+                else None,
                 prior_strength=kappa,
             )
             for b in range(N_TOD_BINS)

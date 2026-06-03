@@ -113,9 +113,7 @@ def _alerts_by_direction(
     south: list[Alert] = []
     for alert in active:
         dirs = {
-            ie.direction_id
-            for ie in alert.informed_entities
-            if ie.route_id == route_id
+            ie.direction_id for ie in alert.informed_entities if ie.route_id == route_id
         }
         applies_both = not dirs or None in dirs
         if applies_both or 0 in dirs:
@@ -235,9 +233,7 @@ def derive_station_status(
         a
         for a in alerts
         if _active_at(a, now)
-        and any(
-            (e.stop_id and e.stop_id in station_stops) for e in a.informed_entities
-        )
+        and any((e.stop_id and e.stop_id in station_stops) for e in a.informed_entities)
     ]
 
     elevators = [e for e in equipment_at_station if e.type == "elevator"]

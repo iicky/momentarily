@@ -74,7 +74,9 @@ def build_mta_truth(
     """For each (route, tick) with any active alert in the window, return MTA
     state. Ticks not in the dict had no active alerts → treat as 'normal'."""
     del bucket  # client carries its own configured bucket via load_config
-    bodies = fetch_alert_versions(start_date=start_date, end_date=end_date, client=client)
+    bodies = fetch_alert_versions(
+        start_date=start_date, end_date=end_date, client=client
+    )
     obs_list = build_tick_observations(bodies)
     return {(o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list}
 
@@ -84,7 +86,9 @@ def confusion(
     truth: dict[tuple[str, int], str],
 ) -> dict[str, dict[str, int]]:
     """Confusion matrix: HMM `condition` (rows) vs MTA-derived state (cols)."""
-    matrix: dict[str, dict[str, int]] = {h: dict.fromkeys(MTA_STATES, 0) for h in HMM_STATES}
+    matrix: dict[str, dict[str, int]] = {
+        h: dict.fromkeys(MTA_STATES, 0) for h in HMM_STATES
+    }
     for p in preds:
         mta = truth.get((p.route, snap_tick(p.ts)), "normal")
         if p.condition not in matrix:
@@ -135,7 +139,9 @@ def changepoint_alignment(
 
 def plot_reliability(eval_doc: dict[str, Any], out: Path) -> None:
     horizons = eval_doc["calibration"]
-    fig, axes = plt.subplots(1, len(horizons), figsize=(4 * len(horizons), 4), sharey=True)
+    fig, axes = plt.subplots(
+        1, len(horizons), figsize=(4 * len(horizons), 4), sharey=True
+    )
     for ax, cal in zip(axes, horizons, strict=True):
         bins = cal["bins"]
         xs = [b["mean_pred"] for b in bins if b["mean_pred"] is not None]
@@ -143,7 +149,13 @@ def plot_reliability(eval_doc: dict[str, Any], out: Path) -> None:
         ns = [b["n"] for b in bins if b["mean_pred"] is not None]
         ax.plot([0, 1], [0, 1], "--", color="gray", lw=1)
         if xs:
-            ax.scatter(xs, ys, s=[max(n / 50.0, 8.0) for n in ns], color="steelblue", alpha=0.85)
+            ax.scatter(
+                xs,
+                ys,
+                s=[max(n / 50.0, 8.0) for n in ns],
+                color="steelblue",
+                alpha=0.85,
+            )
             for x, y, n in zip(xs, ys, ns, strict=True):
                 ax.annotate(f"n={n}", (x, y), fontsize=7, ha="left", va="bottom")
         brier = cal["brier"]
@@ -284,9 +296,13 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     window_end = int(datetime.now(UTC).timestamp())
     window_start = int(
-        datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC).timestamp()
+        datetime(
+            start_date.year, start_date.month, start_date.day, tzinfo=UTC
+        ).timestamp()
     )
-    eval_doc = build_eval(preds, trans, window_start=window_start, window_end=window_end)
+    eval_doc = build_eval(
+        preds, trans, window_start=window_start, window_end=window_end
+    )
     conf = confusion(preds, truth)
     deltas = changepoint_alignment(trans, truth)
 

@@ -33,6 +33,14 @@ class R2Config:
         return f"https://{self.account_id}.r2.cloudflarestorage.com"
 
 
+def _require(key: str) -> str:
+    """Fetch a required key from the vault, raising if it's missing."""
+    value = murk.get(key)
+    if value is None:
+        raise KeyError(f"{key} not found in murk vault")
+    return value
+
+
 def load_config() -> R2Config:
     """Read R2 credentials from the murk vault.
 
@@ -40,14 +48,14 @@ def load_config() -> R2Config:
     vault — those errors are clear enough we don't need to wrap them.
     """
     return R2Config(
-        account_id=murk.get("R2_ACCOUNT_ID"),
-        access_key_id=murk.get("R2_ACCESS_KEY_ID"),
-        secret_access_key=murk.get("R2_SECRET_ACCESS_KEY"),
-        bucket=murk.get("R2_BUCKET"),
+        account_id=_require("R2_ACCOUNT_ID"),
+        access_key_id=_require("R2_ACCESS_KEY_ID"),
+        secret_access_key=_require("R2_SECRET_ACCESS_KEY"),
+        bucket=_require("R2_BUCKET"),
     )
 
 
-def make_client(config: R2Config | None = None) -> "S3Client":
+def make_client(config: R2Config | None = None) -> S3Client:
     """Build a boto3 S3 client targeting Cloudflare R2."""
     cfg = config or load_config()
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]

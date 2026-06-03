@@ -64,8 +64,10 @@ def _argmax_state(probs: tuple[float, float, float]) -> str:
 def _fmt_params(params: HMMParams) -> str:
     em = params.emissions
     a = params.transition
+
     def t(p: tuple[float, float, float]) -> str:
         return f"({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f})"
+
     return (
         f"  poisson_lambda      = {t(em.poisson_lambda)}\n"
         f"  gamma_alpha         = {t(em.gamma_alpha)}\n"

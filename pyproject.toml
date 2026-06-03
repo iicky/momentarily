@@ -39,6 +39,9 @@ extend-exclude = [".venv"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PT", "PIE", "C4"]
 ignore = ["E501"]
+# Greek/math notation is intentional in the HMM and stats code (α forward var,
+# γ posterior, σ std dev, × product, − minus, – en dash). Allow these confusables.
+allowed-confusables = ["α", "γ", "σ", "×", "−", "–"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004"]

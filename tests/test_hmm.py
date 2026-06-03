@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import random
+from itertools import pairwise
 
 import pytest
 
@@ -147,7 +148,7 @@ def test_project_forward_converges_to_stationary() -> None:
 
 
 def test_project_forward_negative_ticks_rejected() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="ticks_ahead must be >= 0"):
         project_forward(_flat_state(), _default_params(), ticks_ahead=-1)
 
 
@@ -276,7 +277,7 @@ def test_em_likelihood_improves_overall() -> None:
         f"EM did not improve likelihood: {log_liks[0]} → {log_liks[-1]}"
     )
     # No single step should regress by more than a tiny amount (Gamma MoM noise).
-    for prev, curr in zip(log_liks, log_liks[1:]):
+    for prev, curr in pairwise(log_liks):
         assert curr >= prev - 1e-2, f"catastrophic regression: {prev} → {curr}"
 
 
@@ -334,7 +335,7 @@ def test_em_single_observation_doesnt_crash() -> None:
 
 
 def test_em_empty_observations_rejected() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="requires at least one observation"):
         fit_em([], _default_params())
 
 
@@ -365,9 +366,15 @@ def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
     fitted, _ = fit_em(obs, _default_params(), max_iterations=30)
 
     em = fitted.emissions
-    assert max(em.gamma_alpha) <= 100.0 + 1e-6, f"gamma_alpha unbounded: {em.gamma_alpha}"
-    for p in (em.bernoulli_p, em.bernoulli_p_delays,
-              em.bernoulli_p_service_change, em.bernoulli_p_planned):
+    assert max(em.gamma_alpha) <= 100.0 + 1e-6, (
+        f"gamma_alpha unbounded: {em.gamma_alpha}"
+    )
+    for p in (
+        em.bernoulli_p,
+        em.bernoulli_p_delays,
+        em.bernoulli_p_service_change,
+        em.bernoulli_p_planned,
+    ):
         assert min(p) >= 1e-3 - 1e-9, f"Bernoulli below floor: {p}"
         assert max(p) <= 1.0 - 1e-3 + 1e-9, f"Bernoulli above ceiling: {p}"
 
@@ -499,9 +506,7 @@ def test_hysteresis_suppresses_single_tick_flicker() -> None:
     )
 
     # Back to quiet — pending resets to normal
-    state, published = forward_step(
-        state, published, _quiet_obs(), params, now=6 * 300
-    )
+    state, published = forward_step(state, published, _quiet_obs(), params, now=6 * 300)
     assert published.label == "normal"
 
 
@@ -516,17 +521,13 @@ def test_hysteresis_publishes_after_sustained_change() -> None:
     published = initial_published_state(state)
 
     # First suspended tick — pending advances but published holds
-    state, published = forward_step(
-        state, published, _suspended_obs(), params, now=300
-    )
+    state, published = forward_step(state, published, _suspended_obs(), params, now=300)
     assert published.label == "normal"
     assert published.pending_state == "suspended"
     assert published.pending_streak == 1
 
     # Second suspended tick — published flips
-    state, published = forward_step(
-        state, published, _suspended_obs(), params, now=600
-    )
+    state, published = forward_step(state, published, _suspended_obs(), params, now=600)
     assert published.label == "suspended"
     assert published.pending_streak >= HYSTERESIS_TICKS
 
@@ -563,9 +564,7 @@ def test_publish_immediately_after_unknown() -> None:
     assert published.label == PUBLISHED_UNKNOWN
 
     # Real suspended observation — should publish "suspended" right away
-    state, published = forward_step(
-        state, published, _suspended_obs(), params, now=600
-    )
+    state, published = forward_step(state, published, _suspended_obs(), params, now=600)
     assert published.label == "suspended"
 
 
@@ -651,7 +650,7 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
             poisson_lambda=(0.2, 3.0, 9.0),
             gamma_alpha=(1.0, 3.0, 6.0),
             gamma_beta=(2.0, 0.5, 0.3),
-            bernoulli_p=(0.01, 0.10, 0.80),         # suspended-alert
+            bernoulli_p=(0.01, 0.10, 0.80),  # suspended-alert
             bernoulli_p_delays=(0.05, 0.60, 0.30),  # delays peak in disrupted
             bernoulli_p_service_change=(0.02, 0.40, 0.20),
             bernoulli_p_planned=(0.10, 0.20, 0.10),
@@ -682,7 +681,9 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
     # Delays should peak in the disrupted state (highest in middle, not extremes)
     # — at minimum, it shouldn't be lowest in state 1 (disrupted)
     delays = fitted.emissions.bernoulli_p_delays
-    assert delays[1] >= delays[0] - 0.1, f"delays in disrupted dropped below normal: {delays}"
+    assert delays[1] >= delays[0] - 0.1, (
+        f"delays in disrupted dropped below normal: {delays}"
+    )
 
 
 # ---------------------------------------------------------------------------

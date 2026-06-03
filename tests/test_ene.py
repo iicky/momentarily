@@ -24,9 +24,7 @@ NY = ZoneInfo("America/New_York")
 
 
 def _et_epoch(year: int, month: int, day: int, hour: int = 12) -> int:
-    return int(
-        datetime(year, month, day, hour, tzinfo=NY).astimezone(UTC).timestamp()
-    )
+    return int(datetime(year, month, day, hour, tzinfo=NY).astimezone(UTC).timestamp())
 
 
 def test_parse_outage_record_basic() -> None:
@@ -79,10 +77,18 @@ def test_parse_rejects_unknown_equipment_type() -> None:
 
 def test_parse_feed_payload_skips_garbage() -> None:
     payload = [
-        {"equipment": "EL1", "equipmenttype": "EL", "outagedate": "01/01/2026 12:00:00 PM"},
+        {
+            "equipment": "EL1",
+            "equipmenttype": "EL",
+            "outagedate": "01/01/2026 12:00:00 PM",
+        },
         "not a dict",
         None,
-        {"equipment": "ES2", "equipmenttype": "ES", "outagedate": "01/02/2026 12:00:00 PM"},
+        {
+            "equipment": "ES2",
+            "equipmenttype": "ES",
+            "outagedate": "01/02/2026 12:00:00 PM",
+        },
         {"equipmenttype": "EL"},  # missing equipment id
     ]
     out = parse_feed_payload(payload)

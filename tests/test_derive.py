@@ -170,7 +170,9 @@ def test_compat_summaries_filtered_per_direction(line_1: Route, now: int) -> Non
 
     assert compat.service_irregularity_summaries is not None
     assert compat.service_irregularity_summaries.north is None
-    assert compat.service_irregularity_summaries.south == "Southbound 1 trains rerouted."
+    assert (
+        compat.service_irregularity_summaries.south == "Southbound 1 trains rerouted."
+    )
 
 
 def test_compat_ignores_other_routes_alerts(line_1: Route, now: int) -> None:

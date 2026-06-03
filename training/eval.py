@@ -126,7 +126,7 @@ def _date_range(start: date, end: date) -> Iterator[date]:
         d += timedelta(days=1)
 
 
-def _list_keys(client: "S3Client", bucket: str, prefix: str) -> list[str]:
+def _list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
     keys: list[str] = []
     token: str | None = None
     while True:
@@ -147,13 +147,13 @@ def _list_keys(client: "S3Client", bucket: str, prefix: str) -> list[str]:
             return keys
 
 
-def _read_jsonl(client: "S3Client", bucket: str, key: str) -> list[dict[str, Any]]:
+def _read_jsonl(client: S3Client, bucket: str, key: str) -> list[dict[str, Any]]:
     body = client.get_object(Bucket=bucket, Key=key)["Body"].read().decode()
     return [json.loads(line) for line in body.splitlines() if line.strip()]
 
 
 def load_predictions(
-    client: "S3Client",
+    client: S3Client,
     bucket: str,
     start_date: date,
     end_date: date,
@@ -173,14 +173,16 @@ def load_predictions(
 
 
 def load_transitions(
-    client: "S3Client",
+    client: S3Client,
     bucket: str,
     start_date: date,
     end_date: date,
 ) -> list[TransitionRecord]:
     keys: list[str] = []
     for d in _date_range(start_date, end_date):
-        keys.extend(_list_keys(client, bucket, f"v1/regime_transitions/{d.isoformat()}/"))
+        keys.extend(
+            _list_keys(client, bucket, f"v1/regime_transitions/{d.isoformat()}/")
+        )
     out: list[TransitionRecord] = []
 
     def fetch(k: str) -> list[dict[str, Any]]:
@@ -224,7 +226,9 @@ class CalibrationResult:
     bins: list[ReliabilityBin]
 
 
-def calibrate(predictions: list[PredictionRecord], horizon_min: int) -> CalibrationResult:
+def calibrate(
+    predictions: list[PredictionRecord], horizon_min: int
+) -> CalibrationResult:
     """Pair each prediction at T with the actual condition at T + horizon_min."""
     # Index predictions by (route, snapped_ts) so T+horizon lookup is O(1).
     by_key: dict[tuple[str, int], PredictionRecord] = {}
@@ -268,13 +272,17 @@ class RecoveryStats:
     n: int
     mae_min: float | None
     rmse_min: float | None
-    iqr_coverage: float | None  # fraction of predictions whose [low,high] contained actual
+    iqr_coverage: (
+        float | None
+    )  # fraction of predictions whose [low,high] contained actual
 
 
 @dataclass
 class RecoveryResult:
     overall: RecoveryStats
-    by_route: dict[str, RecoveryStats] = field(default_factory=lambda: {})
+    by_route: dict[str, RecoveryStats] = field(
+        default_factory=lambda: {}  # noqa: PIE807
+    )
 
 
 def recovery_metrics(
@@ -308,21 +316,29 @@ def recovery_metrics(
         err = abs(p.recovery_minutes - actual_remaining_min)
         abs_errors.append(err)
         sq_errors.append((p.recovery_minutes - actual_remaining_min) ** 2)
-        within = p.recovery_minutes_low <= actual_remaining_min <= p.recovery_minutes_high
+        within = (
+            p.recovery_minutes_low <= actual_remaining_min <= p.recovery_minutes_high
+        )
         covered += 1 if within else 0
         by_route_abs.setdefault(p.route, []).append(err)
-        by_route_sq.setdefault(p.route, []).append((p.recovery_minutes - actual_remaining_min) ** 2)
+        by_route_sq.setdefault(p.route, []).append(
+            (p.recovery_minutes - actual_remaining_min) ** 2
+        )
         by_route_cov.setdefault(p.route, []).append(1 if within else 0)
 
     overall = _stats_from(abs_errors, sq_errors, covered)
     by_route = {
-        route: _stats_from(by_route_abs[route], by_route_sq[route], sum(by_route_cov[route]))
+        route: _stats_from(
+            by_route_abs[route], by_route_sq[route], sum(by_route_cov[route])
+        )
         for route in by_route_abs
     }
     return RecoveryResult(overall=overall, by_route=by_route)
 
 
-def _stats_from(abs_errors: list[float], sq_errors: list[float], covered: int) -> RecoveryStats:
+def _stats_from(
+    abs_errors: list[float], sq_errors: list[float], covered: int
+) -> RecoveryStats:
     n = len(abs_errors)
     if n == 0:
         return RecoveryStats(n=0, mae_min=None, rmse_min=None, iqr_coverage=None)
@@ -382,7 +398,7 @@ def _stats_as_dict(s: RecoveryStats) -> dict[str, Any]:
     }
 
 
-def publish_eval(client: "S3Client", bucket: str, eval_doc: dict[str, Any]) -> None:
+def publish_eval(client: S3Client, bucket: str, eval_doc: dict[str, Any]) -> None:
     client.put_object(
         Bucket=bucket,
         Key=EVAL_KEY,
@@ -399,7 +415,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Self-grading job")
     parser.add_argument("--days", type=int, default=7, help="window length in days")
     parser.add_argument(
-        "--no-publish", action="store_true", help="print eval doc instead of writing to R2"
+        "--no-publish",
+        action="store_true",
+        help="print eval doc instead of writing to R2",
     )
     args = parser.parse_args(argv)
 
@@ -410,7 +428,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     start_date = today - timedelta(days=args.days - 1)
     window_end = int(datetime.now(UTC).timestamp())
     window_start = int(
-        datetime(start_date.year, start_date.month, start_date.day, tzinfo=UTC).timestamp()
+        datetime(
+            start_date.year, start_date.month, start_date.day, tzinfo=UTC
+        ).timestamp()
     )
 
     predictions = load_predictions(client, cfg.bucket, start_date, today)

@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from momentarily.hmm import Observation, tod_bin
 
@@ -37,8 +38,10 @@ def _snap_tick(epoch: int) -> int:
     return (epoch // TICK_SECONDS) * TICK_SECONDS
 
 
-def _sort_order(entity: dict) -> int:
-    selector = entity.get("transit_realtime.mercury_entity_selector") or {}
+def _sort_order(entity: dict[str, Any]) -> int:
+    selector = cast(
+        dict[str, Any], entity.get("transit_realtime.mercury_entity_selector") or {}
+    )
     raw = selector.get("sort_order")
     if not isinstance(raw, str):
         return 0
@@ -46,12 +49,14 @@ def _sort_order(entity: dict) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _alert_type(alert_payload: dict) -> str:
-    mercury = alert_payload.get("transit_realtime.mercury_alert") or {}
+def _alert_type(alert_payload: dict[str, Any]) -> str:
+    mercury = cast(
+        dict[str, Any], alert_payload.get("transit_realtime.mercury_alert") or {}
+    )
     return str(mercury.get("alert_type") or "")
 
 
-def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
+def iter_records(paths: Iterable[Path]) -> Iterator[dict[str, Any]]:
     """Yield parsed JSONL records from a list of files, in file order."""
     for path in paths:
         with path.open() as f:
@@ -59,11 +64,11 @@ def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
                 line = line.strip()
                 if not line:
                     continue
-                yield json.loads(line)
+                yield cast(dict[str, Any], json.loads(line))
 
 
 def build_observations(
-    records: Iterable[dict],
+    records: Iterable[dict[str, Any]],
 ) -> list[TickObservation]:
     """Aggregate raw alert poll records into per-(route, tick) observations.
 
@@ -78,18 +83,21 @@ def build_observations(
         observed_at = int(record["observed_at"])
         tick = _snap_tick(observed_at)
 
-        alert_envelope = record.get("alert") or {}
+        alert_envelope = cast(dict[str, Any], record.get("alert") or {})
         alert_id = alert_envelope.get("id")
-        if not alert_id:
+        if not isinstance(alert_id, str):
             continue
-        alert_payload = alert_envelope.get("alert") or {}
+        alert_payload = cast(dict[str, Any], alert_envelope.get("alert") or {})
         alert_type = _alert_type(alert_payload)
 
         # Each informed_entity contributes its sort_order to the route it names.
         # An entity with route_id is "this alert applies to that route."
-        for entity in alert_payload.get("informed_entity") or []:
+        entities = cast(
+            list[dict[str, Any]], alert_payload.get("informed_entity") or []
+        )
+        for entity in entities:
             route_id = entity.get("route_id")
-            if not route_id:
+            if not isinstance(route_id, str):
                 continue
             sort_order = _sort_order(entity)
             tick_bucket = bucket.setdefault(tick, {})
@@ -134,9 +142,7 @@ def build_observations(
                             ),
                             exclude_prefix="Planned -",
                         ),
-                        has_planned=any(
-                            at.startswith("Planned -") for at in types
-                        ),
+                        has_planned=any(at.startswith("Planned -") for at in types),
                         tod_bin=tod_bin(tick),
                     ),
                 )
@@ -207,9 +213,7 @@ def fill_quiet_ticks(
     return out
 
 
-def load_route_series(
-    data_dir: Path, route_id: str
-) -> list[TickObservation]:
+def load_route_series(data_dir: Path, route_id: str) -> list[TickObservation]:
     """End-to-end convenience: read all alerts/*.jsonl under data_dir, build
     observations, return one route's contiguous tick series."""
     alerts_dir = data_dir / "alerts"

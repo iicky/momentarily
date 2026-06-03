@@ -38,9 +38,9 @@ def test_known_alert_types(alert_type: str, expected: str) -> None:
     "alert_type",
     [
         "Planned Work",
-        "Planned – Service Change",  # noqa: RUF001 — MTA uses en-dash in alert_type
-        "Planned – Multiple Changes",  # noqa: RUF001
-        "Planned – Express to Local",  # noqa: RUF001
+        "Planned – Service Change",  # MTA uses an en-dash in these alert_type strings
+        "Planned – Multiple Changes",
+        "Planned – Express to Local",
     ],
 )
 def test_planned_prefix_maps_to_planned_work(alert_type: str) -> None:

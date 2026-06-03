@@ -19,11 +19,14 @@ import re
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from momentarily.hmm import Observation, tod_bin
 from training.load import TICK_SECONDS, TickObservation
 from training.r2_client import R2Config, load_config, make_client
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 _SORT_ORDER_RE = re.compile(r":(\d+)$")
 
@@ -39,24 +42,26 @@ def _date_range(start: date, end: date) -> Iterator[date]:
         d += timedelta(days=1)
 
 
-def _list_keys(client: Any, bucket: str, prefix: str) -> list[str]:
+def _list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
     keys: list[str] = []
-    token = None
+    token: str | None = None
     while True:
         kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
         if token:
             kwargs["ContinuationToken"] = token
         resp = client.list_objects_v2(**kwargs)
         for obj in resp.get("Contents") or []:
-            keys.append(obj["Key"])
+            key = obj.get("Key")
+            if key is not None:
+                keys.append(key)
         if not resp.get("IsTruncated"):
             return keys
-        token = resp["NextContinuationToken"]
+        token = resp.get("NextContinuationToken")
 
 
-def _fetch_object(client: Any, bucket: str, key: str) -> dict[str, Any]:
+def _fetch_object(client: S3Client, bucket: str, key: str) -> dict[str, Any]:
     body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
-    return json.loads(body)
+    return cast(dict[str, Any], json.loads(body))
 
 
 def fetch_alert_versions(
@@ -64,7 +69,7 @@ def fetch_alert_versions(
     *,
     start_date: date | None = None,
     end_date: date | None = None,
-    client: Any | None = None,
+    client: S3Client | None = None,
 ) -> list[dict[str, Any]]:
     """Pull every alert version object in the [start_date, end_date] window.
 
@@ -83,15 +88,22 @@ def fetch_alert_versions(
         keys.extend(_list_keys(client, cfg.bucket, prefix))
 
     # Parallel fetch — R2 happily handles tens of concurrent GETs.
+    fetched_client = client
+
+    def _fetch(k: str) -> dict[str, Any]:
+        return _fetch_object(fetched_client, cfg.bucket, k)
+
     bodies: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=16) as pool:
-        for body in pool.map(lambda k: _fetch_object(client, cfg.bucket, k), keys):
+        for body in pool.map(_fetch, keys):
             bodies.append(body)
     return bodies
 
 
 def _sort_order(entity: dict[str, Any]) -> int:
-    selector = entity.get("transit_realtime.mercury_entity_selector") or {}
+    selector = cast(
+        dict[str, Any], entity.get("transit_realtime.mercury_entity_selector") or {}
+    )
     raw = selector.get("sort_order")
     if not isinstance(raw, str):
         return 0
@@ -100,7 +112,9 @@ def _sort_order(entity: dict[str, Any]) -> int:
 
 
 def _alert_type(alert_payload: dict[str, Any]) -> str:
-    mercury = alert_payload.get("transit_realtime.mercury_alert") or {}
+    mercury = cast(
+        dict[str, Any], alert_payload.get("transit_realtime.mercury_alert") or {}
+    )
     return str(mercury.get("alert_type") or "")
 
 
@@ -133,7 +147,7 @@ def build_tick_observations(
     # windows at the start of the *next* version, not just the latest.
     versions_by_alert: dict[str, list[int]] = {}
     for body in bodies:
-        alert_envelope = body.get("alert") or {}
+        alert_envelope = cast(dict[str, Any], body.get("alert") or {})
         alert_id = alert_envelope.get("id")
         if not isinstance(alert_id, str):
             continue
@@ -143,19 +157,20 @@ def build_tick_observations(
         arr.sort()
 
     for body in bodies:
-        alert_envelope = body.get("alert") or {}
+        alert_envelope = cast(dict[str, Any], body.get("alert") or {})
         alert_id = alert_envelope.get("id")
         if not isinstance(alert_id, str):
             continue
         observed_at = int(body.get("observed_at") or 0)
-        inner = alert_envelope.get("alert") or {}
+        inner = cast(dict[str, Any], alert_envelope.get("alert") or {})
         alert_type = _alert_type(inner)
 
         # Active window for this version
-        periods = inner.get("active_period") or []
+        periods = cast(list[Any], inner.get("active_period") or [])
         if periods and isinstance(periods[0], dict):
-            start = int(periods[0].get("start") or observed_at)
-            end_raw = periods[0].get("end")
+            period0 = cast(dict[str, Any], periods[0])
+            start = int(period0.get("start") or observed_at)
+            end_raw = period0.get("end")
             # Open-ended period → clamp to corpus_end so we don't generate
             # billions of ticks for a "still active" alert.
             end = int(end_raw) if end_raw else corpus_end
@@ -166,9 +181,7 @@ def build_tick_observations(
         # Clamp at the next version's observed_at for this alert — that
         # version supersedes us and will populate the bucket from there on.
         versions = versions_by_alert[alert_id]
-        next_idx = next(
-            (i for i, t in enumerate(versions) if t > observed_at), None
-        )
+        next_idx = next((i for i, t in enumerate(versions) if t > observed_at), None)
         if next_idx is not None:
             end = min(end, versions[next_idx])
 
@@ -181,16 +194,21 @@ def build_tick_observations(
             continue
 
         # Per-route this alert mentions
-        route_entities = [
-            e
-            for e in (inner.get("informed_entity") or [])
-            if isinstance(e, dict) and e.get("route_id")
+        informed = cast(list[Any], inner.get("informed_entity") or [])
+        route_entities: list[dict[str, Any]] = [
+            entity
+            for entity in (
+                cast(dict[str, Any], e) for e in informed if isinstance(e, dict)
+            )
+            if entity.get("route_id")
         ]
         if not route_entities:
             continue
 
         for entity in route_entities:
             route_id = entity["route_id"]
+            if not isinstance(route_id, str):
+                continue
             sort_order = _sort_order(entity)
             tick = first_tick
             while tick <= last_tick:

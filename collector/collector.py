@@ -190,9 +190,7 @@ def collect_ene() -> int:
         )
         return 0
 
-    _LOGGER.info(
-        "ene: appended %s/%s feeds to %s", total, len(ENE_SOURCES), daily.name
-    )
+    _LOGGER.info("ene: appended %s/%s feeds to %s", total, len(ENE_SOURCES), daily.name)
     return observed_at
 
 

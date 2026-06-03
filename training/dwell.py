@@ -65,3 +65,46 @@ def compute_dwell_quantiles(
             q75_sec=_quantile(dwells, 0.75),
         )
     return dict(out)
+
+
+def compute_dwell_quantiles_by_alert(
+    transitions: list[TransitionRecord],
+    *,
+    min_samples: int = MIN_SAMPLES_FOR_EMPIRICAL,
+) -> dict[str, dict[str, dict[str, DwellQuantiles]]]:
+    """Return {route: {state: {alert_type: DwellQuantiles}}} for each
+    (route, prev_state, alert_type_at_entry) cell with at least `min_samples`
+    transitions.
+
+    Transitions with no alert_type_at_entry (older records, or regimes that
+    began with no active alert) are skipped — they're already represented in
+    the (route, state) aggregate from `compute_dwell_quantiles`, which the
+    consumer falls back to when a (route, state, alert_type) cell is absent.
+    This is the recovery-by-cause segmentation (momentarily-alu): a route's
+    dwell under "Planned - Stops Skipped" is structurally different from the
+    same route under "Delays", so conditioning on the cause tightens the
+    recovery interval.
+    """
+    by_cell: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+    for t in transitions:
+        if t.alert_type_at_entry is None:
+            continue
+        by_cell[(t.route, t.prev_state, t.alert_type_at_entry)].append(int(t.dwell_sec))
+
+    out: dict[str, dict[str, dict[str, DwellQuantiles]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+    for (route, state, alert_type), dwells in by_cell.items():
+        if len(dwells) < min_samples:
+            continue
+        dwells.sort()
+        out[route][state][alert_type] = DwellQuantiles(
+            n=len(dwells),
+            q25_sec=_quantile(dwells, 0.25),
+            median_sec=_quantile(dwells, 0.50),
+            q75_sec=_quantile(dwells, 0.75),
+        )
+    return {
+        r: {s: dict(by_at) for s, by_at in by_state.items()}
+        for r, by_state in out.items()
+    }

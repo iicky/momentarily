@@ -26,7 +26,11 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from momentarily.hmm import HMMParams, Observation, fit_em
-from training.dwell import DwellQuantiles, compute_dwell_quantiles
+from training.dwell import (
+    DwellQuantiles,
+    compute_dwell_quantiles,
+    compute_dwell_quantiles_by_alert,
+)
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import build_tick_observations, fetch_alert_versions
 from training.r2_client import R2Config, load_config, make_client
@@ -195,6 +199,9 @@ def write_params(
     corpus: CorpusStats,
     n_routes_trained: int,
     dwell_quantiles: dict[str, dict[str, DwellQuantiles]] | None = None,
+    dwell_quantiles_by_alert: (
+        dict[str, dict[str, dict[str, DwellQuantiles]]] | None
+    ) = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -210,6 +217,13 @@ def write_params(
         for r, by_state in dwell_quantiles.items():
             if r in routes_doc:
                 routes_doc[r]["dwell_quantiles"] = by_state
+    if dwell_quantiles_by_alert:
+        # Cause-segmented dwell, layered on top of the (route, state) aggregate.
+        # The Worker prefers (route, state, alert_type) and falls back to the
+        # aggregate above when a cause cell is absent. See momentarily-alu.
+        for r, by_state_alert in dwell_quantiles_by_alert.items():
+            if r in routes_doc:
+                routes_doc[r]["dwell_quantiles_by_alert"] = by_state_alert
     doc = {
         "schema_version": SCHEMA_VERSION,
         "trained_at": trained_at,
@@ -302,19 +316,29 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     transitions = load_transitions(client, cfg.bucket, start_date, end_date)
     dwell_q = compute_dwell_quantiles(transitions)
+    dwell_q_by_alert = compute_dwell_quantiles_by_alert(transitions)
     n_dwell_cells = sum(len(by_state) for by_state in dwell_q.values())
+    n_dwell_alert_cells = sum(
+        len(by_alert)
+        for by_state in dwell_q_by_alert.values()
+        for by_alert in by_state.values()
+    )
 
     if args.dry_run:
         dry_routes = {r: _params_to_json(p) for r, p in per_route.items()}
         for r, by_state in dwell_q.items():
             if r in dry_routes:
                 dry_routes[r]["dwell_quantiles"] = by_state
+        for r, by_state_alert in dwell_q_by_alert.items():
+            if r in dry_routes:
+                dry_routes[r]["dwell_quantiles_by_alert"] = by_state_alert
         print(
             json.dumps(
                 {
                     "global_prior": _params_to_json(global_prior),
                     "routes": dry_routes,
                     "dwell_cells": n_dwell_cells,
+                    "dwell_alert_cells": n_dwell_alert_cells,
                 },
                 indent=2,
             )
@@ -338,11 +362,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         corpus=corpus,
         n_routes_trained=n_routes_trained,
         dwell_quantiles=dwell_q,
+        dwell_quantiles_by_alert=dwell_q_by_alert,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
-        f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells})"
+        f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
+        f"dwell_alert_cells={n_dwell_alert_cells})"
     )
     return 0
 

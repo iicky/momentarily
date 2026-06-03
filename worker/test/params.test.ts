@@ -136,4 +136,40 @@ describe('parseTrainedParams', () => {
     // Whole route is dropped (sidecar is part of the route schema)
     expect(Object.keys(result!.routes)).toEqual([]);
   });
+
+  test('prefers cause-conditioned dwell, falls back to the state aggregate', () => {
+    const route = wellFormedRoute();
+    route.dwell_quantiles = {
+      disrupted: { n: 20, q25_sec: 1200, median_sec: 2400, q75_sec: 4800 },
+    };
+    route.dwell_quantiles_by_alert = {
+      disrupted: {
+        Delays: { n: 9, q25_sec: 300, median_sec: 600, q75_sec: 900 },
+      },
+    };
+    const result = parseTrainedParams(wrapper({ A: route }));
+    // Matching (state, alert_type) cell wins.
+    expect(dwellForRouteState(result, 'A', 'disrupted', 'Delays')).toEqual({
+      n: 9, q25_sec: 300, median_sec: 600, q75_sec: 900,
+    });
+    // Alert type with no cell falls back to the (state) aggregate.
+    expect(dwellForRouteState(result, 'A', 'disrupted', 'Planned - Stops Skipped')).toEqual({
+      n: 20, q25_sec: 1200, median_sec: 2400, q75_sec: 4800,
+    });
+    // No alert type given: aggregate.
+    expect(dwellForRouteState(result, 'A', 'disrupted')).toEqual({
+      n: 20, q25_sec: 1200, median_sec: 2400, q75_sec: 4800,
+    });
+  });
+
+  test('cause-conditioned lookup with no aggregate returns null when cell absent', () => {
+    const route = wellFormedRoute();
+    route.dwell_quantiles_by_alert = {
+      disrupted: { Delays: { n: 9, q25_sec: 300, median_sec: 600, q75_sec: 900 } },
+    };
+    const result = parseTrainedParams(wrapper({ A: route }));
+    expect(dwellForRouteState(result, 'A', 'disrupted', 'Delays')).not.toBeNull();
+    // alert type present but no matching cell, and no aggregate -> null
+    expect(dwellForRouteState(result, 'A', 'disrupted', 'Other')).toBeNull();
+  });
 });

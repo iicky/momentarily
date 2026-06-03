@@ -5,11 +5,18 @@ from __future__ import annotations
 from training.dwell import (
     MIN_SAMPLES_FOR_EMPIRICAL,
     compute_dwell_quantiles,
+    compute_dwell_quantiles_by_alert,
 )
 from training.eval import TransitionRecord
 
 
-def _tr(route: str, prev: str, dwell_sec: int, ts: int = 0) -> TransitionRecord:
+def _tr(
+    route: str,
+    prev: str,
+    dwell_sec: int,
+    ts: int = 0,
+    alert_type: str | None = None,
+) -> TransitionRecord:
     return TransitionRecord(
         ts=ts,
         route=route,
@@ -18,6 +25,7 @@ def _tr(route: str, prev: str, dwell_sec: int, ts: int = 0) -> TransitionRecord:
         regime_entered_at=ts - dwell_sec,
         exited_at=ts,
         dwell_sec=dwell_sec,
+        alert_type_at_entry=alert_type,
     )
 
 
@@ -59,3 +67,37 @@ def test_min_samples_override() -> None:
     assert compute_dwell_quantiles(transitions) == {}
     out = compute_dwell_quantiles(transitions, min_samples=2)
     assert out["A"]["disrupted"]["n"] == 3
+
+
+def test_by_alert_segments_on_alert_type() -> None:
+    transitions = [
+        _tr("A", "disrupted", 300, alert_type="Delays") for _ in range(6)
+    ] + [
+        _tr("A", "disrupted", 3600, alert_type="Planned - Stops Skipped")
+        for _ in range(6)
+    ]
+    out = compute_dwell_quantiles_by_alert(transitions)
+    assert set(out["A"]["disrupted"].keys()) == {"Delays", "Planned - Stops Skipped"}
+    # Cause conditioning separates the short delay regime from the long planned one.
+    assert out["A"]["disrupted"]["Delays"]["median_sec"] == 300
+    assert out["A"]["disrupted"]["Planned - Stops Skipped"]["median_sec"] == 3600
+
+
+def test_by_alert_skips_null_alert_type() -> None:
+    # Null-alert transitions belong to the (route, state) aggregate only.
+    transitions = [_tr("A", "disrupted", 600, alert_type=None) for _ in range(8)]
+    assert compute_dwell_quantiles_by_alert(transitions) == {}
+    # ...but they still feed the aggregate.
+    assert compute_dwell_quantiles(transitions)["A"]["disrupted"]["n"] == 8
+
+
+def test_by_alert_thin_cause_cell_is_omitted() -> None:
+    # 6 Delays (emitted) + 3 Planned (below floor, omitted).
+    transitions = [
+        _tr("A", "disrupted", 300, alert_type="Delays") for _ in range(6)
+    ] + [
+        _tr("A", "disrupted", 3600, alert_type="Planned - Stops Skipped")
+        for _ in range(3)
+    ]
+    out = compute_dwell_quantiles_by_alert(transitions)
+    assert set(out["A"]["disrupted"].keys()) == {"Delays"}

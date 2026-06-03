@@ -283,6 +283,13 @@ class RecoveryResult:
     by_route: dict[str, RecoveryStats] = field(
         default_factory=lambda: {}  # noqa: PIE807
     )
+    # Recovery accuracy segmented by the prediction-tick's primary_alert_type.
+    # Surfaces whether cause-conditioned dwell quantiles (momentarily-alu) are
+    # actually tightening the interval per cause. Predictions with no alert type
+    # are omitted from this breakdown.
+    by_alert_type: dict[str, RecoveryStats] = field(
+        default_factory=lambda: {}  # noqa: PIE807
+    )
 
 
 def recovery_metrics(
@@ -303,6 +310,9 @@ def recovery_metrics(
     by_route_abs: dict[str, list[float]] = {}
     by_route_sq: dict[str, list[float]] = {}
     by_route_cov: dict[str, list[int]] = {}
+    by_alert_abs: dict[str, list[float]] = {}
+    by_alert_sq: dict[str, list[float]] = {}
+    by_alert_cov: dict[str, list[int]] = {}
 
     for p in predictions:
         # Indeterminate rows are clamped, not predicted — including them would
@@ -314,17 +324,20 @@ def recovery_metrics(
             continue
         actual_remaining_min = (exited_at - p.ts) / 60.0
         err = abs(p.recovery_minutes - actual_remaining_min)
-        abs_errors.append(err)
-        sq_errors.append((p.recovery_minutes - actual_remaining_min) ** 2)
+        sq_err = (p.recovery_minutes - actual_remaining_min) ** 2
         within = (
             p.recovery_minutes_low <= actual_remaining_min <= p.recovery_minutes_high
         )
+        abs_errors.append(err)
+        sq_errors.append(sq_err)
         covered += 1 if within else 0
         by_route_abs.setdefault(p.route, []).append(err)
-        by_route_sq.setdefault(p.route, []).append(
-            (p.recovery_minutes - actual_remaining_min) ** 2
-        )
+        by_route_sq.setdefault(p.route, []).append(sq_err)
         by_route_cov.setdefault(p.route, []).append(1 if within else 0)
+        if p.primary_alert_type is not None:
+            by_alert_abs.setdefault(p.primary_alert_type, []).append(err)
+            by_alert_sq.setdefault(p.primary_alert_type, []).append(sq_err)
+            by_alert_cov.setdefault(p.primary_alert_type, []).append(1 if within else 0)
 
     overall = _stats_from(abs_errors, sq_errors, covered)
     by_route = {
@@ -333,7 +346,13 @@ def recovery_metrics(
         )
         for route in by_route_abs
     }
-    return RecoveryResult(overall=overall, by_route=by_route)
+    by_alert_type = {
+        at: _stats_from(by_alert_abs[at], by_alert_sq[at], sum(by_alert_cov[at]))
+        for at in by_alert_abs
+    }
+    return RecoveryResult(
+        overall=overall, by_route=by_route, by_alert_type=by_alert_type
+    )
 
 
 def _stats_from(
@@ -385,6 +404,9 @@ def build_eval(
         "recovery": {
             "overall": _stats_as_dict(recovery.overall),
             "by_route": {r: _stats_as_dict(s) for r, s in recovery.by_route.items()},
+            "by_alert_type": {
+                at: _stats_as_dict(s) for at, s in recovery.by_alert_type.items()
+            },
         },
     }
 

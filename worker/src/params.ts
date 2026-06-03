@@ -44,12 +44,20 @@ const DwellQuantilesSchema = z.object({
 // estimate. See momentarily-w97.
 const DwellByStateSchema = z.record(z.string(), DwellQuantilesSchema).optional();
 
+// Cause-segmented dwell: state -> alert_type -> quantiles. Layered on top of
+// dwell_quantiles; the worker prefers a (state, alert_type) cell and falls back
+// to the (state) aggregate when one is absent. See momentarily-alu.
+const DwellByStateAlertSchema = z
+  .record(z.string(), z.record(z.string(), DwellQuantilesSchema))
+  .optional();
+
 const HMMParamsSchema = z.object({
   transition: z.tuple([Vec3Schema, Vec3Schema, Vec3Schema]),
   initial: Vec3Schema,
   emissions: EmissionParamsSchema,
   emissions_by_bin: z.array(EmissionParamsSchema).length(N_TOD_BINS).optional(),
   dwell_quantiles: DwellByStateSchema,
+  dwell_quantiles_by_alert: DwellByStateAlertSchema,
 });
 
 export interface DwellQuantiles {
@@ -60,6 +68,9 @@ export interface DwellQuantiles {
 }
 
 export type DwellByState = Record<string, DwellQuantiles>;
+
+// state -> alert_type -> quantiles
+export type DwellByStateAlert = Record<string, Record<string, DwellQuantiles>>;
 
 const TrainedParamsWrapperSchema = z.object({
   schema_version: z.string(),
@@ -108,6 +119,9 @@ export interface TrainedParams {
   trained_at: number;
   routes: Record<string, HMMParams>;
   dwell: Record<string, DwellByState>;
+  // Cause-segmented dwell sidecar, route -> state -> alert_type -> quantiles.
+  // Preferred over `dwell` when the current regime's alert_type has a cell.
+  dwellByAlert: Record<string, DwellByStateAlert>;
 }
 
 /**
@@ -145,6 +159,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
   }
   const routes: Record<string, HMMParams> = {};
   const dwell: Record<string, DwellByState> = {};
+  const dwellByAlert: Record<string, DwellByStateAlert> = {};
   let dropped = 0;
   for (const [routeId, raw] of Object.entries(wrapper.data.routes)) {
     const parsed = HMMParamsSchema.safeParse(raw);
@@ -152,6 +167,9 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
       routes[routeId] = toHMMParams(parsed.data);
       if (parsed.data.dwell_quantiles) {
         dwell[routeId] = parsed.data.dwell_quantiles;
+      }
+      if (parsed.data.dwell_quantiles_by_alert) {
+        dwellByAlert[routeId] = parsed.data.dwell_quantiles_by_alert;
       }
     } else {
       dropped += 1;
@@ -169,6 +187,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     trained_at: wrapper.data.trained_at,
     routes,
     dwell,
+    dwellByAlert,
   };
 }
 
@@ -199,14 +218,25 @@ export function paramsForRoute(
 }
 
 /**
- * Empirical dwell quantiles for a (route, state) cell. Returns null when the
- * trainer didn't include one — caller should fall back to its analytic
- * (geometric self-loop) estimate.
+ * Empirical dwell quantiles for a regime, most-specific first:
+ *   1. (route, state, alertType) — cause-segmented, when alertType is given
+ *      and the trainer has that cell.
+ *   2. (route, state) — the aggregate across causes.
+ *   3. null — caller falls back to its analytic (geometric self-loop) estimate.
+ *
+ * The cause-conditioned cell is preferred because dwell under e.g. planned work
+ * is structurally different from delays; conditioning tightens the interval.
+ * See momentarily-alu.
  */
 export function dwellForRouteState(
   trained: TrainedParams | null,
   routeId: string,
   state: string,
+  alertType: string | null = null,
 ): DwellQuantiles | null {
+  if (alertType !== null) {
+    const byCause = trained?.dwellByAlert?.[routeId]?.[state]?.[alertType];
+    if (byCause) return byCause;
+  }
   return trained?.dwell?.[routeId]?.[state] ?? null;
 }

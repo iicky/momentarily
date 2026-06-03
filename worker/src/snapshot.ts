@@ -408,10 +408,11 @@ function buildInference(
 
   // Recovery_minutes is "time until back to normal." Two sources, in order
   // of preference:
-  //   1. Empirical dwell quantiles for (route, current_condition) from the
-  //      regime_transitions stream — heavy-tailed reality, not a geometric
-  //      approximation. Only used when the trainer included this cell
-  //      (sample size above its floor).
+  //   1. Empirical dwell quantiles from the regime_transitions stream — heavy-
+  //      tailed reality, not a geometric approximation. Prefers the cause-
+  //      conditioned (route, condition, alert_type_at_entry) cell, falling back
+  //      to the (route, condition) aggregate. Only used when the trainer
+  //      included the cell (sample size above its floor).
   //   2. Geometric dwell from the trained transition self-loop — works
   //      everywhere but saturates at the clamp ceiling for any route with
   //      sustained planned-work alerts. See momentarily-w97.
@@ -421,7 +422,12 @@ function buildInference(
   let recovery_indeterminate = false;
   if (condition !== 'normal') {
     const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
-    const empirical = dwellForRouteState(trained, routeId, condition);
+    const empirical = dwellForRouteState(
+      trained,
+      routeId,
+      condition,
+      roll.alert_type_at_entry,
+    );
     if (empirical !== null) {
       const secToMin = (s: number): number => Math.round(s / 60);
       recovery_minutes = clamp(secToMin(empirical.median_sec));

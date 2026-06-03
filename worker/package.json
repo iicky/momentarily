@@ -5,13 +5,13 @@
   "description": "Cloudflare Worker that fetches MTA feeds, runs the HMM forward filter, and publishes snapshot.json to R2",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "publish:schema": "wrangler r2 object put momentarily/v1/snapshot.schema.json --file=../schema/snapshot.schema.json --content-type=application/json --cache-control=\"public, max-age=86400\"",
-    "tail": "wrangler tail",
+    "dev": "murk exec -- wrangler dev",
+    "deploy": "murk exec -- wrangler deploy",
+    "publish:schema": "murk exec -- wrangler r2 object put momentarily/v1/snapshot.schema.json --file=../schema/snapshot.schema.json --content-type=application/json --cache-control=\"public, max-age=86400\"",
+    "tail": "murk exec -- wrangler tail",
     "test": "vitest run",
     "test:watch": "vitest",
-    "types": "wrangler types ./worker-configuration.d.ts",
+    "types": "murk exec -- wrangler types ./worker-configuration.d.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

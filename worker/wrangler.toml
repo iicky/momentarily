@@ -1,7 +1,9 @@
 name = "momentarily-held"
 main = "src/index.ts"
 compatibility_date = "2026-05-13"
-account_id = "REDACTED"
+# account_id is read from the CLOUDFLARE_ACCOUNT_ID env var (stored in the murk
+# vault) rather than committed here. The bun scripts wrap wrangler in
+# `murk exec`, so `bun run deploy` injects it automatically.
 
 # Cron trigger — fires every 5 min, matching the MTA alerts feed cadence.
 [triggers]

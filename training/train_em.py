@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from momentarily.hmm import HMMParams, Observation, fit_em
+from momentarily.hmm import HMMParams, Observation, canonicalize_states, fit_em
 from training.dwell import (
     DwellQuantiles,
     compute_dwell_quantiles,
@@ -160,7 +160,7 @@ def train(
     for series in series_by_route.values():
         pooled.extend(series)
     global_prior, _ = fit_em(pooled, BOOTSTRAP_PARAMS, max_iterations=50)
-    global_prior = _cap_self_loops(global_prior)
+    global_prior = canonicalize_states(_cap_self_loops(global_prior))
 
     out: dict[str, HMMParams] = {}
     for route, series in series_by_route.items():
@@ -174,7 +174,9 @@ def train(
             prior_params=global_prior,
             prior_strength=prior_strength,
         )
-        out[route] = _cap_self_loops(fitted)
+        # Anchor state identity so the quiet cluster can't sit on `disrupted`
+        # (EM label-switching latches no-alert routes into disruption).
+        out[route] = canonicalize_states(_cap_self_loops(fitted))
     return global_prior, out
 
 

@@ -12,6 +12,7 @@ import { describe, expect, test } from 'vitest';
 
 import schema from '../../schema/snapshot.schema.json';
 import type { RouteRoll } from '../src/alpha';
+import type { RouteSnapshot } from '../src/derive';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
@@ -23,6 +24,35 @@ function check(snapshot: unknown): void {
     ok,
     `snapshot failed schema/snapshot.schema.json:\n${JSON.stringify(validate.errors, null, 2)}`,
   ).toBe(true);
+}
+
+// A route snapshot carrying `n` active alerts, so the disrupted-condition path
+// is reachable (the consistency guardrail forces `normal` when there are none).
+function snapMapWithAlerts(routeId: string, n: number): Map<string, RouteSnapshot> {
+  const ids = Array.from({ length: n }, (_, i) => `lmm:alert:${i}`);
+  const m = new Map<string, RouteSnapshot>();
+  m.set(routeId, {
+    route_id: routeId,
+    observation: {
+      alert_count: n,
+      severity_sum: n * 5,
+      has_suspended_alert: false,
+      has_delays: n > 0,
+      has_service_change: false,
+      has_planned: false,
+      tod_bin: 0,
+    },
+    active_alert_ids: ids,
+    alerts: [],
+    severity_max: n > 0 ? 5 : 0,
+    primary_alert_type: n > 0 ? 'Delays' : null,
+    coarse_label: n > 0 ? 'Delays' : 'Good Service',
+    by_direction: {
+      northbound: { alerts: ids, primary_alert_type: n > 0 ? 'Delays' : null },
+      southbound: { alerts: [], primary_alert_type: null },
+    },
+  });
+  return m;
 }
 
 describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
@@ -111,7 +141,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,
       alertsFreshness: 1_700_000_000,
-      routeSnapshots: new Map(),
+      routeSnapshots: snapMapWithAlerts('1', 1),
       rolls: {
         '1': {
           filter: {
@@ -139,7 +169,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,
       alertsFreshness: 1_700_000_000,
-      routeSnapshots: new Map(),
+      routeSnapshots: snapMapWithAlerts('1', 1),
       rolls: {
         '1': {
           filter: {
@@ -167,7 +197,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,
       alertsFreshness: 1_700_000_000,
-      routeSnapshots: new Map(),
+      routeSnapshots: snapMapWithAlerts('1', 1),
       rolls: {
         '1': {
           filter: {
@@ -194,7 +224,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,
       alertsFreshness: 1_700_000_000,
-      routeSnapshots: new Map(),
+      routeSnapshots: snapMapWithAlerts('1', 1),
       rolls: {
         '1': {
           filter: {
@@ -215,5 +245,37 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       tickSeconds: TICK_SECONDS,
     });
     expect(snap.route_status['1']!.condition).toBe('normal');
+  });
+
+  test('guardrail: confident disrupted filter with zero active alerts publishes normal', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(), // no active alerts on the route
+      rolls: {
+        '1': {
+          filter: {
+            probabilities: [0.02, 0.97, 0.01], // filter latched in disrupted
+            regime_entered_at: 1_699_980_000,
+            last_updated_at: 1_700_000_000,
+          },
+          published: {
+            label: 'disrupted',
+            pending_state: 'disrupted',
+            pending_streak: 5,
+            last_updated_at: 1_700_000_000,
+          },
+          alert_type_at_entry: null,
+        },
+      },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    // No alert to explain a disruption → condition and inference are gated to
+    // normal, is_disrupted is false, and recovery collapses to 0.
+    expect(snap.route_status['1']!.condition).toBe('normal');
+    expect(snap.route_status['1']!.inference!.condition).toBe('normal');
+    expect(snap.route_status['1']!.inference!.is_disrupted).toBe(false);
+    expect(snap.route_status['1']!.inference!.recovery_minutes).toBe(0);
   });
 });

@@ -106,6 +106,83 @@ class HMMParams:
     emissions_by_bin: tuple[EmissionParams, ...] | None = None
 
 
+def _reorder_emissions(
+    em: EmissionParams, perm: tuple[int, int, int]
+) -> EmissionParams:
+    """Reindex every per-state channel of `em` by `perm` (new index -> old)."""
+
+    def r(t: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (t[perm[0]], t[perm[1]], t[perm[2]])
+
+    return EmissionParams(
+        poisson_lambda=r(em.poisson_lambda),
+        gamma_alpha=r(em.gamma_alpha),
+        gamma_beta=r(em.gamma_beta),
+        bernoulli_p=r(em.bernoulli_p),
+        bernoulli_p_delays=r(em.bernoulli_p_delays),
+        bernoulli_p_service_change=r(em.bernoulli_p_service_change),
+        bernoulli_p_planned=r(em.bernoulli_p_planned),
+    )
+
+
+def canonicalize_states(params: HMMParams) -> HMMParams:
+    """Permute the three states into canonical label order so the state index
+    matches its semantics: normal < disrupted < suspended in disruption.
+
+    EM is unsupervised — it finds three clusters but the cluster-to-index
+    assignment is arbitrary, so a route can converge with the *quiet* cluster
+    sitting on the `disrupted` index. Then a route with no active alerts (an
+    all-quiet observation) matches `disrupted` best and latches there with no
+    alert to explain it. We anchor identity by the emissions:
+
+      - normal    = the lowest alert-rate (Poisson lambda) state — good service
+                    is the quietest cluster.
+      - suspended = of the remaining two, the higher suspended-alert
+                    probability (bernoulli_p) — suspension is flag-defined, not
+                    just count-defined.
+      - disrupted = the remaining state.
+
+    The same permutation is applied to the initial vector, the transition matrix
+    (rows and columns), and every per-bin emission set. The relabeled model is
+    statistically identical — only the index<->label mapping changes. See
+    momentarily-13j.
+    """
+    em = params.emissions
+    normal_idx = min(range(N_STATES), key=lambda s: em.poisson_lambda[s])
+    rest = [s for s in range(N_STATES) if s != normal_idx]
+    suspended_idx = max(rest, key=lambda s: em.bernoulli_p[s])
+    disrupted_idx = next(s for s in rest if s != suspended_idx)
+    perm = (normal_idx, disrupted_idx, suspended_idx)
+
+    if perm == (0, 1, 2):
+        return params  # already canonical
+
+    new_transition = tuple(
+        (
+            params.transition[perm[i]][perm[0]],
+            params.transition[perm[i]][perm[1]],
+            params.transition[perm[i]][perm[2]],
+        )
+        for i in range(N_STATES)
+    )
+    new_initial = (
+        params.initial[perm[0]],
+        params.initial[perm[1]],
+        params.initial[perm[2]],
+    )
+    new_by_bin = (
+        tuple(_reorder_emissions(e, perm) for e in params.emissions_by_bin)
+        if params.emissions_by_bin is not None
+        else None
+    )
+    return HMMParams(
+        transition=new_transition,
+        initial=new_initial,
+        emissions=_reorder_emissions(em, perm),
+        emissions_by_bin=new_by_bin,
+    )
+
+
 def _emissions_for(params: HMMParams, obs: Observation) -> EmissionParams:
     """Pick the right EmissionParams for this observation's TOD bin."""
     if params.emissions_by_bin is None:

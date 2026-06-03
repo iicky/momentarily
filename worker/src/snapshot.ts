@@ -186,15 +186,23 @@ export function buildSnapshot(args: {
   for (const routeId of allRouteIds) {
     const snap = args.routeSnapshots.get(routeId);
     const roll = args.rolls[routeId];
+    const activeAlerts = snap?.active_alert_ids ?? [];
     const inference: Inference | null = roll
-      ? buildInference(roll, args.generatedAt, args.tickSeconds, routeId, args.trainedParams)
+      ? buildInference(
+          roll,
+          args.generatedAt,
+          args.tickSeconds,
+          routeId,
+          args.trainedParams,
+          activeAlerts.length,
+        )
       : null;
 
     const label = snap?.coarse_label ?? NO_ALERTS_FALLBACK;
     route_status[routeId] = {
       route_id: routeId,
-      alerts: snap?.active_alert_ids ?? [],
-      condition: roll ? effectiveCondition(roll) : 'unknown',
+      alerts: activeAlerts,
+      condition: roll ? effectiveCondition(roll, activeAlerts.length) : 'unknown',
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,
@@ -391,6 +399,7 @@ function buildInference(
   tickSeconds: number,
   routeId: string,
   trained: TrainedParams | null,
+  activeAlertCount: number,
 ): Inference {
   const probs = roll.filter.probabilities;
   const params = paramsForRoute(trained, routeId);
@@ -404,7 +413,7 @@ function buildInference(
 
   const argmaxIdx = argmaxOf(probs);
 
-  const condition = effectiveCondition(roll);
+  const condition = effectiveCondition(roll, activeAlertCount);
 
   // Recovery_minutes is "time until back to normal." Two sources, in order
   // of preference:
@@ -457,7 +466,9 @@ function buildInference(
   return {
     condition,
     recovery_minutes,
-    is_disrupted: probs[1] + probs[2] > 0.7,
+    // Tie to the gated condition so a no-alert route never counts as disrupted
+    // (keeps lines_disrupted_count consistent with the published condition).
+    is_disrupted: activeAlertCount > 0 && probs[1] + probs[2] > 0.7,
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],
@@ -490,7 +501,13 @@ function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {
  * The underlying publish state machine still respects HYSTERESIS_TICKS;
  * this only governs what we render. See momentarily-8ga.
  */
-function effectiveCondition(roll: RouteRoll): PublishedLabel {
+function effectiveCondition(roll: RouteRoll, activeAlertCount: number): PublishedLabel {
+  // Consistency guardrail: every disruption signal the filter sees is derived
+  // from alerts, so with zero active alerts the honest condition is `normal`.
+  // This stops a stale or over-confident filter from publishing `disrupted`
+  // with no alert to explain it, and keeps system.overall_label consistent with
+  // lines_disrupted_count. See momentarily-13j.
+  if (activeAlertCount === 0) return 'normal';
   const argmaxState = STATES[argmaxOf(roll.filter.probabilities)]!;
   if (roll.published.label === PUBLISHED_UNKNOWN) return argmaxState;
   const peakProb = roll.filter.probabilities[argmaxOf(roll.filter.probabilities)];

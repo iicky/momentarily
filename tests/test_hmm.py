@@ -21,6 +21,7 @@ from momentarily.hmm import (
     HMMParams,
     Observation,
     PublishedState,
+    canonicalize_states,
     expected_dwell_ticks,
     fit_em,
     forward_step,
@@ -808,3 +809,52 @@ def test_observation_defaults_back_compat() -> None:
     state = _flat_state()
     new_state = forward_update(state, obs, params, now=100)
     assert math.isclose(sum(new_state.probabilities), 1.0, abs_tol=1e-9)
+
+
+def _scrambled_params() -> HMMParams:
+    """EM label-switch: the quiet cluster sits on the `disrupted` index (idx1),
+    the busiest on `normal` (idx0). Mirrors real routes 1/3/D/Q. Channels are
+    ordered (idx0=mid, idx1=quiet, idx2=busy).
+    """
+    return HMMParams(
+        transition=(
+            (0.97, 0.02, 0.01),
+            (0.03, 0.97, 0.0),
+            (0.02, 0.01, 0.97),
+        ),
+        initial=(0.8, 0.15, 0.05),
+        emissions=EmissionParams(
+            poisson_lambda=(10.0, 0.02, 34.0),
+            gamma_alpha=(3.0, 1.0, 6.0),
+            gamma_beta=(0.4, 2.0, 0.2),
+            bernoulli_p=(0.03, 0.01, 0.9),
+        ),
+    )
+
+
+def test_canonicalize_puts_quiet_cluster_on_normal() -> None:
+    canon = canonicalize_states(_scrambled_params())
+    lam = canon.emissions.poisson_lambda
+    # normal is now the quietest, suspended the busiest, monotonic in between.
+    assert lam[0] < lam[1] < lam[2]
+    assert math.isclose(lam[0], 0.02)  # the old idx1 quiet cluster
+    # suspended owns the suspended-alert flag.
+    assert canon.emissions.bernoulli_p[2] == max(canon.emissions.bernoulli_p)
+
+
+def test_canonicalize_is_a_pure_relabel() -> None:
+    """An all-quiet observation should land on `normal` after canonicalization,
+    and probabilities still sum to 1 (it's a relabeling, not a refit)."""
+    canon = canonicalize_states(_scrambled_params())
+    quiet = Observation(alert_count=0, severity_sum=0, has_suspended_alert=False)
+    state = FilterState(
+        probabilities=(1 / 3, 1 / 3, 1 / 3), regime_entered_at=0, last_updated_at=0
+    )
+    post = forward_update(state, quiet, canon, now=100)
+    assert math.isclose(sum(post.probabilities), 1.0, abs_tol=1e-9)
+    assert post.probabilities[0] == max(post.probabilities)  # quiet -> normal
+
+
+def test_canonicalize_noop_when_already_ordered() -> None:
+    params = _default_params()  # normal<disrupted<suspended already
+    assert canonicalize_states(params) is params

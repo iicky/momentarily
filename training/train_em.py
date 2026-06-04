@@ -70,22 +70,33 @@ class CorpusStats:
 # the dominant risk of thin data — degenerate emissions — was no longer in
 # play, so we relaxed the gate. _cap_self_loops still bounds the transition
 # self-loops independently. See momentarily-625.
-MAX_SELF_LOOP = 0.97
+#
+# Per-state ceilings, set from the actual median regime dwell in the
+# v1/regime_transitions stream (14d): normal ~135min, disrupted ~45min,
+# suspended ~50min. A single 0.97 cap modeled every regime as ~114min, making
+# the filter 2.5x too pessimistic about recovery from disruption (it predicted
+# 17% recovered-in-30min against 35% actual). self_loop = exp(ln(0.5) / (median
+# dwell minutes / 5)) reproduces each regime's real persistence. Indexed
+# (normal, disrupted, suspended). See momentarily-2jt.
+MAX_SELF_LOOP: tuple[float, float, float] = (0.975, 0.93, 0.93)
 MIN_DATA_DAYS = 5
 
 
-def _cap_self_loops(params: HMMParams, max_self: float = MAX_SELF_LOOP) -> HMMParams:
-    """Clamp each transition row's diagonal to `max_self`, redistributing the
-    freed mass across that row's off-diagonal entries (proportionally, or
-    evenly when they're all zero)."""
+def _cap_self_loops(
+    params: HMMParams, max_self: tuple[float, float, float] = MAX_SELF_LOOP
+) -> HMMParams:
+    """Clamp each transition row's diagonal to its per-state ceiling `max_self[s]`,
+    redistributing the freed mass across that row's off-diagonal entries
+    (proportionally, or evenly when they're all zero)."""
     rows: list[tuple[float, float, float]] = []
     for s in range(3):
         row = list(params.transition[s])
-        if row[s] <= max_self:
+        cap = max_self[s]
+        if row[s] <= cap:
             rows.append((row[0], row[1], row[2]))
             continue
-        freed = row[s] - max_self
-        row[s] = max_self
+        freed = row[s] - cap
+        row[s] = cap
         off = [j for j in range(3) if j != s]
         off_sum = sum(row[j] for j in off)
         for j in off:

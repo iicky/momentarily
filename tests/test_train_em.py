@@ -110,9 +110,9 @@ def test_cap_self_loops_clamps_and_renormalizes() -> None:
     capped = _cap_self_loops(params)
     for s in range(3):
         row = capped.transition[s]
-        assert row[s] <= MAX_SELF_LOOP + 1e-9, f"row {s} self-loop not capped: {row}"
+        assert row[s] <= MAX_SELF_LOOP[s] + 1e-9, f"row {s} self-loop not capped: {row}"
         assert abs(sum(row) - 1.0) < 1e-9, f"row {s} not normalized: {row}"
-    # Untouched row passes through unchanged.
+    # Untouched row passes through unchanged (0.9 is below the disrupted cap).
     assert capped.transition[1] == (0.08, 0.9, 0.02)
     # Off-diagonal proportions are preserved when redistributing freed mass.
     assert capped.transition[0][1] / capped.transition[0][2] == _approx(4.0)
@@ -127,9 +127,9 @@ def test_cap_self_loops_handles_zero_off_diagonal() -> None:
         )
     )
     row = capped.transition[2]
-    assert row[2] == _approx(MAX_SELF_LOOP)
-    assert row[0] == _approx((1.0 - MAX_SELF_LOOP) / 2)
-    assert row[1] == _approx((1.0 - MAX_SELF_LOOP) / 2)
+    assert row[2] == _approx(MAX_SELF_LOOP[2])
+    assert row[0] == _approx((1.0 - MAX_SELF_LOOP[2]) / 2)
+    assert row[1] == _approx((1.0 - MAX_SELF_LOOP[2]) / 2)
 
 
 def test_params_to_json_round_trip_shape() -> None:

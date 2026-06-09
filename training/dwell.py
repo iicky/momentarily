@@ -27,18 +27,44 @@ MIN_SAMPLES_FOR_EMPIRICAL = 5
 
 
 class DwellQuantiles(TypedDict):
-    """Quantiles of dwell duration (seconds) for a (route, state) cell."""
+    """Empirical dwell-duration summary for a (route, state[, alert_type]) cell.
+
+    Quantiles back recovery_minutes_low/median/high. The recover_by_* fractions
+    are the empirical P(dwell <= horizon) — the Worker uses them for the
+    p_normal_in_30/60/120min projection, which is otherwise a geometric estimate
+    from the transition self-loop that can't represent the heavy-tailed,
+    cause-dependent recovery curve (delays clear fast, planned work lingers).
+    See momentarily-<recovery-prob>.
+    """
 
     n: int
     q25_sec: int
     median_sec: int
     q75_sec: int
+    recover_by_30: float
+    recover_by_60: float
+    recover_by_120: float
 
 
 def _quantile(sorted_sec: list[int], q: float) -> int:
     """Sample quantile via the nearest-rank rule. sorted_sec must be non-empty."""
     idx = max(0, min(len(sorted_sec) - 1, int(q * len(sorted_sec))))
     return sorted_sec[idx]
+
+
+def _make_cell(dwells: list[int]) -> DwellQuantiles:
+    """Build a DwellQuantiles (quantiles + recovery fractions) from dwell secs."""
+    dwells.sort()
+    n = len(dwells)
+    return DwellQuantiles(
+        n=n,
+        q25_sec=_quantile(dwells, 0.25),
+        median_sec=_quantile(dwells, 0.50),
+        q75_sec=_quantile(dwells, 0.75),
+        recover_by_30=sum(1 for s in dwells if s <= 1800) / n,
+        recover_by_60=sum(1 for s in dwells if s <= 3600) / n,
+        recover_by_120=sum(1 for s in dwells if s <= 7200) / n,
+    )
 
 
 def compute_dwell_quantiles(
@@ -57,13 +83,7 @@ def compute_dwell_quantiles(
     for (route, state), dwells in by_cell.items():
         if len(dwells) < min_samples:
             continue
-        dwells.sort()
-        out[route][state] = DwellQuantiles(
-            n=len(dwells),
-            q25_sec=_quantile(dwells, 0.25),
-            median_sec=_quantile(dwells, 0.50),
-            q75_sec=_quantile(dwells, 0.75),
-        )
+        out[route][state] = _make_cell(dwells)
     return dict(out)
 
 
@@ -97,13 +117,7 @@ def compute_dwell_quantiles_by_alert(
     for (route, state, alert_type), dwells in by_cell.items():
         if len(dwells) < min_samples:
             continue
-        dwells.sort()
-        out[route][state][alert_type] = DwellQuantiles(
-            n=len(dwells),
-            q25_sec=_quantile(dwells, 0.25),
-            median_sec=_quantile(dwells, 0.50),
-            q75_sec=_quantile(dwells, 0.75),
-        )
+        out[route][state][alert_type] = _make_cell(dwells)
     return {
         r: {s: dict(by_at) for s, by_at in by_state.items()}
         for r, by_state in out.items()

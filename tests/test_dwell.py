@@ -46,6 +46,17 @@ def test_cell_at_floor_is_emitted() -> None:
     assert cell["median_sec"] == 600
 
 
+def test_recovery_fractions() -> None:
+    # 3 regimes recover in 5 min, 3 in 90 min.
+    transitions = [_tr("A", "disrupted", 300) for _ in range(3)] + [
+        _tr("A", "disrupted", 5400) for _ in range(3)
+    ]
+    cell = compute_dwell_quantiles(transitions)["A"]["disrupted"]
+    assert cell["recover_by_30"] == 0.5  # only the 5-min regimes
+    assert cell["recover_by_60"] == 0.5  # 90 min still out at 60
+    assert cell["recover_by_120"] == 1.0  # all recovered by 120
+
+
 def test_quantiles_are_per_route_per_state() -> None:
     transitions = (
         [_tr("A", "disrupted", 60 * (i + 1)) for i in range(10)]  # 1..10 min

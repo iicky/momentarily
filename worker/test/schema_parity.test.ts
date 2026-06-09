@@ -278,4 +278,54 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     expect(snap.route_status['1']!.inference!.is_disrupted).toBe(false);
     expect(snap.route_status['1']!.inference!.recovery_minutes).toBe(0);
   });
+
+  test('p_normal_in_X uses empirical recovery fractions when a dwell cell exists', () => {
+    const trained = {
+      schema_version: '1',
+      trained_at: 1,
+      routes: {},
+      dwell: {
+        '1': {
+          disrupted: {
+            n: 50,
+            q25_sec: 600,
+            median_sec: 1800,
+            q75_sec: 5400,
+            recover_by_30: 0.4,
+            recover_by_60: 0.7,
+            recover_by_120: 0.95,
+          },
+        },
+      },
+      dwellByAlert: {},
+    };
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: snapMapWithAlerts('1', 1),
+      rolls: {
+        '1': {
+          filter: {
+            probabilities: [0.05, 0.94, 0.01],
+            regime_entered_at: 1_699_990_000,
+            last_updated_at: 1_700_000_000,
+          },
+          published: {
+            label: 'disrupted',
+            pending_state: 'disrupted',
+            pending_streak: 5,
+            last_updated_at: 1_700_000_000,
+          },
+          alert_type_at_entry: 'Delays',
+        },
+      },
+      trainedParams: trained,
+      tickSeconds: TICK_SECONDS,
+    });
+    const inf = snap.route_status['1']!.inference!;
+    // Empirical recovery curve replaces the geometric projection.
+    expect(inf.p_normal_in_30min).toBe(0.4);
+    expect(inf.p_normal_in_60min).toBe(0.7);
+    expect(inf.p_normal_in_120min).toBe(0.95);
+  });
 });

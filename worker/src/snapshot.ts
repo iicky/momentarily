@@ -410,6 +410,12 @@ function buildInference(
   const p30 = projectForward(roll.filter, params, ticksFor(30));
   const p60 = projectForward(roll.filter, params, ticksFor(60));
   const p120 = projectForward(roll.filter, params, ticksFor(120));
+  // Geometric projection by default; overridden below with the empirical
+  // recovery curve when a dwell cell exists (it's cause-aware and heavy-tailed,
+  // where the projection is neither — roughly halves 120-min Brier).
+  let p_normal_in_30 = p30[0];
+  let p_normal_in_60 = p60[0];
+  let p_normal_in_120 = p120[0];
 
   const argmaxIdx = argmaxOf(probs);
 
@@ -443,6 +449,11 @@ function buildInference(
       recovery_minutes_low = clamp(secToMin(empirical.q25_sec));
       recovery_minutes_high = clamp(secToMin(empirical.q75_sec));
       recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
+      // Same empirical cell drives the recovery-probability projection.
+      if (empirical.recover_by_30 !== undefined) p_normal_in_30 = empirical.recover_by_30;
+      if (empirical.recover_by_60 !== undefined) p_normal_in_60 = empirical.recover_by_60;
+      if (empirical.recover_by_120 !== undefined)
+        p_normal_in_120 = empirical.recover_by_120;
     } else {
       const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
       const dwellTicks = dwellQuantiles(selfLoop);
@@ -477,9 +488,9 @@ function buildInference(
     recovery_minutes_low,
     recovery_minutes_high,
     recovery_indeterminate,
-    p_normal_in_30min: p30[0],
-    p_normal_in_60min: p60[0],
-    p_normal_in_120min: p120[0],
+    p_normal_in_30min: p_normal_in_30,
+    p_normal_in_60min: p_normal_in_60,
+    p_normal_in_120min: p_normal_in_120,
     model_warming_up,
   };
 }

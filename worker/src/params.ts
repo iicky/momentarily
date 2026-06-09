@@ -35,6 +35,11 @@ const DwellQuantilesSchema = z.object({
   q25_sec: z.number().int().nonnegative(),
   median_sec: z.number().int().nonnegative(),
   q75_sec: z.number().int().nonnegative(),
+  // Empirical P(dwell <= horizon). Optional for back-compat with params.json
+  // written before the recovery-probability work.
+  recover_by_30: z.number().min(0).max(1).optional(),
+  recover_by_60: z.number().min(0).max(1).optional(),
+  recover_by_120: z.number().min(0).max(1).optional(),
 });
 
 // Per-route, per-prev-state empirical dwell quantiles from the trainer.
@@ -65,6 +70,9 @@ export interface DwellQuantiles {
   q25_sec: number;
   median_sec: number;
   q75_sec: number;
+  recover_by_30?: number | undefined;
+  recover_by_60?: number | undefined;
+  recover_by_120?: number | undefined;
 }
 
 export type DwellByState = Record<string, DwellQuantiles>;

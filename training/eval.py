@@ -315,6 +315,13 @@ def recovery_metrics(
     by_alert_cov: dict[str, list[int]] = {}
 
     for p in predictions:
+        # Recovery time is only meaningful during a disruption. A route that is
+        # already normal isn't "recovering" — it predicts recovery_minutes=0, and
+        # grading that against time-until-the-next-disruption (the end of the
+        # current normal regime) swamps MAE and pins IQR coverage near zero. Skip
+        # them so the metric reflects actual recoveries. See momentarily-qsl.
+        if p.condition == "normal":
+            continue
         # Indeterminate rows are clamped, not predicted — including them would
         # bias MAE toward the clamp ceiling. See momentarily-x25.
         if p.recovery_indeterminate:

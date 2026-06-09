@@ -113,6 +113,7 @@ def test_recovery_perfect_when_dwell_matches_prediction():
     preds = [
         _pred(
             ts=t0,
+            condition="disrupted",
             regime_entered_at=t0,
             recovery_minutes=30,
             recovery_minutes_low=15,
@@ -139,7 +140,9 @@ def test_recovery_perfect_when_dwell_matches_prediction():
 def test_recovery_mae_when_off_by_15_min():
     t0 = 1_700_000_000
     # Predicted 30 min, actual 45 min → MAE 15.
-    preds = [_pred(ts=t0, regime_entered_at=t0, recovery_minutes=30)]
+    preds = [
+        _pred(ts=t0, condition="disrupted", regime_entered_at=t0, recovery_minutes=30)
+    ]
     transitions = [
         TransitionRecord(
             ts=t0 + 2700,
@@ -172,6 +175,7 @@ def test_recovery_skips_indeterminate_predictions():
     preds = [
         _pred(
             ts=t0,
+            condition="disrupted",
             regime_entered_at=t0,
             recovery_minutes=1440,  # clamped at ceiling
             recovery_minutes_low=1440,
@@ -181,6 +185,7 @@ def test_recovery_skips_indeterminate_predictions():
         _pred(
             ts=t0 + 100,
             route="2",
+            condition="disrupted",
             regime_entered_at=t0 + 100,
             recovery_minutes=30,
             recovery_minutes_low=15,
@@ -242,6 +247,7 @@ def test_recovery_iqr_coverage():
     preds = [
         _pred(
             ts=t0,
+            condition="disrupted",
             regime_entered_at=t0,
             recovery_minutes=30,
             recovery_minutes_low=15,
@@ -250,6 +256,7 @@ def test_recovery_iqr_coverage():
         _pred(
             ts=t0 + 100,
             route="2",
+            condition="disrupted",
             regime_entered_at=t0 + 100,
             recovery_minutes=30,
             recovery_minutes_low=15,
@@ -279,6 +286,36 @@ def test_recovery_iqr_coverage():
     r = recovery_metrics(preds, transitions)
     assert r.overall.n == 2
     assert r.overall.iqr_coverage == 0.5
+
+
+def test_recovery_skips_normal_predictions():
+    """A route already in `normal` isn't recovering — its recovery_minutes=0
+    prediction must not be graded against time-until-the-next-disruption, which
+    would swamp the metric. See momentarily-qsl."""
+    t0 = 1_700_000_000
+    preds = [
+        _pred(
+            ts=t0,
+            condition="normal",
+            regime_entered_at=t0,
+            recovery_minutes=0,
+            recovery_minutes_low=0,
+            recovery_minutes_high=0,
+        )
+    ]
+    transitions = [
+        TransitionRecord(
+            ts=t0 + 3600,
+            route="1",
+            prev_state="normal",
+            new_state="disrupted",
+            regime_entered_at=t0,
+            exited_at=t0 + 3600,
+            dwell_sec=3600,
+        )
+    ]
+    r = recovery_metrics(preds, transitions)
+    assert r.overall.n == 0
 
 
 def test_build_eval_structure():

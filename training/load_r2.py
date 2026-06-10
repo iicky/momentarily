@@ -224,9 +224,15 @@ def build_tick_observations(
             obs = Observation(
                 alert_count=len(alerts),
                 severity_sum=sum(so for so, _at in alerts.values()),
+                # "No Scheduled Service" is deliberately NOT a suspension: it's
+                # scheduled absence (overnight/weekend non-service on B, W, 7X,
+                # ...), which is normal operations. Counting it made ~41% of
+                # truth ticks "suspended" in the 2026-06-09 shadow review. It
+                # still contributes to alert_count/severity_sum. Mirrors
+                # worker/src/derive.ts. See momentarily-vk0.3.
                 has_suspended_alert=_match(
                     types,
-                    ("Suspend", "No Trains", "No Scheduled Service"),
+                    ("Suspend", "No Trains"),
                     exclude_prefix="Planned -",
                 ),
                 has_delays=_match(

@@ -170,9 +170,12 @@ function buildRouteSnapshot(
   const observation: Observation = {
     alert_count: alerts.length,
     severity_sum: alerts.reduce((acc, a) => acc + a.sort_order, 0),
+    // "No Scheduled Service" is scheduled absence (overnight/weekend
+    // non-service), not a suspension — keep it out of this flag. Mirrors
+    // training/load_r2.py. See momentarily-vk0.3.
     has_suspended_alert: anyMatch(
       types,
-      ['Suspend', 'No Trains', 'No Scheduled Service'],
+      ['Suspend', 'No Trains'],
       'Planned -',
     ),
     has_delays: anyMatch(types, ['Delays', 'Severe Delays'], 'Planned -'),

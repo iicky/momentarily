@@ -20,12 +20,13 @@ def _tr(
     dwell_sec: int,
     ts: int = 0,
     alert_type: str | None = None,
+    new_state: str = "normal",
 ) -> TransitionRecord:
     return TransitionRecord(
         ts=ts,
         route=route,
         prev_state=prev,
-        new_state="normal",
+        new_state=new_state,
         regime_entered_at=ts - dwell_sec,
         exited_at=ts,
         dwell_sec=dwell_sec,
@@ -116,6 +117,57 @@ def test_by_alert_thin_cause_cell_is_omitted() -> None:
     ]
     out = compute_dwell_quantiles_by_alert(transitions)
     assert set(out["A"]["disrupted"].keys()) == {"Delays"}
+
+
+# --- Kaplan-Meier right-censoring (momentarily-vk0.6) ---
+
+
+def test_open_regime_censors_the_tail() -> None:
+    # 5 completed 10-min disrupted regimes, plus a final transition INTO
+    # disrupted whose regime is still running ~28h later. Without censoring
+    # the cell says "always recovers in 10 min"; KM caps what it can claim.
+    transitions = [
+        _tr("A", "disrupted", 600, ts=10_000 * (i + 1)) for i in range(5)
+    ] + [_tr("A", "normal", 9_400, ts=60_000, new_state="disrupted")]
+    out = compute_dwell_quantiles(transitions, window_end=160_000)
+    cell = out["A"]["disrupted"]
+    assert cell["n"] == 5
+    assert cell["n_censored"] == 1
+    # KM: at t=600, 5 of 6 at-risk recover → F(600) = 5/6, not 1.0.
+    assert abs(cell["recover_by_30"] - 5 / 6) < 1e-9
+    assert cell["median_sec"] == 600
+    # Upper quantiles the KM curve can't reach clamp to the censored duration,
+    # so the curve's tail reflects the still-running regime.
+    assert cell["curve_sec"][-1] == 100_000
+
+
+def test_no_window_end_means_no_censoring() -> None:
+    transitions = [
+        _tr("A", "disrupted", 600, ts=10_000 * (i + 1)) for i in range(5)
+    ] + [_tr("A", "normal", 9_400, ts=60_000, new_state="disrupted")]
+    cell = compute_dwell_quantiles(transitions)["A"]["disrupted"]
+    assert cell["n_censored"] == 0
+    assert cell["recover_by_30"] == 1.0
+
+
+def test_censored_sample_does_not_count_toward_floor() -> None:
+    # 4 completed (below floor) + 1 censored must NOT emit the cell.
+    transitions = [
+        _tr("A", "disrupted", 600, ts=10_000 * (i + 1)) for i in range(4)
+    ] + [_tr("A", "normal", 9_400, ts=50_000, new_state="disrupted")]
+    assert compute_dwell_quantiles(transitions, window_end=160_000) == {}
+
+
+def test_open_regime_censors_only_its_own_state() -> None:
+    # Final regime is normal — the disrupted cell must stay uncensored.
+    transitions = [
+        _tr("A", "disrupted", 600, ts=10_000 * (i + 1)) for i in range(5)
+    ]
+    out = compute_dwell_quantiles(transitions, window_end=160_000)
+    assert out["A"]["disrupted"]["n_censored"] == 0
+    # The open normal regime censored into (A, normal), but with zero
+    # completed normal dwells that cell is below floor and omitted.
+    assert "normal" not in out["A"]
 
 
 # --- curve_sec + conditional survival (momentarily-vk0.1) ---

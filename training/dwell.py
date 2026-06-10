@@ -48,7 +48,8 @@ class DwellQuantiles(TypedDict):
     is far below P(dwell <= 30min). See momentarily-vk0.1.
     """
 
-    n: int
+    n: int  # completed (event) observations — the min-samples floor keys on this
+    n_censored: int  # right-censored (still-running at window end) observations
     q25_sec: int
     median_sec: int
     q75_sec: int
@@ -58,28 +59,107 @@ class DwellQuantiles(TypedDict):
     curve_sec: list[int]
 
 
-def _quantile(sorted_sec: list[int], q: float) -> int:
-    """Sample quantile via the nearest-rank rule. sorted_sec must be non-empty."""
-    idx = max(0, min(len(sorted_sec) - 1, int(q * len(sorted_sec))))
-    return sorted_sec[idx]
+# One observation for the estimator: (duration_sec, completed). completed=False
+# means the regime was still running at the observation boundary (right-
+# censored) — we know dwell > duration, not its value.
+DwellSample = tuple[int, bool]
 
 
-def _make_cell(dwells: list[int]) -> DwellQuantiles:
-    """Build a DwellQuantiles (quantiles + recovery fractions) from dwell secs."""
-    dwells.sort()
-    n = len(dwells)
+def _km_cdf_points(samples: list[DwellSample]) -> list[tuple[int, float]]:
+    """Kaplan-Meier product-limit CDF: [(event_time, F(event_time))], ascending.
+
+    Censored observations reduce the at-risk count without registering an
+    event; ties between a censored mark and an event at the same time follow
+    the standard convention (censored stays at risk through the event). With
+    no censoring this reduces exactly to the empirical CDF k/n.
+    """
+    ordered = sorted(samples)
+    n_total = len(ordered)
+    points: list[tuple[int, float]] = []
+    survival = 1.0
+    at_risk = n_total
+    i = 0
+    while i < n_total:
+        t = ordered[i][0]
+        deaths = 0
+        ties = 0
+        while i < n_total and ordered[i][0] == t:
+            if ordered[i][1]:
+                deaths += 1
+            ties += 1
+            i += 1
+        if deaths > 0:
+            survival *= 1.0 - deaths / at_risk
+            points.append((t, 1.0 - survival))
+        at_risk -= ties
+    return points
+
+
+def _km_quantile(points: list[tuple[int, float]], q: float, max_duration: int) -> int:
+    """Smallest event time t with F(t) >= q. Under heavy censoring the KM CDF
+    may never reach q; clamp to the largest observed duration (censored or
+    not) — biased low, but bounded and still >= every completed dwell."""
+    for t, f in points:
+        if f >= q - 1e-12:
+            return t
+    return max_duration
+
+
+def _km_cdf_at(points: list[tuple[int, float]], horizon: int) -> float:
+    """F(horizon): the last KM step at or below the horizon."""
+    out = 0.0
+    for t, f in points:
+        if t > horizon:
+            break
+        out = f
+    return out
+
+
+def _make_cell(samples: list[DwellSample]) -> DwellQuantiles:
+    """Build a DwellQuantiles from (duration, completed) samples via
+    Kaplan-Meier, so right-censored (still-running) regimes push the tail up
+    instead of silently vanishing. See momentarily-vk0.6."""
+    points = _km_cdf_points(samples)
+    n_events = sum(1 for _d, completed in samples if completed)
+    n_censored = len(samples) - n_events
+    max_duration = max(d for d, _completed in samples)
     return DwellQuantiles(
-        n=n,
-        q25_sec=_quantile(dwells, 0.25),
-        median_sec=_quantile(dwells, 0.50),
-        q75_sec=_quantile(dwells, 0.75),
-        recover_by_30=sum(1 for s in dwells if s <= 1800) / n,
-        recover_by_60=sum(1 for s in dwells if s <= 3600) / n,
-        recover_by_120=sum(1 for s in dwells if s <= 7200) / n,
+        n=n_events,
+        n_censored=n_censored,
+        q25_sec=_km_quantile(points, 0.25, max_duration),
+        median_sec=_km_quantile(points, 0.50, max_duration),
+        q75_sec=_km_quantile(points, 0.75, max_duration),
+        recover_by_30=_km_cdf_at(points, 1800),
+        recover_by_60=_km_cdf_at(points, 3600),
+        recover_by_120=_km_cdf_at(points, 7200),
         curve_sec=[
-            _quantile(dwells, i / (CURVE_POINTS - 1)) for i in range(CURVE_POINTS)
+            _km_quantile(points, i / (CURVE_POINTS - 1), max_duration)
+            for i in range(CURVE_POINTS)
         ],
     )
+
+
+def _open_regimes(
+    transitions: list[TransitionRecord], window_end: int
+) -> dict[tuple[str, str], int]:
+    """Right-censored observations: each route's final regime (the new_state of
+    its last transition) is still running at window_end — we know its dwell
+    exceeds window_end − exited_at. Returns {(route, state): censored_duration}.
+
+    Only the final regime per route is open; every earlier regime is fully
+    described by the next transition's prev_state record.
+    """
+    last_by_route: dict[str, TransitionRecord] = {}
+    for t in transitions:
+        prev = last_by_route.get(t.route)
+        if prev is None or t.ts > prev.ts:
+            last_by_route[t.route] = t
+    out: dict[tuple[str, str], int] = {}
+    for route, t in last_by_route.items():
+        duration = window_end - t.exited_at
+        if duration > 0:
+            out[(route, t.new_state)] = duration
+    return out
 
 
 # --- Conditional survival math (reference implementation) ---
@@ -150,19 +230,29 @@ def compute_dwell_quantiles(
     transitions: list[TransitionRecord],
     *,
     min_samples: int = MIN_SAMPLES_FOR_EMPIRICAL,
+    window_end: int | None = None,
 ) -> dict[str, dict[str, DwellQuantiles]]:
     """Return {route: {state: DwellQuantiles}} for each (route, prev_state)
-    with at least `min_samples` transitions. Sparser cells are omitted — the
-    consumer should fall back to its analytic estimate."""
-    by_cell: dict[tuple[str, str], list[int]] = defaultdict(list)
+    with at least `min_samples` completed transitions. Sparser cells are
+    omitted — the consumer should fall back to its analytic estimate.
+
+    With `window_end`, each route's still-open final regime joins its cell as
+    a right-censored observation (Kaplan-Meier), so a marathon regime in
+    progress pushes the tail up instead of being invisible until it ends.
+    See momentarily-vk0.6.
+    """
+    by_cell: dict[tuple[str, str], list[DwellSample]] = defaultdict(list)
     for t in transitions:
-        by_cell[(t.route, t.prev_state)].append(int(t.dwell_sec))
+        by_cell[(t.route, t.prev_state)].append((int(t.dwell_sec), True))
+    if window_end is not None:
+        for (route, state), duration in _open_regimes(transitions, window_end).items():
+            by_cell[(route, state)].append((duration, False))
 
     out: dict[str, dict[str, DwellQuantiles]] = defaultdict(dict)
-    for (route, state), dwells in by_cell.items():
-        if len(dwells) < min_samples:
+    for (route, state), samples in by_cell.items():
+        if sum(1 for _d, completed in samples if completed) < min_samples:
             continue
-        out[route][state] = _make_cell(dwells)
+        out[route][state] = _make_cell(samples)
     return dict(out)
 
 
@@ -183,20 +273,27 @@ def compute_dwell_quantiles_by_alert(
     dwell under "Planned - Stops Skipped" is structurally different from the
     same route under "Delays", so conditioning on the cause tightens the
     recovery interval.
+
+    No censored observations here: transition records only carry the
+    alert_type for the *completed* (prev_state) regime, so a route's open
+    final regime has no known cause. It is censored into the (route, state)
+    aggregate instead — the consumer's fallback when a cause cell is absent.
     """
-    by_cell: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+    by_cell: dict[tuple[str, str, str], list[DwellSample]] = defaultdict(list)
     for t in transitions:
         if t.alert_type_at_entry is None:
             continue
-        by_cell[(t.route, t.prev_state, t.alert_type_at_entry)].append(int(t.dwell_sec))
+        by_cell[(t.route, t.prev_state, t.alert_type_at_entry)].append(
+            (int(t.dwell_sec), True)
+        )
 
     out: dict[str, dict[str, dict[str, DwellQuantiles]]] = defaultdict(
         lambda: defaultdict(dict)
     )
-    for (route, state, alert_type), dwells in by_cell.items():
-        if len(dwells) < min_samples:
+    for (route, state, alert_type), samples in by_cell.items():
+        if len(samples) < min_samples:
             continue
-        out[route][state][alert_type] = _make_cell(dwells)
+        out[route][state][alert_type] = _make_cell(samples)
     return {
         r: {s: dict(by_at) for s, by_at in by_state.items()}
         for r, by_state in out.items()

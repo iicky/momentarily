@@ -343,6 +343,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         "calibration": eval_doc["calibration"],
         "recovery": eval_doc["recovery"],
+        "current_params": eval_doc["current_params"],
         "confusion": conf,
         "changepoint_alignment": {
             "window_minutes": CHANGEPOINT_WINDOW_MIN,

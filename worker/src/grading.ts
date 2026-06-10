@@ -42,6 +42,10 @@ export interface PredictionRecord {
   // the route). null when no alert is active. Lets the grader segment
   // calibration by cause. See momentarily-22k.
   primary_alert_type: string | null;
+  // trained_at of the params.json that produced this prediction (0 = bootstrap).
+  // The grader segments by this so a fresh retrain's predictions are judged
+  // separately from old-params rows in the same window. See momentarily-vk0.5.
+  params_version: number;
 }
 
 export interface TransitionRecord {

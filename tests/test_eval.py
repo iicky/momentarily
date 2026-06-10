@@ -29,11 +29,13 @@ def _pred(
     recovery_minutes_low: int = 15,
     recovery_minutes_high: int = 60,
     recovery_indeterminate: bool = False,
+    params_version: int = 0,
 ) -> PredictionRecord:
     return PredictionRecord(
         ts=ts,
         route=route,
         condition=condition,
+        params_version=params_version,
         regime_entered_at=regime_entered_at if regime_entered_at is not None else ts,
         p_normal=0.95,
         p_disrupted=0.04,
@@ -372,3 +374,45 @@ def test_build_eval_structure():
     assert {c["horizon_min"] for c in doc["calibration"]} == {30, 60, 120}
     assert "overall" in doc["recovery"]
     assert doc["recovery"]["overall"]["n"] == 0
+    # No version tags → no current-params segment.
+    assert doc["current_params"] is None
+
+
+def test_build_eval_segments_by_latest_params_version():
+    # 12 ticks under params v100, then 12 under v200. The current-params
+    # segment must grade only the v200 predictions — full-window metrics mix
+    # model versions and dilute the latest retrain. See momentarily-vk0.5.
+    t0 = 1_700_000_000
+    preds = [
+        _pred(ts=t0 + i * 300, params_version=100 if i < 12 else 200)
+        for i in range(24)
+    ]
+    doc = build_eval(preds, [], window_start=t0, window_end=t0 + 86400)
+    cp = doc["current_params"]
+    assert cp is not None
+    assert cp["trained_at"] == 200
+    assert cp["n_predictions"] == 12
+    # 12 v200 ticks, 30-min horizon → 12 − 6 gradeable... minus none: futures
+    # exist within the v200 block for the first 6. n = 6.
+    cal30 = next(c for c in cp["calibration"] if c["horizon_min"] == 30)
+    assert cal30["n"] == 6
+
+
+def test_prediction_record_from_json_defaults_params_version():
+    raw = {
+        "ts": 1,
+        "route": "1",
+        "condition": "normal",
+        "regime_entered_at": 1,
+        "p_normal": 0.9,
+        "p_disrupted": 0.05,
+        "p_suspended": 0.05,
+        "p_normal_in_30min": 0.9,
+        "p_normal_in_60min": 0.9,
+        "p_normal_in_120min": 0.9,
+        "recovery_minutes": 0,
+        "recovery_minutes_low": 0,
+        "recovery_minutes_high": 0,
+    }
+    assert PredictionRecord.from_json(raw).params_version == 0
+    assert PredictionRecord.from_json({**raw, "params_version": 17}).params_version == 17

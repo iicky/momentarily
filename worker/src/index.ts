@@ -277,6 +277,7 @@ export default {
           recovery_minutes_high: inf.recovery_minutes_high,
           recovery_indeterminate: inf.recovery_indeterminate,
           primary_alert_type: rs.primary_alert_type,
+          params_version: paramsVersion,
         });
       }
       try {

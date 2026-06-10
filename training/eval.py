@@ -66,6 +66,12 @@ class PredictionRecord:
     # primary_alert_type at this tick. Defaults None for JSONL written before
     # momentarily-22k. Lets the grader segment calibration by cause.
     primary_alert_type: str | None = None
+    # trained_at of the params.json active when this prediction was made.
+    # 0 for bootstrap params or JSONL written before momentarily-vk0.5.
+    # Predictions are prequential (params are always trained on data strictly
+    # before the prediction), so this is a version tag for segmentation, not a
+    # leakage guard.
+    params_version: int = 0
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -85,6 +91,7 @@ class PredictionRecord:
             recovery_minutes_high=int(raw["recovery_minutes_high"]),
             recovery_indeterminate=bool(raw.get("recovery_indeterminate", False)),
             primary_alert_type=raw.get("primary_alert_type"),
+            params_version=int(raw.get("params_version") or 0),
         )
 
 
@@ -424,6 +431,31 @@ def _stats_from(
 # --- Eval assembly + publish ---
 
 
+def _calibration_as_dicts(calibrations: list[CalibrationResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "horizon_min": c.horizon_min,
+            "n": c.n,
+            "brier": c.brier,
+            "brier_persistence": c.brier_persistence,
+            "brier_climatology": c.brier_climatology,
+            "bss_persistence": c.bss_persistence,
+            "bss_climatology": c.bss_climatology,
+            "bins": [
+                {
+                    "bin_lo": b.bin_lo,
+                    "bin_hi": b.bin_hi,
+                    "n": b.n,
+                    "mean_pred": b.mean_pred,
+                    "mean_outcome": b.mean_outcome,
+                }
+                for b in c.bins
+            ],
+        }
+        for c in calibrations
+    ]
+
+
 def build_eval(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
@@ -433,33 +465,43 @@ def build_eval(
 ) -> dict[str, Any]:
     calibrations = [calibrate(predictions, h) for h in HORIZONS_MIN]
     recovery = recovery_metrics(predictions, transitions)
+
+    # Per-params-version segment: the full-window metrics mix every params
+    # version active during the window, which dilutes (or masks) the effect of
+    # the latest retrain. The pipeline is prequential — params are always
+    # trained on data strictly before the prediction — so this is isolation of
+    # the current model's performance, not a leakage guard. Empty/None when no
+    # prediction carries a version tag (pre-vk0.5 JSONL). See momentarily-vk0.5.
+    latest_version = max((p.params_version for p in predictions), default=0)
+    current_params: dict[str, Any] | None = None
+    if latest_version > 0:
+        current = [p for p in predictions if p.params_version == latest_version]
+        current_recovery = recovery_metrics(current, transitions)
+        current_params = {
+            "trained_at": latest_version,
+            "n_predictions": len(current),
+            "calibration": _calibration_as_dicts(
+                [calibrate(current, h) for h in HORIZONS_MIN]
+            ),
+            "recovery": {
+                "overall": _stats_as_dict(current_recovery.overall),
+                "by_route": {
+                    r: _stats_as_dict(s) for r, s in current_recovery.by_route.items()
+                },
+                "by_alert_type": {
+                    at: _stats_as_dict(s)
+                    for at, s in current_recovery.by_alert_type.items()
+                },
+            },
+        }
+
     return {
         "generated_at": int(datetime.now(UTC).timestamp()),
         "window": {"start": window_start, "end": window_end},
         "predictions_seen": len(predictions),
         "transitions_seen": len(transitions),
-        "calibration": [
-            {
-                "horizon_min": c.horizon_min,
-                "n": c.n,
-                "brier": c.brier,
-                "brier_persistence": c.brier_persistence,
-                "brier_climatology": c.brier_climatology,
-                "bss_persistence": c.bss_persistence,
-                "bss_climatology": c.bss_climatology,
-                "bins": [
-                    {
-                        "bin_lo": b.bin_lo,
-                        "bin_hi": b.bin_hi,
-                        "n": b.n,
-                        "mean_pred": b.mean_pred,
-                        "mean_outcome": b.mean_outcome,
-                    }
-                    for b in c.bins
-                ],
-            }
-            for c in calibrations
-        ],
+        "current_params": current_params,
+        "calibration": _calibration_as_dicts(calibrations),
         "recovery": {
             "overall": _stats_as_dict(recovery.overall),
             "by_route": {r: _stats_as_dict(s) for r, s in recovery.by_route.items()},

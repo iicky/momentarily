@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -101,24 +100,35 @@ def changepoint_alignment(
     transitions: list[TransitionRecord],
     truth: dict[tuple[str, int], str],
     *,
+    window_start: int,
+    window_end: int,
     window_minutes: int = CHANGEPOINT_WINDOW_MIN,
 ) -> list[float | None]:
     """For each HMM regime transition, return signed minutes to the nearest
-    MTA-state change for that route. None when no MTA change is within ±window."""
-    by_route: dict[str, list[tuple[int, str]]] = defaultdict(list)
-    for (route, tick), state in truth.items():
-        by_route[route].append((tick, state))
-    for route in by_route:
-        by_route[route].sort()
+    MTA-state change for that route. None when no MTA change is within ±window.
+
+    The truth dict only contains (route, tick) pairs where alerts were active —
+    a route with no alerts has no entry. Walking only present ticks therefore
+    never sees the change *back* to normal when alerts clear, making every
+    recovery changepoint invisible (the 2026-06-09 review matched 25/1401
+    transitions largely because of this). Walk the full tick grid instead,
+    treating absent ticks as 'normal'. See momentarily-vk0.2.
+    """
+    routes = {route for route, _tick in truth}
+    first_tick = snap_tick(window_start)
+    last_tick = snap_tick(window_end)
 
     mta_change_ticks: dict[str, list[int]] = {}
-    for route, series in by_route.items():
+    for route in routes:
         change_ticks: list[int] = []
         prev = "normal"
-        for tick, state in series:
+        tick = first_tick
+        while tick <= last_tick:
+            state = truth.get((route, tick), "normal")
             if state != prev:
                 change_ticks.append(tick)
                 prev = state
+            tick += TICK_SECONDS
         mta_change_ticks[route] = change_ticks
 
     window_sec = window_minutes * 60
@@ -162,8 +172,16 @@ def plot_reliability(eval_doc: dict[str, Any], out: Path) -> None:
         if brier is None:
             ax.set_title(f"horizon = {cal['horizon_min']} min (n=0)")
         else:
+            bss_p = cal.get("bss_persistence")
+            bss_c = cal.get("bss_climatology")
+            skill = (
+                f"\nBSS vs persist={bss_p:.2f}, vs climo={bss_c:.2f}"
+                if bss_p is not None and bss_c is not None
+                else ""
+            )
             ax.set_title(
-                f"horizon = {cal['horizon_min']} min\nn={cal['n']}, Brier={brier:.3f}"
+                f"horizon = {cal['horizon_min']} min\n"
+                f"n={cal['n']}, Brier={brier:.3f}{skill}"
             )
         ax.set_xlabel("predicted P(normal)")
         ax.set_xlim(0, 1)
@@ -304,7 +322,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         preds, trans, window_start=window_start, window_end=window_end
     )
     conf = confusion(preds, truth)
-    deltas = changepoint_alignment(trans, truth)
+    deltas = changepoint_alignment(
+        trans, truth, window_start=window_start, window_end=window_end
+    )
 
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")

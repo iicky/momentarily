@@ -302,7 +302,8 @@ def test_em_recovers_state_ordering_on_synthetic_data() -> None:
     )
     fitted, _ = fit_em(obs, init, max_iterations=40, tolerance=1e-5)
 
-    # After _sort_states_by_lambda, state 0 < state 1 < state 2 in poisson_lambda.
+    # After canonicalize_states, state 0 is the quietest; this synthetic data
+    # aligns the suspended flag with the busiest cluster, so lambda is monotone.
     lam = fitted.emissions.poisson_lambda
     assert lam[0] < lam[1] < lam[2], f"states not sorted by quietness: {lam}"
 
@@ -459,7 +460,7 @@ def test_em_prior_returns_prior_when_data_thin() -> None:
     fitted, _ = fit_em(
         obs, prior, max_iterations=5, prior_params=prior, prior_strength=100.0
     )
-    # _sort_states_by_lambda may reorder; just compare the sorted tuples.
+    # canonicalize_states may reorder; just compare the sorted tuples.
     assert sorted(fitted.emissions.poisson_lambda) == sorted(
         prior.emissions.poisson_lambda
     )
@@ -858,3 +859,63 @@ def test_canonicalize_is_a_pure_relabel() -> None:
 def test_canonicalize_noop_when_already_ordered() -> None:
     params = _default_params()  # normal<disrupted<suspended already
     assert canonicalize_states(params) is params
+
+
+def test_canonicalize_quiet_but_flagged_cluster_is_normal() -> None:
+    """The case where the two pre-consolidation ordering rules disagreed: the
+    quietest cluster carries a small suspended-flag rate (overnight blips)
+    while a busy planned-spam cluster never trips the flag. Sorting by
+    bernoulli_p first put the spam cluster on `normal`; the consolidated rule
+    keys normal on alert rate. See momentarily-vk0.7."""
+    params = HMMParams(
+        transition=(
+            (0.97, 0.02, 0.01),
+            (0.03, 0.97, 0.0),
+            (0.02, 0.01, 0.97),
+        ),
+        initial=(0.8, 0.15, 0.05),
+        emissions=EmissionParams(
+            poisson_lambda=(8.0, 0.05, 3.0),  # idx0 = planned spam, idx1 = quiet
+            gamma_alpha=(3.0, 1.0, 6.0),
+            gamma_beta=(0.4, 2.0, 0.2),
+            bernoulli_p=(0.02, 0.10, 0.9),  # quiet cluster flags more than spam
+        ),
+    )
+    canon = canonicalize_states(params)
+    assert math.isclose(canon.emissions.poisson_lambda[0], 0.05)  # quiet → normal
+    assert math.isclose(canon.emissions.bernoulli_p[2], 0.9)  # flag → suspended
+    assert math.isclose(canon.emissions.poisson_lambda[1], 8.0)  # spam → disrupted
+
+
+def test_canonicalize_ranks_across_tod_bins() -> None:
+    """With emissions_by_bin set, ranking must use per-state sums across bins —
+    bin 0 alone (which aliases .emissions) can mislead."""
+    # Bin 0 says idx0 is busier than idx1; the other four bins say the
+    # opposite, loudly. Summed: idx1 is the quiet cluster.
+    bin0 = EmissionParams(
+        poisson_lambda=(5.0, 2.0, 9.0),
+        gamma_alpha=(1.0, 1.0, 1.0),
+        gamma_beta=(1.0, 1.0, 1.0),
+        bernoulli_p=(0.9, 0.01, 0.4),
+    )
+    rest = EmissionParams(
+        poisson_lambda=(5.0, 0.1, 9.0),
+        gamma_alpha=(1.0, 1.0, 1.0),
+        gamma_beta=(1.0, 1.0, 1.0),
+        bernoulli_p=(0.9, 0.01, 0.4),
+    )
+    params = HMMParams(
+        transition=(
+            (0.97, 0.02, 0.01),
+            (0.03, 0.97, 0.0),
+            (0.02, 0.01, 0.97),
+        ),
+        initial=(0.8, 0.15, 0.05),
+        emissions=bin0,
+        emissions_by_bin=(bin0, rest, rest, rest, rest),
+    )
+    canon = canonicalize_states(params)
+    assert canon.emissions_by_bin is not None
+    # normal = summed-quietest (old idx1); suspended = summed-highest flag (old idx0).
+    assert math.isclose(canon.emissions_by_bin[1].poisson_lambda[0], 0.1)
+    assert math.isclose(canon.emissions_by_bin[1].bernoulli_p[2], 0.9)

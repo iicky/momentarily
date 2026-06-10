@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from momentarily.hmm import HMMParams, Observation, canonicalize_states, fit_em
+from momentarily.hmm import HMMParams, Observation, fit_em
 from training.dwell import (
     DwellQuantiles,
     compute_dwell_quantiles,
@@ -171,7 +171,11 @@ def train(
     for series in series_by_route.values():
         pooled.extend(series)
     global_prior, _ = fit_em(pooled, BOOTSTRAP_PARAMS, max_iterations=50)
-    global_prior = canonicalize_states(_cap_self_loops(global_prior))
+    # fit_em returns canonical state order (normal/disrupted/suspended), so the
+    # per-state self-loop caps land on the regimes they were tuned for. Capping
+    # before canonicalization applied them to arbitrary EM indices. See
+    # momentarily-vk0.7.
+    global_prior = _cap_self_loops(global_prior)
 
     out: dict[str, HMMParams] = {}
     for route, series in series_by_route.items():
@@ -185,9 +189,7 @@ def train(
             prior_params=global_prior,
             prior_strength=prior_strength,
         )
-        # Anchor state identity so the quiet cluster can't sit on `disrupted`
-        # (EM label-switching latches no-alert routes into disruption).
-        out[route] = canonicalize_states(_cap_self_loops(fitted))
+        out[route] = _cap_self_loops(fitted)
     return global_prior, out
 
 
@@ -328,7 +330,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     from training.eval import load_transitions
 
     transitions = load_transitions(client, cfg.bucket, start_date, end_date)
-    dwell_q = compute_dwell_quantiles(transitions)
+    # Censoring boundary for still-open regimes: "now", clamped to the
+    # requested window so a backdated --end doesn't fabricate giant censored
+    # durations from regimes that actually ended after the window.
+    _, end_epoch = _aligned_window(start_date, end_date)
+    window_end = min(int(datetime.now(UTC).timestamp()), end_epoch)
+    dwell_q = compute_dwell_quantiles(transitions, window_end=window_end)
     dwell_q_by_alert = compute_dwell_quantiles_by_alert(transitions)
     n_dwell_cells = sum(len(by_state) for by_state in dwell_q.values())
     n_dwell_alert_cells = sum(

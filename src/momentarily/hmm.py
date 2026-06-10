@@ -142,15 +142,33 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
                     just count-defined.
       - disrupted = the remaining state.
 
+    With emissions_by_bin set, ranking uses the per-state sums across bins so
+    one unusual TOD bin (e.g. overnight, which is bin 0 and aliases
+    `.emissions`) can't misrank the whole route.
+
     The same permutation is applied to the initial vector, the transition matrix
     (rows and columns), and every per-bin emission set. The relabeled model is
-    statistically identical — only the index<->label mapping changes. See
-    momentarily-13j.
+    statistically identical — only the index<->label mapping changes. This is
+    the single state-ordering rule — fit_em applies it before returning, and
+    any post-processing keyed by state index (e.g. per-state self-loop caps)
+    must run after it. See momentarily-13j, momentarily-vk0.7.
     """
     em = params.emissions
-    normal_idx = min(range(N_STATES), key=lambda s: em.poisson_lambda[s])
+    if params.emissions_by_bin is None:
+        rank_lambda: tuple[float, ...] = em.poisson_lambda
+        rank_p: tuple[float, ...] = em.bernoulli_p
+    else:
+        rank_lambda = tuple(
+            sum(e.poisson_lambda[s] for e in params.emissions_by_bin)
+            for s in range(N_STATES)
+        )
+        rank_p = tuple(
+            sum(e.bernoulli_p[s] for e in params.emissions_by_bin)
+            for s in range(N_STATES)
+        )
+    normal_idx = min(range(N_STATES), key=lambda s: rank_lambda[s])
     rest = [s for s in range(N_STATES) if s != normal_idx]
-    suspended_idx = max(rest, key=lambda s: em.bernoulli_p[s])
+    suspended_idx = max(rest, key=lambda s: rank_p[s])
     disrupted_idx = next(s for s in rest if s != suspended_idx)
     perm = (normal_idx, disrupted_idx, suspended_idx)
 
@@ -841,68 +859,6 @@ def _em_iteration(
     return new_params, log_lik
 
 
-def _sort_states_by_lambda(params: HMMParams) -> HMMParams:
-    """Reorder states so they line up with the normal/disrupted/suspended labels.
-
-    EM is invariant to state labels (label-switching), so re-sort after fitting
-    to keep semantics consistent across runs. We rank by a composite key:
-      (bernoulli_p_suspended_flag, poisson_lambda)
-    so the state with highest P(has_suspended_alert | state) is always
-    "suspended". Without this, EM sometimes lands "suspended" on the highest-
-    Poisson cluster (planned-work alert spam) which doesn't actually carry the
-    has_suspended_alert signal — producing the flipped bernoulli_p we saw on
-    route Z. Poisson lambda is the secondary key so ties (e.g. quiet routes
-    where everything is near-zero) still break in a stable direction. See
-    momentarily-p8y.
-    """
-    if params.emissions_by_bin is None:
-        rank_p = params.emissions.bernoulli_p
-        rank_lambda = params.emissions.poisson_lambda
-    else:
-        rank_p = tuple(
-            sum(em.bernoulli_p[s] for em in params.emissions_by_bin)
-            for s in range(N_STATES)
-        )
-        rank_lambda = tuple(
-            sum(em.poisson_lambda[s] for em in params.emissions_by_bin)
-            for s in range(N_STATES)
-        )
-    order = sorted(range(N_STATES), key=lambda s: (rank_p[s], rank_lambda[s]))
-    if order == [0, 1, 2]:
-        return params
-
-    def reorder3(t: tuple[float, ...]) -> tuple[float, float, float]:
-        return (t[order[0]], t[order[1]], t[order[2]])
-
-    def reorder_emissions(em: EmissionParams) -> EmissionParams:
-        return EmissionParams(
-            poisson_lambda=reorder3(em.poisson_lambda),
-            gamma_alpha=reorder3(em.gamma_alpha),
-            gamma_beta=reorder3(em.gamma_beta),
-            bernoulli_p=reorder3(em.bernoulli_p),
-            bernoulli_p_delays=reorder3(em.bernoulli_p_delays),
-            bernoulli_p_service_change=reorder3(em.bernoulli_p_service_change),
-            bernoulli_p_planned=reorder3(em.bernoulli_p_planned),
-        )
-
-    new_emissions = reorder_emissions(params.emissions)
-    new_emissions_by_bin = (
-        tuple(reorder_emissions(em) for em in params.emissions_by_bin)
-        if params.emissions_by_bin is not None
-        else None
-    )
-    new_initial = reorder3(params.initial)
-    new_transition = tuple(
-        reorder3(tuple(params.transition[order[s]])) for s in range(N_STATES)
-    )
-    return HMMParams(
-        transition=new_transition,
-        initial=new_initial,
-        emissions=new_emissions,
-        emissions_by_bin=new_emissions_by_bin,
-    )
-
-
 def fit_em(
     observations: list[Observation],
     initial_params: HMMParams,
@@ -927,8 +883,9 @@ def fit_em(
     a regularizer for thin-data entities. `prior_strength` is in units of
     effective observations — `~100` is a sensible default for a daily corpus.
 
-    The output is re-sorted so state 0 has the smallest poisson_lambda, giving
-    stable "normal/disrupted/suspended" semantics across runs.
+    The output is passed through canonicalize_states so the index<->label
+    mapping (normal/disrupted/suspended) is stable across runs — there is
+    exactly one ordering rule; don't add another. See momentarily-vk0.7.
     """
     if not observations:
         raise ValueError("fit_em requires at least one observation")
@@ -951,4 +908,4 @@ def fit_em(
                 break
         prev = log_lik
 
-    return _sort_states_by_lambda(params), log_liks
+    return canonicalize_states(params), log_liks

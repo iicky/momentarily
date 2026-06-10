@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from training.dwell import (
+    CURVE_POINTS,
     MIN_SAMPLES_FOR_EMPIRICAL,
     compute_dwell_quantiles,
     compute_dwell_quantiles_by_alert,
+    conditional_recover_by,
+    conditional_remaining_quantile,
+    dwell_cdf,
 )
 from training.eval import TransitionRecord
 
@@ -112,3 +116,69 @@ def test_by_alert_thin_cause_cell_is_omitted() -> None:
     ]
     out = compute_dwell_quantiles_by_alert(transitions)
     assert set(out["A"]["disrupted"].keys()) == {"Delays"}
+
+
+# --- curve_sec + conditional survival (momentarily-vk0.1) ---
+
+
+def test_cell_includes_monotone_curve() -> None:
+    transitions = [_tr("A", "disrupted", 60 * (i + 1)) for i in range(10)]
+    cell = compute_dwell_quantiles(transitions)["A"]["disrupted"]
+    curve = cell["curve_sec"]
+    assert len(curve) == CURVE_POINTS
+    assert curve == sorted(curve)
+    assert curve[0] == 60  # min sample
+    assert curve[-1] == 600  # max sample
+
+
+def test_dwell_cdf_uniform_curve() -> None:
+    # Two-point curve [0, 100] ≡ uniform on [0, 100].
+    curve = [0, 100]
+    assert dwell_cdf(curve, -5) == 0.0
+    assert dwell_cdf(curve, 0) == 0.0
+    assert dwell_cdf(curve, 50) == 0.5
+    assert dwell_cdf(curve, 100) == 1.0
+    assert dwell_cdf(curve, 500) == 1.0
+
+
+def test_conditional_recover_by_uniform() -> None:
+    # Uniform [0, 100]: P(D <= 75 | D > 50) = (0.75 - 0.5) / 0.5 = 0.5.
+    curve = [0, 100]
+    assert conditional_recover_by(curve, 50, 25) == 0.5
+    # At elapsed=0 the conditional reduces to the unconditional CDF.
+    assert conditional_recover_by(curve, 0, 25) == 0.25
+    # Outlived every observed dwell → indeterminate, not a fabricated number.
+    assert conditional_recover_by(curve, 100, 25) is None
+
+
+def test_conditional_remaining_quantile_uniform() -> None:
+    # Uniform [0, 100] given D > 50: remaining is uniform on [0, 50].
+    curve = [0, 100]
+    assert conditional_remaining_quantile(curve, 50, 0.5) == 25.0
+    assert conditional_remaining_quantile(curve, 50, 0.25) == 12.5
+    assert conditional_remaining_quantile(curve, 100, 0.5) is None
+
+
+def test_conditional_recovery_decays_with_elapsed_for_heavy_tail() -> None:
+    # Heavy-tailed sample: most regimes clear fast, a few run very long. The
+    # longer a regime has survived, the lower its chance of clearing in the
+    # next 30 min — the unconditional fraction badly overstates it.
+    dwells = [300] * 6 + [600] * 6 + [1200] * 4 + [14400] * 2 + [43200] * 2
+    transitions = [_tr("A", "disrupted", d) for d in dwells]
+    curve = compute_dwell_quantiles(transitions)["A"]["disrupted"]["curve_sec"]
+
+    fresh = conditional_recover_by(curve, 0, 1800)
+    aged_1h = conditional_recover_by(curve, 3600, 1800)
+    aged_5h = conditional_recover_by(curve, 18000, 1800)
+    assert fresh is not None
+    assert aged_1h is not None
+    assert aged_5h is not None
+    assert fresh > aged_1h > aged_5h
+
+
+def test_flat_curve_at_value_is_indeterminate() -> None:
+    # All samples identical: a regime at exactly that age has outlived the
+    # whole distribution — indeterminate, not P=0.
+    curve = [600] * CURVE_POINTS
+    assert conditional_recover_by(curve, 600, 1800) is None
+    assert conditional_recover_by(curve, 0, 1800) == 1.0

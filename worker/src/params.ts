@@ -40,6 +40,10 @@ const DwellQuantilesSchema = z.object({
   recover_by_30: z.number().min(0).max(1).optional(),
   recover_by_60: z.number().min(0).max(1).optional(),
   recover_by_120: z.number().min(0).max(1).optional(),
+  // Full dwell distribution as quantiles at evenly spaced probabilities — lets
+  // the Worker condition recovery outputs on elapsed regime age (see
+  // worker/src/dwell.ts). Optional for back-compat. See momentarily-vk0.1.
+  curve_sec: z.array(z.number().nonnegative()).min(2).optional(),
 });
 
 // Per-route, per-prev-state empirical dwell quantiles from the trainer.
@@ -73,6 +77,7 @@ export interface DwellQuantiles {
   recover_by_30?: number | undefined;
   recover_by_60?: number | undefined;
   recover_by_120?: number | undefined;
+  curve_sec?: number[] | undefined;
 }
 
 export type DwellByState = Record<string, DwellQuantiles>;

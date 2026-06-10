@@ -125,6 +125,18 @@ describe('parseTrainedParams', () => {
     expect(dwellForRouteState(null, 'A', 'disrupted')).toBeNull();
   });
 
+  test('round-trips the optional curve_sec dwell curve', () => {
+    const route = wellFormedRoute();
+    const curve = Array.from({ length: 21 }, (_, i) => i * 300);
+    route.dwell_quantiles = {
+      disrupted: {
+        n: 12, q25_sec: 1200, median_sec: 2400, q75_sec: 4800, curve_sec: curve,
+      },
+    };
+    const result = parseTrainedParams(wrapper({ A: route }));
+    expect(dwellForRouteState(result, 'A', 'disrupted')!.curve_sec).toEqual(curve);
+  });
+
   test('drops dwell entry with malformed quantile shape but keeps the route', () => {
     const route = wellFormedRoute();
     route.dwell_quantiles = {

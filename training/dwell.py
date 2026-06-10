@@ -25,6 +25,11 @@ from training.eval import TransitionRecord
 # geometric dwell from the trained transition self-loop.
 MIN_SAMPLES_FOR_EMPIRICAL = 5
 
+# Resolution of curve_sec: dwell quantiles at probabilities 0, 1/(K-1), ..., 1.
+# 21 points = 5% steps; fine enough for interpolation, small enough that the
+# params.json sidecar stays compact.
+CURVE_POINTS = 21
+
 
 class DwellQuantiles(TypedDict):
     """Empirical dwell-duration summary for a (route, state[, alert_type]) cell.
@@ -34,7 +39,13 @@ class DwellQuantiles(TypedDict):
     p_normal_in_30/60/120min projection, which is otherwise a geometric estimate
     from the transition self-loop that can't represent the heavy-tailed,
     cause-dependent recovery curve (delays clear fast, planned work lingers).
-    See momentarily-<recovery-prob>.
+
+    `curve_sec` is the full dwell distribution as quantiles at CURVE_POINTS
+    evenly spaced probabilities. The Worker uses it to condition every recovery
+    output on how long the regime has *already* lasted — the unconditional
+    quantiles/fractions above are only correct at elapsed=0, and for a
+    heavy-tailed dwell distribution P(recover in 30min | disrupted 3h already)
+    is far below P(dwell <= 30min). See momentarily-vk0.1.
     """
 
     n: int
@@ -44,6 +55,7 @@ class DwellQuantiles(TypedDict):
     recover_by_30: float
     recover_by_60: float
     recover_by_120: float
+    curve_sec: list[int]
 
 
 def _quantile(sorted_sec: list[int], q: float) -> int:
@@ -64,7 +76,74 @@ def _make_cell(dwells: list[int]) -> DwellQuantiles:
         recover_by_30=sum(1 for s in dwells if s <= 1800) / n,
         recover_by_60=sum(1 for s in dwells if s <= 3600) / n,
         recover_by_120=sum(1 for s in dwells if s <= 7200) / n,
+        curve_sec=[
+            _quantile(dwells, i / (CURVE_POINTS - 1)) for i in range(CURVE_POINTS)
+        ],
     )
+
+
+# --- Conditional survival math (reference implementation) ---
+#
+# The Worker mirrors these in worker/src/dwell.ts; keep the two in sync. All
+# functions treat `curve_sec` as the dwell CDF sampled at evenly spaced
+# probabilities, linearly interpolated between points.
+
+
+def dwell_cdf(curve_sec: list[int], x: float) -> float:
+    """Empirical P(dwell <= x) from the quantile curve, interpolated."""
+    k = len(curve_sec)
+    # Upper bound first so a degenerate flat curve (all samples equal) reads
+    # as "outlived" at x == that value, not as P=0.
+    if x >= curve_sec[-1]:
+        return 1.0
+    if x <= curve_sec[0]:
+        return 0.0
+    for i in range(k - 1):
+        lo, hi = curve_sec[i], curve_sec[i + 1]
+        if lo <= x <= hi:
+            frac = 0.0 if hi == lo else (x - lo) / (hi - lo)
+            return (i + frac) / (k - 1)
+    return 1.0  # unreachable for a monotone curve
+
+
+def _dwell_quantile(curve_sec: list[int], p: float) -> float:
+    """Inverse of dwell_cdf: dwell duration at cumulative probability p."""
+    k = len(curve_sec)
+    pos = min(max(p, 0.0), 1.0) * (k - 1)
+    i = min(int(pos), k - 2)
+    frac = pos - i
+    return curve_sec[i] + frac * (curve_sec[i + 1] - curve_sec[i])
+
+
+def conditional_recover_by(
+    curve_sec: list[int], elapsed_sec: float, horizon_sec: float
+) -> float | None:
+    """P(dwell <= elapsed + horizon | dwell > elapsed).
+
+    None when the regime has outlived every observed dwell — the empirical
+    distribution says nothing about it and the caller should mark the
+    prediction indeterminate rather than fabricate a number.
+    """
+    p_elapsed = dwell_cdf(curve_sec, elapsed_sec)
+    if p_elapsed >= 1.0:
+        return None
+    p_horizon = dwell_cdf(curve_sec, elapsed_sec + horizon_sec)
+    return (p_horizon - p_elapsed) / (1.0 - p_elapsed)
+
+
+def conditional_remaining_quantile(
+    curve_sec: list[int], elapsed_sec: float, q: float
+) -> float | None:
+    """q-th quantile of remaining dwell given the regime survived elapsed_sec.
+
+    Solves P(dwell <= t | dwell > elapsed) = q for t, returns t − elapsed.
+    None when elapsed exceeds every observed dwell (see conditional_recover_by).
+    """
+    p_elapsed = dwell_cdf(curve_sec, elapsed_sec)
+    if p_elapsed >= 1.0:
+        return None
+    total = _dwell_quantile(curve_sec, p_elapsed + q * (1.0 - p_elapsed))
+    return max(0.0, total - elapsed_sec)
 
 
 def compute_dwell_quantiles(

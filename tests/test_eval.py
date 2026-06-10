@@ -98,6 +98,51 @@ def test_calibrate_wrong_predictions():
     assert result.bins[BIN_COUNT - 1].mean_outcome == 0.0
 
 
+def test_calibrate_baselines_persistence_and_climatology():
+    # Condition alternates normal/disrupted each tick; the +30min future lands
+    # on the same parity, so persistence is a perfect baseline (Brier 0 → BSS
+    # undefined) while the model's constant 0.5 exactly matches the route's
+    # climatology (base rate 0.5 → BSS vs climatology = 0).
+    ts0 = 1_700_000_000
+    preds = [
+        _pred(
+            ts=ts0 + i * 300,
+            condition="normal" if i % 2 == 0 else "disrupted",
+            p_normal_in_30min=0.5,
+        )
+        for i in range(18)
+    ]
+    result = calibrate(preds, horizon_min=30)
+    assert result.n == 12
+    assert result.brier == 0.25
+    assert result.brier_persistence == 0.0
+    assert result.bss_persistence is None  # reference already perfect
+    assert result.brier_climatology == 0.25
+    assert result.bss_climatology == 0.0
+
+
+def test_calibrate_model_beats_baselines():
+    # Disrupted for 60 min, then normal. A model that calls the recovery
+    # perfectly has Brier 0; persistence (condition holds) misses every tick in
+    # the last half-hour of the disruption, climatology hedges at the base rate.
+    ts0 = 1_700_000_000
+    preds = [
+        _pred(
+            ts=ts0 + i * 300,
+            condition="disrupted" if i < 12 else "normal",
+            p_normal_in_30min=0.0 if i < 6 else 1.0,
+        )
+        for i in range(18)
+    ]
+    result = calibrate(preds, horizon_min=30)
+    assert result.n == 12
+    assert result.brier == 0.0
+    assert result.brier_persistence == 0.5
+    assert result.bss_persistence == 1.0
+    assert result.brier_climatology == 0.25
+    assert result.bss_climatology == 1.0
+
+
 def test_calibrate_no_lookup_when_gap():
     # Single prediction with no T+30 future → not graded.
     preds = [_pred(ts=1_700_000_000)]

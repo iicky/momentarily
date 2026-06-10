@@ -223,7 +223,24 @@ class CalibrationResult:
     horizon_min: int
     n: int
     brier: float | None  # None when n=0 — distinguishes "no data" from "perfect"
+    # Reference forecasts on the same matched samples. Persistence predicts the
+    # current condition holds at T+horizon (the baseline to beat for a sticky
+    # process on short horizons); climatology predicts the per-route base rate
+    # of normal over the eval window (in-sample, the standard reference).
+    # A raw Brier score is uninterpretable without these. See momentarily-vk0.4.
+    brier_persistence: float | None
+    brier_climatology: float | None
+    # Brier skill scores: 1 − brier/brier_ref. Positive = beats the baseline.
+    # None when the reference is 0 (baseline already perfect) or n=0.
+    bss_persistence: float | None
+    bss_climatology: float | None
     bins: list[ReliabilityBin]
+
+
+def _skill(brier: float | None, reference: float | None) -> float | None:
+    if brier is None or reference is None or reference == 0.0:
+        return None
+    return 1.0 - brier / reference
 
 
 def calibrate(
@@ -241,9 +258,13 @@ def calibrate(
     ]
 
     horizon_sec = horizon_min * 60
-    n = 0
-    brier_sum = 0.0
     pred_field = f"p_normal_in_{horizon_min}min"
+
+    # (model_pred, persistence_pred, outcome, route) per matched sample. Two
+    # passes: climatology needs the per-route outcome base rate first.
+    matched: list[tuple[float, float, float, str]] = []
+    route_outcome_sum: dict[str, float] = {}
+    route_outcome_n: dict[str, int] = {}
 
     for p in predictions:
         future_key = (p.route, snap_tick(p.ts) + horizon_sec)
@@ -252,8 +273,24 @@ def calibrate(
             continue
         outcome = 1.0 if future.condition == "normal" else 0.0
         pred: float = getattr(p, pred_field)
-        n += 1
+        persistence = 1.0 if p.condition == "normal" else 0.0
+        matched.append((pred, persistence, outcome, p.route))
+        route_outcome_sum[p.route] = route_outcome_sum.get(p.route, 0.0) + outcome
+        route_outcome_n[p.route] = route_outcome_n.get(p.route, 0) + 1
+
+    base_rate = {
+        route: route_outcome_sum[route] / route_outcome_n[route]
+        for route in route_outcome_n
+    }
+
+    n = len(matched)
+    brier_sum = 0.0
+    persistence_sum = 0.0
+    climatology_sum = 0.0
+    for pred, persistence, outcome, route in matched:
         brier_sum += (pred - outcome) ** 2
+        persistence_sum += (persistence - outcome) ** 2
+        climatology_sum += (base_rate[route] - outcome) ** 2
         idx = min(int(pred * BIN_COUNT), BIN_COUNT - 1)
         b = bins[idx]
         b.n += 1
@@ -261,7 +298,18 @@ def calibrate(
         b.sum_outcome += outcome
 
     brier = brier_sum / n if n else None
-    return CalibrationResult(horizon_min=horizon_min, n=n, brier=brier, bins=bins)
+    brier_persistence = persistence_sum / n if n else None
+    brier_climatology = climatology_sum / n if n else None
+    return CalibrationResult(
+        horizon_min=horizon_min,
+        n=n,
+        brier=brier,
+        brier_persistence=brier_persistence,
+        brier_climatology=brier_climatology,
+        bss_persistence=_skill(brier, brier_persistence),
+        bss_climatology=_skill(brier, brier_climatology),
+        bins=bins,
+    )
 
 
 # --- Recovery / dwell math ---
@@ -395,6 +443,10 @@ def build_eval(
                 "horizon_min": c.horizon_min,
                 "n": c.n,
                 "brier": c.brier,
+                "brier_persistence": c.brier_persistence,
+                "brier_climatology": c.brier_climatology,
+                "bss_persistence": c.bss_persistence,
+                "bss_climatology": c.bss_climatology,
                 "bins": [
                     {
                         "bin_lo": b.bin_lo,

@@ -43,3 +43,22 @@ jobs:
           enable-cache: true
       - run: uv sync
       - run: uv run pytest
+
+  # The Worker is the production code path; this job also enforces the
+  # TS<->Python parity pin (worker/test/parity_python.test.ts against
+  # tests/fixtures/parity_forward.json), so hmm.py and hmm.ts can't drift
+  # without a fixture regen.
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # worker-configuration.d.ts is generated, not committed; wrangler types
+      # is offline codegen and needs no credentials.
+      - run: bun x wrangler types ./worker-configuration.d.ts
+      - run: bun run typecheck
+      - run: bun test

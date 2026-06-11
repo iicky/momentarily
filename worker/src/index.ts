@@ -14,7 +14,7 @@
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
-import { readAlphaState, writeAlphaState } from './alpha';
+import { readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
 import { archiveEneSnapshot, archiveNewAlerts } from './archive';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, deriveRouteSnapshots, quietObservation } from './derive';
@@ -135,17 +135,25 @@ export default {
     // --- Step 4: derive per-route observations + advance filter ---
     // A params change (retrain or rollback) invalidates the accumulated
     // posteriors in alpha.json — they were filtered under the old emission/
-    // transition params, so carrying them forward pins routes to stale
-    // regimes. On a version mismatch, drop the filter state and re-seed from
-    // params.initial. See momentarily-x5b.
+    // transition params, so carrying the raw numbers forward can pin routes
+    // to stale regimes. Reseed each roll instead of dropping it: posterior
+    // softened onto the old argmax, regime clock and cause preserved (the
+    // nightly retrain must not zero every regime's age).
     const paramsVersion = trainedParams?.trained_at ?? 0;
     const paramsChanged = alphaState.params_version !== paramsVersion;
     if (paramsChanged) {
       console.log(
-        `params version ${alphaState.params_version} -> ${paramsVersion}; resetting alpha filter state`,
+        `params version ${alphaState.params_version} -> ${paramsVersion}; reseeding alpha filter state`,
       );
     }
-    const carriedRoutes = paramsChanged ? {} : alphaState.routes;
+    const carriedRoutes = paramsChanged
+      ? Object.fromEntries(
+          Object.entries(alphaState.routes).map(([r, roll]) => [
+            r,
+            reseedForNewParams(roll),
+          ]),
+        )
+      : alphaState.routes;
 
     const newAlphaState: AlphaState = {
       params_version: paramsVersion,

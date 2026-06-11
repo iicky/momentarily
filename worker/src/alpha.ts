@@ -34,6 +34,42 @@ export function emptyAlphaState(): AlphaState {
   return { params_version: 0, updated_at: 0, routes: {} };
 }
 
+// Posterior weight placed on the old argmax when reseeding across a params
+// swap. High enough that the predict step doesn't flip the regime on its own,
+// low enough that one tick of contrary evidence can.
+const RESEED_PROB = 0.7;
+
+/**
+ * Reseed a roll for freshly published params: the posterior numbers are stale
+ * (filtered under the old emissions) and get replaced with a soft one-hot on
+ * the old argmax, but the regime clock and its cause are observation-derived
+ * facts and carry over. Recovery predictions condition on regime age, so
+ * zeroing the clock on every retrain would reset long-running regimes to
+ * fresh-regime optimism.
+ */
+export function reseedForNewParams(roll: RouteRoll): RouteRoll {
+  const probs = roll.filter.probabilities;
+  let argmax = 0;
+  for (let i = 1; i < probs.length; i += 1) {
+    if (probs[i]! > probs[argmax]!) argmax = i;
+  }
+  const rest = (1 - RESEED_PROB) / (probs.length - 1);
+  const reseeded = probs.map((_p, i) => (i === argmax ? RESEED_PROB : rest)) as [
+    number,
+    number,
+    number,
+  ];
+  return {
+    filter: {
+      probabilities: reseeded,
+      regime_entered_at: roll.filter.regime_entered_at,
+      last_updated_at: roll.filter.last_updated_at,
+    },
+    published: roll.published,
+    alert_type_at_entry: roll.alert_type_at_entry,
+  };
+}
+
 export async function readAlphaState(
   bucket: R2Bucket,
 ): Promise<VersionedRead<AlphaState>> {

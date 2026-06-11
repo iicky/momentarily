@@ -15,7 +15,7 @@
  * Emissions can be conditioned on TOD bin via `HMMParams.emissionsByBin`.
  */
 
-import { logBernoulli, logGamma, logPoisson } from './math';
+import { logBernoulli, logPoisson } from './math';
 
 export const STATES = ['normal', 'disrupted', 'suspended'] as const;
 export type State = (typeof STATES)[number];
@@ -79,11 +79,15 @@ function emissionsFor(params: HMMParams, obs: Observation): EmissionParams {
   return params.emissions_by_bin[idx] ?? params.emissions;
 }
 
+// severity_sum is NOT a likelihood channel: it's a near-deterministic function
+// of the same alert list as alert_count + the flags, so a Gamma channel on it
+// double-counted the count evidence and saturated the posterior. gamma_alpha/
+// gamma_beta stay in the params schema but are vestigial. Mirrors
+// src/momentarily/hmm.py. See momentarily-vk0.8.
 function logEmission(obs: Observation, em: EmissionParams): Vec3 {
   return [0, 1, 2].map(
     (s) =>
       logPoisson(obs.alert_count, em.poisson_lambda[s]!)
-      + logGamma(obs.severity_sum, em.gamma_alpha[s]!, em.gamma_beta[s]!)
       + logBernoulli(obs.has_suspended_alert, em.bernoulli_p[s]!)
       + logBernoulli(obs.has_delays, em.bernoulli_p_delays[s]!)
       + logBernoulli(obs.has_service_change, em.bernoulli_p_service_change[s]!)

@@ -178,9 +178,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999980175128201,
-          1.9824871798012723e-06,
-          8.298556931126751e-17
+          0.9997773478670606,
+          0.0002226480851031668,
+          4.047836327857947e-09
         ],
         "regime_entered_at": 1700000000,
         "last_updated_at": 1700000300
@@ -195,9 +195,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999992190473829,
-          7.80952617136084e-07,
-          2.5149021551549893e-17
+          0.999911953213592,
+          8.80455582099454e-05,
+          1.228197939695485e-09
         ],
         "regime_entered_at": 1700000000,
         "last_updated_at": 1700000600
@@ -212,9 +212,9 @@
     {
       "filter": {
         "probabilities": [
-          6.7031414294563915e-28,
-          0.5644287815640058,
-          0.43557121843599417
+          2.7461409150685666e-05,
+          0.9963295810784492,
+          0.003642957512400123
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700000900
@@ -229,111 +229,111 @@
     {
       "filter": {
         "probabilities": [
-          2.121774673438121e-30,
-          0.2570829936047491,
-          0.7429170063952508
+          1.7268559395783086e-07,
+          0.9988582609586623,
+          0.0011415663557436894
         ],
-        "regime_entered_at": 1700001200,
+        "regime_entered_at": 1700000900,
         "last_updated_at": 1700001200
       },
       "published": {
-        "label": "normal",
-        "pending_state": "suspended",
-        "pending_streak": 1,
+        "label": "disrupted",
+        "pending_state": "disrupted",
+        "pending_streak": 2,
         "last_updated_at": 1700001200
       }
     },
     {
       "filter": {
         "probabilities": [
-          1.085213529406066e-30,
-          0.11012368719954713,
-          0.8898763128004529
+          1.7258049887863975e-07,
+          0.9989037504308389,
+          0.0010960769886621485
         ],
-        "regime_entered_at": 1700001200,
+        "regime_entered_at": 1700000900,
         "last_updated_at": 1700001500
+      },
+      "published": {
+        "label": "disrupted",
+        "pending_state": "disrupted",
+        "pending_streak": 3,
+        "last_updated_at": 1700001500
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          3.341694573313383e-20,
+          0.0001382089799597593,
+          0.9998617910200402
+        ],
+        "regime_entered_at": 1700001800,
+        "last_updated_at": 1700001800
+      },
+      "published": {
+        "label": "disrupted",
+        "pending_state": "suspended",
+        "pending_streak": 1,
+        "last_updated_at": 1700001800
+      }
+    },
+    {
+      "filter": {
+        "probabilities": [
+          6.008666451382065e-22,
+          1.1702805733405299e-06,
+          0.9999988297194267
+        ],
+        "regime_entered_at": 1700001800,
+        "last_updated_at": 1700002100
       },
       "published": {
         "label": "suspended",
         "pending_state": "suspended",
         "pending_streak": 2,
-        "last_updated_at": 1700001500
-      }
-    },
-    {
-      "filter": {
-        "probabilities": [
-          1.2277181379295553e-83,
-          8.405209107081719e-14,
-          0.9999999999999158
-        ],
-        "regime_entered_at": 1700001200,
-        "last_updated_at": 1700001800
-      },
-      "published": {
-        "label": "suspended",
-        "pending_state": "suspended",
-        "pending_streak": 3,
-        "last_updated_at": 1700001800
-      }
-    },
-    {
-      "filter": {
-        "probabilities": [
-          8.755047271439988e-84,
-          4.511622331027064e-14,
-          0.9999999999999549
-        ],
-        "regime_entered_at": 1700001200,
-        "last_updated_at": 1700002100
-      },
-      "published": {
-        "label": "suspended",
-        "pending_state": "suspended",
-        "pending_streak": 4,
         "last_updated_at": 1700002100
       }
     },
     {
       "filter": {
         "probabilities": [
-          8.755047271439988e-84,
-          4.511622331027064e-14,
-          0.9999999999999549
+          6.008666451382065e-22,
+          1.1702805733405299e-06,
+          0.9999988297194267
         ],
-        "regime_entered_at": 1700001200,
+        "regime_entered_at": 1700001800,
         "last_updated_at": 1700002100
       },
       "published": {
         "label": "unknown",
         "pending_state": "suspended",
-        "pending_streak": 4,
+        "pending_streak": 2,
         "last_updated_at": 1700002400
       }
     },
     {
       "filter": {
         "probabilities": [
-          8.755047271438993e-84,
-          4.511622331025846e-14,
-          0.9999999999999549
+          6.005971028091159e-22,
+          1.169154972966863e-06,
+          0.9999988308450269
         ],
-        "regime_entered_at": 1700001200,
+        "regime_entered_at": 1700001800,
         "last_updated_at": 1700002700
       },
       "published": {
         "label": "suspended",
         "pending_state": "suspended",
-        "pending_streak": 5,
+        "pending_streak": 3,
         "last_updated_at": 1700002700
       }
     },
     {
       "filter": {
         "probabilities": [
-          0.9999412777325768,
-          5.8722267356288324e-05,
-          6.697569670539522e-14
+          0.9934431875341455,
+          0.006553566078566136,
+          3.2463872882710277e-06
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003000
@@ -348,9 +348,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999992182987936,
-          7.817012065019381e-07,
-          2.5156004790521105e-17
+          0.9999025148803163,
+          9.748385291655002e-05,
+          1.266767087899384e-09
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003300
@@ -365,9 +365,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999992190632244,
-          7.809367755331346e-07,
-          2.5148873772671285e-17
+          0.9999121387242021,
+          8.786004835166434e-05,
+          1.2274462032051894e-09
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003600
@@ -382,19 +382,19 @@
   ],
   "expected_projections": {
     "10": [
-      0.6703588273112497,
-      0.24159161976146815,
-      0.08804955292728148
+      0.6703411500147166,
+      0.24160312157628713,
+      0.08805572840899598
     ],
     "50": [
-      0.5655910332251055,
-      0.2976955202732386,
-      0.1367134465016538
+      0.565590951965982,
+      0.29769555914454426,
+      0.136713488889472
     ],
     "200": [
-      0.5650684931520473,
-      0.2979452054787964,
-      0.13698630136914744
+      0.5650684931520485,
+      0.2979452054787972,
+      0.13698630136914786
     ]
   },
   "expected_dwell": {

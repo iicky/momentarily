@@ -342,11 +342,10 @@ def test_em_empty_observations_rejected() -> None:
 
 
 def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
-    """Regression: a quiet corpus (severity_sum=0 in most ticks) used to
-    drive var → 0 and gamma_alpha → 250k, turning the normal state into a
-    delta function. The forward filter then refused any deviating
-    observation. The variance + Bernoulli floors must keep both bounded.
-    See momentarily-p8y.
+    """Regression: emission params must stay bounded on a quiet corpus so the
+    forward filter can always leave a state. Originally about gamma_alpha
+    exploding (momentarily-p8y); the Gamma channel is gone (momentarily-vk0.8)
+    but the Bernoulli floors must still hold.
     """
     quiet = Observation(
         alert_count=0,
@@ -368,9 +367,6 @@ def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
     fitted, _ = fit_em(obs, _default_params(), max_iterations=30)
 
     em = fitted.emissions
-    assert max(em.gamma_alpha) <= 100.0 + 1e-6, (
-        f"gamma_alpha unbounded: {em.gamma_alpha}"
-    )
     for p in (
         em.bernoulli_p,
         em.bernoulli_p_delays,

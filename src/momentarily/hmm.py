@@ -2,12 +2,18 @@
 
 Three hidden states (normal, disrupted, suspended). Observations at each cron tick:
   - alert_count          (Poisson per state)
-  - severity_sum         (Gamma per state)  — sum of sort_order across active alerts
   - has_suspended_alert  (Bernoulli per state) — any "Suspended" / "No Trains"
   - has_delays           (Bernoulli per state) — any "Delays" / "Severe Delays"
   - has_service_change   (Bernoulli per state) — any non-planned "Service Change" /
                                                  "Trains Rerouted" / "Stops Skipped"
   - has_planned          (Bernoulli per state) — any alert_type starting "Planned -"
+
+severity_sum is still carried on Observation but is NOT a likelihood channel:
+it's a near-deterministic function of the same alert list as alert_count and
+the flags, so treating it as an independent Gamma channel double-counted the
+count evidence and saturated the posterior (reliability mass piled at the
+extremes). The gamma_alpha/gamma_beta params remain in the schema for
+back-compat but are vestigial. See momentarily-vk0.8.
 
 Hand-rolled — no extra deps. Forward algorithm for filtering, Baum-Welch for the
 weekly refit (training loop will live separately and call into here).
@@ -267,18 +273,6 @@ def _log_poisson(k: int, lam: float) -> float:
     return -lam + k * math.log(lam) - math.lgamma(k + 1)
 
 
-def _log_gamma(x: float, alpha: float, beta: float) -> float:
-    # Gamma(shape=α, rate=β): pdf = β^α · x^(α-1) · exp(-β·x) / Γ(α)
-    # Severity_sum is integer ≥ 0; we shift x by 0.5 so x=0 doesn't blow up log(x).
-    shifted = max(x + 0.5, 1e-9)
-    return (
-        alpha * math.log(beta)
-        + (alpha - 1) * math.log(shifted)
-        - beta * shifted
-        - math.lgamma(alpha)
-    )
-
-
 def _log_bernoulli(value: bool, p: float) -> float:
     p = min(max(p, 1e-12), 1 - 1e-12)
     return math.log(p) if value else math.log1p(-p)
@@ -292,12 +286,11 @@ def _log_emission(
     Channels treated as conditionally independent given state. Real-world
     independence is imperfect (planned + delays correlate), but with 3 states
     the bias is small relative to the signal gain from the extra channels.
+    severity_sum is deliberately absent — see the module docstring
+    (momentarily-vk0.8).
     """
     out = [
         _log_poisson(obs.alert_count, params.poisson_lambda[i])
-        + _log_gamma(
-            float(obs.severity_sum), params.gamma_alpha[i], params.gamma_beta[i]
-        )
         + _log_bernoulli(obs.has_suspended_alert, params.bernoulli_p[i])
         + _log_bernoulli(obs.has_delays, params.bernoulli_p_delays[i])
         + _log_bernoulli(obs.has_service_change, params.bernoulli_p_service_change[i])
@@ -555,13 +548,6 @@ def _backward_scaled(
     return beta
 
 
-# Cap on the Gamma α we'll fit by method-of-moments. α = μ²/var, so a state
-# with near-constant severity has μ² >> var and α blows up — pinning the
-# emission to a delta. GAMMA_ALPHA_MAX=100 implies the floored σ/μ is at
-# least 0.1 (variance ≥ μ²/100), enough spread to keep neighbouring
-# observations from getting zero likelihood.
-GAMMA_ALPHA_MAX = 100.0
-
 # Floor and ceiling on Bernoulli emissions. 1e-6 was too aggressive: an EM
 # fit that drove a flag's normal-state probability to ~1e-6 made the normal
 # state reject any observation where that flag was True, even briefly, so
@@ -685,40 +671,16 @@ def _estimate_emissions(
                 posterior_bernoulli(s, w, lambda o: o.has_planned, 0.0)
             )
 
-        # Gamma α/β over severity: method-of-moments, optionally shrunk
-        # toward prior by convex combination (weight w MLE vs κ prior).
-        # Floor variance proportional to mean^2 so α = μ²/var stays ≤ GAMMA_ALPHA_MAX.
-        # Without this, a state whose observed severities are nearly constant
-        # (typical of quiet ticks: severity_sum=0) collapses var → 1e-6 and α
-        # explodes to ~250k, turning the emission into a delta function that
-        # rejects any observation drifting from the mean. See momentarily-p8y.
-        if w > 0:
-            x = [observations[t].severity_sum + 0.5 for t in idx_list]
-            mu = sum(gamma[t][s] * xt for t, xt in zip(idx_list, x, strict=True)) / w
-            var = (
-                sum(
-                    gamma[t][s] * (xt - mu) ** 2
-                    for t, xt in zip(idx_list, x, strict=True)
-                )
-                / w
-            )
-            var = max(var, mu * mu / GAMMA_ALPHA_MAX, 1e-6)
-            alpha_mle = max(mu * mu / var, 1e-3)
-            beta_mle = max(mu / var, 1e-6)
-        else:
-            # no data for this state; will be replaced by prior below.
-            alpha_mle = 1e-3
-            beta_mle = 1e-6
+        # Gamma α/β are vestigial — severity_sum is no longer a likelihood
+        # channel (momentarily-vk0.8) — so pass them through unchanged for
+        # schema back-compat rather than fitting dead parameters.
         if use_prior:
             assert prior is not None
-            denom = w + kappa
-            new_alpha = (w * alpha_mle + kappa * prior.gamma_alpha[s]) / denom
-            new_beta = (w * beta_mle + kappa * prior.gamma_beta[s]) / denom
+            gamma_alpha.append(prior.gamma_alpha[s])
+            gamma_beta.append(prior.gamma_beta[s])
         else:
-            new_alpha = alpha_mle
-            new_beta = beta_mle
-        gamma_alpha.append(max(new_alpha, 1e-3))
-        gamma_beta.append(max(new_beta, 1e-6))
+            gamma_alpha.append(fallback.gamma_alpha[s])
+            gamma_beta.append(fallback.gamma_beta[s])
 
     return EmissionParams(
         poisson_lambda=(poisson_lambda[0], poisson_lambda[1], poisson_lambda[2]),

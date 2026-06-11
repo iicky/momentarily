@@ -36,3 +36,12 @@ jobs:
         run: uv run python -m training.train_em --days 14 ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           MURK_KEY: ${{ secrets.MURK_KEY }}
+      # Retention: bucket creds are object-scoped (no R2 lifecycle rules), so
+      # pruning rides the nightly job instead. Failures here shouldn't mask a
+      # successful training run.
+      - name: Prune aged R2 objects
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        run: uv run python -m training.prune
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}

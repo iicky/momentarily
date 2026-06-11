@@ -3,8 +3,8 @@
  *
  * Shape matches src/momentarily/schema.py's Snapshot. Top-level fields whose
  * data sources aren't wired up yet (alerts, observations, routes, stations,
- * equipment, bridges, tunnels, station_status, compat) are emitted as empty
- * placeholders so the schema_version=1 contract stays honored.
+ * equipment, bridges, tunnels) are emitted as empty placeholders so the
+ * schema_version=1 contract stays honored.
  *
  * Output is publicly readable at https://feed.momentarily.nyc/v1/snapshot.json
  * via the R2 custom domain. Cache headers per ADR (max-age=60, s-maxage=300).

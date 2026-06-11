@@ -689,8 +689,26 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_tod_bin_is_dst_aware() -> None:
+    """Same UTC hour, different ET bin across the DST boundary — the old
+    UTC-based bins were off by an hour all winter. See momentarily-vk0.10.
+    Mirrored in worker/test/parity.test.ts."""
+    from datetime import UTC, datetime
+
+    # 10:00 UTC = 05:00 EST (bin 0, overnight) in January
+    winter = int(datetime(2026, 1, 15, 10, 0, tzinfo=UTC).timestamp())
+    # 10:00 UTC = 06:00 EDT (bin 1, morning rush) in July
+    summer = int(datetime(2026, 7, 15, 10, 0, tzinfo=UTC).timestamp())
+    assert tod_bin(winter) == 0
+    assert tod_bin(summer) == 1
+    # Spot-check the ET bin edges (using EDT, UTC-4): 14:59 ET → midday,
+    # 15:00 ET → evening rush.
+    assert tod_bin(int(datetime(2026, 7, 15, 18, 59, tzinfo=UTC).timestamp())) == 2
+    assert tod_bin(int(datetime(2026, 7, 15, 19, 0, tzinfo=UTC).timestamp())) == 3
+
+
 def test_tod_bin_covers_full_24_hours() -> None:
-    """Every UTC hour maps to some valid bin in [0, N_TOD_BINS)."""
+    """Every hour maps to some valid bin in [0, N_TOD_BINS)."""
     seen: set[int] = set()
     for hour in range(24):
         epoch = hour * 3600  # midnight + N hours UTC

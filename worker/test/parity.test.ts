@@ -215,4 +215,15 @@ describe('tod_bin', () => {
     }
     expect(seen.size).toBe(5);
   });
+
+  test('is DST-aware — mirrors tests/test_hmm.py', () => {
+    // 10:00 UTC = 05:00 EST (overnight) in January, 06:00 EDT (rush) in July.
+    const winter = Date.UTC(2026, 0, 15, 10, 0) / 1000;
+    const summer = Date.UTC(2026, 6, 15, 10, 0) / 1000;
+    expect(tod_bin(winter)).toBe(0);
+    expect(tod_bin(summer)).toBe(1);
+    // ET bin edge at 15:00 (EDT = UTC-4).
+    expect(tod_bin(Date.UTC(2026, 6, 15, 18, 59) / 1000)).toBe(2);
+    expect(tod_bin(Date.UTC(2026, 6, 15, 19, 0) / 1000)).toBe(3);
+  });
 });

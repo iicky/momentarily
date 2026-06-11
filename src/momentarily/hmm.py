@@ -33,33 +33,40 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 State = Literal["normal", "disrupted", "suspended"]
 STATES: tuple[State, ...] = ("normal", "disrupted", "suspended")
 N_STATES = len(STATES)
 
-# Time-of-day bins for emission conditioning. UTC-based for simplicity (no DST
-# branching in the loader). NYC subway operational rhythms broadly align with
-# ET, which is UTC-4/5 — these bins approximate (UTC-4):
-#   0 overnight     00-05 UTC  ≈ 20-01 ET — late-night planned work peak
-#   1 morning_rush  05-13 UTC  ≈ 01-09 ET — wind-down + morning ramp
-#   2 midday        13-17 UTC  ≈ 09-13 ET — morning peak into midday
-#   3 evening_rush  17-23 UTC  ≈ 13-19 ET — midday through evening peak
-#   4 late          23-24 UTC  ≈ 19-20 ET — evening into overnight
+# Time-of-day bins for emission conditioning, in America/New_York local time
+# (DST-aware — the old UTC bins drifted an hour for the EST half of the year
+# and their labels never matched; see momentarily-vk0.10):
+#   0 overnight      00-06 ET — late-night planned work window
+#   1 morning_rush   06-10 ET
+#   2 midday         10-15 ET
+#   3 evening_rush   15-20 ET
+#   4 evening        20-24 ET
 N_TOD_BINS = 5
+
+_NYC_TZ = ZoneInfo("America/New_York")
 
 
 def tod_bin(epoch_seconds: int) -> int:
-    """Map UTC epoch seconds to a TOD bin index in [0, N_TOD_BINS)."""
-    hour = (epoch_seconds // 3600) % 24
-    if hour < 5:
+    """Map epoch seconds to a TOD bin index in [0, N_TOD_BINS), by ET local hour.
+
+    Mirrors worker/src/hmm.ts tod_bin (Intl-based); keep the bin edges in sync.
+    """
+    hour = datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ).hour
+    if hour < 6:
         return 0
-    if hour < 13:
+    if hour < 10:
         return 1
-    if hour < 17:
+    if hour < 15:
         return 2
-    if hour < 23:
+    if hour < 20:
         return 3
     return 4
 

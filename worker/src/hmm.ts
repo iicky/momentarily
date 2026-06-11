@@ -21,14 +21,24 @@ export const STATES = ['normal', 'disrupted', 'suspended'] as const;
 export type State = (typeof STATES)[number];
 export const N_STATES = 3;
 
-// TOD bins (UTC) — match hmm.py's tod_bin() exactly.
+// Time-of-day bins in America/New_York local time (DST-aware) — match
+// hmm.py's tod_bin() exactly; keep the bin edges in sync:
+//   0: 00-06 ET overnight, 1: 06-10 morning rush, 2: 10-15 midday,
+//   3: 15-20 evening rush, 4: 20-24 evening. See momentarily-vk0.10.
 export const N_TOD_BINS = 5;
+
+const NYC_HOUR_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  hour: 'numeric',
+  hourCycle: 'h23',
+});
+
 export function tod_bin(epochSeconds: number): number {
-  const hour = Math.floor(epochSeconds / 3600) % 24;
-  if (hour < 5) return 0;
-  if (hour < 13) return 1;
-  if (hour < 17) return 2;
-  if (hour < 23) return 3;
+  const hour = parseInt(NYC_HOUR_FMT.format(new Date(epochSeconds * 1000)), 10);
+  if (hour < 6) return 0;
+  if (hour < 10) return 1;
+  if (hour < 15) return 2;
+  if (hour < 20) return 3;
   return 4;
 }
 

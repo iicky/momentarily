@@ -1,0 +1,32 @@
+name: Snapshot staleness check
+
+# External watchdog on the public feed: fails (and notifies via GitHub's
+# workflow-failure email) when snapshot.json's generated_at falls too far
+# behind. Catches dead crons, CPU-limit outages, and R2 publish failures —
+# the Worker can't report its own death. Public repo, so the cron costs
+# nothing.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # best-effort; GHA may delay under load
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check generated_at lag
+        run: |
+          set -euo pipefail
+          # Cache-bust past the CDN (s-maxage=300) so we measure the origin.
+          url="https://feed.momentarily.nyc/v1/snapshot.json?cb=$(date +%s)"
+          generated_at=$(curl -fsS --max-time 30 "$url" | head -c 1000 | grep -o '"generated_at":[0-9]*' | cut -d: -f2)
+          now=$(date +%s)
+          lag=$(( now - generated_at ))
+          echo "generated_at=$generated_at now=$now lag=${lag}s"
+          # Cron runs every 5 min; 3 missed ticks = something is wrong.
+          if [ "$lag" -gt 900 ]; then
+            echo "::error::snapshot is ${lag}s stale (threshold 900s)"
+            exit 1
+          fi

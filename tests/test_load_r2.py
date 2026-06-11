@@ -74,9 +74,7 @@ def test_extra_service_is_invisible_to_the_hmm():
         assert o.observation.severity_sum == 0
         assert not o.observation.has_service_change
     # ...and it doesn't mask a real disruption alongside it.
-    obs = build_tick_observations(
-        [_body("a1", "Extra Service"), _body("a2", "Delays")]
-    )
+    obs = build_tick_observations([_body("a1", "Extra Service"), _body("a2", "Delays")])
     assert obs
     for o in obs:
         assert o.observation.alert_count == 1

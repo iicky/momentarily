@@ -446,9 +446,7 @@ def recovery_metrics(
             iqr_coverage=sum(regime_covs) / n_regimes,
         )
     else:
-        per_regime = RecoveryStats(
-            n=0, mae_min=None, rmse_min=None, iqr_coverage=None
-        )
+        per_regime = RecoveryStats(n=0, mae_min=None, rmse_min=None, iqr_coverage=None)
 
     return RecoveryResult(
         overall=overall,
@@ -472,7 +470,9 @@ def _stats_from(
 # --- Eval assembly + publish ---
 
 
-def _calibration_as_dicts(calibrations: list[CalibrationResult]) -> list[dict[str, Any]]:
+def _calibration_as_dicts(
+    calibrations: list[CalibrationResult],
+) -> list[dict[str, Any]]:
     return [
         {
             "horizon_min": c.horizon_min,

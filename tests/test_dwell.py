@@ -160,9 +160,7 @@ def test_censored_sample_does_not_count_toward_floor() -> None:
 
 def test_open_regime_censors_only_its_own_state() -> None:
     # Final regime is normal — the disrupted cell must stay uncensored.
-    transitions = [
-        _tr("A", "disrupted", 600, ts=10_000 * (i + 1)) for i in range(5)
-    ]
+    transitions = [_tr("A", "disrupted", 600, ts=10_000 * (i + 1)) for i in range(5)]
     out = compute_dwell_quantiles(transitions, window_end=160_000)
     assert out["A"]["disrupted"]["n_censored"] == 0
     # The open normal regime censored into (A, normal), but with zero

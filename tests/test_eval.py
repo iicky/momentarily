@@ -443,8 +443,7 @@ def test_build_eval_segments_by_latest_params_version():
     # model versions and dilute the latest retrain. See momentarily-vk0.5.
     t0 = 1_700_000_000
     preds = [
-        _pred(ts=t0 + i * 300, params_version=100 if i < 12 else 200)
-        for i in range(24)
+        _pred(ts=t0 + i * 300, params_version=100 if i < 12 else 200) for i in range(24)
     ]
     doc = build_eval(preds, [], window_start=t0, window_end=t0 + 86400)
     cp = doc["current_params"]
@@ -474,4 +473,6 @@ def test_prediction_record_from_json_defaults_params_version():
         "recovery_minutes_high": 0,
     }
     assert PredictionRecord.from_json(raw).params_version == 0
-    assert PredictionRecord.from_json({**raw, "params_version": 17}).params_version == 17
+    assert (
+        PredictionRecord.from_json({**raw, "params_version": 17}).params_version == 17
+    )

@@ -365,6 +365,65 @@ def test_recovery_skips_normal_predictions():
     assert r.overall.n == 0
 
 
+def test_recovery_per_regime_macro_average():
+    """A long regime contributes many ticks; per-tick MAE is dominated by it,
+    per-regime weights both regimes equally. See momentarily-vk0.9."""
+    t0 = 1_700_000_000
+    # Regime A: 10 ticks, each off by 10 min. Regime B: 1 tick, off by 100 min.
+    preds = [
+        _pred(
+            ts=t0 + i * 300,
+            route="1",
+            condition="disrupted",
+            regime_entered_at=t0,
+            recovery_minutes=round((t0 + 3600 - (t0 + i * 300)) / 60) + 10,
+            recovery_minutes_low=0,
+            recovery_minutes_high=10_000,
+        )
+        for i in range(10)
+    ] + [
+        _pred(
+            ts=t0,
+            route="2",
+            condition="disrupted",
+            regime_entered_at=t0,
+            recovery_minutes=60 + 100,
+            recovery_minutes_low=0,
+            recovery_minutes_high=10_000,
+        )
+    ]
+    transitions = [
+        TransitionRecord(
+            ts=t0 + 3600,
+            route="1",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=t0,
+            exited_at=t0 + 3600,
+            dwell_sec=3600,
+        ),
+        TransitionRecord(
+            ts=t0 + 3600,
+            route="2",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=t0,
+            exited_at=t0 + 3600,
+            dwell_sec=3600,
+        ),
+    ]
+    r = recovery_metrics(preds, transitions)
+    # Per-tick: (10*10 + 100) / 11 ≈ 18.2 — dominated by the long regime.
+    assert r.overall.n == 11
+    assert r.overall.mae_min is not None
+    assert abs(r.overall.mae_min - 200 / 11) < 1e-9
+    # Per-regime: regime means are 10 and 100 → macro MAE 55, n = 2 regimes.
+    assert r.per_regime.n == 2
+    assert r.per_regime.mae_min is not None
+    assert abs(r.per_regime.mae_min - 55.0) < 1e-9
+    assert r.per_regime.iqr_coverage == 1.0
+
+
 def test_build_eval_structure():
     t0 = 1_700_000_000
     preds = [_pred(ts=t0)]

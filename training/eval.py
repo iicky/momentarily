@@ -335,6 +335,16 @@ class RecoveryStats:
 @dataclass
 class RecoveryResult:
     overall: RecoveryStats
+    # Macro-average with one sample per regime (each regime's per-tick errors
+    # are averaged first, then regimes weighted equally). The per-tick view
+    # weights a 6-hour regime ~72x a 30-minute one, so a couple of marathon
+    # planned-work regimes dominate MAE. n = number of regimes. See
+    # momentarily-vk0.9.
+    per_regime: RecoveryStats = field(
+        default_factory=lambda: RecoveryStats(
+            n=0, mae_min=None, rmse_min=None, iqr_coverage=None
+        )
+    )
     by_route: dict[str, RecoveryStats] = field(
         default_factory=lambda: {}  # noqa: PIE807
     )
@@ -368,6 +378,7 @@ def recovery_metrics(
     by_alert_abs: dict[str, list[float]] = {}
     by_alert_sq: dict[str, list[float]] = {}
     by_alert_cov: dict[str, list[int]] = {}
+    by_regime: dict[tuple[str, int], list[tuple[float, float, int]]] = {}
 
     for p in predictions:
         # Recovery time is only meaningful during a disruption. A route that is
@@ -393,6 +404,9 @@ def recovery_metrics(
         abs_errors.append(err)
         sq_errors.append(sq_err)
         covered += 1 if within else 0
+        by_regime.setdefault((p.route, p.regime_entered_at), []).append(
+            (err, sq_err, 1 if within else 0)
+        )
         by_route_abs.setdefault(p.route, []).append(err)
         by_route_sq.setdefault(p.route, []).append(sq_err)
         by_route_cov.setdefault(p.route, []).append(1 if within else 0)
@@ -412,8 +426,35 @@ def recovery_metrics(
         at: _stats_from(by_alert_abs[at], by_alert_sq[at], sum(by_alert_cov[at]))
         for at in by_alert_abs
     }
+
+    # Macro-average: collapse each regime to its mean error/coverage first,
+    # then average regimes equally.
+    n_regimes = len(by_regime)
+    if n_regimes:
+        regime_maes: list[float] = []
+        regime_mses: list[float] = []
+        regime_covs: list[float] = []
+        for ticks in by_regime.values():
+            k = len(ticks)
+            regime_maes.append(sum(e for e, _sq, _w in ticks) / k)
+            regime_mses.append(sum(sq for _e, sq, _w in ticks) / k)
+            regime_covs.append(sum(w for _e, _sq, w in ticks) / k)
+        per_regime = RecoveryStats(
+            n=n_regimes,
+            mae_min=sum(regime_maes) / n_regimes,
+            rmse_min=(sum(regime_mses) / n_regimes) ** 0.5,
+            iqr_coverage=sum(regime_covs) / n_regimes,
+        )
+    else:
+        per_regime = RecoveryStats(
+            n=0, mae_min=None, rmse_min=None, iqr_coverage=None
+        )
+
     return RecoveryResult(
-        overall=overall, by_route=by_route, by_alert_type=by_alert_type
+        overall=overall,
+        per_regime=per_regime,
+        by_route=by_route,
+        by_alert_type=by_alert_type,
     )
 
 
@@ -456,6 +497,17 @@ def _calibration_as_dicts(calibrations: list[CalibrationResult]) -> list[dict[st
     ]
 
 
+def _recovery_as_dict(recovery: RecoveryResult) -> dict[str, Any]:
+    return {
+        "overall": _stats_as_dict(recovery.overall),
+        "per_regime": _stats_as_dict(recovery.per_regime),
+        "by_route": {r: _stats_as_dict(s) for r, s in recovery.by_route.items()},
+        "by_alert_type": {
+            at: _stats_as_dict(s) for at, s in recovery.by_alert_type.items()
+        },
+    }
+
+
 def build_eval(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
@@ -483,16 +535,7 @@ def build_eval(
             "calibration": _calibration_as_dicts(
                 [calibrate(current, h) for h in HORIZONS_MIN]
             ),
-            "recovery": {
-                "overall": _stats_as_dict(current_recovery.overall),
-                "by_route": {
-                    r: _stats_as_dict(s) for r, s in current_recovery.by_route.items()
-                },
-                "by_alert_type": {
-                    at: _stats_as_dict(s)
-                    for at, s in current_recovery.by_alert_type.items()
-                },
-            },
+            "recovery": _recovery_as_dict(current_recovery),
         }
 
     return {
@@ -502,13 +545,7 @@ def build_eval(
         "transitions_seen": len(transitions),
         "current_params": current_params,
         "calibration": _calibration_as_dicts(calibrations),
-        "recovery": {
-            "overall": _stats_as_dict(recovery.overall),
-            "by_route": {r: _stats_as_dict(s) for r, s in recovery.by_route.items()},
-            "by_alert_type": {
-                at: _stats_as_dict(s) for at, s in recovery.by_alert_type.items()
-            },
-        },
+        "recovery": _recovery_as_dict(recovery),
     }
 
 

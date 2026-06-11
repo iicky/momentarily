@@ -48,12 +48,15 @@ export function deriveStationStatuses(
   outages: ActiveOutage[],
   now: number,
 ): Map<string, StationStatus> {
-  // Index the catalog: equipment_id → entry, station_complex_id → entries
+  // byEquipmentId keeps inactive entries — it only resolves an outage to its
+  // canonical station, and outages on decommissioned units still belong to a
+  // real station. byStationComplex is active-only: totals and ADA status
+  // shouldn't count decommissioned units.
   const byEquipmentId = new Map<string, EquipmentCatalogEntry>();
   const byStationComplex = new Map<string, EquipmentCatalogEntry[]>();
   for (const e of catalog) {
-    if (!e.is_active) continue;
     byEquipmentId.set(e.equipment_id, e);
+    if (!e.is_active) continue;
     const existing = byStationComplex.get(e.station_complex_id);
     if (existing) existing.push(e);
     else byStationComplex.set(e.station_complex_id, [e]);

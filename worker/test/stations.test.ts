@@ -150,4 +150,18 @@ describe('deriveStationStatuses', () => {
     ];
     expect(deriveStationStatuses(catalog, [], NOW).get('S1')!.elevators_total).toBe(1);
   });
+
+  test('outage on inactive equipment still resolves to the canonical station id', () => {
+    const catalog = [
+      eq('EL1', '119', 'elevator', { active: true }),
+      { ...eq('EL2', '119', 'elevator', { active: false }), station: '1 Av' },
+    ];
+    const outages = [out('EL2', '1 Av', 'elevator')];
+    const m = deriveStationStatuses(catalog, outages, NOW);
+    // Lands under the canonical id, no bogus display-name row, and the
+    // decommissioned unit still doesn't count toward totals.
+    expect(m.get('119')!.elevators_out).toBe(1);
+    expect(m.get('119')!.elevators_total).toBe(1);
+    expect(m.has('1 Av')).toBe(false);
+  });
 });

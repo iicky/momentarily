@@ -21,7 +21,12 @@ jobs:
           set -euo pipefail
           # Cache-bust past the CDN (s-maxage=300) so we measure the origin.
           url="https://feed.momentarily.nyc/v1/snapshot.json?cb=$(date +%s)"
-          generated_at=$(curl -fsS --max-time 30 "$url" | head -c 1000 | grep -o '"generated_at":[0-9]*' | cut -d: -f2)
+          curl -fsS --max-time 30 -o /tmp/snapshot.json "$url"
+          generated_at=$(grep -o '"generated_at":[0-9]*' /tmp/snapshot.json | head -1 | cut -d: -f2)
+          if [ -z "$generated_at" ]; then
+            echo "::error::could not parse generated_at from snapshot"
+            exit 1
+          fi
           now=$(date +%s)
           lag=$(( now - generated_at ))
           echo "generated_at=$generated_at now=$now lag=${lag}s"

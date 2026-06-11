@@ -220,10 +220,17 @@ def build_tick_observations(
     out: list[TickObservation] = []
     for tick in sorted(bucket):
         for route_id, alerts in bucket[tick].items():
-            types = [at for _so, at in alerts.values()]
+            # "Extra Service" is good news, not a disruption — counting it
+            # pushed routes out of `normal` and polluted recovery grading.
+            # It stays in the display surfaces; only the HMM observation
+            # ignores it. Mirrors worker/src/derive.ts. See momentarily-vk0.11.
+            counted = [
+                (so, at) for so, at in alerts.values() if "Extra Service" not in at
+            ]
+            types = [at for _so, at in counted]
             obs = Observation(
-                alert_count=len(alerts),
-                severity_sum=sum(so for so, _at in alerts.values()),
+                alert_count=len(counted),
+                severity_sum=sum(so for so, _at in counted),
                 # "No Scheduled Service" is deliberately NOT a suspension: it's
                 # scheduled absence (overnight/weekend non-service on B, W, 7X,
                 # ...), which is normal operations. Counting it made ~41% of

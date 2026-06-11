@@ -165,11 +165,16 @@ function buildRouteSnapshot(
   todBinValue: number,
 ): RouteSnapshot {
   const primary = pickPrimary(alerts);
-  const types = alerts.map((a) => a.alert_type);
+  // "Extra Service" is good news, not a disruption — counting it pushed
+  // routes out of `normal` and polluted recovery grading. It stays in the
+  // display surfaces (alerts list, primary/coarse label); only the HMM
+  // observation ignores it. Mirrors training/load_r2.py. See momentarily-vk0.11.
+  const counted = alerts.filter((a) => !a.alert_type.includes('Extra Service'));
+  const types = counted.map((a) => a.alert_type);
 
   const observation: Observation = {
-    alert_count: alerts.length,
-    severity_sum: alerts.reduce((acc, a) => acc + a.sort_order, 0),
+    alert_count: counted.length,
+    severity_sum: counted.reduce((acc, a) => acc + a.sort_order, 0),
     // "No Scheduled Service" is scheduled absence (overnight/weekend
     // non-service), not a suspension — keep it out of this flag. Mirrors
     // training/load_r2.py. See momentarily-vk0.3.

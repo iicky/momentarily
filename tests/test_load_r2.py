@@ -62,3 +62,22 @@ def test_planned_suspension_excluded():
     assert obs
     assert all(not o.observation.has_suspended_alert for o in obs)
     assert all(o.observation.has_planned for o in obs)
+
+
+def test_extra_service_is_invisible_to_the_hmm():
+    """Extra Service is good news — it must not contribute to any observation
+    channel (count, severity, flags). See momentarily-vk0.11."""
+    obs = build_tick_observations([_body("a1", "Extra Service")])
+    assert obs
+    for o in obs:
+        assert o.observation.alert_count == 0
+        assert o.observation.severity_sum == 0
+        assert not o.observation.has_service_change
+    # ...and it doesn't mask a real disruption alongside it.
+    obs = build_tick_observations(
+        [_body("a1", "Extra Service"), _body("a2", "Delays")]
+    )
+    assert obs
+    for o in obs:
+        assert o.observation.alert_count == 1
+        assert o.observation.has_delays

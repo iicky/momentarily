@@ -303,7 +303,9 @@ export default {
     }
 
     // --- Step 8: E&E (hourly) ---
-    if (observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
+    // Only the alpha CAS winner gets to mutate lastSeen, so losing runs skip
+    // the E&E fetch too.
+    if (alphaWritten && observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
       let eneOk = 0;
       const enePayloads: Record<string, unknown> = {};
       for (const [name, url] of ENE_SOURCES) {
@@ -316,11 +318,9 @@ export default {
           console.error(`ene ${name} failed:`, err);
         }
       }
-      if (eneOk > 0) lastSeen.ene_at = observedAt;
-
-      // Refresh derived station_statuses when both feeds we need landed.
-      // Skip silently if only one came back — keep the prior status snapshot
-      // rather than emit a half-populated set.
+      // ene_at only advances when both station_status inputs landed — the
+      // published freshness has to describe the data actually being served.
+      // An incomplete fetch leaves it alone, so the next tick retries.
       const catalogPayload = enePayloads.ene_equipments;
       const outagesPayload = enePayloads.ene_current;
       if (catalogPayload !== undefined && outagesPayload !== undefined) {
@@ -328,26 +328,34 @@ export default {
         const outages = parseOutageFeed(outagesPayload);
         const statuses = deriveStationStatuses(catalog, outages, observedAt);
         lastSeen.station_statuses = Object.fromEntries(statuses);
+        lastSeen.ene_at = observedAt;
         console.log(
           `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived, `
           + `${statuses.size} station_status entries derived`,
         );
       } else {
-        console.log(`ene: ${eneOk}/${ENE_SOURCES.length} feeds archived`);
+        console.log(
+          `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived; `
+          + 'station_status inputs incomplete, freshness held — retrying next tick',
+        );
       }
     }
 
-    try {
-      const written = await writeLastSeen(
-        env.MOMENTARILY,
-        lastSeen,
-        lastSeenRead.etag,
-      );
-      if (!written) {
-        console.warn('last_seen.json write conflict; a concurrent run won this tick');
+    // Only the alpha CAS winner commits last_seen — a losing run's outputs
+    // were all discarded above, so it must not race the winner's state here.
+    if (alphaWritten) {
+      try {
+        const written = await writeLastSeen(
+          env.MOMENTARILY,
+          lastSeen,
+          lastSeenRead.etag,
+        );
+        if (!written) {
+          console.warn('last_seen.json write conflict; a concurrent run won this tick');
+        }
+      } catch (err) {
+        console.error('last_seen write failed:', err);
       }
-    } catch (err) {
-      console.error('last_seen write failed:', err);
     }
     step('9-last-seen-write');
   },

@@ -1,0 +1,22 @@
+{
+  "name": "momentarily-trainer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that runs the weekly HMM Baum-Welch EM trainer in a container and republishes params to R2",
+  "scripts": {
+    "dev": "murk exec -- wrangler dev",
+    "deploy": "murk exec -- wrangler deploy",
+    "tail": "murk exec -- wrangler tail",
+    "types": "murk exec -- wrangler types ./worker-configuration.d.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.76.0"
+  }
+}

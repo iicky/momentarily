@@ -1,20 +1,19 @@
 """Shared R2 (S3-compatible) client for Python training tools.
 
-Credentials live in the murk vault at the repo root (`.murk`). The vault is
-age-encrypted; `murk.get()` decrypts in-process using MURK_KEY from the
-environment (set by your shell or `direnv` after `murk env`).
-
-Run with: `python -m training.<tool>` from a shell where MURK_KEY is set,
-or via `murk exec -- python -m training.<tool>` for ephemeral injection.
+Credentials come from the process environment first, then the murk vault.
+Locally, `murk exec -- python -m training.<tool>` injects them from the
+age-encrypted `.murk` vault (decrypted in-process via MURK_KEY). In the
+Cloudflare trainer container there is no vault — the Worker passes R2_* as
+plain env vars at container start, and those take precedence.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import boto3
-import murk
 from botocore.config import Config
 
 if TYPE_CHECKING:
@@ -34,18 +33,24 @@ class R2Config:
 
 
 def _require(key: str) -> str:
-    """Fetch a required key from the vault, raising if it's missing."""
-    value = murk.get(key)
+    """Fetch a required key from the environment, falling back to the vault."""
+    value = os.environ.get(key)
     if value is None:
-        raise KeyError(f"{key} not found in murk vault")
+        # murk is a local-only dep — import lazily so the trainer container
+        # (which always has R2_* in the environment) never needs it installed.
+        import murk
+
+        value = murk.get(key)
+    if value is None:
+        raise KeyError(f"{key} not in environment or murk vault")
     return value
 
 
 def load_config() -> R2Config:
-    """Read R2 credentials from the murk vault.
+    """Read R2 credentials from the environment or the murk vault.
 
-    Raises whatever murk raises if MURK_KEY is missing or a key isn't in the
-    vault — those errors are clear enough we don't need to wrap them.
+    Raises whatever murk raises if a key is absent from both and MURK_KEY is
+    missing — those errors are clear enough we don't need to wrap them.
     """
     return R2Config(
         account_id=_require("R2_ACCOUNT_ID"),

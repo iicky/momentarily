@@ -450,7 +450,6 @@ source = { editable = "." }
 dependencies = [
     { name = "boto3" },
     { name = "httpx" },
-    { name = "murk-secrets" },
     { name = "pydantic" },
 ]
 
@@ -458,6 +457,7 @@ dependencies = [
 dev = [
     { name = "boto3-stubs", extra = ["s3"] },
     { name = "matplotlib" },
+    { name = "murk-secrets" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -468,7 +468,6 @@ dev = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "murk-secrets", specifier = ">=0.6.2" },
     { name = "pydantic", specifier = ">=2.6" },
 ]
 
@@ -476,6 +475,7 @@ requires-dist = [
 dev = [
     { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.34" },
     { name = "matplotlib", specifier = ">=3.10.9" },
+    { name = "murk-secrets", specifier = ">=0.6.2" },
     { name = "pyright", specifier = ">=1.1.380" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=5.0" },

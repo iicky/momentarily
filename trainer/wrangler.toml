@@ -1,0 +1,41 @@
+name = "momentarily-trainer"
+main = "src/index.ts"
+compatibility_date = "2026-06-11"
+# account_id is read from CLOUDFLARE_ACCOUNT_ID (murk vault); the bun scripts
+# wrap wrangler in `murk exec`, matching the live publisher worker.
+
+# Cron-only worker — no fetch handler, so don't expose a public URL.
+workers_dev = false
+preview_urls = false
+
+# Weekly retrain — Sunday 05:00 UTC. The cron starts the trainer container,
+# which runs Baum-Welch EM to completion and republishes params to R2.
+# Cloudflare's cron parser wants SUN/7 for Sunday, not 0.
+[triggers]
+crons = ["0 5 * * SUN"]
+
+# Trainer container. Build context is the repo root so training/ can import
+# `momentarily` from src/. instance_type basic = 1/4 vCPU / 1 GiB — overkill
+# for a ~90s EM run, and $0 marginal inside the Workers Paid free allowance.
+[[containers]]
+class_name = "TrainerContainer"
+image = "../training/Containerfile"
+image_build_context = ".."
+instance_type = "basic"
+max_instances = 1
+
+[[durable_objects.bindings]]
+name = "TRAINER"
+class_name = "TrainerContainer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TrainerContainer"]
+
+# R2 S3 credentials are passed to the container at start(). Set them with
+# `wrangler secret put R2_ACCOUNT_ID` (and R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET) — none are committed here.
+
+[observability]
+enabled = true
+head_sampling_rate = 1

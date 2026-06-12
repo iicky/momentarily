@@ -1,0 +1,42 @@
+# Build context is the repo root (training/Containerfile needs src/). Keep the
+# context lean and never bake secrets or unrelated subprojects into the image.
+.git/
+.venv/
+**/node_modules/
+**/__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+.DS_Store
+
+# Secrets — never copy into the image.
+.env
+.env.local
+.murk
+.murk.lock
+
+# Subprojects and assets the trainer doesn't import.
+worker/
+trainer/
+collector/
+data/
+docs/
+schema/
+scripts/
+tests/
+
+# Tooling / tracker state.
+.github/
+.claude/
+.beads/
+.dolt/
+*.db
+.wrangler/

@@ -1,0 +1,24 @@
+# Weekly HMM trainer — runs Baum-Welch EM to completion and exits.
+# Build context is the repo root (training/ imports `momentarily` from src/),
+# so build with: docker build -f training/Containerfile .
+FROM python:3.13-slim
+
+# uv for deterministic, frozen-lockfile installs.
+COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /bin/
+
+WORKDIR /app
+
+# Dependency layer first for cache reuse. README/LICENSE are referenced by
+# pyproject metadata, so the local package build needs them present.
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY src/ ./src/
+RUN uv sync --frozen --no-dev
+
+# Training code changes more often than deps — copy it last.
+COPY training/ ./training/
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Batch default for local `docker run`; the Worker overrides entrypoint + env
+# at start(). Credentials come from R2_* env vars (see training/r2_client.py).
+CMD ["python", "-m", "training.train_em"]

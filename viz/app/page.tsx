@@ -5,6 +5,7 @@ import Nav from "./Nav";
 import {
   fetchSnapshot,
   conditionRank,
+  impliedCondition,
   routeColor,
   routeLabel,
   fmtAgo,
@@ -240,10 +241,12 @@ function RouteDrawer({
         <span className={`cond ${condClass(r)}`}>
           {!inf || inf.model_warming_up ? "warming up" : r.condition}
         </span>
+        <span className="axis-tag">model · HMM</span>
       </h2>
 
+      <div className="section-title">Alert (MTA)</div>
       <div className="kv">
-        <span className="k">Label</span>
+        <span className="k">Status</span>
         <span className="v">{r.label}</span>
         <span className="k">Category</span>
         <span className="v">{r.category}</span>
@@ -254,6 +257,24 @@ function RouteDrawer({
       {inf && inf.model_warming_up && (
         <div className="warnbox">Model warming up — inference not yet reliable.</div>
       )}
+
+      {inf &&
+        !inf.model_warming_up &&
+        impliedCondition(r.category) !== inf.condition && (
+          <div className="note">
+            The badge is the <b>model&apos;s</b> read ({inf.condition}); the
+            status above is from the <b>MTA alert</b> ({r.label}). They&apos;re
+            different axes and can differ.
+            {r.primary_alert_type === "No Scheduled Service" && (
+              <>
+                {" "}
+                Here, “No Scheduled Service” is scheduled non-service
+                (overnight/weekend), so the HMM doesn&apos;t count it as a live
+                suspension.
+              </>
+            )}
+          </div>
+        )}
 
       {inf && !inf.model_warming_up && (
         <>

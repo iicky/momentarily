@@ -281,6 +281,29 @@ a:hover {
   font-size: 12px;
   margin: 10px 0;
 }
+.note {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 10px 0;
+}
+.note b {
+  color: var(--text);
+  font-weight: 600;
+}
+.axis-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
 .error {
   color: var(--suspended);
 }

@@ -22,6 +22,16 @@ export function conditionRank(c: string | null | undefined): number {
   return CONDITION_RANK[c ?? "unknown"] ?? 0;
 }
 
+// The severity the MTA alert *cause* implies, independent of the HMM. Lets us
+// flag when the model's condition (severity axis) diverges from the alert's
+// label (cause axis) — e.g. planned "No Scheduled Service" reads as a
+// suspension for display but the HMM treats it as disrupted.
+export function impliedCondition(category: string | null | undefined): string {
+  if (category === "service_suspension") return "suspended";
+  if (!category || category === "none") return "normal";
+  return "disrupted";
+}
+
 // Fallback colors for routes the compat layer doesn't carry. Standard MTA hues.
 const FALLBACK_COLOR = "#6e6e73";
 

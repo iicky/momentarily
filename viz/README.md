@@ -35,13 +35,23 @@ window are censored out.
 ### Credentials (Models view only)
 
 The grading streams are timestamped JSONL; reading a window needs an R2 LIST,
-which the public Worker doesn't expose. So Models reads R2 directly:
+which the public Worker doesn't expose. So Models reads R2 directly, using the
+`R2_*` secrets already in the project's **murk** vault.
 
-```bash
-cp .env.local.example .env.local   # then fill in an R2 API token
-```
+`npm run dev` handles this: it sources `../.env` (which exports `MURK_KEY_FILE`)
+and runs Next under `murk exec --vault ../.murk`, so the R2 secrets land in the
+server's environment. No hand-managed keys.
 
-Until that's set, the Status view works fully and Models shows a setup notice.
+If your murk key isn't loaded you'll get a setup notice — `source .env` at the
+repo root (or `direnv allow`) and restart.
+
+Credential resolution order (`lib/r2.ts`): `process.env.R2_*` (murk exec / CI /
+`.env.local`) → the [`@iicky/murk-secrets`](https://www.npmjs.com/package/@iicky/murk-secrets)
+bindings reading `../.murk` in-process. The bindings path activates once that
+package ships a prebuilt native binary for your platform; until then the
+`murk exec` path covers it.
+
+Status needs no credentials. To run it alone without murk: `npm run dev:plain`.
 
 ## Test
 

@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
   const nowSec = Math.floor(Date.now() / 1000);
   const dates = utcDateWindow(days, Date.now());
 
-  if (!r2Configured()) {
+  if (!(await r2Configured())) {
     return NextResponse.json({
       configured: false,
       error:

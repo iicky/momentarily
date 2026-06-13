@@ -97,16 +97,13 @@ export default function ModelsPage() {
 
       {data && !data.configured && (
         <div className="warnbox" style={{ maxWidth: 640 }}>
-          <strong>R2 credentials not configured.</strong> Phase B reads the
-          prediction/transition history directly from R2. Create{" "}
-          <code>viz/.env.local</code> with:
-          <pre style={{ margin: "8px 0 0", whiteSpace: "pre-wrap" }}>
-{`R2_ACCOUNT_ID=...
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...`}
-          </pre>
-          (Mint an R2 API token in the Cloudflare dashboard → R2 → Manage API
-          Tokens. The Workers deploy token can&apos;t read objects.)
+          <strong>R2 credentials not available.</strong> Phase B reads the
+          prediction/transition history from R2 using the R2_* secrets in the
+          project&apos;s murk vault. Launch with <code>npm run dev</code> (it
+          sources <code>../.env</code> and wraps Next in <code>murk exec</code>).
+          If you still see this, make sure your murk key is set —{" "}
+          <code>source .env</code> at the repo root (sets{" "}
+          <code>MURK_KEY_FILE</code>), or run <code>direnv allow</code>.
         </div>
       )}
 

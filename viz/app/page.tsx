@@ -268,9 +268,9 @@ function RouteDrawer({
             {r.primary_alert_type === "No Scheduled Service" && (
               <>
                 {" "}
-                Here, “No Scheduled Service” is scheduled non-service
-                (overnight/weekend), so the HMM doesn&apos;t count it as a live
-                suspension.
+                “No Scheduled Service” means this line just isn&apos;t scheduled
+                to run right now (it doesn&apos;t run 24/7) — nothing&apos;s
+                broken, so the model doesn&apos;t treat it as a suspension.
               </>
             )}
           </div>

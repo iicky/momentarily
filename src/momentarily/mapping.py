@@ -38,11 +38,16 @@ ALERT_TYPE_TO_STATUS: dict[str, str] = {
     "Service Change": "Service Change",
     "Part Suspended": "Service Change",
     "Trains Rerouted": "Service Change",
+    "Reroute": "Service Change",
     "Stations Skipped": "Service Change",
+    "Stops Skipped": "Service Change",
     "Local to Express": "Service Change",
     "Express to Local": "Service Change",
     "Reduced Service": "Service Change",
     "Boarding Change": "Service Change",
+    # Information family
+    "Station Notice": "Information",
+    "Special Schedule": "Information",
     # Suspended family
     "Suspended": "Suspended",
     "No Trains": "Suspended",

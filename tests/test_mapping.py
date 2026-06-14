@@ -23,11 +23,17 @@ def test_none_maps_to_fallback() -> None:
         ("Slow Speeds", "Delays"),
         ("Service Change", "Service Change"),
         ("Trains Rerouted", "Service Change"),
+        ("Reroute", "Service Change"),
         ("Stations Skipped", "Service Change"),
+        ("Stops Skipped", "Service Change"),
+        ("Reduced Service", "Service Change"),
+        ("Boarding Change", "Service Change"),
         ("Suspended", "Suspended"),
         ("No Trains", "Suspended"),
         ("Information", "Information"),
         ("Other", "Information"),
+        ("Station Notice", "Information"),
+        ("Special Schedule", "Information"),
     ],
 )
 def test_known_alert_types(alert_type: str, expected: str) -> None:

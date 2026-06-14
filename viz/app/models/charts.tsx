@@ -41,6 +41,14 @@ export interface AdherenceResult {
   censored: number;
 }
 
+export interface DetectionLatencyResult {
+  points: { route: string; alertType: string; latencyMin: number }[];
+  n: number;
+  missed: number;
+  medianLatencyMin: number;
+  byAlertType: { alertType: string; n: number; medianLatencyMin: number; missed: number }[];
+}
+
 export interface TimelineDTO {
   route: string;
   segments: { state: string; start: number; end: number }[];
@@ -423,6 +431,96 @@ export function AdherencePanel({ result }: { result: AdherenceResult }) {
           +{bound}m late →
         </text>
       </svg>
+    </div>
+  );
+}
+
+// --- Detection latency ---
+
+export function DetectionLatencyPanel({ result }: { result: DetectionLatencyResult }) {
+  if (result.n === 0)
+    return (
+      <div className="muted">
+        No alert→disruption detections in this window
+        {result.missed > 0 && ` (${result.missed} onsets never flipped)`}.
+      </div>
+    );
+
+  const lats = result.points.map((p) => p.latencyMin);
+  const hi = Math.max(15, Math.ceil(quantile(lats.slice().sort((a, b) => a - b), 0.95) / 5) * 5);
+  const nbins = Math.max(4, Math.min(20, Math.round(hi / 5)));
+  const counts = histogram(lats, 0, hi, nbins);
+  const maxBin = Math.max(1, ...counts);
+  const W = 460;
+  const H = 170;
+  const pad = 28;
+  const bw = (W - 2 * pad) / nbins;
+
+  return (
+    <div className="chart">
+      <div className="chart-title">
+        Detection latency ·{" "}
+        <span className="muted">
+          median{" "}
+          {Number.isNaN(result.medianLatencyMin) ? "—" : Math.round(result.medianLatencyMin)}m
+          · n={result.n}
+          {result.missed > 0 && ` · ${result.missed} missed`}
+        </span>
+      </div>
+      <p className="grp-note" style={{ margin: "2px 0 8px" }}>
+        Minutes from a real alert appearing to the HMM flipping to
+        disrupted/suspended. Resolution is one prediction tick (~5m). Breakdown by
+        cause below.
+      </p>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 520 }}>
+        <rect x={pad} y={8} width={W - 2 * pad} height={H - pad - 8} fill="none" stroke="var(--border)" />
+        {counts.map((c, i) => {
+          const h = (c / maxBin) * (H - pad - 8);
+          return (
+            <rect
+              key={i}
+              x={pad + i * bw + 1}
+              y={H - pad - h}
+              width={bw - 2}
+              height={h}
+              fill="var(--disrupted)"
+              fillOpacity={0.7}
+            >
+              <title>
+                {Math.round((i / nbins) * hi)}–{Math.round(((i + 1) / nbins) * hi)}m · {c}
+              </title>
+            </rect>
+          );
+        })}
+        <text x={pad} y={H - 8} fill="var(--muted)" fontSize="9">
+          0m
+        </text>
+        <text x={W - pad} y={H - 8} fill="var(--muted)" fontSize="9" textAnchor="end">
+          {hi}m latency →
+        </text>
+      </svg>
+      {result.byAlertType.length > 0 && (
+        <table className="mini-table">
+          <thead>
+            <tr>
+              <th>cause (primary_alert_type)</th>
+              <th>detections</th>
+              <th>median</th>
+              <th>missed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.byAlertType.slice(0, 8).map((r) => (
+              <tr key={r.alertType}>
+                <td>{r.alertType}</td>
+                <td>{r.n}</td>
+                <td>{Number.isNaN(r.medianLatencyMin) ? "—" : `${Math.round(r.medianLatencyMin)}m`}</td>
+                <td>{r.missed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

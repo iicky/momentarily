@@ -152,9 +152,11 @@ export interface GradingResponse {
   // structurally on the client to avoid importing server modules.
   reliability: unknown[];
   recovery: unknown;
-  // ResumeChurnResult / AdherenceResult — typed structurally on the client.
+  // ResumeChurnResult / AdherenceResult / DetectionLatencyResult — typed
+  // structurally on the client.
   resumeChurn: unknown;
   adherence: unknown;
+  detectionLatency: unknown;
   timelines: unknown[];
   heatmap: HeatmapEntry[];
   paramsTrainedAt: number | null;

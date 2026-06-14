@@ -12,6 +12,7 @@ import {
   buildTimelines,
   reliability,
   recoveryError,
+  detectionLatency,
   routeUniverse,
 } from "@/lib/calibration";
 import {
@@ -137,6 +138,7 @@ export async function GET(req: NextRequest) {
     const rec = recoveryError(predictions, timelines);
     const churn = resumeChurn(alertVersions);
     const adher = adherence(predictions, timelines);
+    const detection = detectionLatency(predictions);
 
     // Cap scatter points to keep the payload small.
     const pointsCapped = rec.points.length > POINT_CAP;
@@ -181,6 +183,7 @@ export async function GET(req: NextRequest) {
       recovery: rec,
       resumeChurn: churn,
       adherence: adher,
+      detectionLatency: detection,
       timelines: [...timelines.values()].map((t) => ({
         route: t.route,
         segments: t.segments,

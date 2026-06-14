@@ -237,6 +237,125 @@ export function recoveryError(
   };
 }
 
+// --- Detection latency ---
+
+export interface DetectionLatencyPoint {
+  route: string;
+  alertType: string;
+  onsetTs: number;
+  detectedTs: number;
+  latencyMin: number;
+}
+
+export interface DetectionLatencyResult {
+  points: DetectionLatencyPoint[];
+  n: number;
+  // Alert onsets that cleared before the HMM ever flipped to disrupted/suspended
+  // — not a latency, a non-detection (e.g. not_scheduled, or sub-threshold).
+  missed: number;
+  medianLatencyMin: number;
+  byAlertType: {
+    alertType: string;
+    n: number;
+    medianLatencyMin: number;
+    missed: number;
+  }[];
+}
+
+function median(sorted: number[]): number {
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN;
+}
+
+/**
+ * Detection latency: minutes between a real alert first appearing on a route
+ * and the HMM published condition flipping to disrupted/suspended.
+ *
+ * Walks each route's per-tick predictions: an alert onset is the first tick a
+ * primary_alert_type appears after none; detection is the first disrupted/
+ * suspended tick before the alert clears. An onset whose alert clears with no
+ * flip is a miss (counted, not a latency). Resolution is the prediction tick
+ * (~5 min). Onsets already in-flight at the window's first tick are imperfectly
+ * attributed — a known window-edge artifact.
+ */
+export function detectionLatency(
+  predictions: PredictionRecord[],
+): DetectionLatencyResult {
+  const byRoute = new Map<string, PredictionRecord[]>();
+  for (const p of predictions) {
+    const arr = byRoute.get(p.route) ?? [];
+    arr.push(p);
+    byRoute.set(p.route, arr);
+  }
+
+  const points: DetectionLatencyPoint[] = [];
+  const missedByType = new Map<string, number>();
+  let missed = 0;
+
+  for (const [route, recs] of byRoute) {
+    recs.sort((a, b) => a.ts - b.ts);
+    let onsetTs: number | null = null;
+    let onsetType: string | null = null;
+    let prevHadAlert = false;
+
+    for (const pr of recs) {
+      const hasAlert = pr.primary_alert_type != null;
+      const disrupted =
+        pr.condition === "disrupted" || pr.condition === "suspended";
+
+      if (hasAlert && !prevHadAlert && onsetTs == null) {
+        onsetTs = pr.ts;
+        onsetType = pr.primary_alert_type;
+      }
+      if (onsetTs != null && disrupted) {
+        points.push({
+          route,
+          alertType: onsetType ?? "(unknown)",
+          onsetTs,
+          detectedTs: pr.ts,
+          latencyMin: (pr.ts - onsetTs) / 60,
+        });
+        onsetTs = null;
+        onsetType = null;
+      } else if (onsetTs != null && !hasAlert) {
+        missed += 1;
+        const k = onsetType ?? "(unknown)";
+        missedByType.set(k, (missedByType.get(k) ?? 0) + 1);
+        onsetTs = null;
+        onsetType = null;
+      }
+      prevHadAlert = hasAlert;
+    }
+  }
+
+  const byTypeMap = new Map<string, number[]>();
+  for (const p of points) {
+    const arr = byTypeMap.get(p.alertType) ?? [];
+    arr.push(p.latencyMin);
+    byTypeMap.set(p.alertType, arr);
+  }
+  const types = new Set<string>([...byTypeMap.keys(), ...missedByType.keys()]);
+  const byAlertType = [...types]
+    .map((alertType) => {
+      const lats = (byTypeMap.get(alertType) ?? []).sort((a, b) => a - b);
+      return {
+        alertType,
+        n: lats.length,
+        medianLatencyMin: median(lats),
+        missed: missedByType.get(alertType) ?? 0,
+      };
+    })
+    .sort((a, b) => b.n - a.n || b.missed - a.missed);
+
+  const allLats = points.map((p) => p.latencyMin).sort((a, b) => a - b);
+  return {
+    points,
+    n: points.length,
+    missed,
+    medianLatencyMin: median(allLats),
+    byAlertType,
+  };
+}
+
 /** Distinct route ids present in either stream, sorted naturally. */
 export function routeUniverse(
   predictions: PredictionRecord[],

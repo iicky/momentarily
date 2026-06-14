@@ -4,6 +4,7 @@ import {
   buildTimelines,
   reliability,
   recoveryError,
+  detectionLatency,
 } from "../lib/calibration.ts";
 import type { PredictionRecord, TransitionRecord } from "../lib/types.ts";
 
@@ -122,4 +123,32 @@ test("schedule-recovery predictions are excluded from HMM calibration", () => {
   const rec = recoveryError(predictions, tls);
   assert.equal(rec.n, 1);
   assert.equal(rec.excludedSchedule, 2);
+});
+
+test("detectionLatency measures alert-onset → first disrupted/suspended tick", () => {
+  // Alert appears at 1000 (still normal), HMM flips to disrupted at 1600.
+  const predictions = [
+    pred({ ts: 700, condition: "normal", primary_alert_type: null }),
+    pred({ ts: 1000, condition: "normal", primary_alert_type: "Delays" }),
+    pred({ ts: 1300, condition: "normal", primary_alert_type: "Delays" }),
+    pred({ ts: 1600, condition: "disrupted", primary_alert_type: "Delays" }),
+    pred({ ts: 1900, condition: "disrupted", primary_alert_type: "Delays" }),
+  ];
+  const res = detectionLatency(predictions);
+  assert.equal(res.n, 1);
+  assert.equal(res.missed, 0);
+  assert.ok(Math.abs(res.points[0].latencyMin - 600 / 60) < 1e-9); // 10 min
+  assert.equal(res.byAlertType[0].alertType, "Delays");
+});
+
+test("detectionLatency counts an onset that clears without a flip as missed", () => {
+  const predictions = [
+    pred({ ts: 1000, condition: "normal", primary_alert_type: "No Scheduled Service" }),
+    pred({ ts: 1300, condition: "normal", primary_alert_type: "No Scheduled Service" }),
+    pred({ ts: 1600, condition: "normal", primary_alert_type: null }), // cleared, never flipped
+  ];
+  const res = detectionLatency(predictions);
+  assert.equal(res.n, 0);
+  assert.equal(res.missed, 1);
+  assert.equal(res.byAlertType[0].missed, 1);
 });

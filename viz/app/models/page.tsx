@@ -7,12 +7,14 @@ import {
   RecoveryScatter,
   ResumeChurnPanel,
   AdherencePanel,
+  DetectionLatencyPanel,
   Swimlane,
   TransitionHeatmap,
   type ReliabilityResult,
   type RecoveryResult,
   type ResumeChurnResult,
   type AdherenceResult,
+  type DetectionLatencyResult,
   type TimelineDTO,
 } from "./charts";
 import type { GradingResponse, HeatmapEntry } from "@/lib/types";
@@ -51,6 +53,7 @@ export default function ModelsPage() {
   const rec = data?.recovery as RecoveryResult | undefined;
   const churn = data?.resumeChurn as ResumeChurnResult | undefined;
   const adher = data?.adherence as AdherenceResult | undefined;
+  const detection = data?.detectionLatency as DetectionLatencyResult | undefined;
   const timelines = (data?.timelines ?? []) as TimelineDTO[];
   const heatmap = (data?.heatmap ?? []) as HeatmapEntry[];
   const states = data?.states ?? ["normal", "disrupted", "suspended"];
@@ -136,6 +139,13 @@ export default function ModelsPage() {
 
           <h3 className="grp">Recovery time: predicted vs actual</h3>
           {rec && <RecoveryScatter result={rec} />}
+
+          <h3 className="grp">Detection latency</h3>
+          <p className="grp-note">
+            How fast the HMM reacts: minutes from a real alert appearing to the
+            published condition flipping to disrupted/suspended.
+          </p>
+          {detection && <DetectionLatencyPanel result={detection} />}
 
           <h3 className="grp">Schedule reliability</h3>
           <p className="grp-note">

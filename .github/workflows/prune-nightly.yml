@@ -1,0 +1,36 @@
+name: Prune R2 (nightly)
+
+# Nightly R2 retention pruning for the archive and grading streams.
+#
+# HMM training is NOT here — it runs weekly in the Cloudflare Container
+# (trainer/, Sunday 05:00 UTC) as the single source of state/params.json. This
+# workflow used to also retrain nightly, which made params retrain daily and
+# raced the container on Sundays; that was retired in favour of the weekly
+# container. See ADR 0001 and momentarily-eb3.
+
+on:
+  schedule:
+    - cron: '0 5 * * *'  # 05:00 UTC daily. GHA cron is best-effort.
+  workflow_dispatch:      # manual prune
+
+concurrency:
+  group: prune-r2
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+      # Bucket creds are object-scoped (no R2 lifecycle rules), so pruning aged
+      # archive + grading objects rides this job.
+      - name: Prune aged R2 objects
+        run: uv run python -m training.prune
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}

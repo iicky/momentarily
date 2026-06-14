@@ -74,6 +74,14 @@ Three independent compute surfaces, all reading/writing the one R2 bucket
 | Publisher | Worker `momentarily-held` (`worker/`) | every 5 min | `v1/snapshot.json`, `v1/predictions/`, `v1/regime_transitions/`, `state/alpha.json`, `state/last_seen.json`, `archive/alerts/`, `archive/ene/` |
 | Trainer | Container via Worker `momentarily-trainer` (`trainer/`) | Sunday 05:00 UTC | `state/params.json`, `state/params/v<trained_at>.json` |
 | Eval | GitHub Actions (`eval-daily.yml`) | daily 06:00 UTC | `v1/eval.json`, `v1/calibration.json` |
+| Prune | GitHub Actions (`prune-nightly.yml`) | daily 05:00 UTC | deletes aged `archive/*` + `v1/predictions/`, `v1/regime_transitions/` objects |
+
+The container is the **single** writer of `state/params.json`. An earlier GitHub
+Actions workflow (`train-nightly.yml`) also retrained nightly and wrote the same
+key — retraining params daily and racing the container on Sundays. That trainer
+was retired (the workflow is now prune-only, `prune-nightly.yml`); the weekly
+container is the sole trainer, so params provenance and the documented weekly
+cadence are deterministic. See momentarily-eb3.
 
 The Worker's per-tick scheduled handler (`worker/src/index.ts`):
 

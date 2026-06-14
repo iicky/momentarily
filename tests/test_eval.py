@@ -9,6 +9,7 @@ from training.eval import (
     BIN_COUNT,
     PredictionRecord,
     TransitionRecord,
+    build_calibration,
     build_eval,
     calibrate,
     recovery_metrics,
@@ -454,6 +455,28 @@ def test_build_eval_segments_by_latest_params_version():
     # exist within the v200 block for the first 6. n = 6.
     cal30 = next(c for c in cp["calibration"] if c["horizon_min"] == 30)
     assert cal30["n"] == 6
+
+
+def test_build_calibration_is_compact_subset():
+    # build_calibration keeps the window-aggregate reliability + recovery but
+    # drops the per-route/per-alert/per-version breakdowns that bloat eval.json.
+    t0 = 1_700_000_000
+    preds = [_pred(ts=t0 + i * 300, params_version=200) for i in range(24)]
+    eval_doc = build_eval(preds, [], window_start=t0, window_end=t0 + 86400)
+    matrices = {
+        "trained_at": 200,
+        "states": ["normal", "disrupted", "suspended"],
+        "routes": {"1": [[0.9, 0.1, 0.0], [0.2, 0.7, 0.1], [0.0, 0.3, 0.7]]},
+    }
+    calib = build_calibration(eval_doc, matrices)
+
+    assert {c["horizon_min"] for c in calib["calibration"]} == {30, 60, 120}
+    assert calib["predictions_seen"] == eval_doc["predictions_seen"]
+    assert calib["transition_matrices"] == matrices
+    # Aggregate recovery only — no route/alert/version explosion.
+    assert set(calib["recovery"]) == {"overall", "per_regime"}
+    assert "by_route" not in calib["recovery"]
+    assert "current_params" not in calib
 
 
 def test_prediction_record_from_json_defaults_params_version():

@@ -38,7 +38,10 @@ if TYPE_CHECKING:
 TICK_SECONDS = 300  # publisher cron grid
 HORIZONS_MIN = (30, 60, 120)
 BIN_COUNT = 10  # 0.0-0.1, ..., 0.9-1.0
+STATES = ("normal", "disrupted", "suspended")  # transition-matrix row/col order
 EVAL_KEY = "v1/eval.json"
+CALIBRATION_KEY = "v1/calibration.json"
+PARAMS_KEY = "state/params.json"
 
 
 # --- Records mirror the JSONL written by worker/src/grading.ts ---
@@ -568,6 +571,68 @@ def publish_eval(client: S3Client, bucket: str, eval_doc: dict[str, Any]) -> Non
     )
 
 
+def load_transition_matrices(client: S3Client, bucket: str) -> dict[str, Any]:
+    """Pull the per-route 3x3 transition matrices out of state/params.json.
+
+    Bundled into calibration.json so a browser-only viz can draw the transition
+    heatmap without LIST/credentialed access to state/. trained_at is the params
+    version the matrices came from; routes maps route -> matrix in STATES order.
+    Empty (trained_at=None) before the first weekly train.
+    """
+    try:
+        body = client.get_object(Bucket=bucket, Key=PARAMS_KEY)["Body"].read()
+        params: dict[str, Any] = json.loads(body)
+    except Exception:
+        return {"trained_at": None, "states": list(STATES), "routes": {}}
+    raw_routes: dict[str, Any] = params.get("routes") or {}
+    routes: dict[str, Any] = {
+        route: p["transition"]
+        for route, p in raw_routes.items()
+        if isinstance(p.get("transition"), list) and len(p["transition"]) == len(STATES)
+    }
+    return {
+        "trained_at": params.get("trained_at"),
+        "states": list(STATES),
+        "routes": routes,
+    }
+
+
+def build_calibration(
+    eval_doc: dict[str, Any], transition_matrices: dict[str, Any]
+) -> dict[str, Any]:
+    """Compact public subset of eval.json for the hosted viz Models tab.
+
+    Keeps the window-aggregate reliability bins, Brier/skill per horizon, and
+    overall + per-regime recovery, plus the transition matrices. Drops the heavy
+    breakdowns (current_params, recovery.by_route, recovery.by_alert_type) that
+    multiply by route/alert-type/params-version — those stay in eval.json.
+    """
+    return {
+        "generated_at": eval_doc["generated_at"],
+        "window": eval_doc["window"],
+        "predictions_seen": eval_doc["predictions_seen"],
+        "transitions_seen": eval_doc["transitions_seen"],
+        "calibration": eval_doc["calibration"],
+        "recovery": {
+            "overall": eval_doc["recovery"]["overall"],
+            "per_regime": eval_doc["recovery"]["per_regime"],
+        },
+        "transition_matrices": transition_matrices,
+    }
+
+
+def publish_calibration(
+    client: S3Client, bucket: str, calibration_doc: dict[str, Any]
+) -> None:
+    client.put_object(
+        Bucket=bucket,
+        Key=CALIBRATION_KEY,
+        Body=json.dumps(calibration_doc).encode(),
+        ContentType="application/json",
+        CacheControl="public, max-age=300, s-maxage=900",
+    )
+
+
 # --- CLI ---
 
 
@@ -598,13 +663,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     eval_doc = build_eval(
         predictions, transitions, window_start=window_start, window_end=window_end
     )
+    transition_matrices = load_transition_matrices(client, cfg.bucket)
+    calibration_doc = build_calibration(eval_doc, transition_matrices)
 
     if args.no_publish:
         print(json.dumps(eval_doc, indent=2))
+        print(json.dumps(calibration_doc, indent=2))
     else:
         publish_eval(client, cfg.bucket, eval_doc)
+        publish_calibration(client, cfg.bucket, calibration_doc)
         print(
-            f"published {EVAL_KEY}: "
+            f"published {EVAL_KEY} + {CALIBRATION_KEY}: "
             f"{len(predictions)} predictions, {len(transitions)} transitions"
         )
     return 0

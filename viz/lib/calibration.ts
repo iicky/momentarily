@@ -102,6 +102,9 @@ export interface ReliabilityResult {
   bins: ReliabilityBin[];
   brier: number;
   n: number;
+  // schedule-recovery predictions skipped — they're deterministic resume
+  // lookups, perfect by construction, so grading them would flatter the HMM.
+  excludedSchedule: number;
 }
 
 const HORIZON_FIELD: Record<number, keyof PredictionRecord> = {
@@ -129,9 +132,14 @@ export function reliability(
   );
   let brierSum = 0;
   let n = 0;
+  let excludedSchedule = 0;
 
   for (const pr of predictions) {
     if (pr.condition === "normal") continue;
+    if (pr.recovery_source === "schedule") {
+      excludedSchedule += 1;
+      continue;
+    }
     const tl = timelines.get(pr.route);
     if (!tl) continue;
     if (pr.ts + horizonSec > tl.observedUntil) continue; // censored
@@ -152,6 +160,7 @@ export function reliability(
   return {
     horizonMin,
     n,
+    excludedSchedule,
     brier: n ? brierSum / n : NaN,
     bins: bins.map((b, i) => ({
       p: (i + 0.5) / nBins,
@@ -177,6 +186,8 @@ export interface RecoveryResult {
   coverage: number; // fraction inside [low, high]
   n: number;
   medianAbsErrorMin: number;
+  // schedule-recovery predictions skipped (graded for adherence instead).
+  excludedSchedule: number;
 }
 
 /**
@@ -188,8 +199,13 @@ export function recoveryError(
   timelines: Map<string, RouteTimeline>,
 ): RecoveryResult {
   const points: RecoveryPoint[] = [];
+  let excludedSchedule = 0;
   for (const pr of predictions) {
     if (pr.condition === "normal" || pr.recovery_indeterminate) continue;
+    if (pr.recovery_source === "schedule") {
+      excludedSchedule += 1;
+      continue;
+    }
     const tl = timelines.get(pr.route);
     if (!tl) continue;
     const nn = nextNormalStart(tl, pr.ts);
@@ -215,6 +231,7 @@ export function recoveryError(
   return {
     points,
     n,
+    excludedSchedule,
     coverage: n ? points.filter((p) => p.inIqr).length / n : NaN,
     medianAbsErrorMin: n ? errs[Math.floor(n / 2)] : NaN,
   };

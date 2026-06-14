@@ -107,6 +107,11 @@ export interface PredictionRecord {
   p_normal_in_120min: number;
   primary_alert_type: string | null;
   params_version: number;
+  // Optional: present only on records written after schedule-based recovery
+  // shipped. "schedule" rows are deterministic resume lookups, excluded from
+  // HMM calibration and graded for adherence instead.
+  recovery_source?: "hmm" | "schedule";
+  resumes_at?: number | null;
 }
 
 export interface TransitionRecord {
@@ -136,6 +141,9 @@ export interface GradingResponse {
     predictionRecords: number;
     transitionFiles: number;
     transitionRecords: number;
+    alertFiles: number;
+    alertVersions: number;
+    alertsCapped: boolean;
     pointsCapped: boolean;
   };
   routes: string[];
@@ -144,6 +152,9 @@ export interface GradingResponse {
   // structurally on the client to avoid importing server modules.
   reliability: unknown[];
   recovery: unknown;
+  // ResumeChurnResult / AdherenceResult — typed structurally on the client.
+  resumeChurn: unknown;
+  adherence: unknown;
   timelines: unknown[];
   heatmap: HeatmapEntry[];
   paramsTrainedAt: number | null;

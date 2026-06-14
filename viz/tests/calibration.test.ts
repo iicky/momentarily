@@ -81,6 +81,7 @@ test("reliability scores forecasts against real recovery; censors the unobservab
 
   const r30 = reliability(predictions, tls, 30);
   assert.equal(r30.n, 1); // only the ts=2300 point is observable & non-normal
+  assert.equal(r30.excludedSchedule, 0);
   // recovered in 45m > 30m → y=0; p=0.2 → brier=0.04
   assert.ok(Math.abs(r30.brier - 0.04) < 1e-9);
   const bin30 = r30.bins.find((b) => b.n > 0)!;
@@ -105,4 +106,20 @@ test("recoveryError compares predicted band to actual time-to-normal", () => {
   assert.equal(res.coverage, 1);
   assert.ok(Math.abs(res.points[0].actualMin - 45) < 1e-9);
   assert.ok(Math.abs(res.medianAbsErrorMin - 5) < 1e-9); // |40 - 45|
+});
+
+test("schedule-recovery predictions are excluded from HMM calibration", () => {
+  const tls = buildTimelines(transitions, NOW);
+  const predictions = [
+    pred({ ts: 2300 }), // hmm row, scored
+    pred({ ts: 2300, recovery_source: "schedule", resumes_at: 5000 }), // excluded
+    pred({ ts: 2400, recovery_source: "schedule", resumes_at: 5000 }), // excluded
+  ];
+  const r30 = reliability(predictions, tls, 30);
+  assert.equal(r30.n, 1);
+  assert.equal(r30.excludedSchedule, 2);
+
+  const rec = recoveryError(predictions, tls);
+  assert.equal(rec.n, 1);
+  assert.equal(rec.excludedSchedule, 2);
 });

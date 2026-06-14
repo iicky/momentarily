@@ -9,6 +9,7 @@ export interface ReliabilityResult {
   bins: { p: number; predictedMean: number; observedFreq: number; n: number }[];
   brier: number;
   n: number;
+  excludedSchedule: number;
 }
 
 export interface RecoveryResult {
@@ -16,6 +17,28 @@ export interface RecoveryResult {
   coverage: number;
   n: number;
   medianAbsErrorMin: number;
+  excludedSchedule: number;
+}
+
+export interface ResumeChurnResult {
+  windows: number;
+  pushed: number;
+  pulled: number;
+  stable: number;
+  pushedPct: number;
+  pulledPct: number;
+  pushMagnitudesMin: number[];
+  byRoute: { route: string; windows: number; pushed: number }[];
+  byAlertType: { alertType: string; windows: number; pushed: number }[];
+}
+
+export interface AdherenceResult {
+  points: { route: string; resumeAt: number; actualNormalAt: number; errorMin: number }[];
+  n: number;
+  medianErrorMin: number;
+  overrunPct: number;
+  onTimePct: number;
+  censored: number;
 }
 
 export interface TimelineDTO {
@@ -53,6 +76,8 @@ export function ReliabilityChart({ result }: { result: ReliabilityResult }) {
         <span className="muted">
           Brier {Number.isNaN(result.brier) ? "—" : result.brier.toFixed(3)} · n=
           {result.n}
+          {result.excludedSchedule > 0 &&
+            ` · ${result.excludedSchedule} schedule excl.`}
         </span>
       </div>
       <svg viewBox={`0 0 ${S} ${S}`} width="100%" style={{ maxWidth: 260 }}>
@@ -108,6 +133,8 @@ export function RecoveryScatter({ result }: { result: RecoveryResult }) {
           (target ~50%) · median abs err{" "}
           {Number.isNaN(result.medianAbsErrorMin) ? "—" : Math.round(result.medianAbsErrorMin)}m ·
           n={result.n}
+          {result.excludedSchedule > 0 &&
+            ` · ${result.excludedSchedule} schedule excl.`}
         </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 520 }}>
@@ -222,6 +249,180 @@ export function Swimlane({ timelines }: { timelines: TimelineDTO[] }) {
         <span><i style={{ background: "var(--disrupted)" }} /> disrupted</span>
         <span><i style={{ background: "var(--suspended)" }} /> suspended</span>
       </div>
+    </div>
+  );
+}
+
+// --- Schedule reliability: resume-churn ---
+
+function pct(x: number): string {
+  return Number.isNaN(x) ? "—" : `${(x * 100).toFixed(1)}%`;
+}
+
+/** Simple signed-value histogram into `bins` buckets over [lo, hi]. */
+function histogram(values: number[], lo: number, hi: number, bins: number): number[] {
+  const counts = new Array(bins).fill(0) as number[];
+  const span = hi - lo || 1;
+  for (const v of values) {
+    const idx = Math.min(bins - 1, Math.max(0, Math.floor(((v - lo) / span) * bins)));
+    counts[idx] += 1;
+  }
+  return counts;
+}
+
+export function ResumeChurnPanel({ result }: { result: ResumeChurnResult }) {
+  if (result.windows === 0)
+    return (
+      <div className="muted">
+        No planned-work windows with ≥2 archived versions in this window.
+      </div>
+    );
+
+  const mags = result.pushMagnitudesMin;
+  const hiMag = Math.max(60, Math.ceil(quantile(mags, 0.95) / 30) * 30);
+  const bins = histogram(mags, 0, hiMag, 12);
+  const maxBin = Math.max(1, ...bins);
+  const W = 460;
+  const H = 160;
+  const pad = 28;
+  const bw = (W - 2 * pad) / bins.length;
+
+  return (
+    <div className="chart">
+      <div className="chart-title">
+        Resume churn ·{" "}
+        <span className="muted">
+          {result.windows.toLocaleString()} windows · pushed {pct(result.pushedPct)} · pulled{" "}
+          {pct(result.pulledPct)} · stable{" "}
+          {pct(result.stable / result.windows)}
+        </span>
+      </div>
+      <p className="grp-note" style={{ margin: "2px 0 8px" }}>
+        How far announced resume times moved later across an alert&apos;s versions
+        (pushed windows only). The MTA rarely pulls a resume earlier, so a push is
+        the main way &ldquo;it&apos;s back&rdquo; gets announced too soon.
+      </p>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 520 }}>
+        <rect x={pad} y={8} width={W - 2 * pad} height={H - pad - 8} fill="none" stroke="var(--border)" />
+        {bins.map((c, i) => {
+          const h = (c / maxBin) * (H - pad - 8);
+          return (
+            <rect
+              key={i}
+              x={pad + i * bw + 1}
+              y={H - pad - h}
+              width={bw - 2}
+              height={h}
+              fill="var(--suspended)"
+              fillOpacity={0.7}
+            >
+              <title>
+                {Math.round((i / bins.length) * hiMag)}–
+                {Math.round(((i + 1) / bins.length) * hiMag)}m · {c}
+              </title>
+            </rect>
+          );
+        })}
+        <text x={pad} y={H - 8} fill="var(--muted)" fontSize="9">
+          0m
+        </text>
+        <text x={W - pad} y={H - 8} fill="var(--muted)" fontSize="9" textAnchor="end">
+          {hiMag}m push →
+        </text>
+      </svg>
+      {result.byAlertType.length > 0 && (
+        <table className="mini-table">
+          <thead>
+            <tr>
+              <th>alert type</th>
+              <th>windows</th>
+              <th>pushed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.byAlertType.slice(0, 6).map((r) => (
+              <tr key={r.alertType}>
+                <td>{r.alertType}</td>
+                <td>{r.windows}</td>
+                <td>
+                  {r.pushed} ({pct(r.windows ? r.pushed / r.windows : NaN)})
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// --- Schedule reliability: adherence ---
+
+export function AdherencePanel({ result }: { result: AdherenceResult }) {
+  if (result.n === 0)
+    return (
+      <div className="muted">
+        No schedule resumes with an observed return-to-normal yet
+        {result.censored > 0 && ` (${result.censored} censored)`}.
+      </div>
+    );
+
+  const errs = result.points.map((p) => p.errorMin);
+  const bound = Math.max(30, Math.ceil(quantile(errs.map(Math.abs).sort((a, b) => a - b), 0.95) / 15) * 15);
+  const bins = 16;
+  const counts = histogram(errs, -bound, bound, bins);
+  const maxBin = Math.max(1, ...counts);
+  const W = 460;
+  const H = 180;
+  const pad = 28;
+  const bw = (W - 2 * pad) / bins;
+  const zeroX = pad + ((0 + bound) / (2 * bound)) * (W - 2 * pad);
+
+  return (
+    <div className="chart">
+      <div className="chart-title">
+        Schedule adherence ·{" "}
+        <span className="muted">
+          n={result.n} · median{" "}
+          {Number.isNaN(result.medianErrorMin) ? "—" : `${result.medianErrorMin > 0 ? "+" : ""}${Math.round(result.medianErrorMin)}m`}{" "}
+          · overran {pct(result.overrunPct)} · on-time {pct(result.onTimePct)}
+          {result.censored > 0 && ` · ${result.censored} censored`}
+        </span>
+      </div>
+      <p className="grp-note" style={{ margin: "2px 0 8px" }}>
+        Announced resume vs when the line actually returned to normal. Right of
+        the dashed line = back later than promised (overrun); the only read on the
+        silent-overrun case.
+      </p>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: 520 }}>
+        <rect x={pad} y={8} width={W - 2 * pad} height={H - pad - 8} fill="none" stroke="var(--border)" />
+        <line x1={zeroX} y1={8} x2={zeroX} y2={H - pad} stroke="var(--muted)" strokeDasharray="3 3" />
+        {counts.map((c, i) => {
+          const h = (c / maxBin) * (H - pad - 8);
+          const center = -bound + ((i + 0.5) / bins) * 2 * bound;
+          return (
+            <rect
+              key={i}
+              x={pad + i * bw + 1}
+              y={H - pad - h}
+              width={bw - 2}
+              height={h}
+              fill={center > 10 ? "var(--suspended)" : center < -10 ? "var(--disrupted)" : "var(--normal)"}
+              fillOpacity={0.7}
+            >
+              <title>
+                {Math.round(center)}m · {c}
+              </title>
+            </rect>
+          );
+        })}
+        <text x={pad} y={H - 8} fill="var(--muted)" fontSize="9">
+          −{bound}m early
+        </text>
+        <text x={W - pad} y={H - 8} fill="var(--muted)" fontSize="9" textAnchor="end">
+          +{bound}m late →
+        </text>
+      </svg>
     </div>
   );
 }

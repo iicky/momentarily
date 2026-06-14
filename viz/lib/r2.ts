@@ -145,4 +145,5 @@ export const STREAMS = {
   predictions: "v1/predictions",
   transitions: "v1/regime_transitions",
   params: "state/params.json",
+  alerts: "archive/alerts",
 } as const;

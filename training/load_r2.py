@@ -220,23 +220,20 @@ def build_tick_observations(
     out: list[TickObservation] = []
     for tick in sorted(bucket):
         for route_id, alerts in bucket[tick].items():
-            # "Extra Service" is good news, not a disruption — counting it
-            # pushed routes out of `normal` and polluted recovery grading.
-            # It stays in the display surfaces; only the HMM observation
-            # ignores it. Mirrors worker/src/derive.ts. See momentarily-vk0.11.
+            # Neither "Extra Service" nor "No Scheduled Service" is a disruption
+            # to recover from — extra service is good news, no-service is planned
+            # absence (overnight/weekend gaps, rush-only lines). Both stay in the
+            # display surfaces but drop out of the HMM observation so the filter
+            # reads quiet and stays normal. Mirrors worker/src/derive.ts.
             counted = [
-                (so, at) for so, at in alerts.values() if "Extra Service" not in at
+                (so, at)
+                for so, at in alerts.values()
+                if "Extra Service" not in at and "No Scheduled Service" not in at
             ]
             types = [at for _so, at in counted]
             obs = Observation(
                 alert_count=len(counted),
                 severity_sum=sum(so for so, _at in counted),
-                # "No Scheduled Service" is deliberately NOT a suspension: it's
-                # scheduled absence (overnight/weekend non-service on B, W, 7X,
-                # ...), which is normal operations. Counting it made ~41% of
-                # truth ticks "suspended" in the 2026-06-09 shadow review. It
-                # still contributes to alert_count/severity_sum. Mirrors
-                # worker/src/derive.ts. See momentarily-vk0.3.
                 has_suspended_alert=_match(
                     types,
                     ("Suspend", "No Trains"),

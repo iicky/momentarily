@@ -40,14 +40,25 @@ def _body(
     }
 
 
-def test_no_scheduled_service_is_not_suspension():
-    """Scheduled absence (overnight/weekend non-service) is normal operations,
-    not a suspension — it must not trip the suspended flag. It still counts
-    toward alert_count/severity. See momentarily-vk0.3."""
+def test_no_scheduled_service_is_invisible_to_the_hmm():
+    """Scheduled absence (overnight/weekend non-service, rush-only lines) is a
+    planned non-disruption, not something to recover from — like Extra Service
+    it drops out of the HMM observation entirely so the filter stays normal and
+    is ready at resume. The not_scheduled condition is applied downstream."""
     obs = build_tick_observations([_body("a1", "No Scheduled Service")])
     assert obs
-    assert all(not o.observation.has_suspended_alert for o in obs)
-    assert all(o.observation.alert_count == 1 for o in obs)
+    for o in obs:
+        assert o.observation.alert_count == 0
+        assert o.observation.severity_sum == 0
+        assert not o.observation.has_suspended_alert
+    # ...and it doesn't mask a real disruption alongside it.
+    obs = build_tick_observations(
+        [_body("a1", "No Scheduled Service"), _body("a2", "Delays")]
+    )
+    assert obs
+    for o in obs:
+        assert o.observation.alert_count == 1
+        assert o.observation.has_delays
 
 
 def test_suspended_and_no_trains_set_flag():

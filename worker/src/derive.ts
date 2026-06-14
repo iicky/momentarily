@@ -118,6 +118,18 @@ export interface RouteSnapshot {
     northbound: DirectionAlerts;
     southbound: DirectionAlerts;
   };
+  /** A real-time disruptive alert (lmm:alert:*) is active on this route. When
+   *  set, the published condition stays HMM-derived even if a planned alert is
+   *  also active. */
+  has_realtime_alert: boolean;
+  /** A planned "No Scheduled Service" alert is active — the line is off its
+   *  timetable, not broken. Precedence (realtime first) is applied downstream. */
+  is_not_scheduled: boolean;
+  /** End of the planned-work window containing `now` (epoch s), or null when no
+   *  planned window is active. Latest end among the route's currently-active
+   *  planned windows — recomputed each tick, never the max across a recurring
+   *  alert's future windows. */
+  scheduled_resume_at: number | null;
 }
 
 /**
@@ -165,11 +177,17 @@ function buildRouteSnapshot(
   todBinValue: number,
 ): RouteSnapshot {
   const primary = pickPrimary(alerts);
-  // "Extra Service" is good news, not a disruption — counting it pushed
-  // routes out of `normal` and polluted recovery grading. It stays in the
-  // display surfaces (alerts list, primary/coarse label); only the HMM
-  // observation ignores it. Mirrors training/load_r2.py. See momentarily-vk0.11.
-  const counted = alerts.filter((a) => !a.alert_type.includes('Extra Service'));
+  // Neither "Extra Service" nor "No Scheduled Service" is a disruption to
+  // recover from — extra service is good news, no-service is planned absence
+  // (overnight/weekend gaps, rush-only lines). Both stay in the display
+  // surfaces (alerts list, primary/coarse label) but drop out of the HMM
+  // observation so the filter reads quiet and stays normal. Mirrors
+  // training/load_r2.py.
+  const counted = alerts.filter(
+    (a) =>
+      !a.alert_type.includes('Extra Service')
+      && !a.alert_type.includes('No Scheduled Service'),
+  );
   const types = counted.map((a) => a.alert_type);
 
   const observation: Observation = {
@@ -209,7 +227,46 @@ function buildRouteSnapshot(
     primary_alert_type: primary?.alert_type ?? null,
     coarse_label: primary ? coarseStatus(primary.alert_type) : NO_ALERTS_FALLBACK,
     by_direction: splitByDirection(alerts),
+    has_realtime_alert: alerts.some((a) => isRealtimeId(a.alert_id)),
+    is_not_scheduled: alerts.some((a) => a.alert_type.includes('No Scheduled Service')),
+    scheduled_resume_at: scheduledResumeAt(alerts, observedAt),
   };
+}
+
+// Entity-id namespaces discriminate the two alert kinds more robustly than the
+// alert_type string: lmm:alert:* are real-time disruptions (end is a rolling
+// display TTL, never a resume time); lmm:planned_work:* carry a bounded
+// active_period.end that IS the resume time — and cover Reduced/Extra/No
+// Scheduled/Special Schedule, which lack the "Planned -" type prefix.
+function isRealtimeId(alertId: string): boolean {
+  return alertId.startsWith('lmm:alert:');
+}
+
+function isPlannedWorkId(alertId: string): boolean {
+  return alertId.startsWith('lmm:planned_work:');
+}
+
+/**
+ * End of the planned-work window containing `now`, or null. Among the route's
+ * planned alerts, take the latest end across windows that contain `now` —
+ * "when everything currently planned is done." Recurring alerts carry many
+ * windows (months out); only the one bracketing `now` is the resume time, so we
+ * never reach for max(end) across the whole alert.
+ */
+function scheduledResumeAt(alerts: RouteEntityRef[], now: number): number | null {
+  let resume: number | null = null;
+  for (const a of alerts) {
+    if (!isPlannedWorkId(a.alert_id)) continue;
+    for (const p of a.active_period) {
+      const end = p.end;
+      if (end === undefined) continue;
+      const start = p.start ?? 0;
+      if (start <= now && now <= end && (resume === null || end > resume)) {
+        resume = end;
+      }
+    }
+  }
+  return resume;
 }
 
 function dedupeRefs(refs: RouteEntityRef[]): AlertRef[] {

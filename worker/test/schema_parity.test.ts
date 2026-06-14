@@ -51,6 +51,9 @@ function snapMapWithAlerts(routeId: string, n: number): Map<string, RouteSnapsho
       northbound: { alerts: ids, primary_alert_type: n > 0 ? 'Delays' : null },
       southbound: { alerts: [], primary_alert_type: null },
     },
+    has_realtime_alert: n > 0,
+    is_not_scheduled: false,
+    scheduled_resume_at: null,
   });
   return m;
 }

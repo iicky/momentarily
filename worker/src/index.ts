@@ -284,6 +284,8 @@ export default {
           recovery_minutes_low: inf.recovery_minutes_low,
           recovery_minutes_high: inf.recovery_minutes_high,
           recovery_indeterminate: inf.recovery_indeterminate,
+          recovery_source: inf.recovery_source,
+          resumes_at: inf.resumes_at,
           primary_alert_type: rs.primary_alert_type,
           params_version: paramsVersion,
         });

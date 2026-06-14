@@ -62,6 +62,15 @@ interface Inference {
   p_normal_in_60min: number;
   p_normal_in_120min: number;
   model_warming_up: boolean;
+  // Where recovery_minutes comes from: "schedule" is a deterministic lookup of
+  // the planned-work resume time (no model uncertainty); "hmm" is the dwell
+  // estimate. The grader excludes "schedule" rows from HMM calibration.
+  recovery_source: 'hmm' | 'schedule';
+  // Announced resume time (epoch s) for schedule recovery; null for hmm.
+  resumes_at: number | null;
+  // now has passed resumes_at but the planned alert is still active — recovery
+  // is clamped to 0 rather than counting down past the announced time.
+  overdue: boolean;
 }
 
 interface RouteStatusOut {
@@ -188,6 +197,11 @@ export function buildSnapshot(args: {
     const snap = args.routeSnapshots.get(routeId);
     const roll = args.rolls[routeId];
     const activeAlerts = snap?.active_alert_ids ?? [];
+    const schedule: ScheduleFacts = {
+      isNotScheduled: snap?.is_not_scheduled ?? false,
+      hasRealtimeAlert: snap?.has_realtime_alert ?? false,
+      scheduledResumeAt: snap?.scheduled_resume_at ?? null,
+    };
     const inference: Inference | null = roll
       ? buildInference(
           roll,
@@ -196,6 +210,7 @@ export function buildSnapshot(args: {
           routeId,
           args.trainedParams,
           activeAlerts.length,
+          schedule,
         )
       : null;
 
@@ -203,7 +218,10 @@ export function buildSnapshot(args: {
     route_status[routeId] = {
       route_id: routeId,
       alerts: activeAlerts,
-      condition: roll ? effectiveCondition(roll, activeAlerts.length) : 'unknown',
+      // Keep the route's published condition identical to its inference — both
+      // run through the same precedence (realtime → HMM, else not_scheduled,
+      // else HMM/normal).
+      condition: inference ? inference.condition : 'unknown',
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,
@@ -260,6 +278,10 @@ function buildSystemStatus(
       routes_with_alerts.push(routeId);
       alert_count += rs.alerts.length;
     }
+    // not_scheduled is a planned non-disruption — keep it out of the disruption
+    // rollups (severity_max here; lines_disrupted_count/most_degraded_line are
+    // gated by is_disrupted, which is already false for it).
+    if (rs.condition === 'not_scheduled') continue;
     const snap = routeSnapshots.get(routeId);
     if (snap && snap.severity_max > severity_max) severity_max = snap.severity_max;
   }
@@ -356,12 +378,15 @@ function buildCompat(
       south: [],
     };
 
+    // not_scheduled is a new condition value; render it as a scheduled gap so
+    // the HomeAssistant integration doesn't choke on an unknown status.
+    const notScheduled = rs.condition === 'not_scheduled';
     subwaynow_routes[routeId] = {
       id: routeId,
       name: meta.name,
       color: meta.color,
-      status: rs.label,
-      scheduled: true,
+      status: notScheduled ? 'Not Scheduled' : rs.label,
+      scheduled: !notScheduled,
       direction_statuses,
       delay_summaries,
       service_irregularity_summaries,
@@ -394,6 +419,12 @@ function headersMatching(refs: AlertRef[], keywords: string[]): string[] {
   return out;
 }
 
+interface ScheduleFacts {
+  isNotScheduled: boolean;
+  hasRealtimeAlert: boolean;
+  scheduledResumeAt: number | null;
+}
+
 function buildInference(
   roll: RouteRoll,
   now: number,
@@ -401,6 +432,7 @@ function buildInference(
   routeId: string,
   trained: TrainedParams | null,
   activeAlertCount: number,
+  schedule: ScheduleFacts,
 ): Inference {
   const probs = roll.filter.probabilities;
   const params = paramsForRoute(trained, routeId);
@@ -420,7 +452,7 @@ function buildInference(
 
   const argmaxIdx = argmaxOf(probs);
 
-  const condition = effectiveCondition(roll, activeAlertCount);
+  const condition = resolveCondition(roll, activeAlertCount, schedule);
 
   // Recovery_minutes is "time until back to normal." Two sources, in order
   // of preference:
@@ -436,7 +468,38 @@ function buildInference(
   let recovery_minutes_low = 0;
   let recovery_minutes_high = 0;
   let recovery_indeterminate = false;
-  if (condition !== 'normal') {
+  let recovery_source: 'hmm' | 'schedule' = 'hmm';
+  let resumes_at: number | null = null;
+  let overdue = false;
+
+  // A planned-work disruption announces its own resume time (the window end),
+  // so recovery is a deterministic schedule lookup, not a dwell estimate — for
+  // ALL planned_work, not just no-service. Real-time alerts have no trustworthy
+  // end and keep HMM recovery; when both are present the real-time alert wins.
+  const scheduleRecovery =
+    condition !== 'normal'
+    && !schedule.hasRealtimeAlert
+    && schedule.scheduledResumeAt !== null;
+
+  if (scheduleRecovery) {
+    const resume = schedule.scheduledResumeAt!;
+    recovery_source = 'schedule';
+    resumes_at = resume;
+    // now has passed the announced resume but the alert is still active this
+    // tick — clamp to 0 rather than count down past it. Next tick an extension
+    // or a newly-posted real-time alert takes over via precedence.
+    overdue = now >= resume;
+    const remaining = Math.max(0, Math.round((resume - now) / 60));
+    recovery_minutes = remaining;
+    recovery_minutes_low = remaining;
+    recovery_minutes_high = remaining;
+    // It's back at the announced time: P(normal in k) is 1 once the window end
+    // falls within k minutes, else 0.
+    const within = (mins: number): number => (resume <= now + mins * 60 ? 1 : 0);
+    p_normal_in_30 = within(30);
+    p_normal_in_60 = within(60);
+    p_normal_in_120 = within(120);
+  } else if (condition !== 'normal') {
     const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
     const empirical = dwellForRouteState(
       trained,
@@ -508,7 +571,9 @@ function buildInference(
     recovery_minutes,
     // Tie to the gated condition so a no-alert route never counts as disrupted
     // (keeps lines_disrupted_count consistent with the published condition).
-    is_disrupted: activeAlertCount > 0 && probs[1] + probs[2] > 0.7,
+    // not_scheduled is a planned non-disruption — never counts.
+    is_disrupted:
+      condition !== 'not_scheduled' && activeAlertCount > 0 && probs[1] + probs[2] > 0.7,
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],
@@ -521,6 +586,9 @@ function buildInference(
     p_normal_in_60min: p_normal_in_60,
     p_normal_in_120min: p_normal_in_120,
     model_warming_up,
+    recovery_source,
+    resumes_at,
+    overdue,
   };
 }
 
@@ -541,6 +609,24 @@ function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {
  * The underlying publish state machine still respects HYSTERESIS_TICKS;
  * this only governs what we render. See momentarily-8ga.
  */
+/**
+ * Apply the condition precedence on top of the HMM label:
+ *   1. real-time disruptive alert (lmm:alert:*) active → HMM condition (live
+ *      reality wins, even if a planned alert is also active)
+ *   2. else active planned "No Scheduled Service" → not_scheduled (off-timetable,
+ *      not broken)
+ *   3. else → HMM condition / normal
+ */
+function resolveCondition(
+  roll: RouteRoll,
+  activeAlertCount: number,
+  schedule: ScheduleFacts,
+): string {
+  if (schedule.hasRealtimeAlert) return effectiveCondition(roll, activeAlertCount);
+  if (schedule.isNotScheduled) return 'not_scheduled';
+  return effectiveCondition(roll, activeAlertCount);
+}
+
 function effectiveCondition(roll: RouteRoll, activeAlertCount: number): PublishedLabel {
   // Consistency guardrail: every disruption signal the filter sees is derived
   // from alerts, so with zero active alerts the honest condition is `normal`.

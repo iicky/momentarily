@@ -38,6 +38,11 @@ export interface PredictionRecord {
   // clamp, not a real prediction. The grader must skip these rows so they don't
   // drag MAE around. See momentarily-x25.
   recovery_indeterminate: boolean;
+  // "schedule" recoveries are deterministic lookups of the planned resume time,
+  // not dwell estimates — the grader excludes them from HMM calibration and
+  // instead grades them against the announced resumes_at (schedule adherence).
+  recovery_source: 'hmm' | 'schedule';
+  resumes_at: number | null;
   // primary_alert_type at this tick (the cause label currently associated with
   // the route). null when no alert is active. Lets the grader segment
   // calibration by cause. See momentarily-22k.

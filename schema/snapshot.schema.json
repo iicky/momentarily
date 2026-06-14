@@ -620,6 +620,11 @@
           "title": "Model Warming Up",
           "type": "boolean"
         },
+        "overdue": {
+          "default": false,
+          "title": "Overdue",
+          "type": "boolean"
+        },
         "p_disrupted": {
           "title": "P Disrupted",
           "type": "number"
@@ -661,6 +666,11 @@
           "title": "Recovery Minutes Low",
           "type": "integer"
         },
+        "recovery_source": {
+          "default": "hmm",
+          "title": "Recovery Source",
+          "type": "string"
+        },
         "regime_age_seconds": {
           "title": "Regime Age Seconds",
           "type": "integer"
@@ -668,6 +678,18 @@
         "regime_entered_at": {
           "title": "Regime Entered At",
           "type": "integer"
+        },
+        "resumes_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resumes At"
         }
       },
       "required": [

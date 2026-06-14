@@ -122,7 +122,10 @@ class Inference(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     # Primary user-facing fields (graduate to sensor entities at Phase 4)
-    condition: str  # "normal" | "disrupted" | "suspended" (open for future regimes)
+    #   "normal" | "disrupted" | "suspended" | "not_scheduled"
+    # not_scheduled is a planned non-disruption (off-timetable, e.g. rush-only
+    # lines off-hours); open for future regimes.
+    condition: str
     recovery_minutes: int
     is_disrupted: bool
 
@@ -152,6 +155,16 @@ class Inference(BaseModel):
     # Cold-start flag — true when the model is still warming up for this entity
     model_warming_up: bool = False
 
+    # Where recovery_minutes comes from: "schedule" is a deterministic lookup of
+    # the planned-work resume time (no model uncertainty); "hmm" is the dwell
+    # estimate. Graders exclude "schedule" rows from HMM calibration.
+    recovery_source: str = "hmm"  # "hmm" | "schedule"
+    # Announced resume time (epoch s) for schedule recovery; None for "hmm".
+    resumes_at: int | None = None
+    # now has passed resumes_at but the planned alert is still active — recovery
+    # is clamped to 0 rather than counting down past the announced time.
+    overdue: bool = False
+
 
 class RouteStatus(BaseModel):
     """Derived per-route view from alerts + route metadata + optional HMM inference."""
@@ -163,7 +176,7 @@ class RouteStatus(BaseModel):
     # Severity axis. The Worker publisher sets this from the HMM's
     # hysteresis-stable published label; the Python path uses a coarse
     # alert-derived fallback (mapping.coarse_condition).
-    #   "normal" | "disrupted" | "suspended" | "unknown"
+    #   "normal" | "disrupted" | "suspended" | "not_scheduled" | "unknown"
     condition: str = "unknown"
     # Cause axis — our stable vocabulary, derived from the MTA alert_type.
     #   "none" | "planned_work" | "delays" | "service_change" |
@@ -343,6 +356,8 @@ class CompatRoute(BaseModel):
     id: str
     name: str
     color: str
+    # Human status string. A not_scheduled route renders as "Not Scheduled" with
+    # scheduled=false, so consumers see a planned gap rather than an outage.
     status: str
     scheduled: bool = True
     direction_statuses: CompatRouteSummary | None = None

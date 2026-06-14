@@ -110,9 +110,19 @@ def build_observations(
     out: list[TickObservation] = []
     for tick in sorted(bucket):
         for route_id, alerts in bucket[tick].items():
-            alert_count = len(alerts)
-            severity_sum = sum(so for so, _at in alerts.values())
-            types = [at for _so, at in alerts.values()]
+            # Neither "Extra Service" nor "No Scheduled Service" is a disruption
+            # to recover from — extra service is good news, no-service is planned
+            # absence. Both drop out of the HMM observation so the filter reads
+            # quiet and stays normal. Mirrors training/load_r2.py and
+            # worker/src/derive.ts.
+            counted = [
+                (so, at)
+                for so, at in alerts.values()
+                if "Extra Service" not in at and "No Scheduled Service" not in at
+            ]
+            alert_count = len(counted)
+            severity_sum = sum(so for so, _at in counted)
+            types = [at for _so, at in counted]
             out.append(
                 TickObservation(
                     route_id=route_id,
@@ -122,7 +132,7 @@ def build_observations(
                         severity_sum=severity_sum,
                         has_suspended_alert=_match(
                             types,
-                            ("Suspend", "No Trains", "No Scheduled Service"),
+                            ("Suspend", "No Trains"),
                             exclude_prefix="Planned -",
                         ),
                         has_delays=_match(

@@ -134,6 +134,11 @@ export interface HeatmapEntry {
 
 export interface GradingResponse {
   configured: boolean;
+  // "streams" = full credentialed read of the grading history; "calibration" =
+  // aggregate-only view served from the public v1/calibration.json (no R2
+  // credentials). Drilldowns (scatter, detection, schedule, swimlane, per-route
+  // filtering) are absent in the calibration view.
+  source?: "streams" | "calibration";
   error?: string;
   window: { days: number; from: string; to: string };
   counts: {

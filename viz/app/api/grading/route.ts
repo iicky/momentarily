@@ -25,7 +25,13 @@ import type {
   PredictionRecord,
   TransitionRecord,
   HeatmapEntry,
+  GradingResponse,
 } from "@/lib/types";
+import {
+  fetchCalibration,
+  calibrationReliability,
+  calibrationHeatmap,
+} from "@/lib/calibrationFeed";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -109,12 +115,47 @@ export async function GET(req: NextRequest) {
   const dates = utcDateWindow(days, Date.now());
 
   if (!(await r2Configured())) {
-    return NextResponse.json({
-      configured: false,
-      error:
-        "R2 credentials not set. Add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY to viz/.env.local.",
-      window: { days, from: dates[dates.length - 1], to: dates[0] },
-    });
+    // No credentials → fall back to the public aggregate feed. Powers the
+    // reliability, recovery-summary, and transition charts without R2 access;
+    // the per-point drilldowns simply aren't in calibration.json.
+    try {
+      const doc = await fetchCalibration();
+      const payload: GradingResponse = {
+        configured: true,
+        source: "calibration",
+        window: { days, from: dates[dates.length - 1], to: dates[0] },
+        counts: {
+          predictionFiles: 0,
+          predictionRecords: doc.predictions_seen,
+          transitionFiles: 0,
+          transitionRecords: doc.transitions_seen,
+          alertFiles: 0,
+          alertVersions: 0,
+          alertsCapped: false,
+          pointsCapped: false,
+        },
+        routes: [],
+        states: doc.transition_matrices.states ?? STATES,
+        reliability: calibrationReliability(doc),
+        recovery: doc.recovery,
+        resumeChurn: null,
+        adherence: null,
+        detectionLatency: null,
+        timelines: [],
+        heatmap: calibrationHeatmap(doc),
+        paramsTrainedAt: doc.transition_matrices.trained_at ?? null,
+      };
+      return NextResponse.json(payload);
+    } catch {
+      return NextResponse.json({
+        configured: false,
+        error:
+          "R2 credentials not set and the public calibration feed is unreachable. " +
+          "Add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY to viz/.env.local " +
+          "for the full history, or set NEXT_PUBLIC_FEED_BASE to a reachable feed.",
+        window: { days, from: dates[dates.length - 1], to: dates[0] },
+      });
+    }
   }
 
   try {
@@ -166,6 +207,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       configured: true,
+      source: "streams",
       window: { days, from: dates[dates.length - 1], to: dates[0] },
       counts: {
         predictionFiles: predRes.files,

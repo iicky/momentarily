@@ -181,6 +181,63 @@ export function RecoveryScatter({ result }: { result: RecoveryResult }) {
   );
 }
 
+// --- Recovery summary (aggregate feed, no per-point scatter) ---
+
+export interface AggregateRecoveryStats {
+  n: number;
+  mae_min: number | null;
+  rmse_min: number | null;
+  iqr_coverage: number | null;
+}
+
+export interface AggregateRecovery {
+  overall: AggregateRecoveryStats;
+  per_regime: AggregateRecoveryStats;
+}
+
+export function RecoverySummary({ result }: { result: AggregateRecovery }) {
+  const fmtPct = (x: number | null) =>
+    x == null ? "—" : `${(x * 100).toFixed(0)}%`;
+  const fmtMin = (x: number | null) => (x == null ? "—" : `${Math.round(x)}m`);
+  const rows: { label: string; s: AggregateRecoveryStats; note: string }[] = [
+    { label: "Per-tick", s: result.overall, note: "every prediction tick weighted equally" },
+    { label: "Per-regime", s: result.per_regime, note: "each disruption weighted equally" },
+  ];
+
+  return (
+    <div className="chart">
+      <div className="chart-title">
+        Recovery accuracy ·{" "}
+        <span className="muted">
+          IQR coverage target ~50% · MAE/RMSE of recovery_minutes vs actual
+        </span>
+      </div>
+      <table className="mini-table">
+        <thead>
+          <tr>
+            <th>weighting</th>
+            <th>n</th>
+            <th>IQR coverage</th>
+            <th>MAE</th>
+            <th>RMSE</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label}>
+              <td title={r.note}>{r.label}</td>
+              <td>{r.s.n}</td>
+              <td>{fmtPct(r.s.iqr_coverage)}</td>
+              <td>{fmtMin(r.s.mae_min)}</td>
+              <td>{fmtMin(r.s.rmse_min)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // --- Regime swimlane ---
 
 export function Swimlane({ timelines }: { timelines: TimelineDTO[] }) {

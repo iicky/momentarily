@@ -5,6 +5,7 @@ import Nav from "../Nav";
 import {
   ReliabilityChart,
   RecoveryScatter,
+  RecoverySummary,
   ResumeChurnPanel,
   AdherencePanel,
   DetectionLatencyPanel,
@@ -12,6 +13,7 @@ import {
   TransitionHeatmap,
   type ReliabilityResult,
   type RecoveryResult,
+  type AggregateRecovery,
   type ResumeChurnResult,
   type AdherenceResult,
   type DetectionLatencyResult,
@@ -49,8 +51,10 @@ export default function ModelsPage() {
     load();
   }, [load]);
 
+  const aggregate = data?.source === "calibration";
   const rel = (data?.reliability ?? []) as ReliabilityResult[];
   const rec = data?.recovery as RecoveryResult | undefined;
+  const recAgg = data?.recovery as AggregateRecovery | undefined;
   const churn = data?.resumeChurn as ResumeChurnResult | undefined;
   const adher = data?.adherence as AdherenceResult | undefined;
   const detection = data?.detectionLatency as DetectionLatencyResult | undefined;
@@ -82,7 +86,12 @@ export default function ModelsPage() {
         </label>
         <label>
           Line
-          <select value={route} onChange={(e) => setRoute(e.target.value)}>
+          <select
+            value={route}
+            onChange={(e) => setRoute(e.target.value)}
+            disabled={aggregate}
+            title={aggregate ? "Per-line filtering needs R2 credentials" : undefined}
+          >
             <option value="">all</option>
             {(data?.routes ?? []).map((r) => (
               <option key={r} value={r}>
@@ -97,14 +106,21 @@ export default function ModelsPage() {
         {data?.counts && (
           <span className="counts">
             {data.counts.predictionRecords.toLocaleString()} predictions ·{" "}
-            {data.counts.transitionRecords.toLocaleString()} transitions ·{" "}
-            {data.counts.alertVersions.toLocaleString()} planned alerts ·{" "}
-            {data.counts.predictionFiles +
-              data.counts.transitionFiles +
-              data.counts.alertFiles}{" "}
-            files
-            {data.counts.pointsCapped && " · scatter downsampled"}
-            {data.counts.alertsCapped && " · alert archive capped"}
+            {data.counts.transitionRecords.toLocaleString()} transitions
+            {aggregate ? (
+              " · public aggregate feed"
+            ) : (
+              <>
+                {" "}
+                · {data.counts.alertVersions.toLocaleString()} planned alerts ·{" "}
+                {data.counts.predictionFiles +
+                  data.counts.transitionFiles +
+                  data.counts.alertFiles}{" "}
+                files
+                {data.counts.pointsCapped && " · scatter downsampled"}
+                {data.counts.alertsCapped && " · alert archive capped"}
+              </>
+            )}
           </span>
         )}
       </div>
@@ -123,6 +139,18 @@ export default function ModelsPage() {
 
       {err && data?.configured && <div className="error">Error: {err}</div>}
 
+      {aggregate && !err && (
+        <div className="warnbox" style={{ maxWidth: 640 }}>
+          <strong>Public aggregate feed.</strong> Reading{" "}
+          <code>v1/calibration.json</code> — no R2 credentials needed. The
+          window-aggregate reliability, recovery, and transition charts are
+          shown below. Per-point drilldowns (recovery scatter, detection
+          latency, schedule reliability, regime swimlane, per-line filtering)
+          need the credentialed stream history — launch with{" "}
+          <code>npm run dev</code> to see them.
+        </div>
+      )}
+
       {data?.configured && !err && (
         <>
           <h3 className="grp">Recovery-forecast reliability</h3>
@@ -137,34 +165,45 @@ export default function ModelsPage() {
             ))}
           </div>
 
-          <h3 className="grp">Recovery time: predicted vs actual</h3>
-          {rec && <RecoveryScatter result={rec} />}
+          {aggregate ? (
+            recAgg && (
+              <>
+                <h3 className="grp">Recovery accuracy</h3>
+                <RecoverySummary result={recAgg} />
+              </>
+            )
+          ) : (
+            <>
+              <h3 className="grp">Recovery time: predicted vs actual</h3>
+              {rec && <RecoveryScatter result={rec} />}
 
-          <h3 className="grp">Detection latency</h3>
-          <p className="grp-note">
-            How fast the HMM reacts: minutes from a real alert appearing to the
-            published condition flipping to disrupted/suspended.
-          </p>
-          {detection && <DetectionLatencyPanel result={detection} />}
+              <h3 className="grp">Detection latency</h3>
+              <p className="grp-note">
+                How fast the HMM reacts: minutes from a real alert appearing to
+                the published condition flipping to disrupted/suspended.
+              </p>
+              {detection && <DetectionLatencyPanel result={detection} />}
 
-          <h3 className="grp">Schedule reliability</h3>
-          <p className="grp-note">
-            Planned-work recoveries are deterministic resume lookups, excluded
-            from the HMM plots above (counts shown there). These two panels grade
-            the schedule itself: do announced windows hold, and do lines return
-            when promised?
-          </p>
-          <div className="charts-row">
-            {churn && <ResumeChurnPanel result={churn} />}
-            {adher && <AdherencePanel result={adher} />}
-          </div>
+              <h3 className="grp">Schedule reliability</h3>
+              <p className="grp-note">
+                Planned-work recoveries are deterministic resume lookups,
+                excluded from the HMM plots above (counts shown there). These two
+                panels grade the schedule itself: do announced windows hold, and
+                do lines return when promised?
+              </p>
+              <div className="charts-row">
+                {churn && <ResumeChurnPanel result={churn} />}
+                {adher && <AdherencePanel result={adher} />}
+              </div>
 
-          <h3 className="grp">Regime timeline vs reality</h3>
-          <p className="grp-note">
-            Each line&apos;s inferred regime over the window. Top 14 lines by
-            non-normal time.
-          </p>
-          <Swimlane timelines={timelines} />
+              <h3 className="grp">Regime timeline vs reality</h3>
+              <p className="grp-note">
+                Each line&apos;s inferred regime over the window. Top 14 lines by
+                non-normal time.
+              </p>
+              <Swimlane timelines={timelines} />
+            </>
+          )}
 
           <h3 className="grp">
             Learned transition matrices

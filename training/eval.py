@@ -75,6 +75,11 @@ class PredictionRecord:
     # before the prediction), so this is a version tag for segmentation, not a
     # leakage guard.
     params_version: int = 0
+    # "schedule" rows are deterministic planned-resume lookups, not HMM dwell
+    # estimates — excluded from calibration/recovery grading (graded for
+    # schedule adherence elsewhere). None for JSONL written before schedule
+    # recovery shipped; treated as "hmm".
+    recovery_source: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -95,6 +100,7 @@ class PredictionRecord:
             recovery_indeterminate=bool(raw.get("recovery_indeterminate", False)),
             primary_alert_type=raw.get("primary_alert_type"),
             params_version=int(raw.get("params_version") or 0),
+            recovery_source=raw.get("recovery_source"),
         )
 
 
@@ -245,6 +251,9 @@ class CalibrationResult:
     bss_persistence: float | None
     bss_climatology: float | None
     bins: list[ReliabilityBin]
+    # Schedule-recovery rows skipped as predictors — they're deterministic resume
+    # lookups, not HMM forecasts, so grading them would flatter the model.
+    excluded_schedule: int = 0
 
 
 def _skill(brier: float | None, reference: float | None) -> float | None:
@@ -275,8 +284,14 @@ def calibrate(
     matched: list[tuple[float, float, float, str]] = []
     route_outcome_sum: dict[str, float] = {}
     route_outcome_n: dict[str, int] = {}
+    excluded_schedule = 0
 
     for p in predictions:
+        # Deterministic planned-resume lookup, not an HMM forecast — skip as a
+        # predictor (it can still be a future outcome; condition is HMM-derived).
+        if p.recovery_source == "schedule":
+            excluded_schedule += 1
+            continue
         future_key = (p.route, snap_tick(p.ts) + horizon_sec)
         future = by_key.get(future_key)
         if future is None:
@@ -319,6 +334,7 @@ def calibrate(
         bss_persistence=_skill(brier, brier_persistence),
         bss_climatology=_skill(brier, brier_climatology),
         bins=bins,
+        excluded_schedule=excluded_schedule,
     )
 
 
@@ -358,6 +374,9 @@ class RecoveryResult:
     by_alert_type: dict[str, RecoveryStats] = field(
         default_factory=lambda: {}  # noqa: PIE807
     )
+    # Schedule-recovery rows skipped — deterministic resume lookups graded for
+    # adherence elsewhere, not against HMM dwell.
+    excluded_schedule: int = 0
 
 
 def recovery_metrics(
@@ -375,6 +394,7 @@ def recovery_metrics(
     abs_errors: list[float] = []
     sq_errors: list[float] = []
     covered = 0
+    excluded_schedule = 0
     by_route_abs: dict[str, list[float]] = {}
     by_route_sq: dict[str, list[float]] = {}
     by_route_cov: dict[str, list[int]] = {}
@@ -394,6 +414,11 @@ def recovery_metrics(
         # Indeterminate rows are clamped, not predicted — including them would
         # bias MAE toward the clamp ceiling. See momentarily-x25.
         if p.recovery_indeterminate:
+            continue
+        # Schedule recoveries are deterministic resume lookups, graded for
+        # adherence elsewhere — not against HMM dwell.
+        if p.recovery_source == "schedule":
+            excluded_schedule += 1
             continue
         exited_at = exits.get((p.route, p.regime_entered_at))
         if exited_at is None or exited_at <= p.ts:
@@ -456,6 +481,7 @@ def recovery_metrics(
         per_regime=per_regime,
         by_route=by_route,
         by_alert_type=by_alert_type,
+        excluded_schedule=excluded_schedule,
     )
 
 
@@ -485,6 +511,7 @@ def _calibration_as_dicts(
             "brier_climatology": c.brier_climatology,
             "bss_persistence": c.bss_persistence,
             "bss_climatology": c.bss_climatology,
+            "excluded_schedule": c.excluded_schedule,
             "bins": [
                 {
                     "bin_lo": b.bin_lo,
@@ -508,6 +535,7 @@ def _recovery_as_dict(recovery: RecoveryResult) -> dict[str, Any]:
         "by_alert_type": {
             at: _stats_as_dict(s) for at, s in recovery.by_alert_type.items()
         },
+        "excluded_schedule": recovery.excluded_schedule,
     }
 
 

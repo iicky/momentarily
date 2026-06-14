@@ -31,12 +31,14 @@ def _pred(
     recovery_minutes_high: int = 60,
     recovery_indeterminate: bool = False,
     params_version: int = 0,
+    recovery_source: str | None = None,
 ) -> PredictionRecord:
     return PredictionRecord(
         ts=ts,
         route=route,
         condition=condition,
         params_version=params_version,
+        recovery_source=recovery_source,
         regime_entered_at=regime_entered_at if regime_entered_at is not None else ts,
         p_normal=0.95,
         p_disrupted=0.04,
@@ -455,6 +457,44 @@ def test_build_eval_segments_by_latest_params_version():
     # exist within the v200 block for the first 6. n = 6.
     cal30 = next(c for c in cp["calibration"] if c["horizon_min"] == 30)
     assert cal30["n"] == 6
+
+
+def test_schedule_rows_excluded_from_calibration_and_recovery():
+    # A schedule-recovery row is a deterministic resume lookup, not an HMM
+    # forecast — it must not be graded for calibration or recovery (it would
+    # otherwise flatter the model). Mirrors the viz exclusion.
+    t0 = 1_700_000_000
+    # One HMM disruption that recovers, one schedule row in the same window.
+    preds = [
+        _pred(ts=t0, condition="suspended", regime_entered_at=t0, recovery_minutes=30),
+        _pred(
+            ts=t0,
+            route="2",
+            condition="suspended",
+            regime_entered_at=t0,
+            recovery_source="schedule",
+        ),
+    ]
+    trans = [
+        TransitionRecord(
+            ts=t0 + 1800,
+            route="1",
+            prev_state="suspended",
+            new_state="normal",
+            regime_entered_at=t0,
+            exited_at=t0 + 1800,
+            dwell_sec=1800,
+            alert_type_at_entry=None,
+        ),
+    ]
+    rec = recovery_metrics(preds, trans)
+    assert rec.excluded_schedule == 1
+    # Only the HMM row (route 1) is graded; route 2's schedule row is skipped.
+    assert rec.overall.n == 1
+
+    # Schedule row is also skipped as a calibration predictor.
+    cal = calibrate(preds, 30)
+    assert cal.excluded_schedule == 1
 
 
 def test_build_calibration_is_compact_subset():

@@ -36,6 +36,8 @@ Momentarily applies a per-line **Hidden Markov Model** with three regimes (norma
 
 User-facing fields graduate from a shadow-logging phase (where we validate calibration against real disruptions) to the published snapshot only after empirical validation. Calibration uses standard probabilistic-forecast tools — reliability diagrams, Brier scores, quantile bracketing.
 
+The live path runs on Cloudflare — a TypeScript Worker for per-tick inference, a weekly Python training container, R2 as the only state store. See [ADR 0001](docs/adr/0001-cloudflare-workers-r2-only-split-ts-python.md) for the full architecture and why.
+
 ## Upstream sources
 
 All fetched from the MTA developer gateway (`api-endpoint.mta.info`):

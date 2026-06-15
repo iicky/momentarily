@@ -14,20 +14,38 @@ import { N_TOD_BINS } from './hmm';
 
 const PARAMS_KEY = 'state/params.json';
 
-const Vec3Schema = z.tuple([
-  z.number().finite(),
-  z.number().finite(),
-  z.number().finite(),
-]);
+// Semantic bounds, not just finiteness: a malformed-but-finite trainer upload
+// (negative mass, a transition row that doesn't sum to 1, a probability > 1)
+// would otherwise pass shape validation and feed invalid numbers straight into
+// the forward filter. Each domain gets the tightest vector that still admits
+// every legitimate trained value.
+const STOCHASTIC_EPS = 1e-3; // row-sum tolerance; EM output is exact to float
+
+const nonNeg = z.number().finite().nonnegative();
+const positive = z.number().finite().positive();
+const prob = z.number().finite().min(0).max(1);
+
+// Poisson rate ≥ 0 (a state may genuinely never emit events).
+const RateVec3 = z.tuple([nonNeg, nonNeg, nonNeg]);
+// Gamma shape/rate must be strictly positive for a proper density.
+const PosVec3 = z.tuple([positive, positive, positive]);
+// Bernoulli emission probabilities in [0, 1].
+const ProbVec3 = z.tuple([prob, prob, prob]);
+// A discrete distribution over the 3 states: each in [0, 1] and summing to 1.
+const StochasticVec3 = z
+  .tuple([prob, prob, prob])
+  .refine((v) => Math.abs(v[0] + v[1] + v[2] - 1) <= STOCHASTIC_EPS, {
+    message: 'must sum to 1',
+  });
 
 const EmissionParamsSchema = z.object({
-  poisson_lambda: Vec3Schema,
-  gamma_alpha: Vec3Schema,
-  gamma_beta: Vec3Schema,
-  bernoulli_p: Vec3Schema,
-  bernoulli_p_delays: Vec3Schema,
-  bernoulli_p_service_change: Vec3Schema,
-  bernoulli_p_planned: Vec3Schema,
+  poisson_lambda: RateVec3,
+  gamma_alpha: PosVec3,
+  gamma_beta: PosVec3,
+  bernoulli_p: ProbVec3,
+  bernoulli_p_delays: ProbVec3,
+  bernoulli_p_service_change: ProbVec3,
+  bernoulli_p_planned: ProbVec3,
 });
 
 const DwellQuantilesSchema = z.object({
@@ -61,8 +79,8 @@ const DwellByStateAlertSchema = z
   .optional();
 
 const HMMParamsSchema = z.object({
-  transition: z.tuple([Vec3Schema, Vec3Schema, Vec3Schema]),
-  initial: Vec3Schema,
+  transition: z.tuple([StochasticVec3, StochasticVec3, StochasticVec3]),
+  initial: StochasticVec3,
   emissions: EmissionParamsSchema,
   emissions_by_bin: z.array(EmissionParamsSchema).length(N_TOD_BINS).optional(),
   dwell_quantiles: DwellByStateSchema,

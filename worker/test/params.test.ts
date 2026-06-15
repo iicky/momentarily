@@ -73,6 +73,54 @@ describe('parseTrainedParams', () => {
     expect(result!.routes).toEqual({});
   });
 
+  test('drops a route whose transition row does not sum to 1', () => {
+    const bad = wellFormedRoute();
+    // Finite, in-range, but the first row sums to 0.5 — invalid forward math.
+    bad['transition'] = [[0.4, 0.05, 0.05], [0.08, 0.9, 0.02], [0.02, 0.1, 0.88]];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute(), BAD: bad }));
+    warn.mockRestore();
+    expect(Object.keys(result!.routes)).toEqual(['1']);
+  });
+
+  test('keeps a route whose rows sum to 1 within float tolerance', () => {
+    const route = wellFormedRoute();
+    route['transition'] = [
+      [0.3333, 0.3333, 0.3334],
+      [0.08, 0.9, 0.02],
+      [0.02, 0.1, 0.88],
+    ];
+    const result = parseTrainedParams(wrapper({ '1': route }));
+    expect(Object.keys(result!.routes)).toEqual(['1']);
+  });
+
+  test('drops a route with an out-of-range emission probability', () => {
+    const bad = wellFormedRoute();
+    (bad.emissions as Record<string, unknown>).bernoulli_p = [0.01, 0.5, 1.2];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute(), BAD: bad }));
+    warn.mockRestore();
+    expect(Object.keys(result!.routes)).toEqual(['1']);
+  });
+
+  test('drops a route with a negative poisson rate', () => {
+    const bad = wellFormedRoute();
+    (bad.emissions as Record<string, unknown>).poisson_lambda = [-0.1, 4.0, 12.0];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseTrainedParams(wrapper({ BAD: bad }));
+    warn.mockRestore();
+    expect(result!.routes).toEqual({});
+  });
+
+  test('drops a route with a non-positive gamma parameter', () => {
+    const bad = wellFormedRoute();
+    (bad.emissions as Record<string, unknown>).gamma_beta = [2.0, 0.0, 0.2];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseTrainedParams(wrapper({ BAD: bad }));
+    warn.mockRestore();
+    expect(result!.routes).toEqual({});
+  });
+
   test('paramsForRoute falls back to bootstrap when a dropped route is requested', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const bad = wellFormedRoute();

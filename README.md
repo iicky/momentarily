@@ -71,6 +71,10 @@ The live publish path is a TypeScript Cloudflare Worker writing to R2 on a Worke
 
 This Python package is the offline toolkit — used for HMM training (Baum-Welch EM), calibration notebooks, and as the reference implementation for the Worker's derivation logic. It is not the live publisher.
 
+### Self-hosting
+
+You can run your own publisher — your own snapshot URL on your own Cloudflare account, independent of the iicky-operated instance. No MTA API key needed. See [docs/self-hosting.md](docs/self-hosting.md).
+
 ## Status mapping
 
 MTA's alerts feed uses an open-set `alert_type` string. Momentarily maps observed values to a coarse status bucket so downstream consumers have a stable vocabulary; unknown values pass through as their raw label rather than being dropped. See [`src/momentarily/mapping.py`](src/momentarily/mapping.py) for the table.

@@ -1,12 +1,16 @@
 // Calibration metrics for the recovery forecasts.
 //
-// Ground truth comes from the transition stream (when a line ACTUALLY returned
-// to normal), not from the model's own labels — so these plots are a real,
-// non-circular test of the forecasts. The two headline questions:
+// "Ground truth" is the transition stream — when the published filter returned
+// to normal. Note this is the model's own argmax flipping back, not an
+// independent service-recovery signal: both the forecast head (p_normal_in_H,
+// the recovery band) and this outcome are driven by the same live alert feed,
+// so these plots are a prequential self-consistency check (does the forecast
+// track where the filter actually goes), not a non-circular test against
+// external ground truth. The two headline questions:
 //
-//   1. Reliability: when the model said "P(normal in H min) = x", did the line
-//      reach normal within H minutes in x fraction of those cases?
-//   2. Recovery coverage: did the actual time-to-normal fall inside the model's
+//   1. Reliability: when the model said "P(normal in H min) = x", did the
+//      filter reach normal within H minutes in x fraction of those cases?
+//   2. Recovery coverage: did the observed time-to-normal fall inside the
 //      predicted [25th, 75th] recovery band ~50% of the time?
 //
 // Predictions whose outcome isn't yet observable (the window ends before ts+H,

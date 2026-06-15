@@ -34,7 +34,7 @@ Full schema in [`src/momentarily/schema.py`](src/momentarily/schema.py).
 
 Momentarily applies a per-line **Hidden Markov Model** with three regimes (normal / disrupted / suspended) to the GTFS-Realtime Mercury alerts stream, producing a probabilistic estimate of each line's current operational state plus expected recovery time. The forward algorithm filters per cron tick; Baum-Welch re-estimates transition matrices and emission parameters weekly from rolling history.
 
-User-facing fields graduate from a shadow-logging phase (where we validate calibration against real disruptions) to the published snapshot only after empirical validation. Calibration uses standard probabilistic-forecast tools — reliability diagrams, Brier scores, quantile bracketing.
+User-facing fields graduate from a shadow-logging phase to the published snapshot only after a calibration review. Grading is prequential and self-consistent: forecasts are scored against the model's own subsequently-published `condition` (the regime-transition stream the recovery metrics use is derived from that same filter output). This is anchored to real MTA alerts — both the forecast and the outcome are driven by the live feed — but it is not yet an independent measure of service recovery (e.g. against GTFS trip-updates). Calibration uses standard probabilistic-forecast tools — reliability diagrams, Brier scores with persistence/climatology skill baselines, quantile bracketing.
 
 The live path runs on Cloudflare — a TypeScript Worker for per-tick inference, a weekly Python training container, R2 as the only state store. See [ADR 0001](docs/adr/0001-cloudflare-workers-r2-only-split-ts-python.md) for the full architecture and why.
 

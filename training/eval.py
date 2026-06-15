@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from training.drift import unmapped_alert_type_drift
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 
@@ -628,6 +629,7 @@ def build_eval(
         "current_params": current_params,
         "calibration": _calibration_as_dicts(calibrations),
         "recovery": _recovery_as_dict(recovery),
+        "drift": {"unmapped_alert_type": unmapped_alert_type_drift(predictions)},
     }
 
 
@@ -697,6 +699,7 @@ def build_calibration(
             "overall": eval_doc["recovery"]["overall"],
             "per_regime": eval_doc["recovery"]["per_regime"],
         },
+        "drift": eval_doc["drift"],
         "transition_matrices": transition_matrices,
     }
 

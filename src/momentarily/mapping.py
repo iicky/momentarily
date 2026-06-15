@@ -131,3 +131,11 @@ def is_known_alert_type(alert_type: str) -> bool:
     if alert_type.startswith("Planned"):
         return True
     return alert_type.startswith("No ") and "Service" in alert_type
+
+
+def is_hmm_excluded(alert_type: str) -> bool:
+    """True for alert_types the HMM deliberately ignores — extra service (good
+    news) and scheduled non-service (planned overnight/weekend/rush-only gaps).
+    They stay on the display surfaces but drop out of the observation so the
+    filter reads quiet. Drift metrics skip them: they're handled, not drift."""
+    return "Extra Service" in alert_type or "No Scheduled Service" in alert_type

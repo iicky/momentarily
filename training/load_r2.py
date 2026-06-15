@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from blake3 import blake3
 
 from momentarily.hmm import Observation, tod_bin
+from momentarily.mapping import is_hmm_excluded
 from training.load import TICK_SECONDS, TickObservation
 from training.r2_client import R2Config, load_config, make_client
 
@@ -335,15 +336,11 @@ def build_tick_observations(
     out: list[TickObservation] = []
     for tick in sorted(bucket):
         for route_id, alerts in bucket[tick].items():
-            # Neither "Extra Service" nor "No Scheduled Service" is a disruption
-            # to recover from — extra service is good news, no-service is planned
-            # absence (overnight/weekend gaps, rush-only lines). Both stay in the
+            # Extra service (good news) and scheduled non-service stay on the
             # display surfaces but drop out of the HMM observation so the filter
-            # reads quiet and stays normal. Mirrors worker/src/derive.ts.
+            # reads quiet. Mirrors training/load.py and worker/src/derive.ts.
             counted = [
-                (so, at)
-                for so, at in alerts.values()
-                if "Extra Service" not in at and "No Scheduled Service" not in at
+                (so, at) for so, at in alerts.values() if not is_hmm_excluded(at)
             ]
             types = [at for _so, at in counted]
             obs = Observation(

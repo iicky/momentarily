@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from momentarily.hmm import Observation, tod_bin
+from momentarily.mapping import is_hmm_excluded
 
 # Cron cadence — collector polls every 5 min, ticks align on this boundary.
 TICK_SECONDS = 300
@@ -110,15 +111,11 @@ def build_observations(
     out: list[TickObservation] = []
     for tick in sorted(bucket):
         for route_id, alerts in bucket[tick].items():
-            # Neither "Extra Service" nor "No Scheduled Service" is a disruption
-            # to recover from — extra service is good news, no-service is planned
-            # absence. Both drop out of the HMM observation so the filter reads
-            # quiet and stays normal. Mirrors training/load_r2.py and
-            # worker/src/derive.ts.
+            # Extra service (good news) and scheduled non-service drop out of the
+            # HMM observation so the filter reads quiet. Mirrors training/load_r2.py
+            # and worker/src/derive.ts.
             counted = [
-                (so, at)
-                for so, at in alerts.values()
-                if "Extra Service" not in at and "No Scheduled Service" not in at
+                (so, at) for so, at in alerts.values() if not is_hmm_excluded(at)
             ]
             alert_count = len(counted)
             severity_sum = sum(so for so, _at in counted)

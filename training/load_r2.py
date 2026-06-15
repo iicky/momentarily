@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+import statistics
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from momentarily.hmm import Observation, tod_bin
 from training.load import TICK_SECONDS, TickObservation
@@ -29,7 +30,19 @@ from training.r2_client import R2Config, load_config, make_client
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
-    from training.eval import PredictionRecord
+
+class PredictionLike(Protocol):
+    """Structural type for the prediction fields the presence mask reads (see
+    training.eval.PredictionRecord). A Protocol so load_r2 doesn't import eval —
+    eval imports load_r2, and a mutual TYPE_CHECKING import confuses the checker.
+    Read-only properties so the frozen PredictionRecord dataclass satisfies it."""
+
+    @property
+    def ts(self) -> int: ...
+    @property
+    def route(self) -> str: ...
+    @property
+    def primary_alert_type(self) -> str | None: ...
 
 _SORT_ORDER_RE = re.compile(r":(\d+)$")
 
@@ -151,7 +164,7 @@ class PresenceMask:
 
 
 def presence_mask_from_predictions(
-    predictions: list[PredictionRecord],
+    predictions: Sequence[PredictionLike],
 ) -> PresenceMask:
     """Build a PresenceMask from loaded prediction rows. primary_alert_type is
     non-null iff the live Worker counted an active alert on that route at that
@@ -388,4 +401,152 @@ def load_route_series_r2(
                 )
             )
         tick += TICK_SECONDS
+    return out
+
+
+# --- Trip-updates service metric: independent recovery truth (momentarily-xum) ---
+#
+# The Worker archives a compact per-route service metric each tick at
+# archive/trip_updates/<date>/<observed_at>.json:
+#   {observed_at, fresh_feeds, rows: {route: {assigned_n, trips_n, ...}}}
+# assigned_n counts NYCT-assigned (dispatched, running) trains on a route — a
+# signal orthogonal to both the alerts feed and the HMM argmax, so it gives an
+# INDEPENDENT recovery truth (vs eval.recovery_metrics, which grades against the
+# model's own transitions). It is service LEVEL, not service quality — a strong
+# proxy, not ground truth (true recovery would need GTFS trip-update arrivals).
+
+
+def fetch_trip_update_metrics(
+    config: R2Config | None = None,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    client: S3Client | None = None,
+) -> list[dict[str, Any]]:
+    """Pull every archived trip-updates service-metric snapshot in the window
+    (one object per tick). Defaults to yesterday-through-today."""
+    cfg = config or load_config()
+    client = client or make_client(cfg)
+
+    today = datetime.now(UTC).date()
+    start = start_date or (today - timedelta(days=1))
+    end = end_date or today
+
+    keys: list[str] = []
+    for d in _date_range(start, end):
+        keys.extend(
+            _list_keys(client, cfg.bucket, f"archive/trip_updates/{d.isoformat()}/")
+        )
+
+    bucket = cfg.bucket
+    fetched_client = client
+
+    def _fetch(k: str) -> dict[str, Any]:
+        return _fetch_object(fetched_client, bucket, k)
+
+    out: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        out.extend(pool.map(_fetch, keys))
+    return out
+
+
+def build_service_series(bodies: list[dict[str, Any]]) -> dict[tuple[str, int], int]:
+    """(route, tick) -> assigned_n, from the archived per-tick snapshots."""
+    series: dict[tuple[str, int], int] = {}
+    for body in bodies:
+        tick = _snap_tick(int(body.get("observed_at") or 0))
+        rows = cast(dict[str, Any], body.get("rows") or {})
+        for route, row in rows.items():
+            if isinstance(row, dict):
+                assigned = cast(dict[str, Any], row).get("assigned_n") or 0
+                series[(route, tick)] = int(assigned)
+    return series
+
+
+def compute_baseline(
+    series: dict[tuple[str, int], int], *, min_samples: int = 20
+) -> dict[tuple[str, int], float]:
+    """Per (route, tod_bin) median of assigned_n — the expected running-train
+    count at that time of day. The median resists the disrupted minority. Cells
+    with fewer than `min_samples` observations are omitted (insufficient data),
+    so callers treat a missing baseline as "can't judge", not "zero service"."""
+    buckets: dict[tuple[str, int], list[int]] = {}
+    for (route, tick), assigned in series.items():
+        buckets.setdefault((route, tod_bin(tick)), []).append(assigned)
+    return {
+        key: statistics.median(vals)
+        for key, vals in buckets.items()
+        if len(vals) >= min_samples
+    }
+
+
+@dataclass(frozen=True)
+class Disruption:
+    """An independent disruption interval derived from the service metric."""
+
+    route: str
+    start_tick: int  # first degraded tick
+    recovered_tick: int  # first recovered tick
+
+
+def derive_actual_recovery(
+    series: dict[tuple[str, int], int],
+    baseline: dict[tuple[str, int], float],
+    *,
+    degrade_ratio: float = 0.5,
+    recover_ratio: float = 0.8,
+    debounce: int = 2,
+) -> list[Disruption]:
+    """Independent disruptions from the service metric: a route is degraded when
+    assigned_n falls below `degrade_ratio` x its (route, tod_bin) baseline for
+    `debounce` consecutive ticks, and recovered at the first tick back above
+    `recover_ratio` for `debounce` consecutive ticks. Hysteresis (recover >
+    degrade) avoids flapping. Ticks with no baseline reset the run counters but
+    don't end an open disruption. Disruptions still open at the window end are
+    censored (dropped)."""
+    by_route: dict[str, list[tuple[int, int]]] = {}
+    for (route, tick), assigned in series.items():
+        by_route.setdefault(route, []).append((tick, assigned))
+
+    out: list[Disruption] = []
+    for route, points in by_route.items():
+        points.sort()
+        in_disruption = False
+        start: int | None = None
+        cand_start: int | None = None
+        cand_recover: int | None = None
+        low_run = 0
+        high_run = 0
+        for tick, assigned in points:
+            base = baseline.get((route, tod_bin(tick)))
+            if base is None or base <= 0:
+                low_run = 0
+                high_run = 0
+                continue
+            ratio = assigned / base
+            if not in_disruption:
+                if ratio < degrade_ratio:
+                    if low_run == 0:
+                        cand_start = tick
+                    low_run += 1
+                    if low_run >= debounce:
+                        in_disruption = True
+                        start = cand_start
+                        high_run = 0
+                else:
+                    low_run = 0
+            else:
+                if ratio >= recover_ratio:
+                    if high_run == 0:
+                        cand_recover = tick
+                    high_run += 1
+                    if high_run >= debounce and start is not None:
+                        out.append(Disruption(route, start, cand_recover or tick))
+                        in_disruption = False
+                        start = None
+                        low_run = 0
+                        high_run = 0
+                else:
+                    high_run = 0
+    out.sort(key=lambda d: (d.route, d.start_tick))
     return out

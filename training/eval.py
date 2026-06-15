@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -34,6 +34,10 @@ from training.r2_client import R2Config, load_config, make_client
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
+
+    # load_r2 no longer imports eval (it uses a PredictionLike Protocol), so this
+    # is no longer a cycle.
+    from training.load_r2 import Disruption
 
 TICK_SECONDS = 300  # publisher cron grid
 HORIZONS_MIN = (30, 60, 120)
@@ -379,18 +383,20 @@ class RecoveryResult:
     excluded_schedule: int = 0
 
 
-def recovery_metrics(
-    predictions: list[PredictionRecord],
-    transitions: list[TransitionRecord],
-) -> RecoveryResult:
-    """For every prediction made during a regime that subsequently ended, compare
-    recovery_minutes (median) against actual remaining time, and check IQR
-    coverage. Each prediction-tick is one grading sample."""
-    # Map (route, regime_entered_at) -> exited_at via transition records.
-    exits: dict[tuple[str, int], int] = {}
-    for t in transitions:
-        exits[(t.route, t.regime_entered_at)] = t.exited_at
+# Resolve a prediction to (actual_recovery_tick | None, regime_key). This is the
+# ONLY thing that differs between the HMM-argmax truth (recovery_metrics) and the
+# independent trip-updates truth (independent_recovery_metrics).
+ExitResolver = Callable[["PredictionRecord"], tuple[int | None, tuple[str, int]]]
 
+
+def _grade_recovery(
+    predictions: list[PredictionRecord],
+    exit_for: ExitResolver,
+) -> RecoveryResult:
+    """Shared recovery grading: for every prediction made during a disruption that
+    subsequently ended, compare recovery_minutes against actual remaining time and
+    check IQR coverage. Each prediction-tick is one grading sample. `exit_for`
+    supplies the actual recovery time and the regime key to group by."""
     abs_errors: list[float] = []
     sq_errors: list[float] = []
     covered = 0
@@ -420,7 +426,7 @@ def recovery_metrics(
         if p.recovery_source == "schedule":
             excluded_schedule += 1
             continue
-        exited_at = exits.get((p.route, p.regime_entered_at))
+        exited_at, regime_key = exit_for(p)
         if exited_at is None or exited_at <= p.ts:
             continue
         actual_remaining_min = (exited_at - p.ts) / 60.0
@@ -432,7 +438,7 @@ def recovery_metrics(
         abs_errors.append(err)
         sq_errors.append(sq_err)
         covered += 1 if within else 0
-        by_regime.setdefault((p.route, p.regime_entered_at), []).append(
+        by_regime.setdefault(regime_key, []).append(
             (err, sq_err, 1 if within else 0)
         )
         by_route_abs.setdefault(p.route, []).append(err)
@@ -483,6 +489,49 @@ def recovery_metrics(
         by_alert_type=by_alert_type,
         excluded_schedule=excluded_schedule,
     )
+
+
+def recovery_metrics(
+    predictions: list[PredictionRecord],
+    transitions: list[TransitionRecord],
+) -> RecoveryResult:
+    """Grade recovery_minutes against the HMM's OWN regime transitions (the
+    filter's argmax flips). Self-consistent — a sanity check, not an independent
+    validation. See momentarily-9bm and independent_recovery_metrics."""
+    exits: dict[tuple[str, int], int] = {}
+    for t in transitions:
+        exits[(t.route, t.regime_entered_at)] = t.exited_at
+
+    def exit_for(p: PredictionRecord) -> tuple[int | None, tuple[str, int]]:
+        key = (p.route, p.regime_entered_at)
+        return exits.get(key), key
+
+    return _grade_recovery(predictions, exit_for)
+
+
+def independent_recovery_metrics(
+    predictions: list[PredictionRecord],
+    disruptions: Sequence[Disruption],
+) -> RecoveryResult:
+    """Grade recovery_minutes against trip-updates-derived actual recovery — an
+    INDEPENDENT truth (real trains running), unlike recovery_metrics which grades
+    against the model's own argmax. A prediction is matched to the disruption
+    interval [start_tick, recovered_tick) covering its tick. Same exclusions
+    (normal / indeterminate / schedule). Truth is service LEVEL, a strong proxy,
+    not service quality. See momentarily-xum / up0."""
+    by_route: dict[str, list[Disruption]] = {}
+    for d in disruptions:
+        by_route.setdefault(d.route, []).append(d)
+    for lst in by_route.values():
+        lst.sort(key=lambda d: d.start_tick)
+
+    def exit_for(p: PredictionRecord) -> tuple[int | None, tuple[str, int]]:
+        for d in by_route.get(p.route, []):
+            if d.start_tick <= p.ts < d.recovered_tick:
+                return d.recovered_tick, (p.route, d.start_tick)
+        return None, ("", 0)
+
+    return _grade_recovery(predictions, exit_for)
 
 
 def _stats_from(
@@ -664,6 +713,45 @@ def publish_calibration(
 # --- CLI ---
 
 
+def build_independent_recovery(
+    client: S3Client,
+    predictions: list[PredictionRecord],
+    start_date: date,
+    end_date: date,
+) -> dict[str, Any] | None:
+    """Load the trip-updates service metric, derive independent disruptions, and
+    grade recovery_minutes against them — a recovery truth independent of the
+    HMM's own argmax. Returns None until the archive accumulates (the metric
+    ships archive-first; ~2 weeks before the baseline is trustworthy). A load
+    failure is non-fatal. See momentarily-xum / up0."""
+    from training.load_r2 import (
+        build_service_series,
+        compute_baseline,
+        derive_actual_recovery,
+        fetch_trip_update_metrics,
+    )
+
+    try:
+        bodies = fetch_trip_update_metrics(
+            start_date=start_date, end_date=end_date, client=client
+        )
+    except Exception as exc:
+        print(f"recovery_independent: trip-updates load failed ({exc})")
+        return None
+    if not bodies:
+        return None
+    series = build_service_series(bodies)
+    baseline = compute_baseline(series)
+    disruptions = derive_actual_recovery(series, baseline)
+    result = independent_recovery_metrics(predictions, disruptions)
+    return {
+        **_recovery_as_dict(result),
+        "truth_source": "trip_updates_service_level",
+        "n_disruptions": len(disruptions),
+        "n_baseline_cells": len(baseline),
+    }
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Self-grading job")
     parser.add_argument("--days", type=int, default=7, help="window length in days")
@@ -690,6 +778,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     transitions = load_transitions(client, cfg.bucket, start_date, today)
     eval_doc = build_eval(
         predictions, transitions, window_start=window_start, window_end=window_end
+    )
+    eval_doc["recovery_independent"] = build_independent_recovery(
+        client, predictions, start_date, today
     )
     transition_matrices = load_transition_matrices(client, cfg.bucket)
     calibration_doc = build_calibration(eval_doc, transition_matrices)

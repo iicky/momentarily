@@ -13,6 +13,11 @@ Each run:
 Run with:
     murk exec -- python -m training.train_em [--days 14] [--start/--end DATE]
         [--routes A,C,E] [--min-ticks N] [--prior-strength 100] [--dry-run]
+
+params.json records what it took to produce it — provenance.code_sha, the
+hyperparams block (resolved window + prior_strength + min_ticks + routes), and
+training_corpus.input_blake3. Against the immutable archive, re-running this
+tool at that code_sha with that hyperparams block reproduces the version.
 """
 
 from __future__ import annotations
@@ -251,6 +256,7 @@ def write_params(
     dwell_quantiles_by_alert: (
         dict[str, dict[str, dict[str, DwellQuantiles]]] | None
     ) = None,
+    hyperparams: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -277,6 +283,7 @@ def write_params(
         "schema_version": SCHEMA_VERSION,
         "trained_at": trained_at,
         "provenance": code_provenance(),
+        "hyperparams": hyperparams or {},
         "training_corpus": {
             "start_tick": corpus.start_tick,
             "end_tick": corpus.end_tick,
@@ -412,6 +419,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 1
 
     n_routes_trained = sum(1 for p in per_route.values() if p is not global_prior)
+    # The knobs that determine the fit — with code_sha + the immutable archive
+    # these make a params_version re-derivable. Window is recorded as resolved
+    # dates so it reproduces regardless of when --days was relative to.
+    hyperparams = {
+        "window_start": start_date.isoformat(),
+        "window_end": end_date.isoformat(),
+        "prior_strength": args.prior_strength,
+        "min_ticks": args.min_ticks,
+        "routes": sorted(args.routes.split(",")) if args.routes else None,
+    }
     versioned_key = write_params(
         client,
         cfg.bucket,
@@ -420,6 +437,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         n_routes_trained=n_routes_trained,
         dwell_quantiles=dwell_q,
         dwell_quantiles_by_alert=dwell_q_by_alert,
+        hyperparams=hyperparams,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "

@@ -204,17 +204,26 @@ def test_write_params_doc_shape_round_trips() -> None:
         n_input_versions=5,
         input_blake3="deadbeef",
     )
+    hyperparams = {
+        "window_start": "2026-06-01",
+        "window_end": "2026-06-14",
+        "prior_strength": 100.0,
+        "min_ticks": 288,
+        "routes": None,
+    }
     write_params(
         cast("S3Client", fake),
         "test-bucket",
         _two_route_params(),
         corpus=corpus,
         n_routes_trained=1,
+        hyperparams=hyperparams,
         trained_at=42,
     )
     doc = json.loads(fake.objects[PARAMS_KEY])
     assert doc["schema_version"] == SCHEMA_VERSION
     assert doc["trained_at"] == 42
+    assert doc["hyperparams"] == hyperparams
     assert doc["training_corpus"] == {
         "start_tick": 100,
         "end_tick": 200,

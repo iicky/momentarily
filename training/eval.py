@@ -758,6 +758,44 @@ def build_independent_recovery(
     }
 
 
+def build_emission_drift(
+    client: S3Client,
+    bucket: str,
+    predictions: Sequence[PredictionRecord],
+    start: date,
+    end: date,
+) -> dict[str, Any]:
+    """Drift of the emission channels vs the training reference in params.json.
+
+    Builds the current window's per-(route, tod_bin) profile the same way the
+    trainer built the stored reference (same masking), then scores PSI + flag
+    deltas. Returns {available: False} when params predate the stored profile."""
+    from training.drift import build_input_profile, emission_channel_drift
+    from training.load_r2 import (
+        build_tick_observations,
+        fetch_objects,
+        list_alert_keys,
+        presence_mask_from_predictions,
+    )
+
+    try:
+        body = client.get_object(Bucket=bucket, Key=PARAMS_KEY)["Body"].read()
+        params: dict[str, Any] = json.loads(body)
+        reference: dict[str, Any] = params.get("input_profile") or {}
+    except Exception as exc:
+        print(f"emission-drift: params load failed ({exc})")
+        return {"available": False}
+    if not reference:
+        return {"available": False}
+
+    keys = list_alert_keys(client, bucket, start, end)
+    bodies = fetch_objects(client, bucket, keys)
+    mask = presence_mask_from_predictions(predictions)
+    ticks = build_tick_observations(bodies, active_mask=mask)
+    current = build_input_profile(ticks)
+    return {"available": True, **emission_channel_drift(reference, current)}
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Self-grading job")
     parser.add_argument("--days", type=int, default=7, help="window length in days")
@@ -787,6 +825,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     eval_doc["recovery_independent"] = build_independent_recovery(
         client, predictions, start_date, today
+    )
+    eval_doc["drift"]["emission_channels"] = build_emission_drift(
+        client, cfg.bucket, predictions, start_date, today
     )
     transition_matrices = load_transition_matrices(client, cfg.bucket)
     calibration_doc = build_calibration(eval_doc, transition_matrices)

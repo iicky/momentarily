@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from momentarily.hmm import HMMParams, Observation, fit_em
+from training.drift import build_input_profile
 from training.dwell import (
     DwellQuantiles,
     compute_dwell_quantiles,
@@ -138,13 +139,15 @@ def load_series_by_route(
     cfg: R2Config,
     start: date,
     end: date,
-) -> tuple[dict[str, list[Observation]], CorpusStats]:
+) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
     """Single R2 pass: fetch alerts, build per-route quiet-filled series.
 
-    Returns (by_route, corpus). `corpus` describes the *actual* observed ticks
-    before quiet-filling — fill_quiet_ticks pads every series to the requested
-    window, so series length can't tell us how much real archive we have. The
-    publish gate and the params.json audit block both need the unpadded view.
+    Returns (by_route, corpus, input_profile). `corpus` describes the *actual*
+    observed ticks before quiet-filling — fill_quiet_ticks pads every series to
+    the requested window, so series length can't tell us how much real archive
+    we have. The publish gate and the params.json audit block both need the
+    unpadded view. `input_profile` is the emission-channel reference profile (over
+    the real ticks) that the eval job's drift check compares against.
     """
     client = make_client(cfg)
     # Hash the exact key set we fetch — the manifest fingerprint and the training
@@ -166,14 +169,19 @@ def load_series_by_route(
         print(f"presence-mask: prediction load failed ({exc}); raw reconstruction")
     all_ticks = build_tick_observations(bodies, active_mask=mask)
     if not all_ticks:
-        return {}, CorpusStats(
-            start_tick=0,
-            end_tick=0,
-            n_observations=0,
-            n_input_versions=len(keys),
-            input_blake3=input_blake3,
+        return (
+            {},
+            CorpusStats(
+                start_tick=0,
+                end_tick=0,
+                n_observations=0,
+                n_input_versions=len(keys),
+                input_blake3=input_blake3,
+            ),
+            {},
         )
 
+    input_profile = build_input_profile(all_ticks)
     ticks = [t.tick for t in all_ticks]
     corpus = CorpusStats(
         start_tick=min(ticks),
@@ -193,7 +201,7 @@ def load_series_by_route(
             all_ticks, route, start_tick=start_tick, end_tick=last_tick
         )
         by_route[route] = [t.observation for t in filled]
-    return by_route, corpus
+    return by_route, corpus, input_profile
 
 
 def train(
@@ -257,6 +265,7 @@ def write_params(
         dict[str, dict[str, dict[str, DwellQuantiles]]] | None
     ) = None,
     hyperparams: dict[str, Any] | None = None,
+    input_profile: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -284,6 +293,7 @@ def write_params(
         "trained_at": trained_at,
         "provenance": code_provenance(),
         "hyperparams": hyperparams or {},
+        "input_profile": input_profile or {},
         "training_corpus": {
             "start_tick": corpus.start_tick,
             "end_tick": corpus.end_tick,
@@ -348,7 +358,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.start
         else end_date - timedelta(days=args.days - 1)
     )
-    series, corpus = load_series_by_route(cfg, start_date, end_date)
+    series, corpus, input_profile = load_series_by_route(cfg, start_date, end_date)
     if not series:
         print("no observations in archive — skipping training", file=sys.stderr)
         return 1
@@ -438,6 +448,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         dwell_quantiles=dwell_q,
         dwell_quantiles_by_alert=dwell_q_by_alert,
         hyperparams=hyperparams,
+        input_profile=input_profile,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "

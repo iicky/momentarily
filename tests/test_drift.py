@@ -73,3 +73,89 @@ def test_hmm_excluded_types_are_not_drift():
     assert d["n_typed_ticks"] == 1
     assert d["unmapped_rate"] == 1.0
     assert d["unmapped_types"] == {"Meteor Strike": 1}
+
+
+# --- emission-channel distribution drift ------------------------------------
+
+from momentarily.hmm import Observation  # noqa: E402
+from training.drift import (  # noqa: E402
+    build_input_profile,
+    emission_channel_drift,
+)
+from training.load import TickObservation  # noqa: E402
+
+
+def _tick(
+    route: str,
+    tod: int,
+    count: int,
+    *,
+    susp: bool = False,
+    delays: bool = False,
+    sc: bool = False,
+    planned: bool = False,
+) -> TickObservation:
+    return TickObservation(
+        route_id=route,
+        tick=0,
+        observation=Observation(
+            alert_count=count,
+            severity_sum=0,
+            has_suspended_alert=susp,
+            has_delays=delays,
+            has_service_change=sc,
+            has_planned=planned,
+            tod_bin=tod,
+        ),
+    )
+
+
+def test_build_input_profile_bins_and_rates():
+    ticks = [
+        _tick("1", 0, 0),
+        _tick("1", 0, 2, delays=True),
+        _tick("1", 0, 7, susp=True),  # 7 -> "6+" bin (index 5)
+        _tick("1", 0, 4),  # 4 -> "4-5" bin (index 4)
+    ]
+    cell = build_input_profile(ticks)["1"]["0"]
+    assert cell["n"] == 4
+    assert cell["hist"] == [1, 0, 1, 0, 1, 1]
+    assert cell["flags"]["delays"] == 0.25
+    assert cell["flags"]["suspended"] == 0.25
+    assert cell["flags"]["planned"] == 0.0
+
+
+def test_emission_drift_identical_is_zero():
+    prof = build_input_profile([_tick("1", 0, 2) for _ in range(40)])
+    d = emission_channel_drift(prof, prof, min_n=30)
+    assert d["by_route"]["1"]["max_alert_count_psi"] == 0.0
+    assert d["routes_drifted"] == []
+    assert d["cells_scored"] == 1
+
+
+def test_emission_drift_thin_cells_skipped():
+    prof = build_input_profile([_tick("1", 0, 2) for _ in range(5)])  # < min_n
+    d = emission_channel_drift(prof, prof, min_n=30)
+    assert d["cells_scored"] == 0
+    assert d["cells_skipped_thin"] == 1
+    assert d["by_route"] == {}
+
+
+def test_emission_drift_distribution_shift_is_significant():
+    ref = build_input_profile([_tick("1", 0, 0) for _ in range(50)])  # always quiet
+    cur = build_input_profile(
+        [_tick("1", 0, 6, susp=True) for _ in range(50)]
+    )  # always busy + suspended
+    d = emission_channel_drift(ref, cur, min_n=30)
+    cell = d["by_route"]["1"]
+    assert cell["max_alert_count_psi"] > 0.25
+    assert cell["significant"] is True
+    assert cell["max_flag_delta"] == 1.0
+    assert cell["max_flag_delta_channel"] == "suspended"
+    assert d["routes_drifted"] == ["1"]
+
+
+def test_emission_drift_empty_reference_is_unavailable_shape():
+    d = emission_channel_drift({}, build_input_profile([_tick("1", 0, 2)]))
+    assert d["by_route"] == {}
+    assert d["routes_drifted"] == []

@@ -22,6 +22,7 @@
  */
 
 import type { LastSeen } from './state';
+import type { ServiceRow } from './trip_updates';
 
 function utcDate(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
@@ -93,6 +94,33 @@ export async function archiveEneSnapshot(
   await bucket.put(
     key,
     JSON.stringify({ observed_at: observedAt, source, payload }),
+    { httpMetadata: { contentType: 'application/json' } },
+  );
+}
+
+/**
+ * Archive the derived per-route trip-updates service metric — one compact
+ * object per tick. Deliberately a tiny derived snapshot (a handful of ints per
+ * route), not the raw protobuf: raw would be ~hundreds of MB/day and blow the
+ * R2 free tier; this is ~1 KB/tick, on par with the alerts archive. Keyed on
+ * the tick wall-clock so an overlapping/retried run overwrites rather than
+ * duplicates. `freshFeeds` records which line-group feeds were decoded this
+ * tick so the offline loader can tell a real zero from a missing feed.
+ */
+export async function archiveTripUpdateMetric(
+  bucket: R2Bucket,
+  rows: Map<string, ServiceRow>,
+  freshFeeds: string[],
+  observedAt: number,
+): Promise<void> {
+  const key = `archive/trip_updates/${utcDate(observedAt)}/${observedAt}.json`;
+  await bucket.put(
+    key,
+    JSON.stringify({
+      observed_at: observedAt,
+      fresh_feeds: freshFeeds,
+      rows: Object.fromEntries(rows),
+    }),
     { httpMetadata: { contentType: 'application/json' } },
   );
 }

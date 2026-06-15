@@ -43,12 +43,21 @@ export const LastSeenSchema = z.object({
   alerts: z.record(z.string(), z.number()),
   alerts_at: z.number().default(0),
   ene_at: z.number(),
+  // Epoch of the last successful trip-updates metric archive. Defaulted for
+  // back-compat with last_seen.json written before trip-updates shipped.
+  trip_updates_at: z.number().default(0),
   station_statuses: z.record(z.string(), StationStatusEntrySchema).default({}),
 });
 export type LastSeen = z.infer<typeof LastSeenSchema>;
 
 export function emptyLastSeen(): LastSeen {
-  return { alerts: {}, alerts_at: 0, ene_at: 0, station_statuses: {} };
+  return {
+    alerts: {},
+    alerts_at: 0,
+    ene_at: 0,
+    trip_updates_at: 0,
+    station_statuses: {},
+  };
 }
 
 export async function readLastSeen(

@@ -15,11 +15,18 @@
 
 import type { AlphaState, RouteRoll } from './alpha';
 import { readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
-import { archiveEneSnapshot, archiveNewAlerts } from './archive';
+import {
+  archiveEneSnapshot,
+  archiveNewAlerts,
+  archiveTripUpdateMetric,
+} from './archive';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
-import { FEEDS, fetchJson } from './fetch';
+import { FEEDS, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
+import type { TripLite } from './gtfsrt';
+import { decodeTripUpdates } from './gtfsrt';
+import { deriveRouteServiceMetric } from './trip_updates';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
@@ -349,6 +356,49 @@ export default {
           + 'station_status inputs incomplete, freshness held — retrying next tick',
         );
       }
+    }
+
+    // --- Step 8b: trip-updates service metric (every tick) ---
+    // Fetch all line-group protobuf feeds concurrently, decode, derive the
+    // compact per-route service metric, and archive it for offline recovery
+    // validation. Gated on the alpha CAS winner like E&E so losing runs don't
+    // double-write. A failed/slow feed is non-fatal — its routes are simply
+    // absent this tick, recorded via fresh_feeds.
+    if (alphaWritten) {
+      try {
+        const results = await Promise.allSettled(
+          TRIP_UPDATE_FEEDS.map(([, url]) => fetchProtobuf(url)),
+        );
+        const trips: TripLite[] = [];
+        const freshFeeds: string[] = [];
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i]!;
+          const name = TRIP_UPDATE_FEEDS[i]![0];
+          if (r.status === 'fulfilled') {
+            freshFeeds.push(name);
+            trips.push(...decodeTripUpdates(r.value));
+          } else {
+            console.error(`trip-updates ${name} failed:`, r.reason);
+          }
+        }
+        if (freshFeeds.length > 0) {
+          const rows = deriveRouteServiceMetric(trips);
+          await archiveTripUpdateMetric(
+            env.MOMENTARILY,
+            rows,
+            freshFeeds,
+            observedAt,
+          );
+          lastSeen.trip_updates_at = observedAt;
+          console.log(
+            `trip-updates: ${freshFeeds.length}/${TRIP_UPDATE_FEEDS.length} feeds, `
+            + `${trips.length} trips, ${rows.size} routes`,
+          );
+        }
+      } catch (err) {
+        console.error('trip-updates step failed:', err);
+      }
+      step('8b-trip-updates');
     }
 
     // Only the alpha CAS winner commits last_seen — a losing run's outputs

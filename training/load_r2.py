@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from blake3 import blake3
+
 from momentarily.hmm import Observation, tod_bin
 from training.load import TICK_SECONDS, TickObservation
 from training.r2_client import R2Config, load_config, make_client
@@ -80,6 +82,45 @@ def _fetch_object(client: S3Client, bucket: str, key: str) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(body))
 
 
+def list_alert_keys(
+    client: S3Client, bucket: str, start: date, end: date
+) -> list[str]:
+    """Every alert-version object key in the [start, end] window, in list order."""
+    keys: list[str] = []
+    for d in _date_range(start, end):
+        keys.extend(_list_keys(client, bucket, f"archive/alerts/{d.isoformat()}/"))
+    return keys
+
+
+def fetch_objects(
+    client: S3Client, bucket: str, keys: list[str]
+) -> list[dict[str, Any]]:
+    """Parallel GET of the given keys — R2 happily handles tens of concurrent GETs."""
+
+    def _fetch(k: str) -> dict[str, Any]:
+        return _fetch_object(client, bucket, k)
+
+    bodies: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for body in pool.map(_fetch, keys):
+            bodies.append(body)
+    return bodies
+
+
+def input_manifest_hash(keys: list[str]) -> str:
+    """BLAKE3 over the sorted object keys that fed a fit.
+
+    The archive is immutable and keys are timestamped, so the sorted key set is a
+    deterministic fingerprint of exactly which feed snapshots trained the model —
+    re-listing the same window reproduces the same digest. Empty key set hashes
+    the empty string."""
+    h = blake3()
+    for k in sorted(keys):
+        h.update(k.encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
 def fetch_alert_versions(
     config: R2Config | None = None,
     *,
@@ -98,22 +139,8 @@ def fetch_alert_versions(
     start = start_date or (today - timedelta(days=1))
     end = end_date or today
 
-    keys: list[str] = []
-    for d in _date_range(start, end):
-        prefix = f"archive/alerts/{d.isoformat()}/"
-        keys.extend(_list_keys(client, cfg.bucket, prefix))
-
-    # Parallel fetch — R2 happily handles tens of concurrent GETs.
-    fetched_client = client
-
-    def _fetch(k: str) -> dict[str, Any]:
-        return _fetch_object(fetched_client, cfg.bucket, k)
-
-    bodies: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        for body in pool.map(_fetch, keys):
-            bodies.append(body)
-    return bodies
+    keys = list_alert_keys(client, cfg.bucket, start, end)
+    return fetch_objects(client, cfg.bucket, keys)
 
 
 def _sort_order(entity: dict[str, Any]) -> int:

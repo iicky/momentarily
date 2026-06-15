@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2.6",
     "httpx>=0.27",
     "boto3>=1.34",
+    # Input-manifest hashing in the trainer container (params provenance).
+    "blake3>=0.4",
 ]
 
 [dependency-groups]

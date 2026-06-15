@@ -34,7 +34,9 @@ from training.dwell import (
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     build_tick_observations,
-    fetch_alert_versions,
+    fetch_objects,
+    input_manifest_hash,
+    list_alert_keys,
     presence_mask_from_predictions,
 )
 from training.provenance import code_provenance
@@ -62,6 +64,8 @@ class CorpusStats:
     start_tick: int
     end_tick: int
     n_observations: int  # real (alert-bearing) tick-observations, pre-quiet-fill
+    n_input_versions: int = 0  # archived alert-version objects that fed the fit
+    input_blake3: str = ""  # BLAKE3 over those object keys — lineage fingerprint
 
     @property
     def span_seconds(self) -> int:
@@ -137,7 +141,12 @@ def load_series_by_route(
     window, so series length can't tell us how much real archive we have. The
     publish gate and the params.json audit block both need the unpadded view.
     """
-    bodies = fetch_alert_versions(cfg, start_date=start, end_date=end)
+    client = make_client(cfg)
+    # Hash the exact key set we fetch — the manifest fingerprint and the training
+    # input are then guaranteed to describe the same objects.
+    keys = list_alert_keys(client, cfg.bucket, start, end)
+    bodies = fetch_objects(client, cfg.bucket, keys)
+    input_blake3 = input_manifest_hash(keys)
     # Mask the reconstruction against what the live Worker actually saw active,
     # so an alert that left the feed without a superseding version doesn't train
     # as still-active to its active_period end. See momentarily-1a7. Degrades to
@@ -146,20 +155,27 @@ def load_series_by_route(
     try:
         from training.eval import load_predictions
 
-        client = make_client(cfg)
         predictions = load_predictions(client, cfg.bucket, start, end)
         mask = presence_mask_from_predictions(predictions)
     except Exception as exc:
         print(f"presence-mask: prediction load failed ({exc}); raw reconstruction")
     all_ticks = build_tick_observations(bodies, active_mask=mask)
     if not all_ticks:
-        return {}, CorpusStats(start_tick=0, end_tick=0, n_observations=0)
+        return {}, CorpusStats(
+            start_tick=0,
+            end_tick=0,
+            n_observations=0,
+            n_input_versions=len(keys),
+            input_blake3=input_blake3,
+        )
 
     ticks = [t.tick for t in all_ticks]
     corpus = CorpusStats(
         start_tick=min(ticks),
         end_tick=max(ticks),
         n_observations=len(all_ticks),
+        n_input_versions=len(keys),
+        input_blake3=input_blake3,
     )
 
     start_tick, end_tick_excl = _aligned_window(start, end)
@@ -266,6 +282,8 @@ def write_params(
             "end_tick": corpus.end_tick,
             "n_routes_trained": n_routes_trained,
             "n_observations": corpus.n_observations,
+            "n_input_versions": corpus.n_input_versions,
+            "input_blake3": corpus.input_blake3,
         },
         "routes": routes_doc,
     }

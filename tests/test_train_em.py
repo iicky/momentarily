@@ -197,7 +197,13 @@ def test_write_params_writes_live_and_versioned_keys() -> None:
 
 def test_write_params_doc_shape_round_trips() -> None:
     fake = _FakeS3()
-    corpus = CorpusStats(start_tick=100, end_tick=200, n_observations=7)
+    corpus = CorpusStats(
+        start_tick=100,
+        end_tick=200,
+        n_observations=7,
+        n_input_versions=5,
+        input_blake3="deadbeef",
+    )
     write_params(
         cast("S3Client", fake),
         "test-bucket",
@@ -214,6 +220,8 @@ def test_write_params_doc_shape_round_trips() -> None:
         "end_tick": 200,
         "n_routes_trained": 1,
         "n_observations": 7,
+        "n_input_versions": 5,
+        "input_blake3": "deadbeef",
     }
     assert set(doc["routes"]) == {"1", "A"}
     # Each route round-trips to the loose HMMParams shape the Worker reads.

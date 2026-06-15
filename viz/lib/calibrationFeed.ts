@@ -20,11 +20,40 @@ export interface CalibrationRecoveryStats {
   iqr_coverage: number | null;
 }
 
+export interface DriftDoc {
+  unmapped_alert_type: {
+    n_typed_ticks: number;
+    unmapped_rate: number;
+    unmapped_types: Record<string, number>;
+    by_route: Record<string, number>;
+  };
+  emission_channels: {
+    available: boolean;
+    cells_scored?: number;
+    cells_skipped_thin?: number;
+    psi_threshold?: number;
+    routes_drifted?: string[];
+    by_route?: Record<
+      string,
+      {
+        max_alert_count_psi: number;
+        max_flag_delta: number;
+        max_flag_delta_channel: string | null;
+        n_cells: number;
+        significant: boolean;
+      }
+    >;
+  };
+}
+
 export interface CalibrationDoc {
   generated_at: number;
   window: { start: number; end: number };
   predictions_seen: number;
   transitions_seen: number;
+  // Present only on calibration.json published after the drift work; older
+  // feeds omit it, so the panel is gated on its presence.
+  drift?: DriftDoc;
   calibration: {
     horizon_min: number;
     n: number;

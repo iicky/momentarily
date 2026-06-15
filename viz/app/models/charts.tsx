@@ -582,6 +582,136 @@ export function DetectionLatencyPanel({ result }: { result: DetectionLatencyResu
   );
 }
 
+// --- Input drift ---
+
+export interface DriftResult {
+  unmapped_alert_type: {
+    n_typed_ticks: number;
+    unmapped_rate: number;
+    unmapped_types: Record<string, number>;
+    by_route: Record<string, number>;
+  };
+  emission_channels: {
+    available: boolean;
+    cells_scored?: number;
+    cells_skipped_thin?: number;
+    psi_threshold?: number;
+    routes_drifted?: string[];
+    by_route?: Record<
+      string,
+      {
+        max_alert_count_psi: number;
+        max_flag_delta: number;
+        max_flag_delta_channel: string | null;
+        n_cells: number;
+        significant: boolean;
+      }
+    >;
+  };
+}
+
+export function DriftPanel({ result }: { result: DriftResult }) {
+  const u = result.unmapped_alert_type;
+  const e = result.emission_channels;
+  const offenders = Object.entries(u.unmapped_types ?? {});
+  const emRoutes = Object.entries(e.by_route ?? {}).sort(
+    (a, b) => b[1].max_alert_count_psi - a[1].max_alert_count_psi,
+  );
+  const rate = u.unmapped_rate;
+
+  return (
+    <div className="charts-row">
+      <div className="chart">
+        <div className="chart-title">
+          Unmapped alert types ·{" "}
+          <span className="muted">
+            share of {u.n_typed_ticks.toLocaleString()} typed ticks with an
+            alert_type we don&apos;t map
+          </span>
+        </div>
+        <div
+          style={{
+            fontSize: 28,
+            fontWeight: 600,
+            margin: "4px 0 8px",
+            color: rate > 0 ? "#c2410c" : "inherit",
+          }}
+        >
+          {(rate * 100).toFixed(2)}%
+        </div>
+        {offenders.length === 0 ? (
+          <div className="muted">Every observed alert_type is mapped.</div>
+        ) : (
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>unmapped type (add to mapping)</th>
+                <th>ticks</th>
+              </tr>
+            </thead>
+            <tbody>
+              {offenders.map(([t, n]) => (
+                <tr key={t}>
+                  <td>{t}</td>
+                  <td>{n}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="chart">
+        <div className="chart-title">
+          Emission-channel drift ·{" "}
+          <span className="muted">
+            alert_count PSI vs the training profile (≥{" "}
+            {e.psi_threshold ?? 0.25} significant)
+          </span>
+        </div>
+        {!e.available ? (
+          <div className="muted">
+            Not yet available — activates once a retrain stores the reference
+            profile in params.json.
+          </div>
+        ) : emRoutes.length === 0 ? (
+          <div className="muted">
+            No (line, time-of-day) cell had enough data to score
+            {e.cells_skipped_thin ? ` (${e.cells_skipped_thin} too thin)` : ""}.
+          </div>
+        ) : (
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>line</th>
+                <th>max PSI</th>
+                <th>worst flag Δ</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {emRoutes.map(([r, v]) => (
+                <tr key={r}>
+                  <td>{r}</td>
+                  <td style={{ color: v.significant ? "#c2410c" : "inherit" }}>
+                    {v.max_alert_count_psi.toFixed(2)}
+                  </td>
+                  <td>
+                    {v.max_flag_delta_channel
+                      ? `${v.max_flag_delta_channel} ${(v.max_flag_delta * 100).toFixed(0)}pp`
+                      : "—"}
+                  </td>
+                  <td>{v.significant ? "⚠" : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // --- Transition matrix heatmap ---
 
 export function TransitionHeatmap({

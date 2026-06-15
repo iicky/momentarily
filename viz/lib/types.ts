@@ -165,4 +165,8 @@ export interface GradingResponse {
   timelines: unknown[];
   heatmap: HeatmapEntry[];
   paramsTrainedAt: number | null;
+  // DriftDoc from the calibration feed — input-drift signals (unmapped
+  // alert_type rate, emission-channel PSI). Absent on the streams view and on
+  // older feeds; typed structurally on the client.
+  drift?: unknown;
 }

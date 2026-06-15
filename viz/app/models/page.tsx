@@ -9,6 +9,7 @@ import {
   ResumeChurnPanel,
   AdherencePanel,
   DetectionLatencyPanel,
+  DriftPanel,
   Swimlane,
   TransitionHeatmap,
   type ReliabilityResult,
@@ -17,6 +18,7 @@ import {
   type ResumeChurnResult,
   type AdherenceResult,
   type DetectionLatencyResult,
+  type DriftResult,
   type TimelineDTO,
 } from "./charts";
 import type { GradingResponse, HeatmapEntry } from "@/lib/types";
@@ -58,6 +60,7 @@ export default function ModelsPage() {
   const churn = data?.resumeChurn as ResumeChurnResult | undefined;
   const adher = data?.adherence as AdherenceResult | undefined;
   const detection = data?.detectionLatency as DetectionLatencyResult | undefined;
+  const drift = data?.drift as DriftResult | undefined;
   const timelines = (data?.timelines ?? []) as TimelineDTO[];
   const heatmap = (data?.heatmap ?? []) as HeatmapEntry[];
   const states = data?.states ?? ["normal", "disrupted", "suspended"];
@@ -164,6 +167,20 @@ export default function ModelsPage() {
               <ReliabilityChart key={r.horizonMin} result={r} />
             ))}
           </div>
+
+          {drift && (
+            <>
+              <h3 className="grp">Input drift</h3>
+              <p className="grp-note">
+                Leading indicators that the live feed has moved away from what
+                the model expects — before calibration degrades. Unmapped
+                alert_types are new MTA values to add to the mapping; emission
+                drift is a PSI shift in the per-line observation distribution
+                versus the training profile.
+              </p>
+              <DriftPanel result={drift} />
+            </>
+          )}
 
           {aggregate ? (
             recAgg && (

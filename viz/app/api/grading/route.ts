@@ -144,6 +144,7 @@ export async function GET(req: NextRequest) {
         timelines: [],
         heatmap: calibrationHeatmap(doc),
         paramsTrainedAt: doc.transition_matrices.trained_at ?? null,
+        drift: doc.drift,
       };
       return NextResponse.json(payload);
     } catch {

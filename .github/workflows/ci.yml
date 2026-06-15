@@ -62,3 +62,18 @@ jobs:
       - run: bun x wrangler types ./worker-configuration.d.ts
       - run: bun run typecheck
       - run: bun test
+
+  # The trainer Worker (container launcher) is a separate package; typecheck it
+  # so a break there doesn't reach the Sunday cron unnoticed. No bun test — it
+  # carries no tests yet.
+  trainer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trainer
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun x wrangler types ./worker-configuration.d.ts
+      - run: bun run typecheck

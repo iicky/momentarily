@@ -18,6 +18,7 @@ import json
 import re
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,6 +28,8 @@ from training.r2_client import R2Config, load_config, make_client
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
+
+    from training.eval import PredictionRecord
 
 _SORT_ORDER_RE = re.compile(r":(\d+)$")
 
@@ -118,10 +121,57 @@ def _alert_type(alert_payload: dict[str, Any]) -> str:
     return str(mercury.get("alert_type") or "")
 
 
+@dataclass(frozen=True)
+class PresenceMask:
+    """Per-(route, tick) live alert presence taken from the v1/predictions stream.
+
+    The archive dedupes by (alert_id, updated_at) and writes no marker when an
+    alert leaves the feed, so build_tick_observations fills an alert's whole
+    active_period — over-extending past when the live Worker actually saw it
+    (open-ended/early-cleared alerts run to corpus_end). The predictions stream
+    records, per (route, tick), whether the live Worker counted any active alert
+    (primary_alert_type non-null). Intersecting against it drops the
+    hallucinated tail. See momentarily-1a7.
+
+    `active` is the set of (route, tick) the Worker saw active; `covered` is
+    every tick the stream spans. A cell is only dropped when its tick is covered
+    but not active — ticks the stream never saw (pre-stream history, write-gap
+    skips) fall back to the raw reconstruction untouched, so masking can only
+    remove over-extension, never under-count a real disruption.
+    """
+
+    active: frozenset[tuple[str, int]]
+    covered: frozenset[int]
+
+    def covers(self, tick: int) -> bool:
+        return tick in self.covered
+
+    def is_active(self, route_id: str, tick: int) -> bool:
+        return (route_id, tick) in self.active
+
+
+def presence_mask_from_predictions(
+    predictions: list[PredictionRecord],
+) -> PresenceMask:
+    """Build a PresenceMask from loaded prediction rows. primary_alert_type is
+    non-null iff the live Worker counted an active alert on that route at that
+    tick (worker/src/index.ts). Snapped with the reconstruction's floor grid so
+    the keys line up with build_tick_observations' ticks."""
+    active: set[tuple[str, int]] = set()
+    covered: set[int] = set()
+    for p in predictions:
+        tick = _snap_tick(p.ts)
+        covered.add(tick)
+        if p.primary_alert_type is not None:
+            active.add((p.route, tick))
+    return PresenceMask(active=frozenset(active), covered=frozenset(covered))
+
+
 def build_tick_observations(
     bodies: list[dict[str, Any]],
     *,
     corpus_end: int | None = None,
+    active_mask: PresenceMask | None = None,
 ) -> list[TickObservation]:
     """Reconstruct per-(route, tick) observations from alert-version events.
 
@@ -132,6 +182,10 @@ def build_tick_observations(
     `corpus_end` caps any open-ended active_period so we don't extend alerts
     forever. Defaults to the max observed_at across all bodies + one day —
     a reasonable upper bound for "still active at corpus end."
+
+    `active_mask`, when given, drops (route, tick) cells the live Worker never
+    saw active — correcting the archive's over-extension past feed presence.
+    See momentarily-1a7.
     """
     if not bodies:
         return []
@@ -142,6 +196,8 @@ def build_tick_observations(
 
     # bucket[tick][route_id] = {alert_id: (sort_order, alert_type)}
     bucket: dict[int, dict[str, dict[str, tuple[int, str]]]] = {}
+    masked_out = 0  # cells the presence mask dropped (diagnostic)
+    kept_active = 0  # cells written through
 
     # All observed_at values per alert_id, sorted — so we can clamp version
     # windows at the start of the *next* version, not just the latest.
@@ -212,10 +268,29 @@ def build_tick_observations(
             sort_order = _sort_order(entity)
             tick = first_tick
             while tick <= last_tick:
+                if (
+                    active_mask is not None
+                    and active_mask.covers(tick)
+                    and not active_mask.is_active(route_id, tick)
+                ):
+                    # Live Worker saw no alert on this route here — the archived
+                    # active_period over-extended past feed presence; drop it.
+                    masked_out += 1
+                    tick += TICK_SECONDS
+                    continue
                 tick_bucket = bucket.setdefault(tick, {})
                 route_bucket = tick_bucket.setdefault(route_id, {})
                 route_bucket.setdefault(alert_id, (sort_order, alert_type))
+                kept_active += 1
                 tick += TICK_SECONDS
+
+    if active_mask is not None and (masked_out or kept_active):
+        total = masked_out + kept_active
+        pct = 100.0 * masked_out / total
+        print(
+            f"presence-mask: dropped {masked_out}/{total} ({pct:.1f}%) "
+            f"over-extended alert-active cells"
+        )
 
     out: list[TickObservation] = []
     for tick in sorted(bucket):

@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from training.load_r2 import build_tick_observations
+from training.load_r2 import (
+    PresenceMask,
+    build_tick_observations,
+    presence_mask_from_predictions,
+)
 
 TICK = 300
 T0 = 1_700_000_100  # tick-aligned
@@ -90,3 +94,69 @@ def test_extra_service_is_invisible_to_the_hmm():
     for o in obs:
         assert o.observation.alert_count == 1
         assert o.observation.has_delays
+
+
+def _pred(ts: int, route: str, primary: str | None) -> Any:
+    """Minimal PredictionRecord via from_json — only ts/route/primary matter
+    for the presence mask."""
+    from training.eval import PredictionRecord
+
+    return PredictionRecord.from_json(
+        {
+            "ts": ts,
+            "route": route,
+            "condition": "disrupted",
+            "regime_entered_at": ts,
+            "p_normal": 0.1,
+            "p_disrupted": 0.8,
+            "p_suspended": 0.1,
+            "p_normal_in_30min": 0.2,
+            "p_normal_in_60min": 0.3,
+            "p_normal_in_120min": 0.4,
+            "recovery_minutes": 30,
+            "recovery_minutes_low": 15,
+            "recovery_minutes_high": 60,
+            "primary_alert_type": primary,
+        }
+    )
+
+
+def test_presence_mask_drops_over_extended_tail():
+    # Alert archived active T0..T0+600 (3 ticks), but the live Worker only saw
+    # it at T0 — the later ticks are the over-extended tail and must drop.
+    mask = PresenceMask(
+        active=frozenset({("1", T0)}),
+        covered=frozenset({T0, T0 + TICK, T0 + 2 * TICK}),
+    )
+    obs = build_tick_observations(
+        [_body("a1", "Delays", start=T0, end=T0 + 600)], active_mask=mask
+    )
+    assert [o.tick for o in obs] == [T0]
+    assert obs[0].observation.has_delays
+
+
+def test_presence_mask_keeps_ticks_it_does_not_cover():
+    # Mask only covers T0; T0+TICK / T0+2*TICK are outside the stream, so they
+    # fall back to the raw reconstruction (no wrongful drop).
+    mask = PresenceMask(active=frozenset({("1", T0)}), covered=frozenset({T0}))
+    obs = build_tick_observations(
+        [_body("a1", "Delays", start=T0, end=T0 + 600)], active_mask=mask
+    )
+    assert [o.tick for o in obs] == [T0, T0 + TICK, T0 + 2 * TICK]
+
+
+def test_presence_mask_none_is_unchanged_behavior():
+    # Without a mask the reconstruction fills the whole active_period.
+    obs = build_tick_observations([_body("a1", "Delays", start=T0, end=T0 + 600)])
+    assert [o.tick for o in obs] == [T0, T0 + TICK, T0 + 2 * TICK]
+
+
+def test_presence_mask_from_predictions_uses_primary_alert_type():
+    mask = presence_mask_from_predictions(
+        [_pred(T0, "1", "Delays"), _pred(T0, "2", None), _pred(T0 + TICK, "1", None)]
+    )
+    assert mask.is_active("1", T0)
+    assert not mask.is_active("2", T0)  # primary None → not active
+    assert mask.covers(T0)
+    assert mask.covers(T0 + TICK)
+    assert not mask.is_active("1", T0 + TICK)

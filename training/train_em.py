@@ -32,7 +32,11 @@ from training.dwell import (
     compute_dwell_quantiles_by_alert,
 )
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
-from training.load_r2 import build_tick_observations, fetch_alert_versions
+from training.load_r2 import (
+    build_tick_observations,
+    fetch_alert_versions,
+    presence_mask_from_predictions,
+)
 from training.r2_client import R2Config, load_config, make_client
 from training.run_filter import BOOTSTRAP_PARAMS
 
@@ -133,7 +137,20 @@ def load_series_by_route(
     publish gate and the params.json audit block both need the unpadded view.
     """
     bodies = fetch_alert_versions(cfg, start_date=start, end_date=end)
-    all_ticks = build_tick_observations(bodies)
+    # Mask the reconstruction against what the live Worker actually saw active,
+    # so an alert that left the feed without a superseding version doesn't train
+    # as still-active to its active_period end. See momentarily-1a7. Degrades to
+    # the raw reconstruction if predictions are unavailable (e.g. pre-stream).
+    mask = None
+    try:
+        from training.eval import load_predictions
+
+        client = make_client(cfg)
+        predictions = load_predictions(client, cfg.bucket, start, end)
+        mask = presence_mask_from_predictions(predictions)
+    except Exception as exc:
+        print(f"presence-mask: prediction load failed ({exc}); raw reconstruction")
+    all_ticks = build_tick_observations(bodies, active_mask=mask)
     if not all_ticks:
         return {}, CorpusStats(start_tick=0, end_tick=0, n_observations=0)
 

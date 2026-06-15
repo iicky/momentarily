@@ -11,6 +11,8 @@
  */
 
 import type { RouteRoll } from './alpha';
+import type { Provenance } from './buildinfo';
+import { codeProvenance } from './buildinfo';
 import type { AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
 import { metaForRoute } from './derive';
 import { conditionalRecovery } from './dwell';
@@ -154,6 +156,7 @@ interface Compat {
 interface Snapshot {
   schema_version: string;
   generated_at: number;
+  provenance: Provenance;
   attribution: string;
   supported_modes: string[];
   freshness: Freshness;
@@ -239,6 +242,7 @@ export function buildSnapshot(args: {
   return {
     schema_version: SCHEMA_VERSION,
     generated_at: args.generatedAt,
+    provenance: codeProvenance(),
     attribution: ATTRIBUTION,
     supported_modes: ['subway'],
     freshness: {

@@ -852,6 +852,35 @@
       "title": "Observation",
       "type": "object"
     },
+    "Provenance": {
+      "description": "Which code produced this snapshot. code_sha is the git commit verbatim;\ndirty is null when it couldn't be determined (e.g. a clean-checkout build).",
+      "properties": {
+        "code_sha": {
+          "default": "unknown",
+          "title": "Code Sha",
+          "type": "string"
+        },
+        "dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dirty"
+        },
+        "producer": {
+          "default": "unknown",
+          "title": "Producer",
+          "type": "string"
+        }
+      },
+      "title": "Provenance",
+      "type": "object"
+    },
     "Route": {
       "description": "Static-ish per-route metadata. From GTFS static + canonical lists.",
       "properties": {
@@ -1383,6 +1412,9 @@
       },
       "title": "Observations",
       "type": "array"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
     },
     "route_status": {
       "additionalProperties": {

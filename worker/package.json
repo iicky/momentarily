@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "murk exec -- wrangler dev",
-    "deploy": "murk exec -- wrangler deploy",
+    "deploy": "GIT_SHA=$(git rev-parse HEAD); test -z \"$(git status --porcelain)\" && GIT_DIRTY=false || GIT_DIRTY=true; murk exec -- wrangler deploy --define __GIT_SHA__:$GIT_SHA --define __GIT_DIRTY__:$GIT_DIRTY",
     "publish:schema": "murk exec -- wrangler r2 object put momentarily/v1/snapshot.schema.json --file=../schema/snapshot.schema.json --content-type=application/json --cache-control=\"public, max-age=86400\"",
     "tail": "murk exec -- wrangler tail",
     "test": "vitest run",

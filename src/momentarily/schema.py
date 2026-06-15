@@ -374,6 +374,17 @@ class Compat(BaseModel):
     subwaynow_routes: dict[str, CompatRoute] = Field(default_factory=dict)
 
 
+class Provenance(BaseModel):
+    """Which code produced this snapshot. code_sha is the git commit verbatim;
+    dirty is null when it couldn't be determined (e.g. a clean-checkout build)."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    code_sha: str = "unknown"
+    dirty: bool | None = None
+    producer: str = "unknown"
+
+
 class Snapshot(BaseModel):
     """The full published snapshot. The contract."""
 
@@ -381,6 +392,7 @@ class Snapshot(BaseModel):
 
     schema_version: str = SCHEMA_VERSION
     generated_at: int
+    provenance: Provenance = Field(default_factory=Provenance)
     attribution: str = (
         "Snapshot built from MTA GTFS-RT feeds via api.mta.info. "
         "Published by Momentarily (https://feed.momentarily.nyc). "

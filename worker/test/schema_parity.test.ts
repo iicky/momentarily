@@ -72,6 +72,25 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     );
   });
 
+  test('snapshot carries a provenance block (falls back to unknown undeployed)', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    check(snap);
+    // __GIT_SHA__ isn't defined under vitest, so the typeof guard yields the
+    // fallback — the point is the field exists and is well-formed.
+    expect(snap.provenance).toEqual({
+      code_sha: 'unknown',
+      dirty: null,
+      producer: 'worker',
+    });
+  });
+
   test('system.accessibility sums elevators/escalators across station_status', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,

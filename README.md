@@ -38,6 +38,8 @@ User-facing fields graduate from a shadow-logging phase to the published snapsho
 
 The live path runs on Cloudflare — a TypeScript Worker for per-tick inference, a weekly Python training container, R2 as the only state store. See [ADR 0001](docs/adr/0001-cloudflare-workers-r2-only-split-ts-python.md) for the full architecture and why.
 
+Every published artifact records its own provenance. The snapshot, the eval/calibration outputs, and `params.json` each carry a `provenance` block — the git `code_sha` that produced them, a `dirty` flag, and the producer (worker / container / local). `params.json` additionally records the `hyperparams` it was fit with (resolved window, prior strength, min ticks) and a BLAKE3 hash of the exact input-manifest (the immutable alert-version objects that fed the fit). Together these make any model version traceable to a commit and re-derivable from the archive — "which build produced this?" is a one-field lookup, not an investigation.
+
 ## Upstream sources
 
 All fetched from the MTA developer gateway (`api-endpoint.mta.info`):

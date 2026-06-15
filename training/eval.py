@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 
 if TYPE_CHECKING:
@@ -620,6 +621,7 @@ def build_eval(
 
     return {
         "generated_at": int(datetime.now(UTC).timestamp()),
+        "provenance": code_provenance(),
         "window": {"start": window_start, "end": window_end},
         "predictions_seen": len(predictions),
         "transitions_seen": len(transitions),
@@ -686,6 +688,7 @@ def build_calibration(
     """
     return {
         "generated_at": eval_doc["generated_at"],
+        "provenance": eval_doc["provenance"],
         "window": eval_doc["window"],
         "predictions_seen": eval_doc["predictions_seen"],
         "transitions_seen": eval_doc["transitions_seen"],

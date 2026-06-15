@@ -37,6 +37,7 @@ from training.load_r2 import (
     fetch_alert_versions,
     presence_mask_from_predictions,
 )
+from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 from training.run_filter import BOOTSTRAP_PARAMS
 
@@ -259,6 +260,7 @@ def write_params(
     doc = {
         "schema_version": SCHEMA_VERSION,
         "trained_at": trained_at,
+        "provenance": code_provenance(),
         "training_corpus": {
             "start_tick": corpus.start_tick,
             "end_tick": corpus.end_tick,

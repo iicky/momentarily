@@ -17,6 +17,14 @@ RUN uv sync --frozen --no-dev
 # Training code changes more often than deps — copy it last.
 COPY training/ ./training/
 
+# Code provenance: the deploy script writes .build-sha (git HEAD) into the build
+# context — the image excludes .git, so this file is how the container learns
+# which commit it was built from. The [a] glob makes the copy optional, so a
+# bare `docker build .` without the file still succeeds (code_sha then falls
+# back to "unknown"). See training/provenance.py.
+COPY .build-sh[a] ./
+ENV MOMENTARILY_PRODUCER=container
+
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Batch default for local `docker run`; the Worker overrides entrypoint + env

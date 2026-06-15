@@ -11,6 +11,7 @@ htmlcov/
 junit.xml
 dist/
 build/
+.build-sha
 .DS_Store
 
 # Local secrets — never commit

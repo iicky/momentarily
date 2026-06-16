@@ -578,7 +578,7 @@ def _calibration_as_dicts(
     ]
 
 
-def _recovery_as_dict(recovery: RecoveryResult) -> dict[str, Any]:
+def recovery_as_dict(recovery: RecoveryResult) -> dict[str, Any]:
     return {
         "overall": _stats_as_dict(recovery.overall),
         "per_regime": _stats_as_dict(recovery.per_regime),
@@ -617,7 +617,7 @@ def build_eval(
             "calibration": _calibration_as_dicts(
                 [calibrate(current, h) for h in HORIZONS_MIN]
             ),
-            "recovery": _recovery_as_dict(current_recovery),
+            "recovery": recovery_as_dict(current_recovery),
         }
 
     return {
@@ -628,7 +628,7 @@ def build_eval(
         "transitions_seen": len(transitions),
         "current_params": current_params,
         "calibration": _calibration_as_dicts(calibrations),
-        "recovery": _recovery_as_dict(recovery),
+        "recovery": recovery_as_dict(recovery),
         "drift": {"unmapped_alert_type": unmapped_alert_type_drift(predictions)},
     }
 
@@ -751,7 +751,7 @@ def build_independent_recovery(
     disruptions = derive_actual_recovery(series, baseline)
     result = independent_recovery_metrics(predictions, disruptions)
     return {
-        **_recovery_as_dict(result),
+        **recovery_as_dict(result),
         "truth_source": "trip_updates_service_level",
         "n_disruptions": len(disruptions),
         "n_baseline_cells": len(baseline),

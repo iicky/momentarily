@@ -31,15 +31,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from momentarily.hmm import Observation
+from momentarily.mapping import category_for_label, coarse_status
 from training.eval import (
     TICK_SECONDS,
     PredictionRecord,
     TransitionRecord,
     build_eval,
+    independent_recovery_metrics,
     load_predictions,
     load_transitions,
+    recovery_as_dict,
 )
-from training.load_r2 import build_tick_observations, fetch_alert_versions
+from training.load_r2 import Disruption, build_tick_observations, fetch_alert_versions
 from training.r2_client import load_config, make_client
 
 if TYPE_CHECKING:
@@ -78,6 +81,76 @@ def build_mta_truth(
     )
     obs_list = build_tick_observations(bodies)
     return {(o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list}
+
+
+# Alert categories that put the HMM in a disrupted condition — the others
+# (planned work, information, no active alert) never do, so a recovery
+# prediction is never graded against them. Clearance of one of these is the
+# feed-side recovery event.
+_DISRUPTIVE_CATEGORIES = frozenset(
+    {"delays", "service_change", "service_suspension", "slow_speeds"}
+)
+
+
+def is_disruptive(alert_type: str | None) -> bool:
+    if alert_type is None:
+        return False
+    return category_for_label(coarse_status(alert_type)) in _DISRUPTIVE_CATEGORIES
+
+
+def clearance_disruptions(
+    predictions: list[PredictionRecord], *, debounce: int = 2
+) -> list[Disruption]:
+    """Independent disruption intervals from alert-feed clearance: a route is
+    disrupted while its primary_alert_type maps to a disruptive category and
+    recovered when that clears. The signal is the raw feed (primary_alert_type in
+    v1/predictions), upstream of and independent of the HMM's own argmax — a
+    lighter recovery truth than the trip-updates service level (momentarily-xum).
+
+    This validates against "when the alert cleared in the feed," NOT true service
+    recovery (trains actually moving) — label it a feed-clearance proxy. Same
+    debounce/hysteresis shape as derive_actual_recovery; disruptions still open at
+    the window end are censored (dropped). See momentarily-up0.
+    """
+    by_route: dict[str, dict[int, bool]] = {}
+    for p in predictions:
+        by_route.setdefault(p.route, {})[snap_tick(p.ts)] = is_disruptive(
+            p.primary_alert_type
+        )
+
+    out: list[Disruption] = []
+    for route, ticks in by_route.items():
+        in_disruption = False
+        start: int | None = None
+        cand_start: int | None = None
+        cand_recover: int | None = None
+        on_run = 0
+        off_run = 0
+        for tick in sorted(ticks):
+            present = ticks[tick]
+            if not in_disruption:
+                if present:
+                    if on_run == 0:
+                        cand_start = tick
+                    on_run += 1
+                    if on_run >= debounce:
+                        in_disruption = True
+                        start = cand_start
+                        off_run = 0
+                else:
+                    on_run = 0
+            elif not present:
+                if off_run == 0:
+                    cand_recover = tick
+                off_run += 1
+                if off_run >= debounce and start is not None:
+                    out.append(Disruption(route, start, cand_recover or tick))
+                    in_disruption = False
+                    start = None
+                    on_run = 0
+            else:
+                off_run = 0
+    return out
 
 
 def confusion(
@@ -325,6 +398,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     deltas = changepoint_alignment(
         trans, truth, window_start=window_start, window_end=window_end
     )
+    clearance = clearance_disruptions(preds)
+    recovery_clearance = independent_recovery_metrics(preds, clearance)
+    print(
+        f"  recovery vs feed-clearance: {len(clearance)} disruptions, "
+        f"n={recovery_clearance.overall.n} graded ticks"
+    )
 
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
@@ -343,6 +422,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         "calibration": eval_doc["calibration"],
         "recovery": eval_doc["recovery"],
+        # Independent recovery truth from alert-feed clearance, beside the
+        # argmax-based `recovery`. A feed-clearance proxy, not true service
+        # recovery (that's the trip-updates signal, momentarily-xum).
+        "recovery_clearance": {
+            **recovery_as_dict(recovery_clearance),
+            "truth_source": "alert_feed_clearance",
+            "n_disruptions": len(clearance),
+        },
         "current_params": eval_doc["current_params"],
         "confusion": conf,
         "changepoint_alignment": {

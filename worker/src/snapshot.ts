@@ -663,10 +663,72 @@ function dwellQuantiles(selfLoop: number): {
   return { median: q(0.5), q25: q(0.25), q75: q(0.75) };
 }
 
+const VALID_CONDITIONS = new Set(['normal', 'disrupted', 'suspended', 'unknown']);
+
+/**
+ * Invariants a published snapshot must hold — caught before it reaches
+ * consumers. Returns the list of violations (empty == valid). Guards against a
+ * derivation bug shipping NaN probabilities, negative recovery, or a missing
+ * condition to the sensor; the structural shape is covered by the schema tests.
+ */
+export function snapshotViolations(s: Snapshot): string[] {
+  const v: string[] = [];
+  if (!s.schema_version) v.push('schema_version is empty');
+  if (!Number.isFinite(s.generated_at) || s.generated_at <= 0) {
+    v.push(`generated_at invalid: ${s.generated_at}`);
+  }
+  if (!s.provenance || typeof s.provenance.code_sha !== 'string') {
+    v.push('provenance.code_sha missing');
+  }
+  for (const [routeId, rs] of Object.entries(s.route_status)) {
+    const inf = rs.inference;
+    if (!inf) continue;
+    if (!VALID_CONDITIONS.has(inf.condition)) {
+      v.push(`${routeId}: condition not recognized: ${inf.condition}`);
+    }
+    const probs = [
+      inf.p_normal,
+      inf.p_disrupted,
+      inf.p_suspended,
+      inf.p_normal_in_30min,
+      inf.p_normal_in_60min,
+      inf.p_normal_in_120min,
+    ];
+    for (const p of probs) {
+      if (!Number.isFinite(p) || p < 0 || p > 1) {
+        v.push(`${routeId}: probability out of [0,1]: ${p}`);
+        break;
+      }
+    }
+    for (const m of [
+      inf.recovery_minutes,
+      inf.recovery_minutes_low,
+      inf.recovery_minutes_high,
+    ]) {
+      if (!Number.isFinite(m) || m < 0) {
+        v.push(`${routeId}: recovery_minutes invalid: ${m}`);
+        break;
+      }
+    }
+  }
+  return v;
+}
+
 export async function publishSnapshot(
   bucket: R2Bucket,
   snapshot: Snapshot,
 ): Promise<void> {
+  // Fail safe: a malformed snapshot is NOT published, so the CDN keeps serving
+  // the last good one rather than poisoning consumers. The caller's try/catch
+  // logs the throw and the tick moves on; the next tick retries.
+  const violations = snapshotViolations(snapshot);
+  if (violations.length > 0) {
+    throw new Error(
+      `snapshot failed ${violations.length} invariant(s), not publishing: ${violations
+        .slice(0, 5)
+        .join('; ')}`,
+    );
+  }
   await bucket.put(SNAPSHOT_KEY, JSON.stringify(snapshot), {
     httpMetadata: {
       contentType: 'application/json',

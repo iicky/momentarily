@@ -47,6 +47,7 @@ class PredictionLike(Protocol):
     @property
     def primary_alert_type(self) -> str | None: ...
 
+
 _SORT_ORDER_RE = re.compile(r":(\d+)$")
 
 
@@ -83,9 +84,7 @@ def _fetch_object(client: S3Client, bucket: str, key: str) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(body))
 
 
-def list_alert_keys(
-    client: S3Client, bucket: str, start: date, end: date
-) -> list[str]:
+def list_alert_keys(client: S3Client, bucket: str, start: date, end: date) -> list[str]:
     """Every alert-version object key in the [start, end] window, in list order."""
     keys: list[str] = []
     for d in _date_range(start, end):

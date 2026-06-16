@@ -52,9 +52,7 @@ def _stream(route: str, alert_types: list[str | None]) -> list[PredictionRecord]
     out: list[PredictionRecord] = []
     for i, at in enumerate(alert_types):
         cond = "disrupted" if is_disruptive(at) else "normal"
-        out.append(
-            _pred(T0 + i * TICK, route=route, condition=cond, alert_type=at)
-        )
+        out.append(_pred(T0 + i * TICK, route=route, condition=cond, alert_type=at))
     return out
 
 

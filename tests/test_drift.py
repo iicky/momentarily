@@ -17,7 +17,11 @@ class _Pred:
 
 
 def test_all_mapped_is_zero_drift():
-    preds = [_Pred("1", "Delays"), _Pred("A", "Suspended"), _Pred("F", "Planned - Work")]
+    preds = [
+        _Pred("1", "Delays"),
+        _Pred("A", "Suspended"),
+        _Pred("F", "Planned - Work"),
+    ]
     d = unmapped_alert_type_drift(preds)
     assert d["unmapped_rate"] == 0.0
     assert d["unmapped_types"] == {}
@@ -55,7 +59,10 @@ def test_empty_is_safe():
 
 def test_passthrough_families_are_known():
     # "Planned -*" and "No <Dir> Service" are recognized by is_known_alert_type.
-    preds = [_Pred("1", "Planned - Stations Skipped"), _Pred("1", "No Northbound Service")]
+    preds = [
+        _Pred("1", "Planned - Stations Skipped"),
+        _Pred("1", "No Northbound Service"),
+    ]
     d = unmapped_alert_type_drift(preds)
     assert d["unmapped_rate"] == 0.0
 

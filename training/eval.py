@@ -440,9 +440,7 @@ def _grade_recovery(
         abs_errors.append(err)
         sq_errors.append(sq_err)
         covered += 1 if within else 0
-        by_regime.setdefault(regime_key, []).append(
-            (err, sq_err, 1 if within else 0)
-        )
+        by_regime.setdefault(regime_key, []).append((err, sq_err, 1 if within else 0))
         by_route_abs.setdefault(p.route, []).append(err)
         by_route_sq.setdefault(p.route, []).append(sq_err)
         by_route_cov.setdefault(p.route, []).append(1 if within else 0)

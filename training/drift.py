@@ -107,7 +107,11 @@ def build_input_profile(ticks: Iterable[TickObservation]) -> dict[str, Any]:
         o = t.observation
         cell = acc.setdefault(t.route_id, {}).setdefault(
             str(o.tod_bin),
-            {"n": 0, "hist": [0] * len(_AC_BIN_LABELS), "flags": dict.fromkeys(_FLAGS, 0)},
+            {
+                "n": 0,
+                "hist": [0] * len(_AC_BIN_LABELS),
+                "flags": dict.fromkeys(_FLAGS, 0),
+            },
         )
         cell["n"] += 1
         cell["hist"][_ac_bin(o.alert_count)] += 1

@@ -77,9 +77,9 @@ You can run your own publisher — your own snapshot URL on your own Cloudflare 
 
 ## Status mapping
 
-MTA's alerts feed uses an open-set `alert_type` string. Momentarily maps observed values to a coarse status bucket so downstream consumers have a stable vocabulary; unknown values pass through as their raw label rather than being dropped. See [`src/momentarily/mapping.py`](src/momentarily/mapping.py) for the table.
+MTA's alerts feed uses an open-set `alert_type` string. Momentarily maps observed values to a coarse status bucket so downstream consumers have a stable vocabulary; unknown values pass through as their raw label rather than being dropped. The live table is documented in [`worker/README.md`](worker/README.md); [`src/momentarily/mapping.py`](src/momentarily/mapping.py) is the offline reference implementation.
 
-When a new `alert_type` is seen in production, add a mapping and ship a release. The publisher logs unknown values so they're noticed.
+When a new `alert_type` is seen in production, add a mapping and ship a release. The offline drift job tracks the unmapped-`alert_type` rate so new values get noticed.
 
 ## License & data attribution
 

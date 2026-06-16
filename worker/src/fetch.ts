@@ -32,6 +32,11 @@ export const TRIP_UPDATE_FEEDS: ReadonlyArray<readonly [string, string]> = [
   ['si', `${MTA_GATEWAY}/nyct%2Fgtfs-si`],
 ] as const;
 
+// Bound each upstream fetch so a hung feed can't stretch the tick toward the
+// cron CPU limit — on timeout the caller's try/catch treats it as a feed gap
+// and the next tick retries.
+const FETCH_TIMEOUT_MS = 10_000;
+
 /**
  * Fetch a JSON feed with no Cloudflare edge caching — we always want a fresh
  * pull from origin on each cron tick.
@@ -39,6 +44,7 @@ export const TRIP_UPDATE_FEEDS: ReadonlyArray<readonly [string, string]> = [
 export async function fetchJson(url: string): Promise<unknown> {
   const response = await fetch(url, {
     cf: { cacheTtl: 0, cacheEverything: false },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`);
@@ -53,6 +59,7 @@ export async function fetchJson(url: string): Promise<unknown> {
 export async function fetchProtobuf(url: string): Promise<Uint8Array> {
   const response = await fetch(url, {
     cf: { cacheTtl: 0, cacheEverything: false },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`);

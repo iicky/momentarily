@@ -170,6 +170,80 @@ export function deriveRouteSnapshots(
   return out;
 }
 
+/** A full Alert object for the snapshot's top-level `alerts` array — the atomic
+ * unit consumers resolve the IDs in route_status/station_status against. */
+export interface AlertOut {
+  id: string;
+  alert_type: string;
+  source: string;
+  sort_order: number | null;
+  active_period: Array<{ start?: number; end?: number }>;
+  header_text: { translation: Array<{ text: string; language: string }> } | null;
+  informed_entities: Array<{ route_id: string; direction_id?: number }>;
+}
+
+/** Static per-route metadata for the snapshot's `routes` map. */
+export interface RouteOut {
+  id: string;
+  mode: string;
+  short_name: string;
+  long_name: string | null;
+  color: string | null;
+  agency: string;
+}
+
+/**
+ * Flatten the alerts payload into the deduped set of alerts active at this tick.
+ * Same parse + active-window filter the per-route snapshots use, so the IDs they
+ * reference always resolve to an object here.
+ */
+export function buildAlertList(alertsPayload: unknown, observedAt: number): AlertOut[] {
+  const out: AlertOut[] = [];
+  const seen = new Set<string>();
+  for (const entity of extractEntities(alertsPayload)) {
+    const ref = parseAlertEntity(entity);
+    if (!ref) continue;
+    if (!isActiveAt(ref.active_period, observedAt)) continue;
+    if (seen.has(ref.alert_id)) continue;
+    seen.add(ref.alert_id);
+    out.push({
+      id: ref.alert_id,
+      alert_type: ref.alert_type,
+      source: 'subway',
+      sort_order: ref.routes.length
+        ? Math.max(...ref.routes.map((r) => r.sort_order))
+        : null,
+      active_period: ref.active_period.map((p) => ({ ...p })),
+      header_text: ref.header_text
+        ? { translation: [{ text: ref.header_text, language: 'en' }] }
+        : null,
+      informed_entities: ref.routes.map((r) =>
+        r.direction_id !== null
+          ? { route_id: r.route_id, direction_id: r.direction_id }
+          : { route_id: r.route_id },
+      ),
+    });
+  }
+  return out;
+}
+
+/** Static metadata for every canonical subway route. */
+export function buildRoutes(): Record<string, RouteOut> {
+  const out: Record<string, RouteOut> = {};
+  for (const id of SUBWAY_ROUTES) {
+    const meta = metaForRoute(id);
+    out[id] = {
+      id,
+      mode: 'subway',
+      short_name: meta.name,
+      long_name: null,
+      color: meta.color,
+      agency: 'nyct_subway',
+    };
+  }
+  return out;
+}
+
 function buildRouteSnapshot(
   routeId: string,
   alerts: RouteEntityRef[],

@@ -1,10 +1,10 @@
 /**
  * Render and publish the public snapshot.
  *
- * Shape matches src/momentarily/schema.py's Snapshot. Top-level fields whose
- * data sources aren't wired up yet (alerts, observations, routes, stations,
- * equipment, bridges, tunnels) are emitted as empty placeholders so the
- * schema_version=1 contract stays honored.
+ * Shape matches src/momentarily/schema.py's Snapshot. Surfaces whose upstream
+ * source isn't wired yet (observations, stations, bridges, tunnels) emit as
+ * empty placeholders so the schema_version=1 contract stays honored. alerts,
+ * routes, and equipment are populated from the data already fetched each tick.
  *
  * Output is publicly readable at https://feed.momentarily.nyc/v1/snapshot.json
  * via the R2 custom domain. Cache headers per ADR (max-age=60, s-maxage=300).
@@ -13,15 +13,15 @@
 import type { RouteRoll } from './alpha';
 import type { Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
-import type { AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
-import { metaForRoute } from './derive';
+import type { AlertOut, AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
+import { buildRoutes, metaForRoute } from './derive';
 import { conditionalRecovery } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { dwellForRouteState, paramsForRoute } from './params';
-import type { StationStatus } from './stations';
+import type { EquipmentOut, StationStatus } from './stations';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -160,11 +160,11 @@ interface Snapshot {
   attribution: string;
   supported_modes: string[];
   freshness: Freshness;
-  alerts: unknown[];
+  alerts: AlertOut[];
   observations: unknown[];
   routes: Record<string, unknown>;
   stations: Record<string, unknown>;
-  equipment: unknown[];
+  equipment: EquipmentOut[];
   bridges: unknown[];
   tunnels: unknown[];
   route_status: Record<string, RouteStatusOut>;
@@ -185,6 +185,11 @@ export function buildSnapshot(args: {
    * deploy). */
   stationStatuses?: Record<string, StationStatus>;
   eneFreshness?: number | null;
+  /** Alerts active this tick — the atomic objects route_status IDs resolve
+   * against. Empty only on a true alerts-feed gap. */
+  alerts?: AlertOut[];
+  /** Elevators/escalators currently out, cached from the hourly E&E fetch. */
+  equipment?: EquipmentOut[];
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -255,11 +260,11 @@ export function buildSnapshot(args: {
       ene: args.eneFreshness ?? null,
       stations_static: null,
     },
-    alerts: [],
+    alerts: args.alerts ?? [],
     observations: [],
-    routes: {},
+    routes: buildRoutes(),
     stations: {},
-    equipment: [],
+    equipment: args.equipment ?? [],
     bridges: [],
     tunnels: [],
     route_status,
@@ -682,6 +687,27 @@ export function snapshotFatalViolations(s: Snapshot): string[] {
 }
 
 /**
+ * Cross-surface consistency checks that don't corrupt a consumer but signal a
+ * wiring regression — the rollups counting things the detail arrays then drop.
+ * Warn-only: a self-contradictory feed is worse than a stale one only if it
+ * also blacks out, so we log and keep publishing. The class of bug this catches
+ * is exactly what shipped `alert_count: 14` next to `alerts: []`.
+ */
+export function snapshotConsistencyWarnings(s: Snapshot): string[] {
+  const w: string[] = [];
+  const subwayAlerts = s.system.by_mode.subway?.alert_count ?? 0;
+  if (subwayAlerts > 0 && s.alerts.length === 0) {
+    w.push(`system.alert_count=${subwayAlerts} but alerts[] is empty`);
+  }
+  const out =
+    s.system.accessibility.elevators_out + s.system.accessibility.escalators_out;
+  if (out > 0 && s.equipment.length === 0) {
+    w.push(`accessibility reports ${out} units out but equipment[] is empty`);
+  }
+  return w;
+}
+
+/**
  * Null out any route inference carrying a non-finite (NaN/Infinity) number —
  * the only kind of value that genuinely poisons a consumer (it serializes to
  * `null` and breaks a numeric reader). The inference field is already nullable,
@@ -730,6 +756,10 @@ export async function publishSnapshot(
   const fatal = snapshotFatalViolations(snapshot);
   if (fatal.length > 0) {
     throw new Error(`snapshot fatally malformed, not publishing: ${fatal.join('; ')}`);
+  }
+  const inconsistencies = snapshotConsistencyWarnings(snapshot);
+  if (inconsistencies.length > 0) {
+    console.warn(`publish: snapshot consistency: ${inconsistencies.join('; ')}`);
   }
   await bucket.put(SNAPSHOT_KEY, JSON.stringify(snapshot), {
     httpMetadata: {

@@ -14,10 +14,51 @@
  * route-level alerts. See momentarily-dik.
  */
 
-import type { ActiveOutage, EquipmentCatalogEntry } from './ene';
+import type { ActiveOutage, EquipmentCatalogEntry, EquipmentOutage, EquipmentType } from './ene';
 import { isActiveOutage } from './ene';
 
 export type AdaStatus = 'operational' | 'ada_degraded' | 'non_ada';
+
+/** One elevator/escalator currently out of service, for the snapshot's
+ * `equipment` array. We publish only units with an active outage — the full
+ * catalog's working units are summarized by the station_status totals, so
+ * shipping ~2k healthy entries every tick would bloat the feed for no signal. */
+export interface EquipmentOut {
+  equipment_id: string;
+  type: EquipmentType;
+  station_complex_id: string | null;
+  location_text: string | null;
+  ada_pathway: boolean;
+  outage: EquipmentOutage;
+}
+
+/**
+ * Equipment with an active outage at `now`, enriched from the catalog (canonical
+ * complex id, type, ADA flag) when the outage's equipment_id resolves there.
+ */
+export function buildEquipmentList(
+  catalog: EquipmentCatalogEntry[],
+  outages: ActiveOutage[],
+  now: number,
+): EquipmentOut[] {
+  const byEquipmentId = new Map<string, EquipmentCatalogEntry>();
+  for (const e of catalog) byEquipmentId.set(e.equipment_id, e);
+
+  const out: EquipmentOut[] = [];
+  for (const o of outages) {
+    if (!isActiveOutage(o.outage, now)) continue;
+    const cat = byEquipmentId.get(o.equipment_id);
+    out.push({
+      equipment_id: o.equipment_id,
+      type: cat?.type ?? o.type,
+      station_complex_id: cat?.station_complex_id ?? o.station ?? null,
+      location_text: o.station ?? null,
+      ada_pathway: cat?.ada_pathway ?? o.ada_pathway,
+      outage: o.outage,
+    });
+  }
+  return out;
+}
 
 export interface StationStatus {
   station_complex_id: string;

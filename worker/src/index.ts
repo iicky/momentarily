@@ -21,7 +21,7 @@ import {
   archiveTripUpdateMetric,
 } from './archive';
 import type { RouteSnapshot } from './derive';
-import { SUBWAY_ROUTES, deriveRouteSnapshots, quietObservation } from './derive';
+import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
 import { FEEDS, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
 import type { TripLite } from './gtfsrt';
@@ -33,7 +33,7 @@ import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
 import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
-import { deriveStationStatuses } from './stations';
+import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { readLastSeen, writeLastSeen } from './state';
 
 export interface Env {
@@ -259,6 +259,9 @@ export default {
         tickSeconds: TICK_SECONDS,
         stationStatuses: lastSeen.station_statuses,
         eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,
+        alerts:
+          alertsPayload !== null ? buildAlertList(alertsPayload, observedAt) : [],
+        equipment: lastSeen.equipment,
       });
       step('6a-build-snapshot');
       try {
@@ -345,6 +348,7 @@ export default {
         const outages = parseOutageFeed(outagesPayload);
         const statuses = deriveStationStatuses(catalog, outages, observedAt);
         lastSeen.station_statuses = Object.fromEntries(statuses);
+        lastSeen.equipment = buildEquipmentList(catalog, outages, observedAt);
         lastSeen.ene_at = observedAt;
         console.log(
           `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived, `

@@ -39,6 +39,21 @@ const StationStatusEntrySchema = z.object({
   oldest_outage_since: z.number().nullable(),
 });
 
+// Cached equipment-outage list, refreshed alongside station_statuses on the
+// hourly E&E fetch and republished each tick for the same reason.
+const EquipmentEntrySchema = z.object({
+  equipment_id: z.string(),
+  type: z.enum(['elevator', 'escalator']),
+  station_complex_id: z.string().nullable(),
+  location_text: z.string().nullable(),
+  ada_pathway: z.boolean(),
+  outage: z.object({
+    reason: z.string().nullable(),
+    est_return: z.number().nullable(),
+    since: z.number().nullable(),
+  }),
+});
+
 export const LastSeenSchema = z.object({
   alerts: z.record(z.string(), z.number()),
   alerts_at: z.number().default(0),
@@ -47,6 +62,7 @@ export const LastSeenSchema = z.object({
   // back-compat with last_seen.json written before trip-updates shipped.
   trip_updates_at: z.number().default(0),
   station_statuses: z.record(z.string(), StationStatusEntrySchema).default({}),
+  equipment: z.array(EquipmentEntrySchema).default([]),
 });
 export type LastSeen = z.infer<typeof LastSeenSchema>;
 
@@ -57,6 +73,7 @@ export function emptyLastSeen(): LastSeen {
     ene_at: 0,
     trip_updates_at: 0,
     station_statuses: {},
+    equipment: [],
   };
 }
 

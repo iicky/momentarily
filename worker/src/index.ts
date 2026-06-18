@@ -23,7 +23,7 @@ import {
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
-import { FEEDS, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
+import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
 import type { TripLite } from './gtfsrt';
 import { decodeTripUpdates } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
@@ -34,6 +34,7 @@ import { forwardStep, initialPublishedState, stationaryDistribution } from './hm
 import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
+import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import { readLastSeen, writeLastSeen } from './state';
 
 export interface Env {
@@ -46,6 +47,7 @@ export interface Env {
 const PUBLIC_PREFIX = 'v1/';
 
 const ENE_INTERVAL_SECONDS = 3600;
+const STATIONS_INTERVAL_SECONDS = 86_400;
 
 async function handlePublicRead(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -250,6 +252,15 @@ export default {
 
     if (alphaWritten) {
       // --- Step 6: render + publish snapshot ---
+      // Station metadata lives in its own R2 object (refreshed daily), read here
+      // and embedded. A read failure degrades to an empty stations surface, never
+      // a failed tick.
+      let stationsCache: Awaited<ReturnType<typeof readStationsCache>> = null;
+      try {
+        stationsCache = await readStationsCache(env.MOMENTARILY);
+      } catch (err) {
+        console.error('stations cache read failed; publishing without stations:', err);
+      }
       const snapshot = buildSnapshot({
         generatedAt: observedAt,
         alertsFreshness: alertsFeedFresh,
@@ -262,6 +273,8 @@ export default {
         alerts:
           alertsPayload !== null ? buildAlertList(alertsPayload, observedAt) : [],
         equipment: lastSeen.equipment,
+        stations: stationsCache?.stations ?? {},
+        stationsStaticFreshness: stationsCache?.fetched_at ?? null,
       });
       step('6a-build-snapshot');
       try {
@@ -403,6 +416,25 @@ export default {
         console.error('trip-updates step failed:', err);
       }
       step('8b-trip-updates');
+    }
+
+    // --- Step 8c: stations static (daily) ---
+    // Writes the parsed metadata to its own R2 object; stations_at advances only
+    // on a successful, non-empty fetch so a transient failure retries next tick.
+    if (alphaWritten && observedAt - lastSeen.stations_at >= STATIONS_INTERVAL_SECONDS) {
+      try {
+        const stations = parseStationsFeed(await fetchJson(STATIONS_FEED));
+        if (stations.length > 0) {
+          await writeStationsCache(env.MOMENTARILY, stations, observedAt);
+          lastSeen.stations_at = observedAt;
+          console.log(`stations: ${stations.length} static records cached`);
+        } else {
+          console.warn('stations: feed parsed to zero records, freshness held');
+        }
+      } catch (err) {
+        console.error('stations fetch failed; freshness held:', err);
+      }
+      step('8c-stations');
     }
 
     // Only the alpha CAS winner commits last_seen — a losing run's outputs

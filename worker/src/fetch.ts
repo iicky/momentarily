@@ -17,6 +17,11 @@ export const FEEDS = {
 
 export type FeedName = keyof typeof FEEDS;
 
+// NYS Open Data — MTA Subway Stations (39hk-dx4f). Socrata JSON on data.ny.gov,
+// not the MTA gateway. ~500 rows, under Socrata's default page size, but pin an
+// explicit limit so a future row-count bump can't silently truncate the set.
+export const STATIONS_FEED = 'https://data.ny.gov/resource/39hk-dx4f.json?$limit=2000';
+
 /**
  * GTFS-realtime trip-update feeds, one per NYCT line group. Protobuf, not JSON.
  * Archived (derived) for offline recovery validation — see trip_updates.ts.

@@ -22,6 +22,7 @@ import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
 import { dwellForRouteState, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
+import type { StationOut } from './stations_static';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -163,7 +164,7 @@ interface Snapshot {
   alerts: AlertOut[];
   observations: unknown[];
   routes: Record<string, unknown>;
-  stations: Record<string, unknown>;
+  stations: Record<string, StationOut>;
   equipment: EquipmentOut[];
   bridges: unknown[];
   tunnels: unknown[];
@@ -190,6 +191,10 @@ export function buildSnapshot(args: {
   alerts?: AlertOut[];
   /** Elevators/escalators currently out, cached from the hourly E&E fetch. */
   equipment?: EquipmentOut[];
+  /** Static station metadata, cached from the daily 39hk-dx4f fetch. */
+  stations?: Record<string, StationOut>;
+  /** Epoch the served station metadata was fetched, or null before first fetch. */
+  stationsStaticFreshness?: number | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -258,12 +263,12 @@ export function buildSnapshot(args: {
       path_alerts: null,
       ferry_alerts: null,
       ene: args.eneFreshness ?? null,
-      stations_static: null,
+      stations_static: args.stationsStaticFreshness ?? null,
     },
     alerts: args.alerts ?? [],
     observations: [],
     routes: buildRoutes(),
-    stations: {},
+    stations: args.stations ?? {},
     equipment: args.equipment ?? [],
     bridges: [],
     tunnels: [],

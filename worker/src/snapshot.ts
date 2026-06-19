@@ -15,7 +15,7 @@ import type { Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
 import type { AlertOut, AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
 import { buildRoutes, metaForRoute } from './derive';
-import { conditionalRecovery } from './dwell';
+import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
@@ -523,31 +523,41 @@ function buildInference(
     );
     if (empirical !== null) {
       const secToMin = (s: number): number => Math.round(s / 60);
-      // Condition on how long the regime has already lasted: the published
-      // value is the remaining time, and for heavy-tailed dwells the
-      // unconditional quantiles/fractions are only correct at elapsed=0.
-      // See momentarily-vk0.1.
+      // Condition on how long the regime has already lasted: for heavy-tailed
+      // dwells the unconditional quantiles/fractions are only correct at
+      // elapsed=0, so recovery is the *remaining* time.
       const elapsedSec = Math.max(0, now - roll.filter.regime_entered_at);
-      const conditional =
-        empirical.curve_sec !== undefined
-          ? conditionalRecovery(empirical.curve_sec, elapsedSec)
-          : null;
-      if (conditional !== null) {
-        recovery_minutes = clamp(secToMin(conditional.median_sec));
-        recovery_minutes_low = clamp(secToMin(conditional.q25_sec));
-        recovery_minutes_high = clamp(secToMin(conditional.q75_sec));
-        recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
-        p_normal_in_30 = conditional.recover_by_30;
-        p_normal_in_60 = conditional.recover_by_60;
-        p_normal_in_120 = conditional.recover_by_120;
-      } else if (empirical.curve_sec !== undefined) {
-        // The regime has outlived every observed dwell — the empirical
-        // distribution says nothing about when it ends. Mark indeterminate;
-        // p_normal_in_X keeps the geometric projection.
-        recovery_minutes = MAX_RECOVERY_MINUTES;
-        recovery_minutes_low = MAX_RECOVERY_MINUTES;
-        recovery_minutes_high = MAX_RECOVERY_MINUTES;
-        recovery_indeterminate = true;
+      // The dwell curve is all-cause — time until the regime ends, whether to
+      // normal or by escalating to suspended. p_normal_in_X needs P(normal), not
+      // P(exited), so weight the exit probability by the share of exits that go
+      // to normal (from the transition matrix). Homogeneous approximation; a
+      // competing-risks cumulative-incidence split is the proper version.
+      const ci = condition === 'suspended' ? 2 : 1;
+      const sl = params.transition[ci]![ci]!;
+      const toNormal =
+        sl < 1 ? Math.min(1, Math.max(0, params.transition[ci]![0]! / (1 - sl))) : 0;
+
+      if (empirical.curve_sec !== undefined) {
+        // p_normal: exit probability (tail-extrapolated past the curve) split to
+        // the normal destination — kept meaningful once the regime outlives every
+        // observed dwell, where recovery_minutes below goes indeterminate.
+        const curve = empirical.curve_sec;
+        p_normal_in_30 = pLeaveBy(curve, elapsedSec, 1800) * toNormal;
+        p_normal_in_60 = pLeaveBy(curve, elapsedSec, 3600) * toNormal;
+        p_normal_in_120 = pLeaveBy(curve, elapsedSec, 7200) * toNormal;
+        const conditional = conditionalRecovery(curve, elapsedSec);
+        if (conditional !== null) {
+          recovery_minutes = clamp(secToMin(conditional.median_sec));
+          recovery_minutes_low = clamp(secToMin(conditional.q25_sec));
+          recovery_minutes_high = clamp(secToMin(conditional.q75_sec));
+          recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
+        } else {
+          // Outlived every observed dwell — no trustworthy recovery time.
+          recovery_minutes = MAX_RECOVERY_MINUTES;
+          recovery_minutes_low = MAX_RECOVERY_MINUTES;
+          recovery_minutes_high = MAX_RECOVERY_MINUTES;
+          recovery_indeterminate = true;
+        }
       } else {
         // Pre-curve params.json: unconditional cell values (legacy behavior
         // until the trainer republishes with curve_sec).
@@ -555,10 +565,10 @@ function buildInference(
         recovery_minutes_low = clamp(secToMin(empirical.q25_sec));
         recovery_minutes_high = clamp(secToMin(empirical.q75_sec));
         recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
-        if (empirical.recover_by_30 !== undefined) p_normal_in_30 = empirical.recover_by_30;
-        if (empirical.recover_by_60 !== undefined) p_normal_in_60 = empirical.recover_by_60;
+        if (empirical.recover_by_30 !== undefined) p_normal_in_30 = empirical.recover_by_30 * toNormal;
+        if (empirical.recover_by_60 !== undefined) p_normal_in_60 = empirical.recover_by_60 * toNormal;
         if (empirical.recover_by_120 !== undefined)
-          p_normal_in_120 = empirical.recover_by_120;
+          p_normal_in_120 = empirical.recover_by_120 * toNormal;
       }
     } else {
       const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;

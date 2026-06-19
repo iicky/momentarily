@@ -301,7 +301,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     expect(snap.route_status['1']!.inference!.recovery_minutes).toBe(0);
   });
 
-  test('p_normal_in_X uses empirical recovery fractions when a dwell cell exists', () => {
+  test('p_normal_in_X uses empirical recovery fractions, split to the normal destination', () => {
     const trained = {
       schema_version: '1',
       trained_at: 1,
@@ -345,9 +345,12 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       tickSeconds: TICK_SECONDS,
     });
     const inf = snap.route_status['1']!.inference!;
-    // Empirical recovery curve replaces the geometric projection.
-    expect(inf.p_normal_in_30min).toBe(0.4);
-    expect(inf.p_normal_in_60min).toBe(0.7);
-    expect(inf.p_normal_in_120min).toBe(0.95);
+    // Empirical recovery curve replaces the geometric projection, weighted by the
+    // share of disrupted exits that go to normal (here the default params'
+    // transition give toNormal = 0.8): the all-cause recover_by fraction is
+    // P(exited), not P(normal).
+    expect(inf.p_normal_in_30min).toBeCloseTo(0.4 * 0.8, 10);
+    expect(inf.p_normal_in_60min).toBeCloseTo(0.7 * 0.8, 10);
+    expect(inf.p_normal_in_120min).toBeCloseTo(0.95 * 0.8, 10);
   });
 });

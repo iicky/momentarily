@@ -15,6 +15,7 @@ floor; otherwise it falls back to the geometric estimate.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from typing import TypedDict
 
@@ -209,6 +210,28 @@ def conditional_recover_by(
         return None
     p_horizon = dwell_cdf(curve_sec, elapsed_sec + horizon_sec)
     return (p_horizon - p_elapsed) / (1.0 - p_elapsed)
+
+
+def p_leave_by(curve_sec: list[int], elapsed_sec: float, horizon_sec: float) -> float:
+    """P(dwell <= elapsed + horizon | dwell > elapsed), extrapolating an
+    exponential tail once the regime has outlived every observed dwell instead of
+    saturating at the curve max. Unlike conditional_recover_by (which returns None
+    past the curve, for a recovery *time* we won't fabricate), this keeps the
+    conditional exit *probability* meaningful in the long-lived tail. Mirrored in
+    worker/src/dwell.ts; keep in sync."""
+    k = len(curve_sec)
+    if k < 2:
+        return 0.0
+    p_elapsed = dwell_cdf(curve_sec, elapsed_sec)
+    if p_elapsed < 1.0:
+        return (dwell_cdf(curve_sec, elapsed_sec + horizon_sec) - p_elapsed) / (
+            1.0 - p_elapsed
+        )
+    # Outlived the curve: constant tail hazard from the top segment (the top
+    # 1/(k-1) of mass is lost over its width), projected across the horizon.
+    seg = curve_sec[-1] - curve_sec[-2]
+    lam = (1.0 / (k - 1)) / seg if seg > 0 else 1.0 / max(1.0, float(curve_sec[-1]))
+    return 1.0 - math.exp(-max(lam, 1e-12) * horizon_sec)
 
 
 def conditional_remaining_quantile(

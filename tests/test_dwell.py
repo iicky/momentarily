@@ -10,6 +10,7 @@ from training.dwell import (
     conditional_recover_by,
     conditional_remaining_quantile,
     dwell_cdf,
+    p_leave_by,
 )
 from training.eval import TransitionRecord
 
@@ -224,6 +225,28 @@ def test_conditional_recovery_decays_with_elapsed_for_heavy_tail() -> None:
     assert aged_1h is not None
     assert aged_5h is not None
     assert fresh > aged_1h > aged_5h
+
+
+def test_p_leave_by_matches_conditional_inside_the_curve() -> None:
+    # Inside the curve, p_leave_by is exactly conditional_recover_by.
+    curve = [0, 100]
+    assert p_leave_by(curve, 50, 25) == 0.5
+    assert p_leave_by(curve, 0, 25) == 0.25
+
+
+def test_p_leave_by_extrapolates_past_the_curve() -> None:
+    # Where conditional_recover_by gives up (None), p_leave_by keeps a positive,
+    # horizon-increasing exit probability via the top-segment tail hazard.
+    curve = [0, 100]
+    assert conditional_recover_by(curve, 100, 1800) is None
+    short = p_leave_by(curve, 100, 600)
+    long = p_leave_by(curve, 100, 3600)
+    assert 0.0 < short < long < 1.0
+
+
+def test_p_leave_by_degenerate_curve_is_zero() -> None:
+    assert p_leave_by([], 0, 1800) == 0.0
+    assert p_leave_by([100], 0, 1800) == 0.0
 
 
 def test_flat_curve_at_value_is_indeterminate() -> None:

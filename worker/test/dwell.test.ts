@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { conditionalRecovery, dwellCdf } from '../src/dwell';
+import { conditionalRecovery, dwellCdf, pLeaveBy } from '../src/dwell';
 
 describe('dwellCdf', () => {
   test('uniform two-point curve', () => {
@@ -81,5 +81,28 @@ describe('conditionalRecovery', () => {
   test('degenerate curve (fewer than 2 points) returns null', () => {
     expect(conditionalRecovery([], 0)).toBeNull();
     expect(conditionalRecovery([100], 0)).toBeNull();
+  });
+});
+
+describe('pLeaveBy', () => {
+  test('inside the curve it matches conditionalRecovery', () => {
+    const curve = [0, 100];
+    expect(pLeaveBy(curve, 50, 25)).toBe(0.5);
+    expect(pLeaveBy(curve, 0, 25)).toBe(0.25);
+  });
+
+  test('extrapolates past the curve where conditionalRecovery gives up', () => {
+    const curve = [0, 100];
+    expect(conditionalRecovery(curve, 100)).toBeNull();
+    const short = pLeaveBy(curve, 100, 600);
+    const long = pLeaveBy(curve, 100, 3600);
+    expect(short).toBeGreaterThan(0);
+    expect(long).toBeGreaterThan(short);
+    expect(long).toBeLessThan(1);
+  });
+
+  test('degenerate curve (fewer than 2 points) is zero', () => {
+    expect(pLeaveBy([], 0, 1800)).toBe(0);
+    expect(pLeaveBy([100], 0, 1800)).toBe(0);
   });
 });

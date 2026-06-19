@@ -78,3 +78,25 @@ export function conditionalRecovery(
     recover_by_120: recoverBy(7200),
   };
 }
+
+/**
+ * P(dwell <= elapsed+horizon | dwell > elapsed), but with an exponential-tail
+ * extrapolation once the regime has outlived every observed dwell instead of
+ * saturating at the curve max. The tail hazard is read off the curve's top
+ * segment. Unlike conditionalRecovery (which returns null past the curve and is
+ * used for a recovery *time* that we won't fabricate), this keeps the conditional
+ * exit *probability* meaningful in the long-lived tail. Mirrors training/dwell.py.
+ */
+export function pLeaveBy(curveSec: number[], elapsedSec: number, horizonSec: number): number {
+  const k = curveSec.length;
+  if (k < 2) return 0;
+  const pElapsed = dwellCdf(curveSec, elapsedSec);
+  if (pElapsed < 1.0) {
+    return (dwellCdf(curveSec, elapsedSec + horizonSec) - pElapsed) / (1.0 - pElapsed);
+  }
+  // Outlived the curve: constant tail hazard from the top segment (the top
+  // 1/(k-1) of mass is lost over its width), projected across the horizon.
+  const seg = curveSec[k - 1]! - curveSec[k - 2]!;
+  const lam = seg > 0 ? 1.0 / (k - 1) / seg : 1.0 / Math.max(1, curveSec[k - 1]!);
+  return 1.0 - Math.exp(-Math.max(lam, 1e-12) * horizonSec);
+}

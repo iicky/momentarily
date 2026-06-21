@@ -1,21 +1,30 @@
 /**
  * Minimal GTFS-realtime protobuf reader — just the slice we need from the NYCT
- * subway trip-updates feeds. No dependency: we read ~6 fields, so a full
- * protobuf lib (reflection + NYCT-extension registration) would be all cost and
- * no benefit. We never materialize the StopTimeUpdate rows — only count them —
- * which is what keeps decoding 8 feeds/tick cheap.
+ * subway feeds. No dependency: we read a handful of fields, so a full protobuf
+ * lib (reflection + NYCT-extension registration) would be all cost and no
+ * benefit. We never materialize the StopTimeUpdate rows — only count them —
+ * which is what keeps decoding 8 feeds/tick cheap. The same feed bytes carry
+ * both TripUpdate and VehiclePosition entities, so both decoders share one fetch.
  *
- * Field numbers verified against a live ACE feed (2026-06-14):
+ * Field numbers verified against a live ACE feed (trip-update 2026-06-14,
+ * vehicle 2026-06-19):
  *   FeedMessage.entity            = 2  (repeated message)
  *   FeedEntity.trip_update        = 3  (message)
+ *   FeedEntity.vehicle            = 4  (message — VehiclePosition)
  *   TripUpdate.trip               = 1  (TripDescriptor)
  *   TripUpdate.stop_time_update   = 2  (repeated — we count these)
+ *   VehiclePosition.trip          = 1  (TripDescriptor)
+ *   VehiclePosition.current_stop_sequence = 3  (uint32)
+ *   VehiclePosition.current_status        = 4  (enum: 0=INCOMING_AT,
+ *                                              1=STOPPED_AT, 2=IN_TRANSIT_TO)
+ *   VehiclePosition.stop_id       = 7  (string)
  *   TripDescriptor.trip_id        = 1  (string)
  *   TripDescriptor.route_id       = 5  (string)
  *   TripDescriptor.<nyct ext>     = 1001 (NyctTripDescriptor)
  *   NyctTripDescriptor.is_assigned= 2  (bool)   <-- a dispatched, running train
  *   NyctTripDescriptor.direction  = 3  (enum: 1=N, 2=E, 3=S, 4=W)
- * Everything else is skipped by wire type.
+ * Everything else is skipped by wire type. NYCT vehicles carry no GPS position
+ * (VehiclePosition.position is always absent) — location is the stop_id only.
  */
 
 const WIRE_VARINT = 0;
@@ -29,6 +38,17 @@ export interface TripLite {
   isAssigned: boolean;
   direction: number | null; // NYCT enum: 1=N, 3=S; null when absent
   stopCount: number; // remaining stop_time_update entries
+}
+
+export interface VehicleLite {
+  routeId: string;
+  tripId: string;
+  stopId: string; // the stop this vehicle is at (STOPPED_AT) or heading to
+  // current_status enum, or null when the field is absent. NYCT only ever emits
+  // STOPPED_AT (1) and omits it otherwise; GTFS-RT defaults absence to
+  // IN_TRANSIT_TO (2), so null is treated as "moving" downstream.
+  status: number | null;
+  stopSeq: number | null; // current_stop_sequence; present only when STOPPED_AT
 }
 
 /** Cursor over a byte view; reads protobuf wire primitives, skips the rest. */
@@ -125,6 +145,61 @@ function parseEntity(view: Uint8Array, out: TripLite[]): void {
       r.skip(wire);
     }
   }
+}
+
+/** Decode one feed's bytes into the lite per-vehicle rows we care about. The
+ * input is the same protobuf as decodeTripUpdates — vehicle entities are field
+ * 4 of FeedEntity, trip_updates field 3, so the two decoders read disjoint
+ * entities from one fetch. */
+export function decodeVehicles(buf: Uint8Array): VehicleLite[] {
+  const out: VehicleLite[] = [];
+  const r = new Reader(buf);
+  while (!r.done) {
+    const { field, wire } = r.tag();
+    if (field === 2 && wire === WIRE_LEN) {
+      parseVehicleEntity(r.lenView(), out);
+    } else {
+      r.skip(wire);
+    }
+  }
+  return out;
+}
+
+function parseVehicleEntity(view: Uint8Array, out: VehicleLite[]): void {
+  const r = new Reader(view);
+  while (!r.done) {
+    const { field, wire } = r.tag();
+    if (field === 4 && wire === WIRE_LEN) {
+      const v = parseVehiclePosition(r.lenView());
+      if (v) out.push(v);
+    } else {
+      r.skip(wire);
+    }
+  }
+}
+
+function parseVehiclePosition(view: Uint8Array): VehicleLite | null {
+  const r = new Reader(view);
+  let descriptor: ReturnType<typeof parseTripDescriptor> | null = null;
+  let stopId = '';
+  let status: number | null = null;
+  let stopSeq: number | null = null;
+  while (!r.done) {
+    const { field, wire } = r.tag();
+    if (field === 1 && wire === WIRE_LEN) {
+      descriptor = parseTripDescriptor(r.lenView());
+    } else if (field === 3 && wire === WIRE_VARINT) {
+      stopSeq = r.varint();
+    } else if (field === 4 && wire === WIRE_VARINT) {
+      status = r.varint();
+    } else if (field === 7 && wire === WIRE_LEN) {
+      stopId = r.string();
+    } else {
+      r.skip(wire);
+    }
+  }
+  if (!descriptor || !descriptor.routeId) return null;
+  return { routeId: descriptor.routeId, tripId: descriptor.tripId, stopId, status, stopSeq };
 }
 
 function parseTripUpdate(view: Uint8Array): TripLite | null {

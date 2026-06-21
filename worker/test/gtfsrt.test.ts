@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { decodeTripUpdates } from '../src/gtfsrt';
+import { decodeTripUpdates, decodeVehicles } from '../src/gtfsrt';
 
 // --- tiny protobuf encoder (test-only) ---
 
@@ -126,5 +126,77 @@ describe('decodeTripUpdates', () => {
     const trips = decodeTripUpdates(buf);
     expect(trips.map((t) => t.routeId)).toEqual(['N', 'Q', 'R']);
     expect(trips.map((t) => t.direction)).toEqual([3, 1, null]);
+  });
+});
+
+// VehiclePosition: trip(1), current_stop_sequence(3, varint), current_status(4,
+// enum varint), stop_id(7, string). Status/seq omitted when not provided, which
+// is how NYCT emits in-transit vehicles.
+function vehiclePosition(opts: {
+  routeId?: string;
+  tripId?: string;
+  stopId?: string;
+  status?: number;
+  stopSeq?: number;
+}): number[] {
+  return [
+    ...lenField(1, tripDescriptor({
+      ...(opts.tripId !== undefined ? { tripId: opts.tripId } : {}),
+      ...(opts.routeId !== undefined ? { routeId: opts.routeId } : {}),
+      withNyct: false,
+    })),
+    ...(opts.stopSeq !== undefined ? varField(3, opts.stopSeq) : []),
+    ...(opts.status !== undefined ? varField(4, opts.status) : []),
+    ...(opts.stopId !== undefined ? strField(7, opts.stopId) : []),
+  ];
+}
+
+describe('decodeVehicles', () => {
+  test('decodes route, stop_id, status, and stop_seq', () => {
+    const buf = feed(
+      entity(
+        vehiclePosition({ routeId: 'A', tripId: 'X..N', stopId: 'A09N', status: 1, stopSeq: 31 }),
+        4,
+      ),
+    );
+    const v = decodeVehicles(buf);
+    expect(v).toHaveLength(1);
+    expect(v[0]).toEqual({
+      routeId: 'A',
+      tripId: 'X..N',
+      stopId: 'A09N',
+      status: 1,
+      stopSeq: 31,
+    });
+  });
+
+  test('in-transit vehicle (no status/seq field) decodes status and seq null', () => {
+    const buf = feed(entity(vehiclePosition({ routeId: 'C', tripId: 'Y..S', stopId: 'A15S' }), 4));
+    const v = decodeVehicles(buf);
+    expect(v[0]).toMatchObject({ status: null, stopSeq: null, stopId: 'A15S' });
+  });
+
+  test('trip_update entities (field 3) are skipped by the vehicle decoder', () => {
+    const buf = feed(
+      entity(vehiclePosition({ routeId: 'A', tripId: 'X..N', stopId: 'A09N', status: 1 }), 4),
+      entity(tripUpdate(tripDescriptor({ routeId: 'E', isAssigned: true }), 2)), // field 3
+    );
+    expect(decodeVehicles(buf)).toHaveLength(1);
+  });
+
+  test('vehicle with no route_id is dropped', () => {
+    const buf = feed(entity(vehiclePosition({ tripId: 'Z', stopId: 'A01N', status: 1 }), 4));
+    expect(decodeVehicles(buf)).toHaveLength(0);
+  });
+
+  test('decodes multiple vehicles', () => {
+    const buf = feed(
+      entity(vehiclePosition({ routeId: 'A', tripId: 'a', stopId: 'A01N', status: 1 }), 4),
+      entity(vehiclePosition({ routeId: 'A', tripId: 'b', stopId: 'A05N' }), 4),
+      entity(vehiclePosition({ routeId: 'C', tripId: 'c', stopId: 'C20S', status: 1 }), 4),
+    );
+    const v = decodeVehicles(buf);
+    expect(v.map((x) => x.routeId)).toEqual(['A', 'A', 'C']);
+    expect(v.map((x) => x.status)).toEqual([1, null, 1]);
   });
 });

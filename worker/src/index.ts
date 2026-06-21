@@ -19,14 +19,16 @@ import {
   archiveEneSnapshot,
   archiveNewAlerts,
   archiveTripUpdateMetric,
+  archiveVehicleMetric,
 } from './archive';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
 import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
-import type { TripLite } from './gtfsrt';
-import { decodeTripUpdates } from './gtfsrt';
+import type { TripLite, VehicleLite } from './gtfsrt';
+import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
+import { deriveRouteMovementMetric, stopPositions } from './vehicles';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
@@ -35,7 +37,7 @@ import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
-import { readLastSeen, writeLastSeen } from './state';
+import { readLastSeen, readVehicleStops, writeLastSeen, writeVehicleStops } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -375,18 +377,20 @@ export default {
       }
     }
 
-    // --- Step 8b: trip-updates service metric (every tick) ---
-    // Fetch all line-group protobuf feeds concurrently, decode, derive the
-    // compact per-route service metric, and archive it for offline recovery
-    // validation. Gated on the alpha CAS winner like E&E so losing runs don't
-    // double-write. A failed/slow feed is non-fatal — its routes are simply
-    // absent this tick, recorded via fresh_feeds.
+    // --- Step 8b: trip-updates + vehicle metrics (every tick) ---
+    // Fetch all line-group protobuf feeds concurrently and decode both the
+    // TripUpdate and VehiclePosition entities — same bytes carry both, so the
+    // vehicle decode is nearly free. Derive each compact per-route metric and
+    // archive both for offline validation. Gated on the alpha CAS winner like
+    // E&E so losing runs don't double-write. A failed/slow feed is non-fatal —
+    // its routes are simply absent this tick, recorded via fresh_feeds.
     if (alphaWritten) {
       try {
         const results = await Promise.allSettled(
           TRIP_UPDATE_FEEDS.map(([, url]) => fetchProtobuf(url)),
         );
         const trips: TripLite[] = [];
+        const vehicles: VehicleLite[] = [];
         const freshFeeds: string[] = [];
         for (let i = 0; i < results.length; i++) {
           const r = results[i]!;
@@ -394,6 +398,7 @@ export default {
           if (r.status === 'fulfilled') {
             freshFeeds.push(name);
             trips.push(...decodeTripUpdates(r.value));
+            vehicles.push(...decodeVehicles(r.value));
           } else {
             console.error(`trip-updates ${name} failed:`, r.reason);
           }
@@ -407,9 +412,25 @@ export default {
             observedAt,
           );
           lastSeen.trip_updates_at = observedAt;
+
+          // Cross-tick movement: diff this tick's stop_ids against the carry map
+          // written last tick, then overwrite it. The map is read/written as its
+          // own R2 object, kept out of last_seen.json on purpose.
+          const prevStops = await readVehicleStops(env.MOMENTARILY);
+          const moveRows = deriveRouteMovementMetric(vehicles, prevStops);
+          await archiveVehicleMetric(
+            env.MOMENTARILY,
+            moveRows,
+            freshFeeds,
+            observedAt,
+          );
+          await writeVehicleStops(env.MOMENTARILY, stopPositions(vehicles));
+          lastSeen.vehicles_at = observedAt;
+
           console.log(
             `trip-updates: ${freshFeeds.length}/${TRIP_UPDATE_FEEDS.length} feeds, `
-            + `${trips.length} trips, ${rows.size} routes`,
+            + `${trips.length} trips, ${rows.size} routes; `
+            + `vehicles: ${vehicles.length}, ${moveRows.size} routes`,
           );
         }
       } catch (err) {

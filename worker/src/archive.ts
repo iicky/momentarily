@@ -23,6 +23,7 @@
 
 import type { LastSeen } from './state';
 import type { ServiceRow } from './trip_updates';
+import type { MovementRow } from './vehicles';
 
 function utcDate(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
@@ -114,6 +115,32 @@ export async function archiveTripUpdateMetric(
   observedAt: number,
 ): Promise<void> {
   const key = `archive/trip_updates/${utcDate(observedAt)}/${observedAt}.json`;
+  await bucket.put(
+    key,
+    JSON.stringify({
+      observed_at: observedAt,
+      fresh_feeds: freshFeeds,
+      rows: Object.fromEntries(rows),
+    }),
+    { httpMetadata: { contentType: 'application/json' } },
+  );
+}
+
+/**
+ * Archive the derived per-route vehicle-movement metric — one compact object
+ * per tick, mirroring archiveTripUpdateMetric. Same rationale: a handful of
+ * ints per route (~1 KB/tick), not the raw protobuf. Keyed on the tick
+ * wall-clock so an overlapping/retried run overwrites rather than duplicates.
+ * `freshFeeds` records which line-group feeds decoded so the offline loader can
+ * tell a real zero from a missing feed.
+ */
+export async function archiveVehicleMetric(
+  bucket: R2Bucket,
+  rows: Map<string, MovementRow>,
+  freshFeeds: string[],
+  observedAt: number,
+): Promise<void> {
+  const key = `archive/vehicles/${utcDate(observedAt)}/${observedAt}.json`;
   await bucket.put(
     key,
     JSON.stringify({

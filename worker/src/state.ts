@@ -61,6 +61,10 @@ export const LastSeenSchema = z.object({
   // Epoch of the last successful trip-updates metric archive. Defaulted for
   // back-compat with last_seen.json written before trip-updates shipped.
   trip_updates_at: z.number().default(0),
+  // Epoch of the last successful vehicle-movement metric archive. The per-trip
+  // stop_id carry map it depends on lives in its own R2 object, not here, so its
+  // ~700 entries don't bloat the per-tick state parse.
+  vehicles_at: z.number().default(0),
   station_statuses: z.record(z.string(), StationStatusEntrySchema).default({}),
   equipment: z.array(EquipmentEntrySchema).default([]),
   // Epoch of the last successful daily stations-static fetch. Gates the daily
@@ -76,6 +80,7 @@ export function emptyLastSeen(): LastSeen {
     alerts_at: 0,
     ene_at: 0,
     trip_updates_at: 0,
+    vehicles_at: 0,
     station_statuses: {},
     equipment: [],
     stations_at: 0,
@@ -108,5 +113,39 @@ export async function writeLastSeen(
   return conditionalPut(bucket, STATE_KEY, JSON.stringify(state), etag, {
     contentType: 'application/json',
     cacheControl: 'no-store',
+  });
+}
+
+// The vehicle-movement cross-tick signal needs last tick's trip_id → stop_id
+// map. It lives in its own R2 object, deliberately NOT in last_seen.json: the
+// map is ~700 entries and last_seen.json is parsed + stringified on every 5-min
+// tick, so folding it in would compound the JSON cost that has caused CPU-limit
+// outages before. Plain put (no CAS) — step 8b is already gated on the alpha
+// winner, so only one run writes it per tick.
+export const VEHICLE_STOPS_KEY = 'state/vehicle_stops.json';
+
+const VehicleStopsSchema = z.record(z.string(), z.string());
+
+/** Read last tick's per-trip stop_id carry map. Returns {} when absent or
+ * corrupt — the cross-tick counters just stay 0 that tick. */
+export async function readVehicleStops(
+  bucket: R2Bucket,
+): Promise<Record<string, string>> {
+  const obj = await bucket.get(VEHICLE_STOPS_KEY);
+  if (!obj) return {};
+  try {
+    return VehicleStopsSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('vehicle_stops.json corrupt; resetting:', err);
+    return {};
+  }
+}
+
+export async function writeVehicleStops(
+  bucket: R2Bucket,
+  stops: Record<string, string>,
+): Promise<void> {
+  await bucket.put(VEHICLE_STOPS_KEY, JSON.stringify(stops), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }

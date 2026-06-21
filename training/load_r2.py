@@ -573,3 +573,136 @@ def derive_actual_recovery(
                     high_run = 0
     out.sort(key=lambda d: (d.route, d.start_tick))
     return out
+
+
+# --- Vehicle-movement metric: independent current-state truth (momentarily-vy0) ---
+#
+# The Worker archives a compact per-route movement metric each tick at
+# archive/vehicles/<date>/<observed_at>.json:
+#   {observed_at, fresh_feeds, rows: {route: {vehicles_n, stopped_n, moving_n,
+#                                             advanced_n, stalled_n}}}
+# This is independent IN DERIVATION from the alerts feed and from assigned_n:
+# it's where trains physically are (decoded VehiclePosition stop_ids), not how
+# many trips are dispatched. Once assigned_n becomes a live HMM input it can no
+# longer be held out as truth; vehicle movement still can. Same upstream feed,
+# though — independent-in-derivation, not in-source.
+#
+# The headline signal is the CROSS-TICK advance fraction, advanced_n /
+# (advanced_n + stalled_n): of the trips seen both this tick and last, the share
+# that moved to a new stop. A route with trains dispatched but none advancing is
+# physically frozen — the disruption mode assigned_n structurally cannot see.
+
+
+def fetch_vehicle_metrics(
+    config: R2Config | None = None,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    client: S3Client | None = None,
+) -> list[dict[str, Any]]:
+    """Pull every archived vehicle-movement snapshot in the window (one object
+    per tick). Defaults to yesterday-through-today. Mirrors
+    fetch_trip_update_metrics."""
+    cfg = config or load_config()
+    client = client or make_client(cfg)
+
+    today = datetime.now(UTC).date()
+    start = start_date or (today - timedelta(days=1))
+    end = end_date or today
+
+    keys: list[str] = []
+    for d in _date_range(start, end):
+        keys.extend(
+            _list_keys(client, cfg.bucket, f"archive/vehicles/{d.isoformat()}/")
+        )
+
+    bucket = cfg.bucket
+    fetched_client = client
+
+    def _fetch(k: str) -> dict[str, Any]:
+        return _fetch_object(fetched_client, bucket, k)
+
+    out: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        out.extend(pool.map(_fetch, keys))
+    return out
+
+
+def build_movement_series(
+    bodies: list[dict[str, Any]],
+) -> dict[tuple[str, int], dict[str, int]]:
+    """(route, tick) -> the full movement row, from the archived per-tick
+    snapshots. Keeps every counter (not just one) because the current-state call
+    needs both presence (vehicles_n) and the cross-tick advance fraction."""
+    series: dict[tuple[str, int], dict[str, int]] = {}
+    for body in bodies:
+        tick = _snap_tick(int(body.get("observed_at") or 0))
+        rows = cast(dict[str, Any], body.get("rows") or {})
+        for route, row in rows.items():
+            if isinstance(row, dict):
+                series[(route, tick)] = {
+                    k: int(cast(dict[str, Any], row).get(k) or 0)
+                    for k in (
+                        "vehicles_n",
+                        "stopped_n",
+                        "moving_n",
+                        "advanced_n",
+                        "stalled_n",
+                    )
+                }
+    return series
+
+
+# Provisional thresholds for the movement→state call. NOT yet tuned against real
+# archived data (the Worker side ships first); treat the resulting truth as a
+# first-cut independent signal, not gospel, until a window of real ticks exists
+# to calibrate against. See momentarily-vy0.
+MIN_MATCHED_TRIPS = 3  # advanced_n + stalled_n floor to make a cross-tick call
+FROZEN_ADVANCE_FRAC = 0.25  # advance fraction at/under which a route reads "frozen"
+
+
+def derive_movement_state(
+    row: dict[str, int],
+    *,
+    min_matched: int = MIN_MATCHED_TRIPS,
+    frozen_advance_frac: float = FROZEN_ADVANCE_FRAC,
+) -> str | None:
+    """Independent current-state label from one tick's movement row, or None when
+    the row can't support a call (caller treats None as "can't judge", not
+    "normal", so it stays out of the confusion matrix).
+
+      suspended — no trains physically on the route (vehicles_n == 0).
+      disrupted — trains present but the cross-tick advance fraction is at/under
+                  `frozen_advance_frac` (physically frozen/crawling), with at
+                  least `min_matched` trips matched across ticks to judge from.
+      normal    — trains present and advancing.
+
+    Labels mirror derive_mta_state so this can be dropped into confusion() as an
+    alternate truth column."""
+    vehicles = row.get("vehicles_n", 0)
+    if vehicles <= 0:
+        return "suspended"
+    matched = row.get("advanced_n", 0) + row.get("stalled_n", 0)
+    if matched < min_matched:
+        return None  # trains present but too few cross-tick matches to judge
+    advance_frac = row.get("advanced_n", 0) / matched
+    return "disrupted" if advance_frac <= frozen_advance_frac else "normal"
+
+
+def build_movement_truth(
+    bodies: list[dict[str, Any]],
+    *,
+    min_matched: int = MIN_MATCHED_TRIPS,
+    frozen_advance_frac: float = FROZEN_ADVANCE_FRAC,
+) -> dict[tuple[str, int], str]:
+    """(route, tick) -> independent movement-derived state, judgeable ticks only.
+    A drop-in alternate truth for confusion(): pass it where build_mta_truth's
+    output goes to score the HMM condition against where trains physically are."""
+    truth: dict[tuple[str, int], str] = {}
+    for key, row in build_movement_series(bodies).items():
+        state = derive_movement_state(
+            row, min_matched=min_matched, frozen_advance_frac=frozen_advance_frac
+        )
+        if state is not None:
+            truth[key] = state
+    return truth

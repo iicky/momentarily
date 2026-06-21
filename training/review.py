@@ -42,7 +42,13 @@ from training.eval import (
     load_transitions,
     recovery_as_dict,
 )
-from training.load_r2 import Disruption, build_tick_observations, fetch_alert_versions
+from training.load_r2 import (
+    Disruption,
+    build_movement_truth,
+    build_tick_observations,
+    fetch_alert_versions,
+    fetch_vehicle_metrics,
+)
 from training.r2_client import load_config, make_client
 
 if TYPE_CHECKING:
@@ -301,7 +307,13 @@ def plot_recovery_by_route(eval_doc: dict[str, Any], out: Path) -> None:
     plt.close(fig)
 
 
-def plot_confusion(conf: dict[str, dict[str, int]], out: Path) -> None:
+def plot_confusion(
+    conf: dict[str, dict[str, int]],
+    out: Path,
+    *,
+    truth_label: str = "MTA-derived state (from alerts)",
+    title: str = "Regime confusion: HMM vs MTA alerts (row-normalized)",
+) -> None:
     mat = np.array(
         [[conf[h][m] for m in MTA_STATES] for h in HMM_STATES],
         dtype=float,
@@ -325,9 +337,9 @@ def plot_confusion(conf: dict[str, dict[str, int]], out: Path) -> None:
     ax.set_xticklabels(MTA_STATES)
     ax.set_yticks(range(len(HMM_STATES)))
     ax.set_yticklabels(HMM_STATES)
-    ax.set_xlabel("MTA-derived state (from alerts)")
+    ax.set_xlabel(truth_label)
     ax.set_ylabel("HMM-published condition")
-    ax.set_title("Regime confusion: HMM vs MTA alerts (row-normalized)")
+    ax.set_title(title)
     fig.colorbar(im, ax=ax, label="row fraction")
     fig.tight_layout()
     fig.savefig(out, dpi=130)
@@ -384,6 +396,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     print("loading alerts archive for MTA-state truth")
     truth = build_mta_truth(client, cfg.bucket, start_date, today)
     print(f"  {len(truth)} (route, tick) ground-truth states")
+    print("loading vehicle-movement archive for independent current-state truth")
+    movement_truth = build_movement_truth(
+        fetch_vehicle_metrics(cfg, start_date=start_date, end_date=today, client=client)
+    )
+    print(f"  {len(movement_truth)} (route, tick) movement-derived states")
 
     window_end = int(datetime.now(UTC).timestamp())
     window_start = int(
@@ -395,6 +412,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         preds, trans, window_start=window_start, window_end=window_end
     )
     conf = confusion(preds, truth)
+    # Same HMM condition, scored against where trains physically are instead of
+    # the alert feed — an independent-in-derivation cross-check. Empty until the
+    # vehicle archive has accumulated ticks (Worker side ships first).
+    conf_movement = confusion(preds, movement_truth)
     deltas = changepoint_alignment(
         trans, truth, window_start=window_start, window_end=window_end
     )
@@ -408,6 +429,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
     plot_confusion(conf, out_dir / "confusion.png")
+    plot_confusion(
+        conf_movement,
+        out_dir / "confusion_movement.png",
+        truth_label="movement-derived state (from vehicle positions)",
+        title="Regime confusion: HMM vs vehicle movement (row-normalized)",
+    )
     plot_changepoint_alignment(deltas, out_dir / "changepoint_alignment.png")
 
     matched = [d for d in deltas if d is not None]
@@ -419,6 +446,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "predictions": len(preds),
             "transitions": len(trans),
             "mta_truth_ticks": len(truth),
+            "movement_truth_ticks": len(movement_truth),
         },
         "calibration": eval_doc["calibration"],
         "recovery": eval_doc["recovery"],
@@ -432,6 +460,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         "current_params": eval_doc["current_params"],
         "confusion": conf,
+        # HMM condition vs vehicle-movement truth — independent in derivation from
+        # the alert feed above (where trains physically are, not what the feed
+        # says). truth_source documents the column axis.
+        "confusion_movement": {
+            "matrix": conf_movement,
+            "truth_source": "vehicle_movement",
+        },
         "changepoint_alignment": {
             "window_minutes": CHANGEPOINT_WINDOW_MIN,
             "n_total": len(deltas),
@@ -444,7 +479,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"wrote {out_dir}/ (summary.json + 4 PNGs)")
+    print(f"wrote {out_dir}/ (summary.json + 5 PNGs)")
     return 0
 
 

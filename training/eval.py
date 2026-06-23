@@ -241,6 +241,26 @@ class ReliabilityBin:
 
 
 @dataclass
+class StratumStats:
+    """Calibration sliced to one subset of matched samples — used to localize
+    where the persistence baseline beats the model. mean_pred vs mean_outcome is
+    the sharpness/bias view: a forecast that under-shoots a near-certain outcome
+    (low mean_pred, high mean_outcome) is exactly what loses to a hard
+    persistence call on a sticky regime. See momentarily-eeh."""
+
+    n: int
+    brier: float | None
+    brier_persistence: float | None
+    bss_persistence: float | None
+    mean_pred: float | None  # average forecast (sharpness)
+    mean_outcome: float | None  # realized P(normal at T+horizon) in this subset
+
+
+def _empty_strata() -> dict[str, StratumStats]:
+    return {}
+
+
+@dataclass
 class CalibrationResult:
     horizon_min: int
     n: int
@@ -257,6 +277,11 @@ class CalibrationResult:
     bss_persistence: float | None
     bss_climatology: float | None
     bins: list[ReliabilityBin]
+    # Persistence loss decomposed by the current condition at T: "normal_now"
+    # (persistence predicts 1.0 — the sticky-regime case that dominates the
+    # corpus) vs "not_normal_now" (persistence predicts 0.0 — the recovery
+    # forecast). Isolates which slice drags the overall BSS negative.
+    by_current: dict[str, StratumStats] = field(default_factory=_empty_strata)
     # Schedule-recovery rows skipped as predictors — they're deterministic resume
     # lookups, not HMM forecasts, so grading them would flatter the model.
     excluded_schedule: int = 0
@@ -266,6 +291,23 @@ def _skill(brier: float | None, reference: float | None) -> float | None:
     if brier is None or reference is None or reference == 0.0:
         return None
     return 1.0 - brier / reference
+
+
+def _stratum(samples: list[tuple[float, float, float]]) -> StratumStats:
+    """Brier/persistence/sharpness over a subset of (pred, persistence, outcome)."""
+    n = len(samples)
+    if n == 0:
+        return StratumStats(0, None, None, None, None, None)
+    brier = sum((pred - out) ** 2 for pred, _per, out in samples) / n
+    persistence = sum((per - out) ** 2 for _pred, per, out in samples) / n
+    return StratumStats(
+        n=n,
+        brier=brier,
+        brier_persistence=persistence,
+        bss_persistence=_skill(brier, persistence),
+        mean_pred=sum(pred for pred, _per, _out in samples) / n,
+        mean_outcome=sum(out for _pred, _per, out in samples) / n,
+    )
 
 
 def calibrate(
@@ -331,6 +373,14 @@ def calibrate(
     brier = brier_sum / n if n else None
     brier_persistence = persistence_sum / n if n else None
     brier_climatology = climatology_sum / n if n else None
+
+    # Split by current condition: persistence == 1.0 iff the route is normal now.
+    samples = [(pred, per, out) for pred, per, out, _route in matched]
+    by_current = {
+        "normal_now": _stratum([s for s in samples if s[1] == 1.0]),
+        "not_normal_now": _stratum([s for s in samples if s[1] != 1.0]),
+    }
+
     return CalibrationResult(
         horizon_min=horizon_min,
         n=n,
@@ -340,6 +390,7 @@ def calibrate(
         bss_persistence=_skill(brier, brier_persistence),
         bss_climatology=_skill(brier, brier_climatology),
         bins=bins,
+        by_current=by_current,
         excluded_schedule=excluded_schedule,
     )
 
@@ -561,6 +612,17 @@ def _calibration_as_dicts(
             "bss_persistence": c.bss_persistence,
             "bss_climatology": c.bss_climatology,
             "excluded_schedule": c.excluded_schedule,
+            "by_current": {
+                stratum: {
+                    "n": s.n,
+                    "brier": s.brier,
+                    "brier_persistence": s.brier_persistence,
+                    "bss_persistence": s.bss_persistence,
+                    "mean_pred": s.mean_pred,
+                    "mean_outcome": s.mean_outcome,
+                }
+                for stratum, s in c.by_current.items()
+            },
             "bins": [
                 {
                     "bin_lo": b.bin_lo,

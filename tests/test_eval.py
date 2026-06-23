@@ -148,6 +148,55 @@ def test_calibrate_model_beats_baselines():
     assert result.bss_climatology == 1.0
 
 
+def test_calibrate_by_current_splits_normal_vs_recovery():
+    """The persistence loss decomposes by current condition: a route that is
+    normal-now and stays normal lands in 'normal_now'; a disrupted-now route in
+    'not_normal_now'. Counts and the realized normal rate must line up."""
+    ts0 = 1_700_000_000
+    preds: list[PredictionRecord] = []
+    for i in range(18):
+        preds.append(_pred(ts=ts0 + i * 300, route="N", condition="normal"))
+    for i in range(18):
+        preds.append(
+            _pred(ts=ts0 + i * 300, route="D", condition="disrupted")
+        )
+    result = calibrate(preds, horizon_min=30)
+    normal = result.by_current["normal_now"]
+    recovery = result.by_current["not_normal_now"]
+    assert normal.n == 12  # 18 − 6 unmatched tail
+    assert recovery.n == 12
+    # Route N is always normal → outcome rate 1.0; route D always disrupted → 0.0
+    assert normal.mean_outcome == 1.0
+    assert recovery.mean_outcome == 0.0
+    # The two strata partition the matched set.
+    assert normal.n + recovery.n == result.n
+
+
+def test_calibrate_by_current_flags_underconfident_normal():
+    """A normal-now route that stays normal but is forecast under-confidently
+    (p_normal_in_30 = 0.8) loses to persistence on that slice — the eeh signature:
+    the forecast trails the realized rate, so its Brier is worse than the hard
+    persistence call."""
+    ts0 = 1_700_000_000
+    preds = [
+        _pred(
+            ts=ts0 + i * 300,
+            route="1",
+            condition="normal",
+            p_normal_in_30min=0.8,
+        )
+        for i in range(18)
+    ]
+    normal = calibrate(preds, horizon_min=30).by_current["normal_now"]
+    assert normal.mean_outcome == 1.0  # it really did stay normal
+    assert normal.mean_pred is not None
+    assert normal.mean_pred < 1.0  # but the forecast hedged below the realized rate
+    assert normal.brier is not None
+    assert normal.brier_persistence is not None
+    # Persistence (predict 1.0) beats the hedged 0.8 forecast on this slice.
+    assert normal.brier > normal.brier_persistence
+
+
 def test_calibrate_no_lookup_when_gap():
     # Single prediction with no T+30 future → not graded.
     preds = [_pred(ts=1_700_000_000)]

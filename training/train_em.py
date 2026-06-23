@@ -266,6 +266,7 @@ def write_params(
     ) = None,
     hyperparams: dict[str, Any] | None = None,
     input_profile: dict[str, Any] | None = None,
+    movement_baseline: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -304,6 +305,11 @@ def write_params(
         },
         "routes": routes_doc,
     }
+    # Per-(route, direction, tod_bin) advance-rate baseline the Worker needs live
+    # to gate and score the movement channel. Top-level (not per-route) so 8zp's
+    # assigned_n service baseline can sit beside it under the same delivery.
+    if movement_baseline:
+        doc["movement_baseline"] = movement_baseline
     body = json.dumps(doc).encode()
     versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
     for key in (PARAMS_KEY, versioned_key):

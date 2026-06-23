@@ -320,6 +320,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         },
       },
       dwellByAlert: {},
+      movementBaseline: {},
     };
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,

@@ -8,7 +8,13 @@
 
 import { describe, expect, test, vi } from 'vitest';
 
-import { parseTrainedParams, paramsForRoute, dwellForRouteState, BOOTSTRAP_PARAMS } from '../src/params';
+import {
+  parseTrainedParams,
+  paramsForRoute,
+  dwellForRouteState,
+  advanceBaselineFor,
+  BOOTSTRAP_PARAMS,
+} from '../src/params';
 
 function wellFormedEmissions(): Record<string, unknown> {
   return {
@@ -231,5 +237,52 @@ describe('parseTrainedParams', () => {
     expect(dwellForRouteState(result, 'A', 'disrupted', 'Delays')).not.toBeNull();
     // alert type present but no matching cell, and no aggregate -> null
     expect(dwellForRouteState(result, 'A', 'disrupted', 'Other')).toBeNull();
+  });
+});
+
+describe('movement_baseline delivery (vhh.5)', () => {
+  function withBaseline(baseline: unknown): Record<string, unknown> {
+    return {
+      schema_version: '1',
+      trained_at: 1_700_000_000,
+      routes: { '1': wellFormedRoute() },
+      movement_baseline: baseline,
+    };
+  }
+
+  test('parses and looks up an advance-rate cell', () => {
+    const result = parseTrainedParams(
+      withBaseline({ A: { north: { '3': { p0: 0.7, alpha: 35, beta: 15, n: 120 } } } }),
+    );
+    expect(result).not.toBeNull();
+    const cell = advanceBaselineFor(result, 'A', 'north', 3);
+    expect(cell).toEqual({ p0: 0.7, alpha: 35, beta: 15, n: 120 });
+  });
+
+  test('missing cell or absent baseline returns null', () => {
+    const result = parseTrainedParams(
+      withBaseline({ A: { north: { '3': { p0: 0.7, alpha: 35, beta: 15, n: 120 } } } }),
+    );
+    expect(advanceBaselineFor(result, 'A', 'south', 3)).toBeNull();
+    expect(advanceBaselineFor(result, 'B', 'north', 3)).toBeNull();
+    expect(advanceBaselineFor(result, 'A', 'north', 1)).toBeNull();
+  });
+
+  test('absent movement_baseline yields an empty map, routes still intact', () => {
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute() }));
+    expect(result).not.toBeNull();
+    expect(result!.movementBaseline).toEqual({});
+    expect(advanceBaselineFor(result, 'A', 'north', 3)).toBeNull();
+  });
+
+  test('malformed baseline disables the channel but keeps the params', () => {
+    // p0 out of [0,1] and a negative beta — the whole baseline is rejected.
+    const result = parseTrainedParams(
+      withBaseline({ A: { north: { '3': { p0: 2, alpha: 35, beta: -1, n: 120 } } } }),
+    );
+    expect(result).not.toBeNull();
+    expect(result!.movementBaseline).toEqual({});
+    // Routes survive the bad baseline.
+    expect(Object.keys(result!.routes)).toEqual(['1']);
   });
 });

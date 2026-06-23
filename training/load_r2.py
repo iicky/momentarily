@@ -764,6 +764,23 @@ def compute_advance_baseline(
     return out
 
 
+def advance_baseline_to_json(
+    baseline: dict[tuple[str, str, int], AdvanceBaseline],
+) -> dict[str, dict[str, dict[str, dict[str, float]]]]:
+    """Serialize the advance baseline for params.json delivery to the Worker,
+    nested route -> direction -> tod_bin -> cell. tod_bin keys are stringified
+    (JSON object keys must be strings; the Worker parses them back to int)."""
+    out: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    for (route, direction, tod), cell in baseline.items():
+        out.setdefault(route, {}).setdefault(direction, {})[str(tod)] = {
+            "p0": cell.p0,
+            "alpha": cell.alpha,
+            "beta": cell.beta,
+            "n": cell.n,
+        }
+    return out
+
+
 def derive_movement_state(
     row: dict[str, int],
     *,

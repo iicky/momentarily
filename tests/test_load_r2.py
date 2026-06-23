@@ -10,6 +10,7 @@ from typing import Any
 from momentarily.hmm import tod_bin
 from training.load_r2 import (
     PresenceMask,
+    advance_baseline_to_json,
     build_movement_series_by_direction,
     build_tick_observations,
     compute_advance_baseline,
@@ -270,3 +271,18 @@ def test_advance_baseline_omits_thin_cells_and_low_match_ticks():
     bodies.append(_movement_body(T0 + 99 * TICK, "A", north=(2, 1, 1)))  # matched=2 < 3
     series = build_movement_series_by_direction(bodies)
     assert compute_advance_baseline(series, min_samples=20) == {}
+
+
+def test_advance_baseline_to_json_nests_route_direction_todbin():
+    bodies = [_movement_body(T0 + i * TICK, "A", north=(10, 7, 3)) for i in range(24)]
+    series = build_movement_series_by_direction(bodies)
+    baseline = compute_advance_baseline(series, prior_strength=50.0, min_samples=20)
+    doc = advance_baseline_to_json(baseline)
+    tod = str(tod_bin(T0))
+    cell = doc["A"]["north"][tod]
+    assert cell["p0"] == 0.7
+    assert cell["n"] == 24
+    assert abs(cell["alpha"] - 35.0) < 1e-9
+    assert abs(cell["beta"] - 15.0) < 1e-9
+    # JSON object keys must be strings (tod_bin stringified for delivery).
+    assert all(isinstance(k, str) for k in doc["A"]["north"])

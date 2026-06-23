@@ -106,12 +106,34 @@ export type DwellByState = Record<string, DwellQuantiles>;
 // state -> alert_type -> quantiles
 export type DwellByStateAlert = Record<string, Record<string, DwellQuantiles>>;
 
+// Per-(route, direction, tod_bin) advance-rate baseline (momentarily-vhh.3/vhh.5).
+// p0 is the cell's normal cross-tick advance fraction; alpha/beta carry it as a
+// Beta prior for the movement emission. The Worker uses it live to gate and
+// score the movement channel.
+const AdvanceBaselineCellSchema = z.object({
+  p0: prob,
+  alpha: positive,
+  beta: positive,
+  n: z.number().int().nonnegative(),
+});
+// route -> direction -> tod_bin (stringified int) -> cell
+const MovementBaselineSchema = z.record(
+  z.string(),
+  z.record(z.string(), z.record(z.string(), AdvanceBaselineCellSchema)),
+);
+
+export type AdvanceBaselineCell = z.infer<typeof AdvanceBaselineCellSchema>;
+export type MovementBaseline = z.infer<typeof MovementBaselineSchema>;
+
 const TrainedParamsWrapperSchema = z.object({
   schema_version: z.string(),
   trained_at: z.number().finite(),
   // Validate each route separately (below) so one bad route doesn't drop the
   // whole upload — the others should still apply.
   routes: z.record(z.string(), z.unknown()),
+  // Validated separately too, so a malformed baseline degrades the movement
+  // channel only, not the whole params upload.
+  movement_baseline: z.unknown().optional(),
 });
 
 // The three "kind of disruption" flags (delays/service_change/planned) all
@@ -156,6 +178,9 @@ export interface TrainedParams {
   // Cause-segmented dwell sidecar, route -> state -> alert_type -> quantiles.
   // Preferred over `dwell` when the current regime's alert_type has a cell.
   dwellByAlert: Record<string, DwellByStateAlert>;
+  // Per-(route, direction, tod_bin) advance-rate baseline for the movement
+  // channel. Empty until the trainer has ~2wk of by_direction archive.
+  movementBaseline: MovementBaseline;
 }
 
 /**
@@ -216,12 +241,26 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
   if (dropped > 0) {
     console.warn(`params.json: ${dropped} route(s) dropped; bootstrap will fill in`);
   }
+
+  // Movement baseline is optional and validated on its own: a malformed baseline
+  // disables the movement channel but leaves the rest of the params intact.
+  let movementBaseline: MovementBaseline = {};
+  if (wrapper.data.movement_baseline !== undefined) {
+    const parsed = MovementBaselineSchema.safeParse(wrapper.data.movement_baseline);
+    if (parsed.success) {
+      movementBaseline = parsed.data;
+    } else {
+      console.warn('params.json movement_baseline invalid; movement channel off:', parsed.error.issues);
+    }
+  }
+
   return {
     schema_version: wrapper.data.schema_version,
     trained_at: wrapper.data.trained_at,
     routes,
     dwell,
     dwellByAlert,
+    movementBaseline,
   };
 }
 
@@ -249,6 +288,20 @@ export function paramsForRoute(
   routeId: string,
 ): HMMParams {
   return trained?.routes?.[routeId] ?? BOOTSTRAP_PARAMS;
+}
+
+/**
+ * Advance-rate baseline for a (route, direction, tod_bin) cell, or null when the
+ * trainer hasn't established one yet. A null baseline is the signal to drop the
+ * movement channel out for that cell (Observation.has_movement = false).
+ */
+export function advanceBaselineFor(
+  trained: TrainedParams | null,
+  routeId: string,
+  direction: string,
+  todBin: number,
+): AdvanceBaselineCell | null {
+  return trained?.movementBaseline?.[routeId]?.[direction]?.[String(todBin)] ?? null;
 }
 
 /**

@@ -37,6 +37,11 @@ const MAX_RECOVERY_MINUTES = 1440;
 // see. See momentarily-8ga.
 const FAST_ATTACK_PROB = 0.9;
 
+// Movement state is carried from the prior tick, normally ~5 min old. If the
+// vehicle feeds stall, don't keep publishing a frozen reading indefinitely —
+// past this age the route falls back to the alert/HMM condition. Six ticks.
+const MAX_MOVEMENT_STATE_AGE_SEC = 1800;
+
 const SNAPSHOT_KEY = 'v1/snapshot.json';
 
 export const SCHEMA_VERSION = '1';
@@ -79,8 +84,12 @@ interface Inference {
 interface RouteStatusOut {
   route_id: string;
   alerts: string[];
-  // Severity axis — hysteresis-stable HMM published label.
+  // Severity axis — current state, observed from train movement when available,
+  // else the hysteresis-stable HMM published label.
   condition: string;
+  // Where `condition` came from this tick: 'movement' (observed), 'hmm' (alert-
+  // derived fallback), or 'unknown' (no inference yet).
+  condition_source: string;
   // Cause axis — our vocabulary, derived from the MTA alert_type.
   category: string;
   primary_alert_type: string | null;
@@ -195,8 +204,20 @@ export function buildSnapshot(args: {
   stations?: Record<string, StationOut>;
   /** Epoch the served station metadata was fetched, or null before first fetch. */
   stationsStaticFreshness?: number | null;
+  /** Last tick's movement-derived per-route condition. Routes present here have
+   * their published `condition` observed from train movement; absent routes fall
+   * back to the alert/HMM condition. Null/undefined before the first vehicle tick
+   * after deploy. Lagged one tick (~5 min) — see state.MOVEMENT_STATE_KEY. */
+  movementStates?: { observed_at: number; states: Record<string, string> } | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
+
+  // Use movement state only while it's reasonably fresh; a long vehicle-feed
+  // gap shouldn't pin a stale condition on the public surface.
+  const movementFresh =
+    args.movementStates != null &&
+    args.generatedAt - args.movementStates.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+  const movementStates = movementFresh ? args.movementStates : null;
 
   // Publish every route we have alpha for — good-service lines get their
   // inference too. Union with current routeSnapshots in case a route just got
@@ -228,13 +249,20 @@ export function buildSnapshot(args: {
       : null;
 
     const label = snap?.coarse_label ?? NO_ALERTS_FALLBACK;
+    // Current state is observed from train movement when we have a judgeable
+    // reading; the alert-derived HMM condition is the fallback (cold start, feed
+    // gap, too few cross-tick matches). not_scheduled is a planned non-run and
+    // always wins — a route that isn't meant to run now reads neither disrupted
+    // nor suspended just because no trains are moving.
+    const hmmCondition = inference ? inference.condition : 'unknown';
+    const movementCondition = movementStates?.states[routeId];
+    const useMovement =
+      movementCondition !== undefined && hmmCondition !== 'not_scheduled';
     route_status[routeId] = {
       route_id: routeId,
       alerts: activeAlerts,
-      // Keep the route's published condition identical to its inference — both
-      // run through the same precedence (realtime → HMM, else not_scheduled,
-      // else HMM/normal).
-      condition: inference ? inference.condition : 'unknown',
+      condition: useMovement ? movementCondition : hmmCondition,
+      condition_source: useMovement ? 'movement' : inference ? 'hmm' : 'unknown',
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,
@@ -308,15 +336,18 @@ function buildSystemStatus(
   let mostRecoveredEnteredAt = -1;
   for (const [routeId, rs] of Object.entries(routeStatuses)) {
     const inf = rs.inference;
-    if (!inf) continue;
-    if (inf.is_disrupted) {
+    // Count what's published: condition is movement-observed when available,
+    // HMM-derived otherwise. Rank within (most degraded/recovered) still uses
+    // the HMM's continuous probabilities and regime age, which movement lacks.
+    const disrupted = rs.condition === 'disrupted' || rs.condition === 'suspended';
+    if (disrupted) {
       lines_disrupted_count += 1;
-      const score = inf.p_disrupted + inf.p_suspended;
+      const score = inf ? inf.p_disrupted + inf.p_suspended : 1;
       if (score > mostDegradedScore) {
         mostDegradedScore = score;
         most_degraded_line = routeId;
       }
-    } else if (inf.condition === 'normal' && inf.regime_entered_at > mostRecoveredEnteredAt) {
+    } else if (rs.condition === 'normal' && inf && inf.regime_entered_at > mostRecoveredEnteredAt) {
       mostRecoveredEnteredAt = inf.regime_entered_at;
       most_recovered_line = routeId;
     }

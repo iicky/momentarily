@@ -998,6 +998,11 @@
           "title": "Condition",
           "type": "string"
         },
+        "condition_source": {
+          "default": "hmm",
+          "title": "Condition Source",
+          "type": "string"
+        },
         "inference": {
           "anyOf": [
             {

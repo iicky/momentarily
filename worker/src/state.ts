@@ -149,3 +149,40 @@ export async function writeVehicleStops(
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }
+
+// Per-route movement-derived condition, computed at step 8b (post-publish) and
+// read by the next tick's snapshot build (pre-publish). Carrying it forward this
+// way keeps the vehicle fetch off the time-to-publish path; the route's current
+// state is published one tick (~5 min) stale, which a slow freeze/recovery
+// regime tolerates. Its own small object (~28 routes), like vehicle_stops.json.
+export const MOVEMENT_STATE_KEY = 'state/movement_state.json';
+
+const MovementStateSchema = z.object({
+  observed_at: z.number(),
+  states: z.record(z.string(), z.enum(['normal', 'disrupted', 'suspended'])),
+});
+export type MovementStateDoc = z.infer<typeof MovementStateSchema>;
+
+/** Read last tick's movement-derived states. Returns null when absent or corrupt
+ * — the snapshot then falls back to the alert/HMM condition for every route. */
+export async function readMovementState(
+  bucket: R2Bucket,
+): Promise<MovementStateDoc | null> {
+  const obj = await bucket.get(MOVEMENT_STATE_KEY);
+  if (!obj) return null;
+  try {
+    return MovementStateSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('movement_state.json corrupt; resetting:', err);
+    return null;
+  }
+}
+
+export async function writeMovementState(
+  bucket: R2Bucket,
+  doc: MovementStateDoc,
+): Promise<void> {
+  await bucket.put(MOVEMENT_STATE_KEY, JSON.stringify(doc), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+}

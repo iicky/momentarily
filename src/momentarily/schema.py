@@ -173,11 +173,16 @@ class RouteStatus(BaseModel):
 
     route_id: str
     alerts: list[str] = []
-    # Severity axis. The Worker publisher sets this from the HMM's
-    # hysteresis-stable published label; the Python path uses a coarse
-    # alert-derived fallback (mapping.coarse_condition).
+    # Severity axis. The Worker publisher sets this from observed train movement
+    # when available, falling back to the HMM's hysteresis-stable published
+    # label; the Python path uses a coarse alert-derived fallback
+    # (mapping.coarse_condition).
     #   "normal" | "disrupted" | "suspended" | "not_scheduled" | "unknown"
     condition: str = "unknown"
+    # Where `condition` came from: "movement" (observed from vehicle positions),
+    # "hmm" (alert-derived fallback), or "unknown" (no inference yet). The Python
+    # path, which has no live movement feed, always emits "hmm".
+    condition_source: str = "hmm"
     # Cause axis — our stable vocabulary, derived from the MTA alert_type.
     #   "none" | "planned_work" | "delays" | "service_change" |
     #   "service_suspension" | "slow_speeds" | "information" | "other"

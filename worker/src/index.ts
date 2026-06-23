@@ -29,6 +29,7 @@ import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
 import { deriveRouteMovementMetric, stopPositions } from './vehicles';
+import { MOVEMENT_STATE_PUBLISH, deriveMovementStates } from './movement_state';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
@@ -37,7 +38,14 @@ import { loadParams, paramsForRoute } from './params';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
-import { readLastSeen, readVehicleStops, writeLastSeen, writeVehicleStops } from './state';
+import {
+  readLastSeen,
+  readMovementState,
+  readVehicleStops,
+  writeLastSeen,
+  writeMovementState,
+  writeVehicleStops,
+} from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -263,6 +271,15 @@ export default {
       } catch (err) {
         console.error('stations cache read failed; publishing without stations:', err);
       }
+      // Last tick's movement-derived states drive the published current-state
+      // condition (lagged ~5 min — written at step 8b, after this publishes).
+      // A read failure degrades to alert/HMM conditions, never a failed tick.
+      let movementStates: Awaited<ReturnType<typeof readMovementState>> = null;
+      try {
+        movementStates = await readMovementState(env.MOMENTARILY);
+      } catch (err) {
+        console.error('movement_state read failed; publishing without it:', err);
+      }
       const snapshot = buildSnapshot({
         generatedAt: observedAt,
         alertsFreshness: alertsFeedFresh,
@@ -277,6 +294,7 @@ export default {
         equipment: lastSeen.equipment,
         stations: stationsCache?.stations ?? {},
         stationsStaticFreshness: stationsCache?.fetched_at ?? null,
+        movementStates,
       });
       step('6a-build-snapshot');
       try {
@@ -426,6 +444,17 @@ export default {
           );
           await writeVehicleStops(env.MOMENTARILY, stopPositions(vehicles));
           lastSeen.vehicles_at = observedAt;
+
+          // Movement-derived current state, read by next tick's snapshot build.
+          // Gated off: the fixed-threshold derivation is biased per-route and not
+          // published; the Bayesian model (momentarily-vhh) replaces it. The
+          // direction-split archive above still accrues for baseline training.
+          if (MOVEMENT_STATE_PUBLISH) {
+            await writeMovementState(env.MOMENTARILY, {
+              observed_at: observedAt,
+              states: deriveMovementStates(moveRows, rows),
+            });
+          }
 
           console.log(
             `trip-updates: ${freshFeeds.length}/${TRIP_UPDATE_FEEDS.length} feeds, `

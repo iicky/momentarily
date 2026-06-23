@@ -660,12 +660,108 @@ def build_movement_series(
     return series
 
 
+_DIRECTIONS: tuple[str, ...] = ("north", "south")
+
+
+def build_movement_series_by_direction(
+    bodies: list[dict[str, Any]],
+) -> dict[tuple[str, str, int], dict[str, int]]:
+    """(route, direction, tick) -> the per-direction movement counters, from the
+    by_direction split the Worker archives (north/south). The cross-tick advance
+    fraction is direction-specific because the two directions fail independently
+    and the Bayesian model scores each line-direction against its own baseline."""
+    series: dict[tuple[str, str, int], dict[str, int]] = {}
+    for body in bodies:
+        tick = _snap_tick(int(body.get("observed_at") or 0))
+        rows = cast(dict[str, Any], body.get("rows") or {})
+        for route, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            by_dir = cast(dict[str, Any], cast(dict[str, Any], row).get("by_direction") or {})
+            for direction in _DIRECTIONS:
+                drow = by_dir.get(direction)
+                if not isinstance(drow, dict):
+                    continue
+                series[(route, direction, tick)] = {
+                    k: int(cast(dict[str, Any], drow).get(k) or 0)
+                    for k in ("vehicles_n", "advanced_n", "stalled_n")
+                }
+    return series
+
+
 # Provisional thresholds for the movement→state call. NOT yet tuned against real
 # archived data (the Worker side ships first); treat the resulting truth as a
 # first-cut independent signal, not gospel, until a window of real ticks exists
 # to calibrate against. See momentarily-vy0.
 MIN_MATCHED_TRIPS = 3  # advanced_n + stalled_n floor to make a cross-tick call
 FROZEN_ADVANCE_FRAC = 0.25  # advance fraction at/under which a route reads "frozen"
+
+
+# Pseudo-trials behind a baseline Beta prior — how much a cell's history outvotes
+# the live tick when forming the posterior advance rate. ~50 trips is a few ticks
+# of a busy line; enough to anchor a thin live sample without burying a real shift.
+ADVANCE_PRIOR_STRENGTH = 50.0
+
+# Keep p0 off the degenerate endpoints so the Beta shapes stay strictly positive
+# (a healthy line where every matched trip advanced medians to 1.0 → beta=0
+# otherwise). Mirrors hmm.py's BERNOULLI_FLOOR on the emission's advance_rate.
+P0_FLOOR = 1e-3
+
+
+@dataclass(frozen=True)
+class AdvanceBaseline:
+    """The normal advance-rate prior for one (route, direction, tod_bin) cell.
+
+    `p0` is the cell's baseline (normal) cross-tick advance fraction — the share
+    of matched trips that advance a stop in a healthy tick. It anchors the HMM's
+    movement emission: the normal state sits near p0, disrupted below it. Carried
+    as the Beta(alpha, beta) prior the emission's responsibility-weighted update
+    consumes, with alpha + beta = the prior strength in pseudo-trials.
+    """
+
+    p0: float  # baseline advance rate (median over the cell's ticks)
+    n: int  # ticks contributing to the cell
+    alpha: float  # Beta prior successes: prior_strength * p0
+    beta: float  # Beta prior failures: prior_strength * (1 - p0)
+
+
+def compute_advance_baseline(
+    series: dict[tuple[str, str, int], dict[str, int]],
+    *,
+    prior_strength: float = ADVANCE_PRIOR_STRENGTH,
+    min_matched: int = MIN_MATCHED_TRIPS,
+    min_samples: int = 20,
+) -> dict[tuple[str, str, int], AdvanceBaseline]:
+    """Per (route, direction, tod_bin) baseline advance rate, as a Beta prior.
+
+    For each tick with at least `min_matched` cross-tick matches, the advance
+    fraction is advanced_n / (advanced_n + stalled_n). The cell's p0 is the
+    *median* of those fractions — like compute_baseline for assigned_n, the
+    median resists the disrupted minority, so a line that mostly runs well keeps
+    a high baseline even with occasional frozen stretches. Cells below
+    `min_samples` ticks are omitted (callers treat a missing baseline as "no
+    prior", and the emission channel drops out — see hmm.py has_movement).
+    """
+    buckets: dict[tuple[str, str, int], list[float]] = {}
+    for (route, direction, tick), row in series.items():
+        matched = row.get("advanced_n", 0) + row.get("stalled_n", 0)
+        if matched < min_matched:
+            continue
+        frac = row.get("advanced_n", 0) / matched
+        buckets.setdefault((route, direction, tod_bin(tick)), []).append(frac)
+
+    out: dict[tuple[str, str, int], AdvanceBaseline] = {}
+    for key, fracs in buckets.items():
+        if len(fracs) < min_samples:
+            continue
+        p0 = min(max(statistics.median(fracs), P0_FLOOR), 1.0 - P0_FLOOR)
+        out[key] = AdvanceBaseline(
+            p0=p0,
+            n=len(fracs),
+            alpha=prior_strength * p0,
+            beta=prior_strength * (1.0 - p0),
+        )
+    return out
 
 
 def derive_movement_state(

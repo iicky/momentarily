@@ -7,9 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from momentarily.hmm import tod_bin
 from training.load_r2 import (
     PresenceMask,
+    build_movement_series_by_direction,
     build_tick_observations,
+    compute_advance_baseline,
     input_manifest_hash,
     presence_mask_from_predictions,
 )
@@ -188,3 +191,82 @@ def test_manifest_hash_empty_is_stable():
     # A key boundary follows every key, so the empty set is NOT the same as a
     # single empty-string key.
     assert input_manifest_hash([]) != input_manifest_hash([""])
+
+
+# --- Per-(route,direction,tod_bin) advance-rate baseline (momentarily-vhh.3) ---
+
+
+def _movement_body(
+    tick: int,
+    route: str,
+    *,
+    north: tuple[int, int, int] = (0, 0, 0),  # (vehicles_n, advanced_n, stalled_n)
+    south: tuple[int, int, int] = (0, 0, 0),
+) -> dict[str, Any]:
+    def dir_row(t: tuple[int, int, int]) -> dict[str, int]:
+        return {"vehicles_n": t[0], "advanced_n": t[1], "stalled_n": t[2]}
+
+    return {
+        "observed_at": tick,
+        "rows": {
+            route: {
+                "vehicles_n": north[0] + south[0],
+                "advanced_n": north[1] + south[1],
+                "stalled_n": north[2] + south[2],
+                "by_direction": {"north": dir_row(north), "south": dir_row(south)},
+            }
+        },
+    }
+
+
+def test_movement_series_by_direction_splits_north_south():
+    bodies = [_movement_body(T0, "A", north=(8, 6, 2), south=(7, 3, 4))]
+    series = build_movement_series_by_direction(bodies)
+    assert series[("A", "north", T0)] == {"vehicles_n": 8, "advanced_n": 6, "stalled_n": 2}
+    assert series[("A", "south", T0)] == {"vehicles_n": 7, "advanced_n": 3, "stalled_n": 4}
+
+
+def test_movement_series_skips_rows_without_by_direction():
+    # A pre-vhh.2 archive row (no by_direction) contributes nothing.
+    bodies = [{"observed_at": T0, "rows": {"A": {"advanced_n": 5, "stalled_n": 1}}}]
+    assert build_movement_series_by_direction(bodies) == {}
+
+
+def test_advance_baseline_median_resists_disrupted_minority():
+    """Mostly-healthy north ticks (advance ~0.9) with a frozen minority should
+    still yield a high p0 — the median ignores the disrupted tail."""
+    bodies: list[dict[str, Any]] = []
+    # 24 healthy ticks: 9 of 10 advanced. 6 frozen ticks: 0 of 10 advanced.
+    for i in range(24):
+        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 9, 1)))
+    for i in range(24, 30):
+        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 0, 10)))
+    series = build_movement_series_by_direction(bodies)
+    baseline = compute_advance_baseline(series, prior_strength=50.0, min_samples=20)
+    cell = baseline[("A", "north", tod_bin(T0))]
+    assert cell.p0 == 0.9  # median of the per-tick fractions, frozen tail ignored
+    assert cell.n == 30
+    # Beta prior carries p0 at the chosen strength (alpha+beta = prior_strength).
+    assert abs(cell.alpha - 45.0) < 1e-9
+    assert abs(cell.beta - 5.0) < 1e-9
+
+
+def test_advance_baseline_keeps_beta_shapes_positive_at_endpoints():
+    """A perfectly healthy line (every matched trip advances → median 1.0) must
+    not produce a degenerate Beta(strength, 0); p0 is clamped off the endpoint."""
+    bodies = [_movement_body(T0 + i * TICK, "A", north=(10, 10, 0)) for i in range(24)]
+    series = build_movement_series_by_direction(bodies)
+    cell = compute_advance_baseline(series, prior_strength=50.0, min_samples=20)[
+        ("A", "north", tod_bin(T0))
+    ]
+    assert cell.p0 < 1.0
+    assert cell.alpha > 0.0
+    assert cell.beta > 0.0
+
+
+def test_advance_baseline_omits_thin_cells_and_low_match_ticks():
+    # 5 ticks (< min_samples) and one tick below the matched floor.
+    bodies = [_movement_body(T0 + i * TICK, "A", north=(10, 8, 2)) for i in range(5)]
+    bodies.append(_movement_body(T0 + 99 * TICK, "A", north=(2, 1, 1)))  # matched=2 < 3
+    series = build_movement_series_by_direction(bodies)
+    assert compute_advance_baseline(series, min_samples=20) == {}

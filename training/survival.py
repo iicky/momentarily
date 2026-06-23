@@ -13,6 +13,10 @@ and selects by AIC. Pure stdlib to match dwell.py; no scipy.
 Weibull MLE uses the closed-form profile: the scale solves in one step given the
 shape, and the shape is a 1-D root of the profile score. Log-logistic has no such
 reduction, so it goes through a small Nelder-Mead simplex on the log-parameters.
+
+It also carries a censored k-group log-rank test, for asking whether the dwell
+hazard genuinely differs across strata (tod_bin, route, alert_type) before
+keying curves on a covariate.
 """
 
 from __future__ import annotations
@@ -291,6 +295,142 @@ def select_parametric(
         return None, []
     best = min(fits, key=lambda f: f.aic)
     return best, fits
+
+
+# --- Log-rank: does the dwell hazard differ across strata? ----------------------
+
+
+def chi2_sf(x: float, df: int) -> float:
+    """Upper-tail P(chi2_df > x) via the regularized incomplete gamma Q(df/2, x/2).
+    Hand-rolled (no scipy): series for x < a+1, continued fraction otherwise."""
+    if x <= 0:
+        return 1.0
+    a = df / 2.0
+    z = x / 2.0
+    gln = math.lgamma(a)
+    if z < a + 1.0:
+        # Series for the lower regularized gamma P(a, z); Q = 1 - P.
+        term = 1.0 / a
+        total = term
+        n = a
+        for _ in range(1000):
+            n += 1.0
+            term *= z / n
+            total += term
+            if abs(term) < abs(total) * 1e-14:
+                break
+        p = total * math.exp(-z + a * math.log(z) - gln)
+        return 1.0 - p
+    # Lentz continued fraction for Q(a, z) directly.
+    tiny = 1e-300
+    b = z + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / b
+    h = d
+    for i in range(1, 1000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 1e-14:
+            break
+    return h * math.exp(-z + a * math.log(z) - gln)
+
+
+@dataclass(frozen=True)
+class LogRankResult:
+    """Omnibus k-group log-rank test of equal hazard across strata."""
+
+    statistic: float
+    df: int
+    p_value: float
+    observed: dict[str, float]  # observed events per group
+    expected: dict[str, float]  # expected events under the null
+
+
+def _solve(matrix: list[list[float]], rhs: list[float]) -> list[float] | None:
+    """Gaussian elimination with partial pivoting; None if singular."""
+    n = len(rhs)
+    aug = [[*matrix[r], rhs[r]] for r in range(n)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(aug[r][col]))
+        if abs(aug[pivot][col]) < 1e-12:
+            return None
+        aug[col], aug[pivot] = aug[pivot], aug[col]
+        for r in range(n):
+            if r == col:
+                continue
+            factor = aug[r][col] / aug[col][col]
+            for k in range(col, n + 1):
+                aug[r][k] -= factor * aug[col][k]
+    return [aug[r][n] / aug[r][r] for r in range(n)]
+
+
+def logrank_test(groups: dict[str, list[DwellSample]]) -> LogRankResult | None:
+    """Omnibus log-rank test that the dwell hazard is equal across `groups`.
+
+    Each group is a list of (duration, completed) dwells, right-censoring honored
+    (censored observations leave the risk set without an event). Returns None when
+    fewer than two non-empty groups or no events exist. The statistic is
+    chi-square with (k-1) df under the null of equal hazards.
+    """
+    labels = [g for g, s in groups.items() if s]
+    if len(labels) < 2:
+        return None
+    k = len(labels)
+    event_times = sorted(
+        {int(t) for g in labels for t, c in groups[g] if c}
+    )
+    if not event_times:
+        return None
+
+    observed = dict.fromkeys(labels, 0.0)
+    expected = dict.fromkeys(labels, 0.0)
+    # Covariance accumulated only over the first k-1 groups (the last is redundant).
+    cov = [[0.0 for _ in range(k - 1)] for _ in range(k - 1)]
+
+    def at_risk(g: str, t: int) -> int:
+        return sum(1 for dur, _c in groups[g] if dur >= t)
+
+    for t in event_times:
+        n_g = [at_risk(labels[j], t) for j in range(k)]
+        d_g = [sum(1 for dur, c in groups[labels[j]] if c and dur == t) for j in range(k)]
+        n = sum(n_g)
+        d = sum(d_g)
+        if n <= 1 or d == 0:
+            continue
+        for j in range(k):
+            e = d * n_g[j] / n
+            observed[labels[j]] += d_g[j]
+            expected[labels[j]] += e
+        var_common = d * (n - d) / (n - 1) / (n * n)
+        for a in range(k - 1):
+            cov[a][a] += var_common * n_g[a] * (n - n_g[a])
+            for b in range(a + 1, k - 1):
+                term = -var_common * n_g[a] * n_g[b]
+                cov[a][b] += term
+                cov[b][a] += term
+
+    diff = [observed[labels[j]] - expected[labels[j]] for j in range(k - 1)]
+    solved = _solve(cov, diff)
+    if solved is None:
+        return None
+    statistic = sum(diff[a] * solved[a] for a in range(k - 1))
+    statistic = max(0.0, statistic)
+    return LogRankResult(
+        statistic=statistic,
+        df=k - 1,
+        p_value=chi2_sf(statistic, k - 1),
+        observed=observed,
+        expected=expected,
+    )
 
 
 def parametric_curve_sec(fit: ParametricFit, points: int = CURVE_POINTS) -> list[int]:

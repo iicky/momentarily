@@ -7,10 +7,12 @@ import random
 
 from training.dwell import DwellSample
 from training.survival import (
+    chi2_sf,
     fit_loglogistic,
     fit_weibull,
     loglogistic_loglik,
     loglogistic_survival,
+    logrank_test,
     parametric_curve_sec,
     select_parametric,
     weibull_loglik,
@@ -176,6 +178,52 @@ def test_no_events_yields_no_fit():
 
 
 # --- Curve emission ------------------------------------------------------------
+
+
+def test_chi2_sf_matches_known_critical_values():
+    assert math.isclose(chi2_sf(0.0, 1), 1.0)
+    assert abs(chi2_sf(3.8415, 1) - 0.05) < 1e-3  # 1-df 95th percentile
+    assert abs(chi2_sf(6.6349, 1) - 0.01) < 1e-3  # 1-df 99th percentile
+    assert abs(chi2_sf(5.9915, 2) - 0.05) < 1e-3  # 2-df 95th percentile
+    assert abs(chi2_sf(11.345, 3) - 0.01) < 1e-3  # 3-df 99th percentile
+    assert chi2_sf(100.0, 1) < 1e-12  # far tail
+
+
+def test_logrank_finds_no_difference_between_identical_hazards():
+    a = _weibull_samples(800, shape=1.3, scale=1800.0, seed=20)
+    b = _weibull_samples(800, shape=1.3, scale=1800.0, seed=21)
+    res = logrank_test({"a": a, "b": b})
+    assert res is not None
+    assert res.df == 1
+    assert res.p_value > 0.1  # same generating hazard → no significant split
+
+
+def test_logrank_detects_clearly_different_hazards():
+    fast = _weibull_samples(800, shape=1.3, scale=900.0, seed=22)
+    slow = _weibull_samples(800, shape=1.3, scale=3600.0, seed=23)
+    res = logrank_test({"fast": fast, "slow": slow})
+    assert res is not None
+    assert res.statistic > 50.0
+    assert res.p_value < 1e-6
+    # The fast group exits more than its share; the slow group fewer.
+    assert res.observed["fast"] > res.expected["fast"]
+    assert res.observed["slow"] < res.expected["slow"]
+
+
+def test_logrank_handles_censoring_and_three_groups():
+    a = _weibull_samples(600, shape=1.2, scale=1200.0, seed=24, censor_at=4000.0)
+    b = _weibull_samples(600, shape=1.2, scale=1800.0, seed=25, censor_at=4000.0)
+    c = _weibull_samples(600, shape=1.2, scale=2400.0, seed=26, censor_at=4000.0)
+    res = logrank_test({"a": a, "b": b, "c": c})
+    assert res is not None
+    assert res.df == 2  # k-1 for three groups
+    assert res.p_value < 1e-3  # the three scales differ
+
+
+def test_logrank_needs_two_groups_with_events():
+    assert logrank_test({"only": _weibull_samples(50, 1.2, 1800.0, seed=27)}) is None
+    censored: list[DwellSample] = [(1800, False)] * 20
+    assert logrank_test({"a": censored, "b": censored}) is None
 
 
 def test_parametric_curve_sec_is_nondecreasing_and_finite():

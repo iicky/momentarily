@@ -7,6 +7,11 @@ Three hidden states (normal, disrupted, suspended). Observations at each cron ti
   - has_service_change   (Bernoulli per state) — any non-planned "Service Change" /
                                                  "Trains Rerouted" / "Stops Skipped"
   - has_planned          (Bernoulli per state) — any alert_type starting "Planned -"
+  - advanced_n of matched_n (Binomial per state) - of the trips seen both this
+                            tick and last, how many advanced a stop. Per-state
+                            advance rate (normal~baseline, disrupted<baseline,
+                            suspended~0). Gated off when matched_n==0 or the
+                            derivation has no baseline (has_movement=False).
 
 severity_sum is still carried on Observation but is NOT a likelihood channel:
 it's a near-deterministic function of the same alert list as alert_count and
@@ -82,6 +87,12 @@ class Observation:
     has_service_change: bool = False
     has_planned: bool = False
     tod_bin: int = 0  # TOD bin index; if HMMParams.emissions_by_bin unset, ignored
+    # Train-movement channel: of matched_n trips seen both this tick and last,
+    # advanced_n moved up a stop. has_movement gates the channel out (no
+    # baseline, feed gap, or matched_n==0) so the tick scores on alerts alone.
+    advanced_n: int = 0
+    matched_n: int = 0
+    has_movement: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,6 +112,9 @@ class EmissionParams:
     bernoulli_p_delays: tuple[float, float, float] = (0.01, 0.3, 0.5)
     bernoulli_p_service_change: tuple[float, float, float] = (0.01, 0.4, 0.6)
     bernoulli_p_planned: tuple[float, float, float] = (0.05, 0.3, 0.5)
+    # Per-state probability a matched trip advances a stop in one tick. Normal
+    # sits near the route-direction baseline; disrupted below it; suspended ~0.
+    advance_rate: tuple[float, float, float] = (0.6, 0.3, 0.02)
 
 
 @dataclass(frozen=True)
@@ -135,6 +149,7 @@ def _reorder_emissions(
         bernoulli_p_delays=r(em.bernoulli_p_delays),
         bernoulli_p_service_change=r(em.bernoulli_p_service_change),
         bernoulli_p_planned=r(em.bernoulli_p_planned),
+        advance_rate=r(em.advance_rate),
     )
 
 
@@ -170,6 +185,7 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
     if params.emissions_by_bin is None:
         rank_lambda: tuple[float, ...] = em.poisson_lambda
         rank_p: tuple[float, ...] = em.bernoulli_p
+        rank_advance: tuple[float, ...] = em.advance_rate
     else:
         rank_lambda = tuple(
             sum(e.poisson_lambda[s] for e in params.emissions_by_bin)
@@ -179,9 +195,16 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
             sum(e.bernoulli_p[s] for e in params.emissions_by_bin)
             for s in range(N_STATES)
         )
-    normal_idx = min(range(N_STATES), key=lambda s: rank_lambda[s])
+        rank_advance = tuple(
+            sum(e.advance_rate[s] for e in params.emissions_by_bin)
+            for s in range(N_STATES)
+        )
+    # Movement reinforces identity (normal moves most, suspended least) but only
+    # breaks ties: lowest alert rate wins normal, highest advance rate breaks a
+    # tie; highest suspended-flag wins suspended, lowest advance rate breaks one.
+    normal_idx = min(range(N_STATES), key=lambda s: (rank_lambda[s], -rank_advance[s]))
     rest = [s for s in range(N_STATES) if s != normal_idx]
-    suspended_idx = max(rest, key=lambda s: rank_p[s])
+    suspended_idx = max(rest, key=lambda s: (rank_p[s], -rank_advance[s]))
     disrupted_idx = next(s for s in rest if s != suspended_idx)
     perm = (normal_idx, disrupted_idx, suspended_idx)
 
@@ -285,6 +308,18 @@ def _log_bernoulli(value: bool, p: float) -> float:
     return math.log(p) if value else math.log1p(-p)
 
 
+def _log_binomial(k: int, n: int, p: float) -> float:
+    """log P(k of n advanced | Binomial(n, p)). The n-choose-k coefficient is
+    constant across states so it cancels in the per-tick posterior, but it's
+    kept so the EM log-likelihood is a true data likelihood (mirrors how the
+    Poisson term carries its log k! factor)."""
+    if n <= 0:
+        return 0.0
+    p = min(max(p, 1e-12), 1 - 1e-12)
+    log_coef = math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+    return log_coef + k * math.log(p) + (n - k) * math.log1p(-p)
+
+
 def _log_emission(
     obs: Observation, params: EmissionParams
 ) -> tuple[float, float, float]:
@@ -294,16 +329,24 @@ def _log_emission(
     independence is imperfect (planned + delays correlate), but with 3 states
     the bias is small relative to the signal gain from the extra channels.
     severity_sum is deliberately absent — see the module docstring
-    (momentarily-vk0.8).
+    (momentarily-vk0.8). The movement channel drops out (contributes 0) when
+    has_movement is False or no trips matched across the two ticks.
     """
-    out = [
-        _log_poisson(obs.alert_count, params.poisson_lambda[i])
-        + _log_bernoulli(obs.has_suspended_alert, params.bernoulli_p[i])
-        + _log_bernoulli(obs.has_delays, params.bernoulli_p_delays[i])
-        + _log_bernoulli(obs.has_service_change, params.bernoulli_p_service_change[i])
-        + _log_bernoulli(obs.has_planned, params.bernoulli_p_planned[i])
-        for i in range(N_STATES)
-    ]
+    has_movement = obs.has_movement and obs.matched_n > 0
+    out: list[float] = []
+    for i in range(N_STATES):
+        log_lik = (
+            _log_poisson(obs.alert_count, params.poisson_lambda[i])
+            + _log_bernoulli(obs.has_suspended_alert, params.bernoulli_p[i])
+            + _log_bernoulli(obs.has_delays, params.bernoulli_p_delays[i])
+            + _log_bernoulli(obs.has_service_change, params.bernoulli_p_service_change[i])
+            + _log_bernoulli(obs.has_planned, params.bernoulli_p_planned[i])
+        )
+        if has_movement:
+            log_lik += _log_binomial(
+                obs.advanced_n, obs.matched_n, params.advance_rate[i]
+            )
+        out.append(log_lik)
     return (out[0], out[1], out[2])
 
 
@@ -589,6 +632,7 @@ def _estimate_emissions(
     bernoulli_p_delays: list[float] = []
     bernoulli_p_service_change: list[float] = []
     bernoulli_p_planned: list[float] = []
+    advance_rate: list[float] = []
     gamma_alpha: list[float] = []
     gamma_beta: list[float] = []
 
@@ -626,6 +670,7 @@ def _estimate_emissions(
             bernoulli_p_delays.append(fallback.bernoulli_p_delays[s])
             bernoulli_p_service_change.append(fallback.bernoulli_p_service_change[s])
             bernoulli_p_planned.append(fallback.bernoulli_p_planned[s])
+            advance_rate.append(fallback.advance_rate[s])
             gamma_alpha.append(fallback.gamma_alpha[s])
             gamma_beta.append(fallback.gamma_beta[s])
             continue
@@ -678,6 +723,29 @@ def _estimate_emissions(
                 posterior_bernoulli(s, w, lambda o: o.has_planned, 0.0)
             )
 
+        # Advance rate: responsibility-weighted pooled Binomial rate over ticks
+        # where movement is available, k = Σ γ·advanced_n, n = Σ γ·matched_n.
+        # The prior acts as κ pseudo-trials at prior.advance_rate (Beta-style),
+        # so a thin-movement state leans on the baseline prior instead of noise.
+        mov_k = sum(
+            gamma[t][s] * observations[t].advanced_n
+            for t in idx_list
+            if observations[t].has_movement
+        )
+        mov_n = sum(
+            gamma[t][s] * observations[t].matched_n
+            for t in idx_list
+            if observations[t].has_movement
+        )
+        if use_prior:
+            assert prior is not None
+            rate = (kappa * prior.advance_rate[s] + mov_k) / (kappa + mov_n)
+        elif mov_n > 0:
+            rate = mov_k / mov_n
+        else:
+            rate = fallback.advance_rate[s]
+        advance_rate.append(min(max(rate, BERNOULLI_FLOOR), 1.0 - BERNOULLI_FLOOR))
+
         # Gamma α/β are vestigial — severity_sum is no longer a likelihood
         # channel (momentarily-vk0.8) — so pass them through unchanged for
         # schema back-compat rather than fitting dead parameters.
@@ -709,6 +777,7 @@ def _estimate_emissions(
             bernoulli_p_planned[1],
             bernoulli_p_planned[2],
         ),
+        advance_rate=(advance_rate[0], advance_rate[1], advance_rate[2]),
     )
 
 

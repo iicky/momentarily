@@ -60,6 +60,11 @@
         0.05,
         0.6,
         0.35
+      ],
+      "advance_rate": [
+        0.7,
+        0.3,
+        0.02
       ]
     }
   },
@@ -80,7 +85,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 10,
+      "matched_n": 12,
+      "has_movement": true
     },
     {
       "alert_count": 0,
@@ -89,7 +97,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 10,
+      "matched_n": 12,
+      "has_movement": true
     },
     {
       "alert_count": 6,
@@ -98,7 +109,10 @@
       "has_delays": true,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 3,
+      "matched_n": 12,
+      "has_movement": true
     },
     {
       "alert_count": 6,
@@ -107,7 +121,10 @@
       "has_delays": true,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 3,
+      "matched_n": 12,
+      "has_movement": true
     },
     {
       "alert_count": 6,
@@ -116,7 +133,10 @@
       "has_delays": true,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 3,
+      "matched_n": 12,
+      "has_movement": true
     },
     {
       "alert_count": 14,
@@ -125,7 +145,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 2
+      "tod_bin": 2,
+      "advanced_n": 0,
+      "matched_n": 8,
+      "has_movement": true
     },
     {
       "alert_count": 14,
@@ -134,7 +157,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 2
+      "tod_bin": 2,
+      "advanced_n": 0,
+      "matched_n": 8,
+      "has_movement": true
     },
     null,
     {
@@ -144,7 +170,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 2
+      "tod_bin": 2,
+      "advanced_n": 0,
+      "matched_n": 8,
+      "has_movement": true
     },
     {
       "alert_count": 0,
@@ -153,7 +182,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 10,
+      "matched_n": 12,
+      "has_movement": true
     },
     {
       "alert_count": 0,
@@ -162,7 +194,10 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 0,
+      "matched_n": 0,
+      "has_movement": false
     },
     {
       "alert_count": 0,
@@ -171,16 +206,19 @@
       "has_delays": false,
       "has_service_change": false,
       "has_planned": false,
-      "tod_bin": 1
+      "tod_bin": 1,
+      "advanced_n": 10,
+      "matched_n": 12,
+      "has_movement": true
     }
   ],
   "expected_steps": [
     {
       "filter": {
         "probabilities": [
-          0.9997773478670606,
-          0.0002226480851031668,
-          4.047836327857947e-09
+          0.9999997465447571,
+          2.53455242841186e-07,
+          1.566205480925379e-23
         ],
         "regime_entered_at": 1700000000,
         "last_updated_at": 1700000300
@@ -195,9 +233,9 @@
     {
       "filter": {
         "probabilities": [
-          0.999911953213592,
-          8.80455582099454e-05,
-          1.228197939695485e-09
+          0.9999999001604911,
+          9.9839508854903e-08,
+          4.7463867721417655e-24
         ],
         "regime_entered_at": 1700000000,
         "last_updated_at": 1700000600
@@ -212,9 +250,9 @@
     {
       "filter": {
         "probabilities": [
-          2.7461409150685666e-05,
-          0.9963295810784492,
-          0.003642957512400123
+          1.7103858282143695e-07,
+          0.9999774222714894,
+          2.2406689927682695e-05
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700000900
@@ -229,9 +267,9 @@
     {
       "filter": {
         "probabilities": [
-          1.7268559395783086e-07,
-          0.9988582609586623,
-          0.0011415663557436894
+          1.070353486880477e-09,
+          0.9999934061237894,
+          6.5928058570049325e-06
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700001200
@@ -246,9 +284,9 @@
     {
       "filter": {
         "probabilities": [
-          1.7258049887863975e-07,
-          0.9989037504308389,
-          0.0010960769886621485
+          1.070349100961671e-09,
+          0.9999934078809858,
+          6.591048665058975e-06
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700001500
@@ -263,9 +301,9 @@
     {
       "filter": {
         "probabilities": [
-          3.341694573313383e-20,
-          0.0001382089799597593,
-          0.9998617910200402
+          2.624334781750056e-24,
+          9.538474799432244e-06,
+          0.9999904615252005
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700001800
@@ -280,9 +318,9 @@
     {
       "filter": {
         "probabilities": [
-          6.008666451382065e-22,
-          1.1702805733405299e-06,
-          0.9999988297194267
+          4.6318772203618604e-26,
+          7.922710691749256e-08,
+          0.9999999207728932
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700002100
@@ -297,9 +335,9 @@
     {
       "filter": {
         "probabilities": [
-          6.008666451382065e-22,
-          1.1702805733405299e-06,
-          0.9999988297194267
+          4.6318772203618604e-26,
+          7.922710691749256e-08,
+          0.9999999207728932
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700002100
@@ -314,9 +352,9 @@
     {
       "filter": {
         "probabilities": [
-          6.005971028091159e-22,
-          1.169154972966863e-06,
-          0.9999988308450269
+          4.6317337539540154e-26,
+          7.922184285281658e-08,
+          0.9999999207781572
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700002700
@@ -331,9 +369,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9934431875341455,
-          0.006553566078566136,
-          3.2463872882710277e-06
+          0.9999924921544693,
+          7.507845530619547e-06,
+          1.2641097498782385e-20
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003000
@@ -348,9 +386,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999025148803163,
-          9.748385291655002e-05,
-          1.266767087899384e-09
+          0.9999122720552737,
+          8.77267178203341e-05,
+          1.2269059873012078e-09
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003300
@@ -365,9 +403,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999121387242021,
-          8.786004835166434e-05,
-          1.2274462032051894e-09
+          0.9999999000129431,
+          9.998705691460169e-08,
+          4.748419164902356e-24
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003600
@@ -382,19 +420,19 @@
   ],
   "expected_projections": {
     "10": [
-      0.6703411500147166,
-      0.24160312157628713,
-      0.08805572840899598
+      0.6703589655427554,
+      0.24159152981964754,
+      0.08804950463759652
     ],
     "50": [
-      0.565590951965982,
-      0.29769555914454426,
-      0.136713488889472
+      0.5655910338605262,
+      0.2976955199692772,
+      0.13671344617019437
     ],
     "200": [
-      0.5650684931520485,
-      0.2979452054787972,
-      0.13698630136914786
+      0.5650684931520487,
+      0.29794520547879694,
+      0.13698630136914772
     ]
   },
   "expected_dwell": {

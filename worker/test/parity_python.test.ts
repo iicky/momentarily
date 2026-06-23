@@ -42,6 +42,7 @@ function toParams(p: (typeof fixture)['params']): HMMParams {
     bernoulli_p_delays: vec3(e.bernoulli_p_delays),
     bernoulli_p_service_change: vec3(e.bernoulli_p_service_change),
     bernoulli_p_planned: vec3(e.bernoulli_p_planned),
+    advance_rate: vec3(e.advance_rate),
   };
   return {
     transition: [vec3(p.transition[0]!), vec3(p.transition[1]!), vec3(p.transition[2]!)],
@@ -58,6 +59,9 @@ type RawObs = {
   has_service_change: boolean;
   has_planned: boolean;
   tod_bin: number;
+  advanced_n?: number;
+  matched_n?: number;
+  has_movement?: boolean;
 };
 
 function toObs(o: RawObs | null): Observation | null {

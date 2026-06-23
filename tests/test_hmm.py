@@ -96,6 +96,89 @@ def test_suspended_alert_pulls_toward_suspended() -> None:
     assert p_suspended > 0.6
 
 
+# ---------------------------------------------------------------------------
+# Train-movement (Binomial advance) channel
+# ---------------------------------------------------------------------------
+
+
+def test_frozen_movement_pulls_away_from_normal() -> None:
+    """No alerts but every matched trip stalled — the advance channel alone
+    should pull the posterior off normal even when the alert channels are quiet."""
+    params = _default_params()
+    state = _flat_state()
+    quiet = Observation(alert_count=0, severity_sum=0, has_suspended_alert=False)
+    frozen = Observation(
+        alert_count=0,
+        severity_sum=0,
+        has_suspended_alert=False,
+        advanced_n=0,
+        matched_n=15,
+        has_movement=True,
+    )
+    p_normal_quiet = forward_update(state, quiet, params, now=100).probabilities[0]
+    p_normal_frozen = forward_update(state, frozen, params, now=100).probabilities[0]
+    assert p_normal_frozen < p_normal_quiet
+
+
+def test_healthy_movement_reinforces_normal() -> None:
+    """Most matched trips advanced → normal stays the dominant state."""
+    params = _default_params()
+    state = _flat_state()
+    obs = Observation(
+        alert_count=0,
+        severity_sum=0,
+        has_suspended_alert=False,
+        advanced_n=14,
+        matched_n=15,
+        has_movement=True,
+    )
+    p_normal, p_disrupted, p_suspended = forward_update(
+        state, obs, params, now=100
+    ).probabilities
+    assert p_normal > p_disrupted > p_suspended
+    assert p_normal > 0.8
+
+
+def test_movement_gate_drops_channel() -> None:
+    """has_movement=False makes the advance counts inert: the posterior must
+    match an observation that carries no movement data at all."""
+    params = _default_params()
+    state = _flat_state()
+    gated = Observation(
+        alert_count=2,
+        severity_sum=10,
+        has_suspended_alert=False,
+        advanced_n=0,
+        matched_n=15,
+        has_movement=False,
+    )
+    no_movement = Observation(
+        alert_count=2, severity_sum=10, has_suspended_alert=False
+    )
+    p_gated = forward_update(state, gated, params, now=100).probabilities
+    p_plain = forward_update(state, no_movement, params, now=100).probabilities
+    assert all(math.isclose(a, b, abs_tol=1e-15) for a, b in zip(p_gated, p_plain, strict=True))
+
+
+def test_zero_matched_trips_drops_channel() -> None:
+    """matched_n==0 (nothing seen across both ticks) also drops the channel out,
+    even with has_movement=True."""
+    params = _default_params()
+    state = _flat_state()
+    empty = Observation(
+        alert_count=2,
+        severity_sum=10,
+        has_suspended_alert=False,
+        advanced_n=0,
+        matched_n=0,
+        has_movement=True,
+    )
+    plain = Observation(alert_count=2, severity_sum=10, has_suspended_alert=False)
+    p_empty = forward_update(state, empty, params, now=100).probabilities
+    p_plain = forward_update(state, plain, params, now=100).probabilities
+    assert all(math.isclose(a, b, abs_tol=1e-15) for a, b in zip(p_empty, p_plain, strict=True))
+
+
 def test_regime_entered_at_advances_on_state_change() -> None:
     """When argmax shifts between ticks, regime_entered_at moves to `now`."""
     params = _default_params()
@@ -682,6 +765,99 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
     assert delays[1] >= delays[0] - 0.1, (
         f"delays in disrupted dropped below normal: {delays}"
     )
+
+
+def test_em_fits_advance_rate_per_state() -> None:
+    """The M-step should recover a high normal advance rate and a near-zero
+    suspended advance rate from movement-bearing synthetic data."""
+    true_params = HMMParams(
+        transition=(
+            (0.95, 0.04, 0.01),
+            (0.08, 0.90, 0.02),
+            (0.02, 0.10, 0.88),
+        ),
+        initial=(0.6, 0.3, 0.1),
+        emissions=EmissionParams(
+            poisson_lambda=(0.2, 3.0, 9.0),
+            gamma_alpha=(1.0, 3.0, 6.0),
+            gamma_beta=(2.0, 0.5, 0.3),
+            bernoulli_p=(0.01, 0.10, 0.80),
+            advance_rate=(0.85, 0.40, 0.03),
+        ),
+    )
+    rng = random.Random(7)
+    states: list[int] = [
+        rng.choices(range(N_STATES), weights=list(true_params.initial), k=1)[0]
+    ]
+    for _ in range(1499):
+        row = list(true_params.transition[states[-1]])
+        states.append(rng.choices(range(N_STATES), weights=row, k=1)[0])
+
+    em = true_params.emissions
+    obs: list[Observation] = []
+    for s in states:
+        matched = 12
+        advanced = sum(1 for _ in range(matched) if rng.random() < em.advance_rate[s])
+        obs.append(
+            Observation(
+                alert_count=_sample_poisson(rng, em.poisson_lambda[s]),
+                severity_sum=0,
+                has_suspended_alert=rng.random() < em.bernoulli_p[s],
+                advanced_n=advanced,
+                matched_n=matched,
+                has_movement=True,
+            )
+        )
+
+    init = HMMParams(
+        transition=(
+            (0.8, 0.15, 0.05),
+            (0.15, 0.7, 0.15),
+            (0.05, 0.15, 0.8),
+        ),
+        initial=(0.6, 0.3, 0.1),
+        emissions=EmissionParams(
+            poisson_lambda=(1.0, 4.0, 8.0),
+            gamma_alpha=(1.5, 2.5, 4.0),
+            gamma_beta=(1.0, 0.5, 0.3),
+            bernoulli_p=(0.1, 0.3, 0.7),
+            advance_rate=(0.5, 0.5, 0.5),
+        ),
+    )
+    fitted, _ = fit_em(obs, init, max_iterations=40, tolerance=1e-5)
+    rate = fitted.emissions.advance_rate
+    # After canonicalize_states, index 0 is normal and index 2 suspended; the
+    # fitted advance rate should track that ordering.
+    assert rate[0] > rate[1] > rate[2], f"advance rate not monotone by state: {rate}"
+    assert rate[0] > 0.6
+    assert rate[2] < 0.2
+
+
+def test_canonicalize_advance_rate_breaks_ties() -> None:
+    """When two states tie on alert rate and suspended-flag probability, the
+    advance rate decides which is normal (highest) and which is suspended."""
+    params = HMMParams(
+        transition=(
+            (0.9, 0.05, 0.05),
+            (0.05, 0.9, 0.05),
+            (0.05, 0.05, 0.9),
+        ),
+        initial=(0.4, 0.3, 0.3),
+        emissions=EmissionParams(
+            # States 0 and 2 tie on alert rate and suspended-flag probability;
+            # only advance_rate separates them — state 2 moves, state 0 is frozen.
+            poisson_lambda=(1.0, 5.0, 1.0),
+            gamma_alpha=(1.0, 1.0, 1.0),
+            gamma_beta=(1.0, 1.0, 1.0),
+            bernoulli_p=(0.5, 0.01, 0.5),
+            advance_rate=(0.02, 0.4, 0.9),
+        ),
+    )
+    canon = canonicalize_states(params)
+    # Highest advance rate (old state 2) becomes normal; the frozen tie-mate
+    # (old state 0) becomes suspended.
+    assert math.isclose(canon.emissions.advance_rate[0], 0.9)
+    assert math.isclose(canon.emissions.advance_rate[2], 0.02)
 
 
 # ---------------------------------------------------------------------------

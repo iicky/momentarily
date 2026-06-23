@@ -58,11 +58,14 @@ PARAMS = HMMParams(
         bernoulli_p_delays=(0.02, 0.6, 0.35),
         bernoulli_p_service_change=(0.02, 0.6, 0.4),
         bernoulli_p_planned=(0.05, 0.6, 0.35),
+        advance_rate=(0.7, 0.3, 0.02),
     ),
 )
 
 
 def _quiet() -> Observation:
+    # Healthy movement (10 of 12 advanced) so the Binomial channel is exercised
+    # on the normal side, not just the alert channels.
     return Observation(
         alert_count=0,
         severity_sum=0,
@@ -71,10 +74,14 @@ def _quiet() -> Observation:
         has_service_change=False,
         has_planned=False,
         tod_bin=1,
+        advanced_n=10,
+        matched_n=12,
+        has_movement=True,
     )
 
 
 def _delays() -> Observation:
+    # Degraded movement (3 of 12 advanced) — pulls toward disrupted.
     return Observation(
         alert_count=6,
         severity_sum=30,
@@ -83,10 +90,15 @@ def _delays() -> Observation:
         has_service_change=False,
         has_planned=False,
         tod_bin=1,
+        advanced_n=3,
+        matched_n=12,
+        has_movement=True,
     )
 
 
 def _suspended() -> Observation:
+    # Frozen movement (0 of 8 advanced) — reinforces suspended. Also covers the
+    # k==0 edge of the Binomial term.
     return Observation(
         alert_count=14,
         severity_sum=75,
@@ -95,11 +107,30 @@ def _suspended() -> Observation:
         has_service_change=False,
         has_planned=False,
         tod_bin=2,
+        advanced_n=0,
+        matched_n=8,
+        has_movement=True,
+    )
+
+
+def _quiet_no_movement() -> Observation:
+    # Movement unavailable (no baseline / no matched trips): the Binomial channel
+    # must drop out and the tick scores on the alert channels alone.
+    return Observation(
+        alert_count=0,
+        severity_sum=0,
+        has_suspended_alert=False,
+        has_delays=False,
+        has_service_change=False,
+        has_planned=False,
+        tod_bin=1,
+        has_movement=False,
     )
 
 
 # Quiet -> delays -> suspended -> feed gap (None) -> suspended -> recovery.
-# Exercises argmax changes, hysteresis promotion, and the obs=None branch.
+# Exercises argmax changes, hysteresis promotion, the obs=None branch, the
+# Binomial movement channel, and the has_movement=False gate.
 OBSERVATIONS: list[Observation | None] = [
     _quiet(),
     _quiet(),
@@ -111,7 +142,7 @@ OBSERVATIONS: list[Observation | None] = [
     None,
     _suspended(),
     _quiet(),
-    _quiet(),
+    _quiet_no_movement(),
     _quiet(),
 ]
 

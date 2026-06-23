@@ -46,6 +46,9 @@ const EmissionParamsSchema = z.object({
   bernoulli_p_delays: ProbVec3,
   bernoulli_p_service_change: ProbVec3,
   bernoulli_p_planned: ProbVec3,
+  // Per-state matched-trip advance rate. Optional for back-compat with
+  // params.json written before the movement channel (vhh.4).
+  advance_rate: ProbVec3.optional(),
 });
 
 const DwellQuantilesSchema = z.object({

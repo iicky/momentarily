@@ -58,3 +58,15 @@ export function logBernoulli(value: boolean, p: number): number {
   const clipped = Math.min(Math.max(p, 1e-12), 1 - 1e-12);
   return value ? Math.log(clipped) : Math.log1p(-clipped);
 }
+
+/**
+ * log P(k of n | Binomial(n, p)) with the n-choose-k coefficient included, so
+ * the value is a true log-likelihood. n <= 0 returns 0 (the channel drops out).
+ * Mirrors _log_binomial in src/momentarily/hmm.py.
+ */
+export function logBinomial(k: number, n: number, p: number): number {
+  if (n <= 0) return 0;
+  const clipped = Math.min(Math.max(p, 1e-12), 1 - 1e-12);
+  const logCoef = lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1);
+  return logCoef + k * Math.log(clipped) + (n - k) * Math.log1p(-clipped);
+}

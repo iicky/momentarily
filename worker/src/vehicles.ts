@@ -1,9 +1,8 @@
 /**
  * Derive a compact per-route "are trains actually moving" metric from the
- * decoded GTFS-RT vehicle positions. Archived for OFFLINE validation only — a
- * contemporaneous independent truth for the current-state classification,
- * orthogonal in DERIVATION to assigned_n (where trains physically are, not how
- * many trips are dispatched). NOT published to snapshot.json in this phase.
+ * decoded GTFS-RT vehicle positions. Archived for OFFLINE validation and as the
+ * basis for the movement-derived current state — orthogonal in DERIVATION to
+ * assigned_n (where trains physically are, not how many trips are dispatched).
  *
  * Two signals, with different strengths:
  *   - moving_n / vehicles_n: an INSTANTANEOUS movement fraction. Cheap but
@@ -14,9 +13,20 @@
  *     stalled; one that moved on has advanced. A route where assigned trains are
  *     dispatched (assigned_n high) but none advance is physically frozen — the
  *     disruption mode assigned_n structurally cannot see.
+ *
+ * Advance/stall are also split by direction (north/south), because the two
+ * directions fail independently and the Bayesian movement model scores each
+ * line-direction against its own baseline advance rate. Direction comes from the
+ * stop_id N/S suffix, falling back to the trip_id `..N`/`..S` char.
  */
 
 import type { VehicleLite } from './gtfsrt';
+
+export interface DirMovementRow {
+  vehicles_n: number;
+  advanced_n: number; // present last tick AND stop_id changed
+  stalled_n: number; // present last tick AND stop_id identical
+}
 
 export interface MovementRow {
   vehicles_n: number; // vehicles referencing this route
@@ -25,6 +35,7 @@ export interface MovementRow {
   // Cross-tick (0 when no previous stop is known for the trip):
   advanced_n: number; // present last tick AND stop_id changed
   stalled_n: number; // present last tick AND stop_id identical
+  by_direction: { north: DirMovementRow; south: DirMovementRow };
 }
 
 /** Express variants (6X, 7X, FX) fold to their base route, matching derive.ts. */
@@ -34,8 +45,34 @@ function baseRoute(routeId: string): string {
 
 const STOPPED_AT = 1; // GTFS-RT VehicleStopStatus; absence defaults to IN_TRANSIT_TO
 
+/** Direction from the stop_id N/S suffix (e.g. `A09N`), falling back to the
+ * trip_id direction char after `..` (e.g. `..N`). null when neither is present. */
+function directionOf(v: VehicleLite): 'north' | 'south' | null {
+  const last = v.stopId.slice(-1);
+  if (last === 'N') return 'north';
+  if (last === 'S') return 'south';
+  const i = v.tripId.indexOf('..');
+  if (i >= 0) {
+    const c = v.tripId[i + 2];
+    if (c === 'N') return 'north';
+    if (c === 'S') return 'south';
+  }
+  return null;
+}
+
+function emptyDir(): DirMovementRow {
+  return { vehicles_n: 0, advanced_n: 0, stalled_n: 0 };
+}
+
 function emptyRow(): MovementRow {
-  return { vehicles_n: 0, stopped_n: 0, moving_n: 0, advanced_n: 0, stalled_n: 0 };
+  return {
+    vehicles_n: 0,
+    stopped_n: 0,
+    moving_n: 0,
+    advanced_n: 0,
+    stalled_n: 0,
+    by_direction: { north: emptyDir(), south: emptyDir() },
+  };
 }
 
 /**
@@ -69,13 +106,23 @@ export function deriveRouteMovementMetric(
       row = emptyRow();
       out.set(route, row);
     }
+    const dir = directionOf(v);
+    const dirRow = dir ? row.by_direction[dir] : null;
+
     row.vehicles_n += 1;
+    if (dirRow) dirRow.vehicles_n += 1;
     if (v.status === STOPPED_AT) row.stopped_n += 1;
     else row.moving_n += 1;
+
     const prev = v.tripId ? prevStops[v.tripId] : undefined;
     if (prev !== undefined) {
-      if (prev === v.stopId) row.stalled_n += 1;
-      else row.advanced_n += 1;
+      if (prev === v.stopId) {
+        row.stalled_n += 1;
+        if (dirRow) dirRow.stalled_n += 1;
+      } else {
+        row.advanced_n += 1;
+        if (dirRow) dirRow.advanced_n += 1;
+      }
     }
   }
   return out;

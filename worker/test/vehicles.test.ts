@@ -27,7 +27,40 @@ describe('deriveRouteMovementMetric', () => {
       moving_n: 2,
       advanced_n: 0,
       stalled_n: 0,
+      by_direction: {
+        north: { vehicles_n: 3, advanced_n: 0, stalled_n: 0 }, // default stop_id A01N
+        south: { vehicles_n: 0, advanced_n: 0, stalled_n: 0 },
+      },
     });
+  });
+
+  test('splits advance/stall by direction from the stop_id suffix', () => {
+    const prev = stopPositions([
+      veh({ tripId: 'n1', stopId: 'A05N' }),
+      veh({ tripId: 's1', stopId: 'A05S' }),
+      veh({ tripId: 's2', stopId: 'A07S' }),
+    ]);
+    const rows = deriveRouteMovementMetric(
+      [
+        veh({ routeId: 'A', tripId: 'n1', stopId: 'A06N' }), // north, advanced
+        veh({ routeId: 'A', tripId: 's1', stopId: 'A05S' }), // south, stalled
+        veh({ routeId: 'A', tripId: 's2', stopId: 'A09S' }), // south, advanced
+      ],
+      prev,
+    );
+    const a = rows.get('A')!;
+    expect(a.by_direction.north).toEqual({ vehicles_n: 1, advanced_n: 1, stalled_n: 0 });
+    expect(a.by_direction.south).toEqual({ vehicles_n: 2, advanced_n: 1, stalled_n: 1 });
+    // route totals still aggregate both directions
+    expect(a).toMatchObject({ vehicles_n: 3, advanced_n: 2, stalled_n: 1 });
+  });
+
+  test('falls back to the trip_id direction char when stop_id has no suffix', () => {
+    const rows = deriveRouteMovementMetric([
+      veh({ routeId: 'L', tripId: '012345_L..S01R', stopId: 'L06' }), // no N/S on stop
+    ]);
+    expect(rows.get('L')!.by_direction.south.vehicles_n).toBe(1);
+    expect(rows.get('L')!.by_direction.north.vehicles_n).toBe(0);
   });
 
   test('folds express variants to the base route', () => {

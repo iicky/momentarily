@@ -8,6 +8,7 @@ from momentarily.mapping import (
     NO_ALERTS_FALLBACK,
     coarse_status,
     is_known_alert_type,
+    severity_tier,
 )
 
 
@@ -68,3 +69,33 @@ def test_known_alert_type_helper() -> None:
     assert is_known_alert_type("Delays") is True
     assert is_known_alert_type("Planned Work") is True
     assert is_known_alert_type("No Uptown Service") is True
+
+
+@pytest.mark.parametrize(
+    ("alert_type", "expected"),
+    [
+        (None, 0),
+        ("Good Service", 0),
+        ("Information", 0),
+        ("Station Notice", 0),
+        ("Planned - Service Change", 0),
+        ("Planned Work", 0),
+        ("Delays", 1),
+        ("Some Delays", 1),
+        ("Slow Speeds", 1),
+        ("Service Change", 1),
+        ("Trains Rerouted", 1),
+        ("Stops Skipped", 1),
+        ("Severe Delays", 2),
+        ("Suspended", 3),
+        ("No Trains", 3),
+        ("No Uptown Service", 3),
+    ],
+)
+def test_severity_tier(alert_type: str | None, expected: int) -> None:
+    assert severity_tier(alert_type) == expected
+
+
+def test_severity_tier_unknown_is_zero() -> None:
+    """Unknown alert_types don't inflate the graded truth — they read tier 0."""
+    assert severity_tier("Brand New Mystery Type") == 0

@@ -33,6 +33,10 @@ class TickObservation:
     route_id: str
     tick: int  # epoch seconds, snapped to TICK_SECONDS
     observation: Observation
+    # Counted (HMM-included) alert_types active on this route-tick. Only the R2
+    # truth builder populates it — used by the review to grade ground truth by
+    # severity; the HMM training path leaves it empty.
+    disruptive_types: tuple[str, ...] = ()
 
 
 def _snap_tick(epoch: int) -> int:

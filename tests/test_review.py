@@ -6,8 +6,14 @@ tick grid so alert-clear (recovery) changepoints exist. See momentarily-vk0.2.
 
 from __future__ import annotations
 
+from momentarily.hmm import Observation
 from training.eval import TransitionRecord
-from training.review import changepoint_alignment
+from training.load import TickObservation
+from training.review import (
+    changepoint_alignment,
+    derive_graded_mta_state,
+    mta_truth,
+)
 
 TICK = 300
 T0 = 1_700_000_100  # tick-aligned
@@ -65,3 +71,60 @@ def test_route_without_truth_entries_is_unmatched():
         window_end=T0 + 7200,
     )
     assert deltas == [None]
+
+
+# ---------------------------------------------------------------------------
+# Severity-graded MTA truth (momentarily-zl6)
+# ---------------------------------------------------------------------------
+
+
+def test_graded_state_demotes_minor_alerts_at_severe_floor():
+    """Ordinary delays / routine reroutes (tier 1) read normal at floor 2, so the
+    HMM filtering them is scored as correct rather than a miss."""
+    assert derive_graded_mta_state(("Delays",), floor=2) == "normal"
+    assert derive_graded_mta_state(("Trains Rerouted",), floor=2) == "normal"
+    # At floor 1 the same tick counts as disrupted — the breadth truth.
+    assert derive_graded_mta_state(("Delays",), floor=1) == "disrupted"
+
+
+def test_graded_state_keeps_severe_and_suspension():
+    assert derive_graded_mta_state(("Severe Delays",), floor=2) == "disrupted"
+    assert derive_graded_mta_state(("Suspended",), floor=2) == "suspended"
+    # A severe alert alongside minor ones still grades disrupted.
+    assert derive_graded_mta_state(("Delays", "Severe Delays"), floor=2) == "disrupted"
+    # Suspension outranks everything regardless of floor.
+    assert derive_graded_mta_state(("Suspended", "Delays"), floor=5) == "suspended"
+
+
+def test_graded_state_no_alerts_is_normal():
+    assert derive_graded_mta_state((), floor=2) == "normal"
+    assert derive_graded_mta_state(("Planned - Service Change",), floor=2) == "normal"
+
+
+def _tick_obs(route: str, tick: int, types: tuple[str, ...]) -> TickObservation:
+    return TickObservation(
+        route_id=route,
+        tick=tick,
+        observation=Observation(
+            alert_count=len(types),
+            severity_sum=0,
+            has_suspended_alert=any("Suspend" in t or "No Trains" in t for t in types),
+            has_delays=any("Delays" in t for t in types),
+            has_service_change=any("Rerouted" in t or "Service Change" in t for t in types),
+        ),
+        disruptive_types=types,
+    )
+
+
+def test_mta_truth_floor_tightens_truth():
+    """The graded floor reclassifies a minor-delays route-tick from disrupted to
+    normal while leaving a severe one disrupted."""
+    obs = [
+        _tick_obs("1", T0, ("Delays",)),
+        _tick_obs("A", T0, ("Severe Delays",)),
+    ]
+    broad = mta_truth(obs, severity_floor=1)
+    graded = mta_truth(obs, severity_floor=2)
+    assert broad[("1", T0)] == "disrupted"
+    assert graded[("1", T0)] == "normal"
+    assert broad[("A", T0)] == graded[("A", T0)] == "disrupted"

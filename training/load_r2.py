@@ -368,7 +368,14 @@ def build_tick_observations(
                 has_planned=any(at.startswith("Planned -") for at in types),
                 tod_bin=tod_bin(tick),
             )
-            out.append(TickObservation(route_id=route_id, tick=tick, observation=obs))
+            out.append(
+                TickObservation(
+                    route_id=route_id,
+                    tick=tick,
+                    observation=obs,
+                    disruptive_types=tuple(types),
+                )
+            )
     return out
 
 

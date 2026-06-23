@@ -105,6 +105,29 @@ def category_for_label(label: str) -> str:
     return LABEL_TO_CATEGORY.get(label, "other")
 
 
+def severity_tier(alert_type: str | None) -> int:
+    """Severity rank for an MTA alert_type, for grading ground truth:
+
+      3 — service suspension (Suspended / No Trains / No <Direction> Service)
+      2 — major degradation (Severe Delays)
+      1 — minor/moderate (ordinary Delays, Slow Speeds, reroutes, skips)
+      0 — non-disruptive (Planned work, Information, Good Service, unknown)
+
+    Lets the review judge the condition classifier on like-for-like severity
+    rather than lumping a minor reroute in with a full suspension.
+    """
+    if alert_type is None:
+        return 0
+    if alert_type.startswith("Planned"):
+        return 0
+    status = coarse_status(alert_type)
+    if status == "Suspended":
+        return 3
+    if status in ("Delays", "Service Change"):
+        return 2 if "Severe" in alert_type else 1
+    return 0
+
+
 def coarse_condition(category: str) -> str:
     """Non-model severity fallback for the Python publisher.
 

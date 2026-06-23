@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from momentarily.hmm import Observation
-from momentarily.mapping import category_for_label, coarse_status
+from momentarily.mapping import category_for_label, coarse_status, severity_tier
 from training.eval import (
     TICK_SECONDS,
     PredictionRecord,
@@ -42,6 +42,7 @@ from training.eval import (
     load_transitions,
     recovery_as_dict,
 )
+from training.load import TickObservation
 from training.load_r2 import (
     Disruption,
     build_movement_truth,
@@ -58,6 +59,12 @@ HMM_STATES = ("normal", "disrupted", "suspended")
 MTA_STATES = ("normal", "disrupted", "suspended")
 CHANGEPOINT_WINDOW_MIN = 30
 
+# Default severity floor for the graded truth: tier 2 (Severe Delays) and up
+# count as disrupted; ordinary delays / reroutes (tier 1) read normal. Lets the
+# confusion matrix judge the classifier on like-for-like severity instead of a
+# truth dominated by minor-alert breadth. See momentarily-zl6.
+SEVERE_FLOOR = 2
+
 
 def derive_mta_state(obs: Observation) -> str:
     """MTA-derived ground-truth state for a tick — mirrors the HMM training
@@ -69,8 +76,58 @@ def derive_mta_state(obs: Observation) -> str:
     return "normal"
 
 
+def derive_graded_mta_state(alert_types: tuple[str, ...], *, floor: int) -> str:
+    """Severity-graded ground-truth state from a route-tick's active alert_types.
+
+    suspended if any suspension alert (tier 3); disrupted if any alert reaches
+    `floor`; otherwise normal — so sub-floor alerts (minor delays, routine
+    reroutes) read normal and the HMM filtering them is scored as correct, not a
+    miss. floor=1 reproduces the breadth-dominated truth; floor=2 is severe-only.
+    """
+    tiers = [severity_tier(at) for at in alert_types]
+    if any(t == 3 for t in tiers):
+        return "suspended"
+    if any(t >= floor for t in tiers):
+        return "disrupted"
+    return "normal"
+
+
 def snap_tick(ts: int) -> int:
     return ((ts + TICK_SECONDS // 2) // TICK_SECONDS) * TICK_SECONDS
+
+
+def load_truth_observations(
+    client: S3Client,
+    bucket: str,
+    start_date: Any,
+    end_date: Any,
+) -> list[TickObservation]:
+    """Per-(route, tick) observations from the alerts archive, with the active
+    alert_types retained for severity grading. Fetched once; both the broad and
+    graded truths derive from it."""
+    del bucket  # client carries its own configured bucket via load_config
+    bodies = fetch_alert_versions(
+        start_date=start_date, end_date=end_date, client=client
+    )
+    return build_tick_observations(bodies)
+
+
+def mta_truth(
+    obs_list: list[TickObservation], *, severity_floor: int = 1
+) -> dict[tuple[str, int], str]:
+    """(route, tick) → MTA-derived state. severity_floor <= 1 uses the original
+    breadth truth (any delays/service-change = disrupted); >= 2 grades by
+    alert-type severity. Ticks not in the dict had no active alerts → 'normal'."""
+    if severity_floor <= 1:
+        return {
+            (o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list
+        }
+    return {
+        (o.route_id, o.tick): derive_graded_mta_state(
+            o.disruptive_types, floor=severity_floor
+        )
+        for o in obs_list
+    }
 
 
 def build_mta_truth(
@@ -78,15 +135,12 @@ def build_mta_truth(
     bucket: str,
     start_date: Any,
     end_date: Any,
+    *,
+    severity_floor: int = 1,
 ) -> dict[tuple[str, int], str]:
-    """For each (route, tick) with any active alert in the window, return MTA
-    state. Ticks not in the dict had no active alerts → treat as 'normal'."""
-    del bucket  # client carries its own configured bucket via load_config
-    bodies = fetch_alert_versions(
-        start_date=start_date, end_date=end_date, client=client
-    )
-    obs_list = build_tick_observations(bodies)
-    return {(o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list}
+    """Convenience: fetch + derive the truth in one call."""
+    obs_list = load_truth_observations(client, bucket, start_date, end_date)
+    return mta_truth(obs_list, severity_floor=severity_floor)
 
 
 # Alert categories that put the HMM in a disrupted condition — the others
@@ -379,6 +433,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         default=None,
         help="output dir (default docs/review/<today>-shadow-hmm/)",
     )
+    parser.add_argument(
+        "--severity-floor",
+        type=int,
+        default=SEVERE_FLOOR,
+        help="alert-severity tier (2=severe-only) for the graded truth confusion",
+    )
     args = parser.parse_args(argv)
 
     today = datetime.now(UTC).date()
@@ -394,8 +454,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     trans = load_transitions(client, cfg.bucket, start_date, today)
     print(f"  {len(preds)} predictions, {len(trans)} transitions")
     print("loading alerts archive for MTA-state truth")
-    truth = build_mta_truth(client, cfg.bucket, start_date, today)
+    truth_obs = load_truth_observations(client, cfg.bucket, start_date, today)
+    truth = mta_truth(truth_obs, severity_floor=1)
+    truth_graded = mta_truth(truth_obs, severity_floor=args.severity_floor)
+    regraded = sum(1 for k, v in truth.items() if truth_graded.get(k) != v)
     print(f"  {len(truth)} (route, tick) ground-truth states")
+    print(
+        f"  severity-graded truth (floor={args.severity_floor}): "
+        f"{regraded} ticks reclassified vs the breadth truth"
+    )
     print("loading vehicle-movement archive for independent current-state truth")
     movement_truth = build_movement_truth(
         fetch_vehicle_metrics(cfg, start_date=start_date, end_date=today, client=client)
@@ -412,6 +479,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         preds, trans, window_start=window_start, window_end=window_end
     )
     conf = confusion(preds, truth)
+    # Same HMM condition, scored against severity-graded truth: sub-floor alerts
+    # (minor delays, routine reroutes) read normal, so predicted-normal cells are
+    # judged on whether real disruption was missed, not on minor-alert breadth.
+    conf_graded = confusion(preds, truth_graded)
     # Same HMM condition, scored against where trains physically are instead of
     # the alert feed — an independent-in-derivation cross-check. Empty until the
     # vehicle archive has accumulated ticks (Worker side ships first).
@@ -429,6 +500,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
     plot_confusion(conf, out_dir / "confusion.png")
+    plot_confusion(
+        conf_graded,
+        out_dir / "confusion_graded.png",
+        truth_label=f"severity-graded MTA state (floor={args.severity_floor})",
+        title="Regime confusion: HMM vs severe-only MTA truth (row-normalized)",
+    )
     plot_confusion(
         conf_movement,
         out_dir / "confusion_movement.png",
@@ -460,6 +537,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
         "current_params": eval_doc["current_params"],
         "confusion": conf,
+        # HMM condition vs severity-graded MTA truth — sub-floor alerts read
+        # normal so the matrix judges severity like-for-like. severity_floor and
+        # the reclassified-tick count document how much the truth tightened.
+        "confusion_graded": {
+            "matrix": conf_graded,
+            "truth_source": "mta_alerts_severity_graded",
+            "severity_floor": args.severity_floor,
+            "reclassified_ticks": regraded,
+        },
         # HMM condition vs vehicle-movement truth — independent in derivation from
         # the alert feed above (where trains physically are, not what the feed
         # says). truth_source documents the column axis.
@@ -479,7 +565,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"wrote {out_dir}/ (summary.json + 5 PNGs)")
+    print(f"wrote {out_dir}/ (summary.json + 6 PNGs)")
     return 0
 
 

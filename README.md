@@ -52,7 +52,7 @@ All fetched from the MTA developer gateway (`api-endpoint.mta.info`):
 | Elevator/escalator (registry) | `…/nyct%2Fnyct_ene_equipments.json` | hourly |
 | MTA Subway Stations | NYS Open Data `39hk-dx4f` | daily |
 
-JSON-only for v1 — no protobuf parsing. Trip updates and vehicle positions (protobuf-only) deferred to a later milestone if station-arrival sensors get added downstream.
+The published v1 snapshot is JSON-derived. The protobuf GTFS-RT feeds (trip updates and vehicle positions) are decoded too, but only for offline HMM validation — each tick archives a per-route service metric (assigned trips) and a movement metric (where trains are, advancing vs stalled across ticks), held out as independent truth for recovery and current-state classification. They do not feed the public snapshot.
 
 ## Running it
 

@@ -66,7 +66,7 @@ class DwellQuantiles(TypedDict):
 DwellSample = tuple[int, bool]
 
 
-def _km_cdf_points(samples: list[DwellSample]) -> list[tuple[int, float]]:
+def km_cdf_points(samples: list[DwellSample]) -> list[tuple[int, float]]:
     """Kaplan-Meier product-limit CDF: [(event_time, F(event_time))], ascending.
 
     Censored observations reduce the at-risk count without registering an
@@ -120,7 +120,7 @@ def _make_cell(samples: list[DwellSample]) -> DwellQuantiles:
     """Build a DwellQuantiles from (duration, completed) samples via
     Kaplan-Meier, so right-censored (still-running) regimes push the tail up
     instead of silently vanishing. See momentarily-vk0.6."""
-    points = _km_cdf_points(samples)
+    points = km_cdf_points(samples)
     n_events = sum(1 for _d, completed in samples if completed)
     n_censored = len(samples) - n_events
     max_duration = max(d for d, _completed in samples)

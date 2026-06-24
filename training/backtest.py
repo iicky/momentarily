@@ -65,20 +65,25 @@ from momentarily.hmm import (
     initial_published_state,
     project_forward,
 )
-from training.dwell import compute_dwell_quantiles, dwell_cdf
+from training.dwell import compute_dwell_quantiles, dwell_cdf, dwell_samples_by_cell
 from training.eval import TICK_SECONDS, load_transitions, snap_tick
 from training.load_r2 import load_route_series_r2
 from training.r2_client import load_config, make_client
 from training.review import build_mta_truth, derive_mta_state
+from training.survival import ParametricFit, fit_loglogistic, loglogistic_survival
 from training.train_em import load_series_by_route, train
 
 HORIZONS_MIN = (30, 60, 120)
 # Arms compared, all scored against the same fixed truth:
-#   geom : geometric filter + geometric projection (production path)
-#   km   : geometric filter + KM-residual projection (the shipped Tier-1 change)
+#   geom  : geometric filter + geometric projection (production path)
+#   km    : geometric filter + KM-residual projection (the shipped Tier-1 change)
+#   km_ll : KM-residual, but the past-the-curve tail extrapolation swaps the
+#           constant-hazard exponential patch for a fitted log-logistic tail
+#           (gtq.5 splice candidate — the body stays empirical, only the tail
+#           beyond the last observed quantile differs).
 # A full HSMM filter was tested and shelved — it added nothing to the forecast
 # (filtering is emission-dominated).
-MODELS = ("geom", "km")
+MODELS = ("geom", "km", "km_ll")
 
 
 def _argmax(probs: tuple[float, float, float]) -> int:
@@ -105,23 +110,59 @@ def _p_leave(curve_sec: list[int], elapsed: float, horizon: float) -> float:
     return 1.0 - math.exp(-max(lam, 1e-12) * horizon)
 
 
+def _p_leave_ll(
+    curve_sec: list[int], fit: ParametricFit | None, elapsed: float, horizon: float
+) -> float:
+    """Like _p_leave, but past the last observed quantile the tail is the fitted
+    log-logistic conditional survival 1 - S(elapsed+h)/S(elapsed) rather than a
+    constant-hazard exponential. The body (elapsed within the curve) is still the
+    empirical KM curve — this is a tail splice, not a parametric body fit, which
+    gtq.4 showed is a worse in-body match. Falls back to the exponential patch
+    when no fit converged."""
+    pe = dwell_cdf(curve_sec, elapsed)
+    if pe < 1.0:
+        ph = dwell_cdf(curve_sec, elapsed + horizon)
+        return (ph - pe) / (1.0 - pe)
+    if fit is None:
+        return _p_leave(curve_sec, elapsed, horizon)
+    s_now = loglogistic_survival(elapsed, fit.shape, fit.scale)
+    s_fut = loglogistic_survival(elapsed + horizon, fit.shape, fit.scale)
+    if s_now <= 0.0:
+        return 1.0
+    return max(0.0, min(1.0, 1.0 - s_fut / s_now))
+
+
 def _km_residual_p_normal(
     state: FilterState,
     params: HMMParams,
     route: str,
     dwell_curves: dict[str, dict[str, Any]],
     pooled: dict[str, Any],
+    dwell_fits: dict[str, dict[str, ParametricFit]],
+    pooled_fits: dict[str, ParametricFit],
     horizon_sec: float,
     clim_normal: float,
+    tail: str,
 ) -> float | None:
     """Explicit-duration P(normal at t+H). None only when no curve exists at all
-    (route cell missing AND no pooled fallback) — then caller uses geometric."""
+    (route cell missing AND no pooled fallback) — then caller uses geometric.
+    `tail` selects the past-the-curve extrapolation: "exp" (constant hazard) or
+    "ll" (fitted log-logistic). The fit is drawn from the same source as the cell
+    so curve and tail stay on the same samples."""
     s = _argmax(state.probabilities)
-    cell = dwell_curves.get(route, {}).get(STATES[s]) or pooled.get(STATES[s])
+    state_name = STATES[s]
+    cell = dwell_curves.get(route, {}).get(state_name)
+    fit = dwell_fits.get(route, {}).get(state_name)
+    if cell is None:
+        cell = pooled.get(state_name)
+        fit = pooled_fits.get(state_name)
     if cell is None:
         return None
     elapsed = max(0, state.last_updated_at - state.regime_entered_at)
-    p_leave = _p_leave(cell["curve_sec"], elapsed, horizon_sec)
+    if tail == "ll":
+        p_leave = _p_leave_ll(cell["curve_sec"], fit, elapsed, horizon_sec)
+    else:
+        p_leave = _p_leave(cell["curve_sec"], elapsed, horizon_sec)
     if s == 0:  # currently normal: stay normal, or leave then revert to climatology
         return (1.0 - p_leave) + p_leave * clim_normal
     # currently disrupted/suspended: only normal if we've left AND jumped to normal
@@ -192,10 +233,29 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
     pooled = compute_dwell_quantiles(pooled_trans, window_end=train_end_epoch).get(
         "*", {}
     )
+    # Log-logistic tail fits for the km_ll arm, on the same censored samples that
+    # back each curve. A cell with no fit (no events) falls back to the
+    # exponential tail inside _p_leave_ll.
+    dwell_fits: dict[str, dict[str, ParametricFit]] = defaultdict(dict)
+    for (route_, state_), cell_samples in dwell_samples_by_cell(
+        train_trans, window_end=train_end_epoch
+    ).items():
+        fit = fit_loglogistic(cell_samples)
+        if fit is not None:
+            dwell_fits[route_][state_] = fit
+    pooled_fits: dict[str, ParametricFit] = {}
+    for (_route, state_), cell_samples in dwell_samples_by_cell(
+        pooled_trans, window_end=train_end_epoch
+    ).items():
+        fit = fit_loglogistic(cell_samples)
+        if fit is not None:
+            pooled_fits[state_] = fit
     print(
         f"fit {len(params_by_route)} routes; dwell cells for "
         f"{sum(len(v) for v in dwell_curves.values())} (route,state) pairs; "
-        f"pooled states: {sorted(pooled)}",
+        f"pooled states: {sorted(pooled)}; "
+        f"log-logistic tail fits: {sum(len(v) for v in dwell_fits.values())} route cells, "
+        f"{sorted(pooled_fits)} pooled",
         file=sys.stderr,
     )
 
@@ -242,13 +302,20 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
                 hsec = h * 60
                 geom = project_forward(geom_state, params, hsec // TICK_SECONDS)[0]
                 km = _km_residual_p_normal(
-                    geom_state, params, route, dwell_curves, pooled, hsec, cn
+                    geom_state, params, route, dwell_curves, pooled,
+                    dwell_fits, pooled_fits, hsec, cn, "exp",
+                )
+                km_ll = _km_residual_p_normal(
+                    geom_state, params, route, dwell_curves, pooled,
+                    dwell_fits, pooled_fits, hsec, cn, "ll",
                 )
                 total[h] += 1
                 if km is None:
                     fallback[h] += 1
                     km = geom
-                preds = {"geom": geom, "km": km}
+                if km_ll is None:
+                    km_ll = geom
+                preds = {"geom": geom, "km": km, "km_ll": km_ll}
                 samples[h].append(
                     (route, preds, persistence, outcome, cur_state != "normal")
                 )
@@ -380,6 +447,14 @@ def _print_report(doc: dict[str, Any]) -> None:
         print(
             f"  projection effect (geom proj -> KM-residual proj): "
             f"{means['geom']:.4f} -> {means['km']:.4f}"
+        )
+    m_km, m_ll = means.get("km"), means.get("km_ll")
+    if m_km is not None and m_ll is not None:
+        delta = m_ll - m_km
+        verdict = "ship" if delta < 0 else "no ship"
+        print(
+            f"  tail splice effect (exp tail -> log-logistic tail): "
+            f"{m_km:.4f} -> {m_ll:.4f} (Δ {delta:+.4f}, {verdict})"
         )
 
 

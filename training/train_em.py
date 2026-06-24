@@ -48,6 +48,7 @@ from training.load_r2 import (
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 from training.run_filter import BOOTSTRAP_PARAMS
+from training.survival import loglogistic_tail
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -395,8 +396,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     # durations from regimes that actually ended after the window.
     _, end_epoch = _aligned_window(start_date, end_date)
     window_end = min(int(datetime.now(UTC).timestamp()), end_epoch)
-    dwell_q = compute_dwell_quantiles(transitions, window_end=window_end)
-    dwell_q_by_alert = compute_dwell_quantiles_by_alert(transitions)
+    dwell_q = compute_dwell_quantiles(
+        transitions, window_end=window_end, tail_fn=loglogistic_tail
+    )
+    dwell_q_by_alert = compute_dwell_quantiles_by_alert(
+        transitions, tail_fn=loglogistic_tail
+    )
     n_dwell_cells = sum(len(by_state) for by_state in dwell_q.values())
     n_dwell_alert_cells = sum(
         len(by_alert)

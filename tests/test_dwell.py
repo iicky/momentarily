@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from training.dwell import (
     CURVE_POINTS,
     MIN_SAMPLES_FOR_EMPIRICAL,
@@ -247,6 +249,27 @@ def test_p_leave_by_extrapolates_past_the_curve() -> None:
 def test_p_leave_by_degenerate_curve_is_zero() -> None:
     assert p_leave_by([], 0, 1800) == 0.0
     assert p_leave_by([100], 0, 1800) == 0.0
+
+
+def test_p_leave_by_log_logistic_tail_only_past_the_curve() -> None:
+    # Inside the curve the splice is inert; past it the log-logistic's decreasing
+    # hazard leaves less eagerly than the constant-hazard exponential patch.
+    curve = [0, 100]
+    tail = [2.0, 100.0]
+    assert p_leave_by(curve, 50, 25, tail) == p_leave_by(curve, 50, 25)
+    ll = p_leave_by(curve, 100, 3600, tail)
+    exp = p_leave_by(curve, 100, 3600)
+    assert 0.0 < ll < exp
+
+
+def test_p_leave_by_log_logistic_matches_conditional_survival() -> None:
+    curve = [0, 100]
+    shape, scale = 1.5, 200.0
+    s_now = 1.0 / (1.0 + (100 / scale) ** shape)
+    s_fut = 1.0 / (1.0 + (700 / scale) ** shape)
+    assert p_leave_by(curve, 100, 600, [shape, scale]) == pytest.approx(
+        1.0 - s_fut / s_now
+    )
 
 
 def test_flat_curve_at_value_is_indeterminate() -> None:

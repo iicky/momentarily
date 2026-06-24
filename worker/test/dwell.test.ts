@@ -105,4 +105,25 @@ describe('pLeaveBy', () => {
     expect(pLeaveBy([], 0, 1800)).toBe(0);
     expect(pLeaveBy([100], 0, 1800)).toBe(0);
   });
+
+  test('log-logistic tail is used only past the curve, not in the body', () => {
+    const curve = [0, 100];
+    const tail: [number, number] = [2, 100];
+    // Inside the curve the splice is inert — body stays empirical.
+    expect(pLeaveBy(curve, 50, 25, tail)).toBe(pLeaveBy(curve, 50, 25));
+    // Past the curve the tail's decreasing hazard is *less* eager to leave than
+    // the constant-hazard exponential patch — a long-calm regime stays confident.
+    const ll = pLeaveBy(curve, 100, 3600, tail);
+    const exp = pLeaveBy(curve, 100, 3600);
+    expect(ll).toBeGreaterThan(0);
+    expect(ll).toBeLessThan(exp);
+  });
+
+  test('log-logistic tail matches the conditional-survival formula past the curve', () => {
+    const curve = [0, 100];
+    const [shape, scale] = [1.5, 200];
+    const sNow = 1 / (1 + (100 / scale) ** shape);
+    const sFut = 1 / (1 + (700 / scale) ** shape);
+    expect(pLeaveBy(curve, 100, 600, [shape, scale])).toBeCloseTo(1 - sFut / sNow, 12);
+  });
 });

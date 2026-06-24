@@ -65,6 +65,11 @@ const DwellQuantilesSchema = z.object({
   // the Worker condition recovery outputs on elapsed regime age (see
   // worker/src/dwell.ts). Optional for back-compat. See momentarily-vk0.1.
   curve_sec: z.array(z.number().nonnegative()).min(2).optional(),
+  // [shape, scale] of a log-logistic fit to this cell's dwells. pLeaveBy uses it
+  // to extrapolate the tail past the last observed quantile instead of the
+  // constant-hazard exponential patch. Optional for back-compat with older
+  // params.json. See momentarily-gtq.5.
+  tail_ll: z.tuple([z.number().positive(), z.number().positive()]).optional(),
 });
 
 // Per-route, per-prev-state empirical dwell quantiles from the trainer.
@@ -99,6 +104,7 @@ export interface DwellQuantiles {
   recover_by_60?: number | undefined;
   recover_by_120?: number | undefined;
   curve_sec?: number[] | undefined;
+  tail_ll?: [number, number] | undefined;
 }
 
 export type DwellByState = Record<string, DwellQuantiles>;

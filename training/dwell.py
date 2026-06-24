@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from typing import TypedDict
+from collections.abc import Callable
+from typing import NotRequired, TypedDict
 
 from training.eval import TransitionRecord
 
@@ -58,12 +59,22 @@ class DwellQuantiles(TypedDict):
     recover_by_60: float
     recover_by_120: float
     curve_sec: list[int]
+    # [shape, scale] of a log-logistic fit to this cell's censored dwells, used by
+    # p_leave_by to extrapolate the tail past the last observed quantile instead
+    # of the coarse constant-hazard exponential patch. Absent when no fit
+    # converged (no completed events). See momentarily-gtq.5.
+    tail_ll: NotRequired[list[float]]
 
 
 # One observation for the estimator: (duration_sec, completed). completed=False
 # means the regime was still running at the observation boundary (right-
 # censored) — we know dwell > duration, not its value.
 DwellSample = tuple[int, bool]
+
+# Fits a [shape, scale] log-logistic tail to a cell's samples, or None if it
+# can't. Injected (rather than imported) so dwell.py stays free of survival.py,
+# which depends on this module.
+TailFn = Callable[[list["DwellSample"]], "list[float] | None"]
 
 
 def km_cdf_points(samples: list[DwellSample]) -> list[tuple[int, float]]:
@@ -116,15 +127,21 @@ def _km_cdf_at(points: list[tuple[int, float]], horizon: int) -> float:
     return out
 
 
-def _make_cell(samples: list[DwellSample]) -> DwellQuantiles:
+def _make_cell(
+    samples: list[DwellSample], tail_fn: TailFn | None = None
+) -> DwellQuantiles:
     """Build a DwellQuantiles from (duration, completed) samples via
     Kaplan-Meier, so right-censored (still-running) regimes push the tail up
-    instead of silently vanishing. See momentarily-vk0.6."""
+    instead of silently vanishing. See momentarily-vk0.6.
+
+    With `tail_fn`, a log-logistic [shape, scale] tail is fit to the same
+    samples and stored on the cell for the Worker's past-the-curve splice.
+    """
     points = km_cdf_points(samples)
     n_events = sum(1 for _d, completed in samples if completed)
     n_censored = len(samples) - n_events
     max_duration = max(d for d, _completed in samples)
-    return DwellQuantiles(
+    cell = DwellQuantiles(
         n=n_events,
         n_censored=n_censored,
         q25_sec=_km_quantile(points, 0.25, max_duration),
@@ -138,6 +155,11 @@ def _make_cell(samples: list[DwellSample]) -> DwellQuantiles:
             for i in range(CURVE_POINTS)
         ],
     )
+    if tail_fn is not None:
+        tail = tail_fn(samples)
+        if tail is not None:
+            cell["tail_ll"] = tail
+    return cell
 
 
 def _open_regimes(
@@ -212,13 +234,24 @@ def conditional_recover_by(
     return (p_horizon - p_elapsed) / (1.0 - p_elapsed)
 
 
-def p_leave_by(curve_sec: list[int], elapsed_sec: float, horizon_sec: float) -> float:
-    """P(dwell <= elapsed + horizon | dwell > elapsed), extrapolating an
-    exponential tail once the regime has outlived every observed dwell instead of
-    saturating at the curve max. Unlike conditional_recover_by (which returns None
-    past the curve, for a recovery *time* we won't fabricate), this keeps the
-    conditional exit *probability* meaningful in the long-lived tail. Mirrored in
-    worker/src/dwell.ts; keep in sync."""
+def p_leave_by(
+    curve_sec: list[int],
+    elapsed_sec: float,
+    horizon_sec: float,
+    tail_ll: list[float] | None = None,
+) -> float:
+    """P(dwell <= elapsed + horizon | dwell > elapsed), extrapolating a tail once
+    the regime has outlived every observed dwell instead of saturating at the
+    curve max. Unlike conditional_recover_by (which returns None past the curve,
+    for a recovery *time* we won't fabricate), this keeps the conditional exit
+    *probability* meaningful in the long-lived tail.
+
+    Past the curve the tail is the fitted log-logistic conditional survival when
+    `tail_ll` ([shape, scale]) is supplied, else a constant-hazard exponential
+    patch read off the top segment. The log-logistic's decreasing hazard models
+    the heavy dwell tail better — a long-calm regime stays confident rather than
+    being told it's about to leave (gtq.5 Brier backtest). The body stays
+    empirical either way. Mirrored in worker/src/dwell.ts; keep in sync."""
     k = len(curve_sec)
     if k < 2:
         return 0.0
@@ -227,11 +260,26 @@ def p_leave_by(curve_sec: list[int], elapsed_sec: float, horizon_sec: float) -> 
         return (dwell_cdf(curve_sec, elapsed_sec + horizon_sec) - p_elapsed) / (
             1.0 - p_elapsed
         )
+    if tail_ll is not None:
+        shape, scale = tail_ll
+        s_now = _loglogistic_survival(elapsed_sec, shape, scale)
+        if s_now <= 0.0:
+            return 1.0
+        s_fut = _loglogistic_survival(elapsed_sec + horizon_sec, shape, scale)
+        return max(0.0, min(1.0, 1.0 - s_fut / s_now))
     # Outlived the curve: constant tail hazard from the top segment (the top
     # 1/(k-1) of mass is lost over its width), projected across the horizon.
     seg = curve_sec[-1] - curve_sec[-2]
     lam = (1.0 / (k - 1)) / seg if seg > 0 else 1.0 / max(1.0, float(curve_sec[-1]))
     return 1.0 - math.exp(-max(lam, 1e-12) * horizon_sec)
+
+
+def _loglogistic_survival(t: float, shape: float, scale: float) -> float:
+    """S(t) = 1 / (1 + (t/scale)^shape). Inlined (not imported from survival.py)
+    to keep the conditional-survival math free of that module's import cycle."""
+    if t <= 0.0 or scale <= 0.0:
+        return 1.0
+    return 1.0 / (1.0 + (t / scale) ** shape)
 
 
 def conditional_remaining_quantile(
@@ -249,11 +297,30 @@ def conditional_remaining_quantile(
     return max(0.0, total - elapsed_sec)
 
 
+def dwell_samples_by_cell(
+    transitions: list[TransitionRecord], *, window_end: int | None = None
+) -> dict[tuple[str, str], list[DwellSample]]:
+    """Group transitions into per-(route, state) dwell samples. Each completed
+    transition contributes a (dwell_sec, True) event; with `window_end`, each
+    route's still-open final regime joins its cell as a right-censored
+    (duration, False) observation (Kaplan-Meier). The raw samples backing every
+    cell, so a parametric fit and the empirical curve see identical data.
+    """
+    by_cell: dict[tuple[str, str], list[DwellSample]] = defaultdict(list)
+    for t in transitions:
+        by_cell[(t.route, t.prev_state)].append((int(t.dwell_sec), True))
+    if window_end is not None:
+        for (route, state), duration in _open_regimes(transitions, window_end).items():
+            by_cell[(route, state)].append((duration, False))
+    return by_cell
+
+
 def compute_dwell_quantiles(
     transitions: list[TransitionRecord],
     *,
     min_samples: int = MIN_SAMPLES_FOR_EMPIRICAL,
     window_end: int | None = None,
+    tail_fn: TailFn | None = None,
 ) -> dict[str, dict[str, DwellQuantiles]]:
     """Return {route: {state: DwellQuantiles}} for each (route, prev_state)
     with at least `min_samples` completed transitions. Sparser cells are
@@ -262,20 +329,15 @@ def compute_dwell_quantiles(
     With `window_end`, each route's still-open final regime joins its cell as
     a right-censored observation (Kaplan-Meier), so a marathon regime in
     progress pushes the tail up instead of being invisible until it ends.
-    See momentarily-vk0.6.
+    See momentarily-vk0.6. With `tail_fn`, each cell carries a log-logistic
+    tail for the Worker's past-the-curve splice.
     """
-    by_cell: dict[tuple[str, str], list[DwellSample]] = defaultdict(list)
-    for t in transitions:
-        by_cell[(t.route, t.prev_state)].append((int(t.dwell_sec), True))
-    if window_end is not None:
-        for (route, state), duration in _open_regimes(transitions, window_end).items():
-            by_cell[(route, state)].append((duration, False))
-
+    by_cell = dwell_samples_by_cell(transitions, window_end=window_end)
     out: dict[str, dict[str, DwellQuantiles]] = defaultdict(dict)
     for (route, state), samples in by_cell.items():
         if sum(1 for _d, completed in samples if completed) < min_samples:
             continue
-        out[route][state] = _make_cell(samples)
+        out[route][state] = _make_cell(samples, tail_fn)
     return dict(out)
 
 
@@ -283,6 +345,7 @@ def compute_dwell_quantiles_by_alert(
     transitions: list[TransitionRecord],
     *,
     min_samples: int = MIN_SAMPLES_FOR_EMPIRICAL,
+    tail_fn: TailFn | None = None,
 ) -> dict[str, dict[str, dict[str, DwellQuantiles]]]:
     """Return {route: {state: {alert_type: DwellQuantiles}}} for each
     (route, prev_state, alert_type_at_entry) cell with at least `min_samples`
@@ -316,7 +379,7 @@ def compute_dwell_quantiles_by_alert(
     for (route, state, alert_type), samples in by_cell.items():
         if len(samples) < min_samples:
             continue
-        out[route][state][alert_type] = _make_cell(samples)
+        out[route][state][alert_type] = _make_cell(samples, tail_fn)
     return {
         r: {s: dict(by_at) for s, by_at in by_state.items()}
         for r, by_state in out.items()

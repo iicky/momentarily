@@ -280,6 +280,15 @@ def quantile_of(fit: ParametricFit, p: float) -> float:
     return loglogistic_quantile(p, fit.shape, fit.scale)
 
 
+def loglogistic_tail(samples: list[DwellSample]) -> list[float] | None:
+    """[shape, scale] of the log-logistic fit, or None if it doesn't converge.
+    The compact tail descriptor stored on each dwell cell for the Worker's
+    past-the-curve splice (dwell.p_leave_by / worker pLeaveBy). See
+    momentarily-gtq.5."""
+    fit = fit_loglogistic(samples)
+    return [fit.shape, fit.scale] if fit is not None else None
+
+
 def fit_all(samples: list[DwellSample]) -> list[ParametricFit]:
     """Both families, fitted; failed fits dropped. Empty if nothing fits."""
     return [f for f in (fit_weibull(samples), fit_loglogistic(samples)) if f is not None]

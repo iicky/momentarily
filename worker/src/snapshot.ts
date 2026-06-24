@@ -573,9 +573,10 @@ function buildInference(
         // the normal destination — kept meaningful once the regime outlives every
         // observed dwell, where recovery_minutes below goes indeterminate.
         const curve = empirical.curve_sec;
-        p_normal_in_30 = pLeaveBy(curve, elapsedSec, 1800) * toNormal;
-        p_normal_in_60 = pLeaveBy(curve, elapsedSec, 3600) * toNormal;
-        p_normal_in_120 = pLeaveBy(curve, elapsedSec, 7200) * toNormal;
+        const tail = empirical.tail_ll;
+        p_normal_in_30 = pLeaveBy(curve, elapsedSec, 1800, tail) * toNormal;
+        p_normal_in_60 = pLeaveBy(curve, elapsedSec, 3600, tail) * toNormal;
+        p_normal_in_120 = pLeaveBy(curve, elapsedSec, 7200, tail) * toNormal;
         const conditional = conditionalRecovery(curve, elapsedSec);
         if (conditional !== null) {
           recovery_minutes = clamp(secToMin(conditional.median_sec));

@@ -63,6 +63,27 @@ test("calibrationReliability maps bins to midpoint/predicted/observed", () => {
   assert.equal(r.bins[1].p, 0.95);
 });
 
+test("calibrationReliability threads skill scores and the state decomposition", () => {
+  const d = doc();
+  d.calibration[0].excluded_schedule = 9;
+  d.calibration[0].by_current = {
+    normal_now: { n: 30, brier: 0.02, bss_persistence: 0.6 },
+    not_normal_now: { n: 12, brier: 0.3, bss_persistence: -0.45 },
+  };
+  const [r] = calibrationReliability(d);
+  assert.equal(r.skillPersistence, 0.4);
+  assert.equal(r.skillClimatology, 0.52);
+  assert.equal(r.excludedSchedule, 9);
+  assert.deepEqual(r.decomp?.normalNow, { n: 30, bss: 0.6 });
+  assert.deepEqual(r.decomp?.notNormalNow, { n: 12, bss: -0.45 });
+});
+
+test("calibrationReliability leaves decomp undefined when the feed omits it", () => {
+  const [r] = calibrationReliability(doc());
+  assert.equal(r.decomp, undefined);
+  assert.equal(r.skillPersistence, 0.4);
+});
+
 test("calibrationReliability null brier/means become NaN", () => {
   const d = doc();
   d.calibration[0].brier = null;

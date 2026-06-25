@@ -62,6 +62,14 @@ export interface CalibrationDoc {
     brier_climatology: number | null;
     bss_persistence: number | null;
     bss_climatology: number | null;
+    excluded_schedule?: number;
+    // Persistence loss split by the current condition at T — "normal_now" (the
+    // sticky-regime case) vs "not_normal_now" (the recovery forecast), so the UI
+    // can show which slice drags the overall skill negative.
+    by_current?: Record<
+      string,
+      { n: number; brier: number | null; bss_persistence: number | null }
+    >;
     bins: {
       bin_lo: number;
       bin_hi: number;
@@ -88,30 +96,48 @@ export async function fetchCalibration(base = FEED_BASE): Promise<CalibrationDoc
 }
 
 // Reshape the published bins into the same ReliabilityResult the client charts
-// expect (bin midpoint, predicted/observed means). excludedSchedule isn't
-// carried in the aggregate — the published Brier is over whatever the grader
-// scored — so it's reported as 0.
+// expect (bin midpoint, predicted/observed means), carrying through the skill
+// scores and the normal-now/not-normal-now decomposition the feed publishes.
 export interface AggregateReliability {
   horizonMin: number;
   bins: { p: number; predictedMean: number; observedFreq: number; n: number }[];
   brier: number;
   n: number;
   excludedSchedule: number;
+  skillPersistence: number | null;
+  skillClimatology: number | null;
+  decomp?: {
+    normalNow?: { n: number; bss: number | null };
+    notNormalNow?: { n: number; bss: number | null };
+  };
 }
 
 export function calibrationReliability(doc: CalibrationDoc): AggregateReliability[] {
-  return doc.calibration.map((c) => ({
-    horizonMin: c.horizon_min,
-    n: c.n,
-    brier: c.brier ?? NaN,
-    excludedSchedule: 0,
-    bins: c.bins.map((b) => ({
-      p: (b.bin_lo + b.bin_hi) / 2,
-      predictedMean: b.mean_pred ?? NaN,
-      observedFreq: b.mean_outcome ?? NaN,
-      n: b.n,
-    })),
-  }));
+  return doc.calibration.map((c) => {
+    const nn = c.by_current?.normal_now;
+    const xn = c.by_current?.not_normal_now;
+    return {
+      horizonMin: c.horizon_min,
+      n: c.n,
+      brier: c.brier ?? NaN,
+      excludedSchedule: c.excluded_schedule ?? 0,
+      skillPersistence: c.bss_persistence,
+      skillClimatology: c.bss_climatology,
+      decomp:
+        nn || xn
+          ? {
+              normalNow: nn ? { n: nn.n, bss: nn.bss_persistence } : undefined,
+              notNormalNow: xn ? { n: xn.n, bss: xn.bss_persistence } : undefined,
+            }
+          : undefined,
+      bins: c.bins.map((b) => ({
+        p: (b.bin_lo + b.bin_hi) / 2,
+        predictedMean: b.mean_pred ?? NaN,
+        observedFreq: b.mean_outcome ?? NaN,
+        n: b.n,
+      })),
+    };
+  });
 }
 
 export function calibrationHeatmap(doc: CalibrationDoc): HeatmapEntry[] {

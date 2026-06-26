@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Project pre-commit gate. Lints + typechecks only the subtrees that have
+# staged changes, mirroring CI (.github/workflows/ci.yml) plus viz. Auto-fixes
+# formatting/lint and re-stages the result. Runs after the beads + codex review
+# gate (chained from .beads/hooks/pre-commit).
+#
+# The gate checks the WORKING TREE, which equals the index only for fully-staged
+# files. So if a checked file is partially staged (staged AND has unstaged edits)
+# the working tree no longer matches what's being committed — we can't validate
+# it without guessing, and auto-fix would drag in the unstaged hunks. Rather than
+# pass a commit it didn't actually inspect, the gate stops and asks you to stage
+# the file fully or commit it on its own.
+#
+# Paths are read NUL-delimited into arrays and passed after `--`, so spaces,
+# newlines, globs, and leading dashes in filenames are handled safely.
+#
+# Skip just this gate:   PRECOMMIT_SKIP=1 git commit ...
+# Skip all hooks:        git commit --no-verify
+
+set -uo pipefail
+[ "${PRECOMMIT_SKIP:-}" = "1" ] && exit 0
+
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+
+staged=()
+while IFS= read -r -d '' f; do staged+=("$f"); done \
+  < <(git diff --cached --name-only -z --diff-filter=ACMR)
+[ ${#staged[@]} -eq 0 ] && exit 0
+
+unstaged=()
+while IFS= read -r -d '' f; do unstaged+=("$f"); done < <(git diff --name-only -z)
+
+is_unstaged() {
+  local x=$1 u
+  for u in ${unstaged[@]+"${unstaged[@]}"}; do [ "$u" = "$x" ] && return 0; done
+  return 1
+}
+has_prefix() {
+  local p=$1 f
+  for f in "${staged[@]}"; do [[ $f == "$p"* ]] && return 0; done
+  return 1
+}
+
+# Block partially-staged files in any checked stack (see header).
+partial=()
+for f in "${staged[@]}"; do
+  is_unstaged "$f" || continue
+  case "$f" in
+    *.py | worker/* | trainer/* | viz/*) partial+=("$f") ;;
+  esac
+done
+if [ ${#partial[@]} -gt 0 ]; then
+  echo "pre-commit: ✗ partially-staged files can't be validated against this gate:" >&2
+  for f in "${partial[@]}"; do echo "    $f" >&2; done
+  echo "  stage them fully ('git add'), commit them separately, or PRECOMMIT_SKIP=1 to bypass once" >&2
+  exit 1
+fi
+
+fail=0
+
+# --- Python (root): ruff format + ruff check --fix, then pyright -------------
+py=()
+for f in "${staged[@]}"; do [[ $f == *.py ]] && py+=("$f"); done
+if [ ${#py[@]} -gt 0 ]; then
+  echo "pre-commit: python — ruff + pyright…" >&2
+  uv run ruff format -- "${py[@]}" >/dev/null 2>&1
+  uv run ruff check --fix -- "${py[@]}" >/dev/null 2>&1
+  git add -- "${py[@]}"
+  uv run ruff check -- "${py[@]}" || fail=1
+  uv run pyright || fail=1
+fi
+
+# --- Worker / trainer (TS, bun): typecheck ----------------------------------
+for pkg in worker trainer; do
+  if has_prefix "$pkg/"; then
+    echo "pre-commit: $pkg — typecheck…" >&2
+    (
+      cd "$pkg" || exit 1
+      [ -f worker-configuration.d.ts ] || bun x wrangler types ./worker-configuration.d.ts >/dev/null 2>&1
+      bun run typecheck
+    ) || fail=1
+  fi
+done
+
+# --- viz (TS, npm): typecheck ------------------------------------------------
+if has_prefix "viz/"; then
+  echo "pre-commit: viz — typecheck…" >&2
+  ( cd viz && npm run --silent typecheck ) || fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: ✗ blocked — fix the above (or PRECOMMIT_SKIP=1 to bypass once)" >&2
+  exit 1
+fi
+exit 0

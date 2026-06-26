@@ -17,6 +17,15 @@ from training.dwell import (
 from training.eval import TransitionRecord
 
 
+def _approx(expected: float) -> object:
+    """Typed wrapper around ``pytest.approx``.
+
+    pytest's ``approx`` leaks ``Unknown`` through its ``ApproxBase`` return type
+    under strict mode, so we pin the boundary to ``object`` once here.
+    """
+    return pytest.approx(expected)  # pyright: ignore[reportUnknownMemberType]
+
+
 def _tr(
     route: str,
     prev: str,
@@ -267,9 +276,7 @@ def test_p_leave_by_log_logistic_matches_conditional_survival() -> None:
     shape, scale = 1.5, 200.0
     s_now = 1.0 / (1.0 + (100 / scale) ** shape)
     s_fut = 1.0 / (1.0 + (700 / scale) ** shape)
-    assert p_leave_by(curve, 100, 600, [shape, scale]) == pytest.approx(
-        1.0 - s_fut / s_now
-    )
+    assert p_leave_by(curve, 100, 600, [shape, scale]) == _approx(1.0 - s_fut / s_now)
 
 
 def test_flat_curve_at_value_is_indeterminate() -> None:

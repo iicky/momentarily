@@ -95,7 +95,12 @@ def weibull_loglik(samples: list[DwellSample], shape: float, scale: float) -> fl
         t = max(float(raw_t), _MIN_DURATION)
         z = (t / scale) ** shape
         if completed:
-            ll += math.log(shape) - math.log(scale) + (shape - 1.0) * math.log(t / scale) - z
+            ll += (
+                math.log(shape)
+                - math.log(scale)
+                + (shape - 1.0) * math.log(t / scale)
+                - z
+            )
         else:
             ll -= z
     return ll
@@ -291,7 +296,9 @@ def loglogistic_tail(samples: list[DwellSample]) -> list[float] | None:
 
 def fit_all(samples: list[DwellSample]) -> list[ParametricFit]:
     """Both families, fitted; failed fits dropped. Empty if nothing fits."""
-    return [f for f in (fit_weibull(samples), fit_loglogistic(samples)) if f is not None]
+    return [
+        f for f in (fit_weibull(samples), fit_loglogistic(samples)) if f is not None
+    ]
 
 
 def select_parametric(
@@ -394,9 +401,7 @@ def logrank_test(groups: dict[str, list[DwellSample]]) -> LogRankResult | None:
     if len(labels) < 2:
         return None
     k = len(labels)
-    event_times = sorted(
-        {int(t) for g in labels for t, c in groups[g] if c}
-    )
+    event_times = sorted({int(t) for g in labels for t, c in groups[g] if c})
     if not event_times:
         return None
 
@@ -410,7 +415,9 @@ def logrank_test(groups: dict[str, list[DwellSample]]) -> LogRankResult | None:
 
     for t in event_times:
         n_g = [at_risk(labels[j], t) for j in range(k)]
-        d_g = [sum(1 for dur, c in groups[labels[j]] if c and dur == t) for j in range(k)]
+        d_g = [
+            sum(1 for dur, c in groups[labels[j]] if c and dur == t) for j in range(k)
+        ]
         n = sum(n_g)
         d = sum(d_g)
         if n <= 1 or d == 0:

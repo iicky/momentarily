@@ -157,9 +157,7 @@ def test_calibrate_by_current_splits_normal_vs_recovery():
     for i in range(18):
         preds.append(_pred(ts=ts0 + i * 300, route="N", condition="normal"))
     for i in range(18):
-        preds.append(
-            _pred(ts=ts0 + i * 300, route="D", condition="disrupted")
-        )
+        preds.append(_pred(ts=ts0 + i * 300, route="D", condition="disrupted"))
     result = calibrate(preds, horizon_min=30)
     normal = result.by_current["normal_now"]
     recovery = result.by_current["not_normal_now"]

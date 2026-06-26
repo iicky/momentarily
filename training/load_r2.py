@@ -677,7 +677,9 @@ def build_movement_series_by_direction(
         for route, row in rows.items():
             if not isinstance(row, dict):
                 continue
-            by_dir = cast(dict[str, Any], cast(dict[str, Any], row).get("by_direction") or {})
+            by_dir = cast(
+                dict[str, Any], cast(dict[str, Any], row).get("by_direction") or {}
+            )
             for direction in _DIRECTIONS:
                 drow = by_dir.get(direction)
                 if not isinstance(drow, dict):

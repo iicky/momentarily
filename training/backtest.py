@@ -302,12 +302,28 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
                 hsec = h * 60
                 geom = project_forward(geom_state, params, hsec // TICK_SECONDS)[0]
                 km = _km_residual_p_normal(
-                    geom_state, params, route, dwell_curves, pooled,
-                    dwell_fits, pooled_fits, hsec, cn, "exp",
+                    geom_state,
+                    params,
+                    route,
+                    dwell_curves,
+                    pooled,
+                    dwell_fits,
+                    pooled_fits,
+                    hsec,
+                    cn,
+                    "exp",
                 )
                 km_ll = _km_residual_p_normal(
-                    geom_state, params, route, dwell_curves, pooled,
-                    dwell_fits, pooled_fits, hsec, cn, "ll",
+                    geom_state,
+                    params,
+                    route,
+                    dwell_curves,
+                    pooled,
+                    dwell_fits,
+                    pooled_fits,
+                    hsec,
+                    cn,
+                    "ll",
                 )
                 total[h] += 1
                 if km is None:

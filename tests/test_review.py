@@ -110,7 +110,9 @@ def _tick_obs(route: str, tick: int, types: tuple[str, ...]) -> TickObservation:
             severity_sum=0,
             has_suspended_alert=any("Suspend" in t or "No Trains" in t for t in types),
             has_delays=any("Delays" in t for t in types),
-            has_service_change=any("Rerouted" in t or "Service Change" in t for t in types),
+            has_service_change=any(
+                "Rerouted" in t or "Service Change" in t for t in types
+            ),
         ),
         disruptive_types=types,
     )

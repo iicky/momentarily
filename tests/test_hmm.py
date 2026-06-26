@@ -152,12 +152,12 @@ def test_movement_gate_drops_channel() -> None:
         matched_n=15,
         has_movement=False,
     )
-    no_movement = Observation(
-        alert_count=2, severity_sum=10, has_suspended_alert=False
-    )
+    no_movement = Observation(alert_count=2, severity_sum=10, has_suspended_alert=False)
     p_gated = forward_update(state, gated, params, now=100).probabilities
     p_plain = forward_update(state, no_movement, params, now=100).probabilities
-    assert all(math.isclose(a, b, abs_tol=1e-15) for a, b in zip(p_gated, p_plain, strict=True))
+    assert all(
+        math.isclose(a, b, abs_tol=1e-15) for a, b in zip(p_gated, p_plain, strict=True)
+    )
 
 
 def test_zero_matched_trips_drops_channel() -> None:
@@ -176,7 +176,9 @@ def test_zero_matched_trips_drops_channel() -> None:
     plain = Observation(alert_count=2, severity_sum=10, has_suspended_alert=False)
     p_empty = forward_update(state, empty, params, now=100).probabilities
     p_plain = forward_update(state, plain, params, now=100).probabilities
-    assert all(math.isclose(a, b, abs_tol=1e-15) for a, b in zip(p_empty, p_plain, strict=True))
+    assert all(
+        math.isclose(a, b, abs_tol=1e-15) for a, b in zip(p_empty, p_plain, strict=True)
+    )
 
 
 def test_regime_entered_at_advances_on_state_change() -> None:

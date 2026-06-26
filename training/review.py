@@ -119,9 +119,7 @@ def mta_truth(
     breadth truth (any delays/service-change = disrupted); >= 2 grades by
     alert-type severity. Ticks not in the dict had no active alerts → 'normal'."""
     if severity_floor <= 1:
-        return {
-            (o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list
-        }
+        return {(o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list}
     return {
         (o.route_id, o.tick): derive_graded_mta_state(
             o.disruptive_types, floor=severity_floor

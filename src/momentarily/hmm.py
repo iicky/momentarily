@@ -339,7 +339,9 @@ def _log_emission(
             _log_poisson(obs.alert_count, params.poisson_lambda[i])
             + _log_bernoulli(obs.has_suspended_alert, params.bernoulli_p[i])
             + _log_bernoulli(obs.has_delays, params.bernoulli_p_delays[i])
-            + _log_bernoulli(obs.has_service_change, params.bernoulli_p_service_change[i])
+            + _log_bernoulli(
+                obs.has_service_change, params.bernoulli_p_service_change[i]
+            )
             + _log_bernoulli(obs.has_planned, params.bernoulli_p_planned[i])
         )
         if has_movement:

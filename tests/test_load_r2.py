@@ -223,8 +223,16 @@ def _movement_body(
 def test_movement_series_by_direction_splits_north_south():
     bodies = [_movement_body(T0, "A", north=(8, 6, 2), south=(7, 3, 4))]
     series = build_movement_series_by_direction(bodies)
-    assert series[("A", "north", T0)] == {"vehicles_n": 8, "advanced_n": 6, "stalled_n": 2}
-    assert series[("A", "south", T0)] == {"vehicles_n": 7, "advanced_n": 3, "stalled_n": 4}
+    assert series[("A", "north", T0)] == {
+        "vehicles_n": 8,
+        "advanced_n": 6,
+        "stalled_n": 2,
+    }
+    assert series[("A", "south", T0)] == {
+        "vehicles_n": 7,
+        "advanced_n": 3,
+        "stalled_n": 4,
+    }
 
 
 def test_movement_series_skips_rows_without_by_direction():

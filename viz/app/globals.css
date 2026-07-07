@@ -10,6 +10,10 @@
   --suspended: #f85149;
   --unknown: #6e6e73;
   --accent: #4493f8;
+  /* Predicted-vs-observed overlays. Kept separate from the state colors above
+     so "model forecast" / "what really happened" never reads as a line state. */
+  --forecast: #4493f8;
+  --realized: #56d364;
 }
 
 * {
@@ -363,6 +367,18 @@ a:hover {
   flex-wrap: wrap;
   gap: 16px;
 }
+/* Fixed N-up row that won't wrap — columns shrink instead (minmax(0,1fr) lets
+   the SVGs scale below their intrinsic width). */
+.charts-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  .charts-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
 .chart {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -419,4 +435,61 @@ code {
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 12px;
+}
+
+/* --- Shared chart chrome (ChartFrame) --- */
+/* Legend marker shapes — a second encoding so hue isn't the only signal. */
+.legend i.lg-line {
+  height: 3px;
+  border-radius: 2px;
+}
+.legend i.lg-dot {
+  border-radius: 50%;
+}
+
+/* Metadata footer: compact chips for source/unit/n/exclusions/censoring. */
+.chart-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.chart-chip {
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.chart-chip-muted {
+  opacity: 0.75;
+}
+.chart-chip-warn {
+  color: var(--disrupted);
+  background: color-mix(in srgb, var(--disrupted) 12%, transparent);
+  border-color: color-mix(in srgb, var(--disrupted) 30%, transparent);
+}
+.chart-chip-good {
+  color: var(--normal);
+  background: color-mix(in srgb, var(--normal) 12%, transparent);
+  border-color: color-mix(in srgb, var(--normal) 30%, transparent);
+}
+
+/* Empty state: same footprint as a populated card, no layout jump. */
+.chart-empty {
+  font-size: 12px;
+  padding: 18px 4px;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .charts-row {
+    flex-direction: column;
+  }
 }

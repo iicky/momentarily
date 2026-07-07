@@ -12,9 +12,12 @@ import {
   buildTimelines,
   reliability,
   recoveryError,
+  recoveryOutcomes,
   detectionLatency,
   routeUniverse,
 } from "@/lib/calibration";
+import { recoveryDistReport, type RecoveryDistSample } from "@/lib/recovery_dist";
+import { predictedRecoveryCurve } from "@/lib/dwell";
 import {
   adherence,
   parseAlertVersion,
@@ -35,6 +38,20 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+interface TrainedParamsDoc {
+  trained_at?: number;
+  routes?: Record<
+    string,
+    {
+      transition?: number[][];
+      dwell_quantiles?: Record<
+        string,
+        { curve_sec?: number[]; tail_ll?: [number, number] }
+      >;
+    }
+  >;
+}
 
 const STATES = ["normal", "disrupted", "suspended"];
 const MAX_DAYS = 21;
@@ -144,6 +161,7 @@ export async function GET(req: NextRequest) {
         timelines: [],
         heatmap: calibrationHeatmap(doc),
         paramsTrainedAt: doc.transition_matrices.trained_at ?? null,
+        generatedAt: doc.generated_at ?? null,
         drift: doc.drift,
       };
       return NextResponse.json(payload);
@@ -189,14 +207,13 @@ export async function GET(req: NextRequest) {
       rec.points = rec.points.filter((_, i) => i % stride === 0);
     }
 
-    // Transition matrices from the trained params.
+    // Trained params drive both the transition heatmaps and the reconstructed
+    // recovery curves (full dwell curve, not the three published checkpoints).
     let heatmap: HeatmapEntry[] = [];
     let paramsTrainedAt: number | null = null;
+    let params: TrainedParamsDoc | null = null;
     try {
-      const params = await getJson<{
-        trained_at?: number;
-        routes?: Record<string, { transition?: number[][] }>;
-      }>(STREAMS.params);
+      params = await getJson<TrainedParamsDoc>(STREAMS.params);
       paramsTrainedAt = params.trained_at ?? null;
       heatmap = Object.entries(params.routes ?? {})
         .filter(([r]) => !routeFilter || r === routeFilter)
@@ -205,6 +222,22 @@ export async function GET(req: NextRequest) {
     } catch {
       // params may be absent before the first weekly train — non-fatal.
     }
+
+    // Rebuild each gradeable prediction's full recovery curve from its dwell
+    // cell, then score the distribution (CRPS / PIT). Outcomes whose cell lacks
+    // a curve are skipped (the curve view needs the real distribution).
+    const recoverySamples: RecoveryDistSample[] = [];
+    for (const o of recoveryOutcomes(predictions, timelines)) {
+      const cell = params?.routes?.[o.route]?.dwell_quantiles?.[o.condition];
+      if (!cell?.curve_sec || cell.curve_sec.length < 2) continue;
+      const elapsedSec = Math.max(0, o.ts - o.regimeEnteredAt);
+      recoverySamples.push({
+        predCurve: predictedRecoveryCurve(elapsedSec, cell.curve_sec, cell.tail_ll),
+        actualMin: o.actualMin,
+        regimeKey: `${o.route}:${o.regimeEnteredAt}`,
+      });
+    }
+    const recoveryDist = recoveryDistReport(recoverySamples);
 
     return NextResponse.json({
       configured: true,
@@ -224,6 +257,7 @@ export async function GET(req: NextRequest) {
       states: STATES,
       reliability: rel,
       recovery: rec,
+      recoveryDist,
       resumeChurn: churn,
       adherence: adher,
       detectionLatency: detection,
@@ -234,6 +268,7 @@ export async function GET(req: NextRequest) {
       })),
       heatmap,
       paramsTrainedAt,
+      generatedAt: null, // credentialed read runs live up to "now"
     });
   } catch (e) {
     return NextResponse.json(

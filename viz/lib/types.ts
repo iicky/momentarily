@@ -165,6 +165,12 @@ export interface GradingResponse {
   timelines: unknown[];
   heatmap: HeatmapEntry[];
   paramsTrainedAt: number | null;
+  // When the underlying feed was generated (public aggregate). null on the
+  // credentialed streams view, which reads live up to "now".
+  generatedAt?: number | null;
+  // RecoveryDistResult — recovery-time CDF + CRPS/PIT report. Streams view only;
+  // typed structurally on the client.
+  recoveryDist?: unknown;
   // DriftDoc from the calibration feed — input-drift signals (unmapped
   // alert_type rate, emission-channel PSI). Absent on the streams view and on
   // older feeds; typed structurally on the client.

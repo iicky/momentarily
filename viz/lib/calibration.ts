@@ -183,6 +183,9 @@ export interface RecoveryPoint {
   highMin: number;
   actualMin: number;
   inIqr: boolean;
+  // Minutes the line had already been non-normal when this forecast was made —
+  // lets the dashboard ask whether the forecast sharpens as recovery nears.
+  elapsedMin: number;
 }
 
 export interface RecoveryResult {
@@ -226,6 +229,7 @@ export function recoveryError(
       highMin: pr.recovery_minutes_high,
       actualMin,
       inIqr,
+      elapsedMin: Math.max(0, (pr.ts - pr.regime_entered_at) / 60),
     });
   }
   const n = points.length;
@@ -239,6 +243,42 @@ export function recoveryError(
     coverage: n ? points.filter((p) => p.inIqr).length / n : NaN,
     medianAbsErrorMin: n ? errs[Math.floor(n / 2)] : NaN,
   };
+}
+
+// --- Recovery as a distribution: gradeable outcomes ---
+
+export interface RecoveryOutcome {
+  route: string;
+  condition: string;
+  ts: number;
+  regimeEnteredAt: number;
+  actualMin: number; // realized minutes until the route next returned to normal
+}
+
+/** One (prediction context, realized time-to-normal) pair per gradeable
+ * prediction — same censoring/exclusion rules as recoveryError. The caller
+ * rebuilds the predicted recovery curve from the params.json dwell cells. */
+export function recoveryOutcomes(
+  predictions: PredictionRecord[],
+  timelines: Map<string, RouteTimeline>,
+): RecoveryOutcome[] {
+  const out: RecoveryOutcome[] = [];
+  for (const pr of predictions) {
+    if (pr.condition === "normal" || pr.recovery_indeterminate) continue;
+    if (pr.recovery_source === "schedule") continue;
+    const tl = timelines.get(pr.route);
+    if (!tl) continue;
+    const nn = nextNormalStart(tl, pr.ts);
+    if (nn == null || nn > tl.observedUntil) continue; // never recovered in window
+    out.push({
+      route: pr.route,
+      condition: pr.condition,
+      ts: pr.ts,
+      regimeEnteredAt: pr.regime_entered_at,
+      actualMin: (nn - pr.ts) / 60,
+    });
+  }
+  return out;
 }
 
 // --- Detection latency ---

@@ -35,11 +35,27 @@ export interface ChartMeta {
   extra?: ReactNode; // chart-specific chips (e.g. skill vs baseline)
 }
 
-// Page-level facts shared by every footer (the data window and which feed the
-// page is reading), so individual charts don't each thread them through props.
+// Data provenance: the published feed home + the upstream attribution shown on
+// hover. The MTA is the real source; we just archive and score it.
+const FEED_URL = "https://feed.momentarily.nyc";
+const FEED_ATTRIBUTION =
+  "Built from MTA GTFS-RT feeds via api.mta.info · published by Momentarily · not affiliated with the MTA";
+
+function feedAge(generatedAt?: number | null): string {
+  if (generatedAt == null) return "live"; // credentialed read runs up to now
+  const sec = Math.max(0, Math.floor(Date.now() / 1000) - generatedAt);
+  const h = Math.floor(sec / 3600);
+  if (h < 1) return `generated ${Math.max(1, Math.floor(sec / 60))}m ago`;
+  if (h < 48) return `generated ${h}h ago`;
+  return `generated ${Math.floor(h / 24)}d ago`;
+}
+
+// Page-level facts shared by every footer (the data window, which feed the page
+// is reading, and when that feed was generated), so charts don't each thread them.
 interface ChartContext {
   feed?: "credentialed" | "public";
   window?: string; // e.g. "3d"
+  generatedAt?: number | null; // feed generation epoch; null = live read
 }
 const ChartCtx = createContext<ChartContext>({});
 export function ChartMetaProvider({
@@ -62,12 +78,17 @@ export interface LegendItem {
 export function Chip({
   children,
   tone,
+  title,
 }: {
   children: ReactNode;
   tone?: "warn" | "muted" | "good";
+  title?: string;
 }) {
   return (
-    <span className={`chart-chip${tone ? ` chart-chip-${tone}` : ""}`}>
+    <span
+      className={`chart-chip${tone ? ` chart-chip-${tone}` : ""}`}
+      title={title}
+    >
       {children}
     </span>
   );
@@ -102,23 +123,32 @@ export function MetaFooter({ meta }: { meta: ChartMeta }) {
   const ctx = useContext(ChartCtx);
   const feed = meta.feed ?? ctx.feed;
   const chips: ReactNode[] = [];
+  // Lead with the sizing facts: window, sample unit, n.
   if (ctx.window) chips.push(<Chip key="win">window: {ctx.window}</Chip>);
-  if (meta.source) {
-    const dependent = meta.independent === false;
-    chips.push(
-      <Chip key="src" tone={dependent ? "warn" : undefined}>
-        {dependent ? "⚠ " : ""}source: {meta.source}
-        {meta.independent === false
-          ? " · not independent of HMM"
-          : meta.independent === true
-            ? " · independent"
-            : ""}
-      </Chip>,
-    );
-  }
   if (meta.unit) chips.push(<Chip key="unit">unit: {meta.unit}</Chip>);
   if (meta.n != null)
     chips.push(<Chip key="n">n={meta.n.toLocaleString()}</Chip>);
+  // Then how the chart is graded — a one-word tag; detail lives in the tooltip.
+  if (meta.source) {
+    if (meta.independent === false)
+      chips.push(
+        <Chip key="src" title={`checked against ${meta.source}`}>
+          model-graded
+        </Chip>,
+      );
+    else if (meta.independent === true)
+      chips.push(
+        <Chip key="src" tone="good" title={`checked against ${meta.source}`}>
+          independent
+        </Chip>,
+      );
+    else
+      chips.push(
+        <Chip key="src" tone="muted" title={`from ${meta.source}`}>
+          {meta.source}
+        </Chip>,
+      );
+  }
   if (meta.excluded)
     chips.push(
       <Chip key="ex" tone="muted">
@@ -138,12 +168,25 @@ export function MetaFooter({ meta }: { meta: ChartMeta }) {
       </Chip>,
     );
   if (meta.extra) chips.push(<span key="extra" style={{ display: "contents" }}>{meta.extra}</span>);
-  if (feed)
+  if (feed) {
     chips.push(
       <Chip key="feed" tone="muted">
         {feed}
       </Chip>,
     );
+    chips.push(
+      <a
+        key="prov"
+        className="chart-chip chart-chip-muted"
+        href={FEED_URL}
+        target="_blank"
+        rel="noreferrer"
+        title={FEED_ATTRIBUTION}
+      >
+        MTA alerts · {feedAge(ctx.generatedAt)} ↗
+      </a>,
+    );
+  }
   if (!chips.length) return null;
   return <div className="chart-meta">{chips}</div>;
 }

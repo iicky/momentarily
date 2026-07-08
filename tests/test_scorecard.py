@@ -12,9 +12,10 @@ from typing import Any
 
 import pytest
 
-from training.episodes import extract_episodes
+from training.episodes import Episode, extract_episodes
 from training.eval import TICK_SECONDS, PredictionRecord
 from training.scorecard import (
+    cause_dwell_lookup,
     dwell_lookup_from_params,
     episode_recovery,
     episode_scorecard,
@@ -307,7 +308,9 @@ def test_episode_recovery_excludes_censored_and_curve_less_episodes() -> None:
     truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(9))
     assert len(truth_eps) == 4
 
-    def lookup(route: str, state: str) -> tuple[list[int], list[float] | None] | None:
+    def lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
         if route == "S" and state == "disrupted":
             return [300, 600, 900], None
         return None
@@ -320,16 +323,72 @@ def test_episode_recovery_excludes_censored_and_curve_less_episodes() -> None:
     assert result["report"]["n"] == 1
 
 
+def test_episode_recovery_uses_cause_curve_then_falls_back_to_state_curve() -> None:
+    """episode_recovery looks up the dwell curve by the episode's own cause
+    first; when the lookup has no cell for that cause, it falls back to the
+    state-level curve. Two 2-point curves are shaped so the conditional-exit
+    probability at the same realized duration is unmistakably different (0.5
+    vs 1.0), so the resulting per-episode PIT proves which curve fed the
+    score — a cause/state mix-up would collapse both episodes into the same
+    PIT bin."""
+    cause_ep = Episode(
+        route="R",
+        onset=WS,
+        recovery=WS + 600,
+        peak_state="disrupted",
+        cause="signal_failure",
+        n_ticks=2,
+        left_censored=False,
+        right_censored=False,
+    )
+    fallback_ep = Episode(
+        route="R",
+        onset=WS + 10_000,
+        recovery=WS + 10_000 + 600,
+        peak_state="disrupted",
+        cause="weather",
+        n_ticks=2,
+        left_censored=False,
+        right_censored=False,
+    )
+
+    def lookup(
+        route: str, state: str, cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
+        if route != "R" or state != "disrupted":
+            return None
+        if cause == "signal_failure":
+            return [0, 1200], None  # half-life at 600s -> PIT 0.5
+        return [0, 100], None  # state-level fallback: outlived by 600s -> PIT 1.0
+
+    result = episode_recovery([cause_ep, fallback_ep], lookup)
+
+    assert result["n_scored"] == 2
+    assert result["n_no_curve"] == 0
+    assert result["report"]["pit"][5] == 1
+    assert result["report"]["pit"][9] == 1
+    assert result["report"]["mean_pit"] == _approx(0.75)
+
+
 # --- dwell_lookup_from_params --------------------------------------------------------
 
 
 def test_dwell_lookup_from_params_reads_curve_and_tail_or_none() -> None:
-    """A present (route, state) cell resolves to (curve_sec, tail_ll); a
-    missing route, missing state, or a cell with no usable curve all read
-    as None."""
+    """A (route, state, cause) cell in dwell_quantiles_by_cause resolves first;
+    a cause absent from that cause-conditioned table falls back to the
+    (route, state) aggregate in dwell_quantiles; a cell with no usable curve,
+    a missing state, or a missing route all read as None."""
     params: dict[str, Any] = {
         "routes": {
             "A": {
+                "dwell_quantiles_by_cause": {
+                    "disrupted": {
+                        "signal_failure": {
+                            "curve_sec": [100, 200, 300],
+                            "tail_ll": [1.2, 250.0],
+                        },
+                    },
+                },
                 "dwell_quantiles": {
                     "disrupted": {
                         "curve_sec": [300, 600, 900],
@@ -337,17 +396,48 @@ def test_dwell_lookup_from_params_reads_curve_and_tail_or_none() -> None:
                     },
                     "suspended": {"curve_sec": [300]},  # too short: no curve
                     "unknown": {},  # empty cell: no curve
-                }
+                },
             }
         }
     }
     lookup = dwell_lookup_from_params(params)
 
-    assert lookup("A", "disrupted") == ([300, 600, 900], [1.5, 400.0])
-    assert lookup("A", "suspended") is None
-    assert lookup("A", "unknown") is None
-    assert lookup("A", "missing_state") is None
-    assert lookup("missing_route", "disrupted") is None
+    assert lookup("A", "disrupted", "signal_failure") == (
+        [100, 200, 300],
+        [1.2, 250.0],
+    )
+    assert lookup("A", "disrupted", "weather") == ([300, 600, 900], [1.5, 400.0])
+    assert lookup("A", "suspended", "weather") is None
+    assert lookup("A", "unknown", "weather") is None
+    assert lookup("A", "missing_state", "weather") is None
+    assert lookup("missing_route", "disrupted", "weather") is None
+
+
+# --- cause_dwell_lookup: train-derived cause -> state -> pooled fallback -----------
+
+
+def test_cause_dwell_lookup_fallback_chain_cause_then_state_then_pooled() -> None:
+    """cause_dwell_lookup checks train-derived cells in priority order: an
+    exact (route, state, cause) cell wins over the (route, state) cell for
+    the same route/state, which wins over the state-pooled cell, which wins
+    over nothing at all. Four distinct 2-point curves make the fallback
+    level that actually resolved unmistakable."""
+    by_cause: dict[str, Any] = {
+        "R": {"disrupted": {"signal_failure": {"curve_sec": [1, 2]}}},
+    }
+    by_state: dict[str, Any] = {
+        "R": {"disrupted": {"curve_sec": [3, 4]}},
+    }
+    pooled: dict[str, Any] = {
+        "disrupted": {"curve_sec": [5, 6]},
+        "suspended": {"curve_sec": [7, 8]},
+    }
+    lookup = cause_dwell_lookup(by_cause, by_state, pooled)
+
+    assert lookup("R", "disrupted", "signal_failure") == ([1, 2], None)
+    assert lookup("R", "disrupted", "weather") == ([3, 4], None)
+    assert lookup("R", "suspended", "signal_failure") == ([7, 8], None)
+    assert lookup("Q", "totally_missing", "signal_failure") is None
 
 
 # --- episode_scorecard: the verified oracle -----------------------------------------
@@ -379,7 +469,9 @@ def test_episode_scorecard_matches_the_verified_oracle() -> None:
     ]
     movement_truth = {("B", g(8)): "normal", ("B", g(9)): "normal"}
 
-    def lookup(route: str, state: str) -> tuple[list[int], list[float] | None] | None:
+    def lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
         if route == "A" and state == "disrupted":
             return [300, 600, 900], None
         return None

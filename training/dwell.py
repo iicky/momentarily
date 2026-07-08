@@ -20,6 +20,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import NotRequired, TypedDict
 
+from momentarily.mapping import category_for_label, coarse_status
 from training.eval import TransitionRecord
 
 # A (route, state) cell needs at least this many transitions to back an
@@ -382,5 +383,47 @@ def compute_dwell_quantiles_by_alert(
         out[route][state][alert_type] = _make_cell(samples, tail_fn)
     return {
         r: {s: dict(by_at) for s, by_at in by_state.items()}
+        for r, by_state in out.items()
+    }
+
+
+def cause_of(alert_type: str | None) -> str | None:
+    """Cause-category key for a dwell cell — the same coarse cause the episode
+    grader attributes (category_for_label(coarse_status(alert_type))). None when
+    there is no alert_type to key on."""
+    if alert_type is None:
+        return None
+    return category_for_label(coarse_status(alert_type))
+
+
+def compute_dwell_quantiles_by_cause(
+    transitions: list[TransitionRecord],
+    *,
+    min_samples: int = MIN_SAMPLES_FOR_EMPIRICAL,
+    tail_fn: TailFn | None = None,
+) -> dict[str, dict[str, dict[str, DwellQuantiles]]]:
+    """Return {route: {state: {cause: DwellQuantiles}}} keyed on the cause
+    CATEGORY of alert_type_at_entry, matching the episode grader's cause so
+    per-episode recovery can look a curve up by the same key. Like
+    compute_dwell_quantiles_by_alert but grouped by coarse cause rather than raw
+    alert_type; transitions with no alert_type_at_entry are skipped (they live in
+    the (route, state) aggregate the consumer falls back to). Completed
+    transitions only — an open final regime has no known cause and is censored
+    into the (route, state) aggregate instead."""
+    by_cell: dict[tuple[str, str, str], list[DwellSample]] = defaultdict(list)
+    for t in transitions:
+        cause = cause_of(t.alert_type_at_entry)
+        if cause is None:
+            continue
+        by_cell[(t.route, t.prev_state, cause)].append((int(t.dwell_sec), True))
+    out: dict[str, dict[str, dict[str, DwellQuantiles]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+    for (route, state, cause), samples in by_cell.items():
+        if len(samples) < min_samples:
+            continue
+        out[route][state][cause] = _make_cell(samples, tail_fn)
+    return {
+        r: {s: dict(by_cause) for s, by_cause in by_state.items()}
         for r, by_state in out.items()
     }

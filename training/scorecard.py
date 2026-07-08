@@ -23,7 +23,7 @@ Pure over its inputs so it grades without R2 and unit-tests on fixtures.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from statistics import median
 from typing import Any
 
@@ -40,8 +40,10 @@ from training.recovery_dist import (
 
 NOT_NORMAL = ("disrupted", "suspended")
 
-# Curve + optional log-logistic tail for a (route, state) dwell cell.
-DwellLookup = Callable[[str, str], "tuple[list[int], list[float] | None] | None"]
+# Curve + optional log-logistic tail for a (route, state, cause) dwell cell. A
+# cause-aware lookup falls back cause -> state -> pooled, so an unknown cause
+# degrades to the state-level curve rather than missing.
+DwellLookup = Callable[[str, str, str], "tuple[list[int], list[float] | None] | None"]
 
 
 def model_episodes(
@@ -149,7 +151,7 @@ def episode_recovery(
 ) -> dict[str, Any]:
     """Per-episode recovery CRPS/PIT over uncensored episodes with a dwell curve.
     The predicted curve is the model's recovery forecast for the episode's peak
-    state at onset (elapsed 0); the outcome is the realized duration."""
+    state and cause at onset (elapsed 0); the outcome is the realized duration."""
     samples: list[RecoveryDistSample] = []
     n_censored = 0
     n_no_curve = 0
@@ -157,7 +159,7 @@ def episode_recovery(
         if e.left_censored or e.right_censored:
             n_censored += 1
             continue
-        cell = dwell_lookup(e.route, e.peak_state)
+        cell = dwell_lookup(e.route, e.peak_state, e.cause)
         if cell is None or len(cell[0]) < 2:
             n_no_curve += 1
             continue
@@ -179,22 +181,62 @@ def episode_recovery(
     }
 
 
+def _cell_curve(cell: Any) -> tuple[list[int], list[float] | None] | None:
+    """Extract (curve_sec, tail_ll) from a dwell-cell dict, or None if unusable."""
+    if not cell:
+        return None
+    curve: list[int] = cell.get("curve_sec") or []
+    if len(curve) < 2:
+        return None
+    tail: list[float] | None = cell.get("tail_ll")
+    return curve, tail
+
+
 def dwell_lookup_from_params(params: dict[str, Any]) -> DwellLookup:
-    """Build a (route, state) -> (curve_sec, tail_ll) lookup from a params.json
-    doc (params['routes'][route]['dwell_quantiles'][state])."""
+    """Cause-aware (route, state, cause) -> (curve_sec, tail_ll) lookup over a
+    params.json doc. Fallback chain: the cause-conditioned cell
+    (routes[route]['dwell_quantiles_by_cause'][state][cause]) if present, else the
+    (route, state) aggregate (routes[route]['dwell_quantiles'][state]). params is
+    prequential (trained strictly before the graded window), so scoring against it
+    does not leak outcomes."""
     routes: dict[str, Any] = params.get("routes") or {}
 
-    def lookup(route: str, state: str) -> tuple[list[int], list[float] | None] | None:
+    def lookup(
+        route: str, state: str, cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
         route_doc: dict[str, Any] = routes.get(route) or {}
-        quantiles: dict[str, Any] = route_doc.get("dwell_quantiles") or {}
-        cell: dict[str, Any] | None = quantiles.get(state)
+        by_cause: dict[str, Any] = route_doc.get("dwell_quantiles_by_cause") or {}
+        state_causes: dict[str, Any] = by_cause.get(state) or {}
+        cell = state_causes.get(cause)
         if not cell:
-            return None
-        curve: list[int] = cell.get("curve_sec") or []
-        if len(curve) < 2:
-            return None
-        tail: list[float] | None = cell.get("tail_ll")
-        return curve, tail
+            quantiles: dict[str, Any] = route_doc.get("dwell_quantiles") or {}
+            cell = quantiles.get(state)
+        return _cell_curve(cell)
+
+    return lookup
+
+
+def cause_dwell_lookup(
+    by_cause: Mapping[str, Any],
+    by_state: Mapping[str, Any],
+    pooled: Mapping[str, Any],
+) -> DwellLookup:
+    """Cause-aware lookup over TRAIN-DERIVED cells (compute_dwell_quantiles* on the
+    training window — never the scored window, which would leak outcomes). Fallback
+    chain: (route, state, cause) -> (route, state) -> pooled(state)."""
+
+    def lookup(
+        route: str, state: str, cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
+        route_causes: dict[str, Any] = by_cause.get(route) or {}
+        state_causes: dict[str, Any] = route_causes.get(state) or {}
+        cell = state_causes.get(cause)
+        if not cell:
+            route_states: dict[str, Any] = by_state.get(route) or {}
+            cell = route_states.get(state)
+        if not cell:
+            cell = pooled.get(state)
+        return _cell_curve(cell)
 
     return lookup
 

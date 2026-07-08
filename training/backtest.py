@@ -66,8 +66,14 @@ from momentarily.hmm import (
     project_forward,
 )
 from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, TRUTH_VERSION
+from training.competing_risks import (
+    CIFResult,
+    CompetingSample,
+    cif_curves,
+    conditional_cif,
+)
 from training.dwell import compute_dwell_quantiles, dwell_cdf, dwell_samples_by_cell
-from training.eval import TICK_SECONDS, load_transitions, snap_tick
+from training.eval import TICK_SECONDS, TransitionRecord, load_transitions, snap_tick
 from training.load_r2 import load_route_series_r2
 from training.r2_client import load_config, make_client
 from training.review import build_mta_truth, derive_mta_state
@@ -80,11 +86,14 @@ HORIZONS_MIN = (30, 60, 120)
 #   km    : geometric filter + KM-residual projection (the shipped Tier-1 change)
 #   km_ll : KM-residual, but the past-the-curve tail extrapolation swaps the
 #           constant-hazard exponential patch for a fitted log-logistic tail
-#           (gtq.5 splice candidate — the body stays empirical, only the tail
-#           beyond the last observed quantile differs).
+#           (the body stays empirical, only the tail beyond the last observed
+#           quantile differs).
+#   cif   : disrupted-now only — the competing-risks cumulative incidence of the
+#           normal exit (D->Normal vs D->Suspended, elapsed-conditioned) instead
+#           of km's flat normal-share split; falls back to km_ll elsewhere.
 # A full HSMM filter was tested and shelved — it added nothing to the forecast
 # (filtering is emission-dominated).
-MODELS = ("geom", "km", "km_ll")
+MODELS = ("geom", "km", "km_ll", "cif")
 
 
 def _argmax(probs: tuple[float, float, float]) -> int:
@@ -173,6 +182,28 @@ def _km_residual_p_normal(
     return p_leave * min(1.0, max(0.0, to_normal))
 
 
+def _cif_p_normal(
+    state: FilterState,
+    route: str,
+    cif_by_route: dict[str, CIFResult],
+    pooled_cif: CIFResult,
+    horizon_sec: float,
+) -> float | None:
+    """Competing-risks CIF of the normal exit for a currently-disrupted route,
+    conditioned on elapsed dwell. None for non-disrupted states (the caller falls
+    back to the km_ll arm) — the CIF decomposition only refines disrupted-now
+    p_normal, where km's flat normal-share approximation is loosest."""
+    if _argmax(state.probabilities) != 1:  # disrupted state index
+        return None
+    result = cif_by_route.get(route)
+    if result is None or "normal" not in result.cif:
+        result = pooled_cif
+    if "normal" not in result.cif:
+        return None  # no normal-exit incidence anywhere — let the caller use km_ll
+    elapsed = max(0, state.last_updated_at - state.regime_entered_at)
+    return conditional_cif(result, "normal", elapsed, horizon_sec)
+
+
 def _brier(samples: list[tuple[float, float]]) -> float | None:
     """Mean squared error of (pred, outcome) pairs."""
     if not samples:
@@ -251,6 +282,27 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
         fit = fit_loglogistic(cell_samples)
         if fit is not None:
             pooled_fits[state_] = fit
+
+    # Competing-risks CIF on TRAIN transitions: the cif arm reads the elapsed-
+    # conditioned cumulative incidence of the D->Normal exit (accounting for the
+    # competing D->Suspended off-ramp) instead of km's flat normal-share split.
+    cif_samples: dict[str, list[CompetingSample]] = defaultdict(list)
+    for tr in train_trans:
+        if tr.prev_state == "disrupted":
+            cif_samples[tr.route].append((int(tr.dwell_sec), tr.new_state))
+    last_seen: dict[str, TransitionRecord] = {}
+    for tr in train_trans:
+        if tr.route not in last_seen or tr.exited_at > last_seen[tr.route].exited_at:
+            last_seen[tr.route] = tr
+    for route_, tr in last_seen.items():  # censor each route's open disrupted tail
+        if tr.new_state == "disrupted":
+            cif_samples[route_].append((max(0, train_end_epoch - tr.exited_at), None))
+    cif_by_route: dict[str, CIFResult] = {
+        r: cif_curves(s) for r, s in cif_samples.items()
+    }
+    pooled_cif: CIFResult = cif_curves(
+        [s for samples in cif_samples.values() for s in samples]
+    )
     print(
         f"fit {len(params_by_route)} routes; dwell cells for "
         f"{sum(len(v) for v in dwell_curves.values())} (route,state) pairs; "
@@ -334,7 +386,10 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
                     km = geom
                 if km_ll is None:
                     km_ll = geom
-                preds = {"geom": geom, "km": km, "km_ll": km_ll}
+                cif = _cif_p_normal(geom_state, route, cif_by_route, pooled_cif, hsec)
+                if cif is None:
+                    cif = km_ll
+                preds = {"geom": geom, "km": km, "km_ll": km_ll, "cif": cif}
                 samples[h].append(
                     (route, preds, persistence, outcome, cur_state != "normal")
                 )

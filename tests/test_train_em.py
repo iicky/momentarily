@@ -7,19 +7,25 @@ Covers pooling + prior anchoring, the self-loop cap, and the R2 write paths
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from datetime import date
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from momentarily.hmm import EmissionParams, HMMParams, Observation
+from training.eval import TransitionRecord
+from training.r2_client import R2Config
 from training.train_em import (
     MAX_SELF_LOOP,
+    MIN_DATA_DAYS,
     PARAMS_KEY,
     SCHEMA_VERSION,
     VERSIONED_PARAMS_PREFIX,
     CorpusStats,
     _cap_self_loops,  # pyright: ignore[reportPrivateUsage]
+    _movement_baseline,  # pyright: ignore[reportPrivateUsage]
     _params_to_json,  # pyright: ignore[reportPrivateUsage]
+    main,
     train,
     write_params,
 )
@@ -238,3 +244,173 @@ def test_write_params_doc_shape_round_trips() -> None:
     assert len(route["transition"]) == 3
     assert len(route["initial"]) == 3
     assert "poisson_lambda" in route["emissions"]
+
+
+def _r2_config() -> R2Config:
+    return R2Config(
+        account_id="acct",
+        access_key_id="key",
+        secret_access_key="secret",
+        bucket="test-bucket",
+    )
+
+
+def test_movement_baseline_uses_explicit_window_and_threads_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_movement_baseline must fetch the *explicit* training window (not
+    fetch_vehicle_metrics' yesterday..today default) and thread the
+    build/compute/serialize chain's output straight through."""
+    fetch_calls: list[dict[str, Any]] = []
+    bodies_seen: list[list[dict[str, Any]]] = []
+    series_seen: list[dict[tuple[str, str, int], dict[str, int]]] = []
+    baseline_seen: list[dict[tuple[str, str, int], object]] = []
+
+    sentinel_bodies: list[dict[str, Any]] = [{"marker": "body"}]
+    sentinel_series: dict[tuple[str, str, int], dict[str, int]] = {
+        ("A", "north", 0): {"vehicles_n": 1}
+    }
+    sentinel_baseline: dict[tuple[str, str, int], object] = {
+        ("A", "north", 0): object(),
+        ("A", "south", 300): object(),
+    }
+    sentinel_json: dict[str, Any] = {"A": {"north": {"0": {"p0": 0.9}}}}
+
+    def _fake_fetch(
+        cfg: R2Config,
+        *,
+        start_date: date,
+        end_date: date,
+        client: object,
+    ) -> list[dict[str, Any]]:
+        fetch_calls.append(
+            {"start_date": start_date, "end_date": end_date, "client": client}
+        )
+        return sentinel_bodies
+
+    def _fake_build_series(
+        bodies: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, int], dict[str, int]]:
+        bodies_seen.append(bodies)
+        return sentinel_series
+
+    def _fake_compute_baseline(
+        series: dict[tuple[str, str, int], dict[str, int]],
+    ) -> dict[tuple[str, str, int], object]:
+        series_seen.append(series)
+        return sentinel_baseline
+
+    def _fake_to_json(
+        baseline: dict[tuple[str, str, int], object],
+    ) -> dict[str, Any]:
+        baseline_seen.append(baseline)
+        return sentinel_json
+
+    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _fake_fetch)
+    monkeypatch.setattr(
+        "training.train_em.build_movement_series_by_direction", _fake_build_series
+    )
+    monkeypatch.setattr(
+        "training.train_em.compute_advance_baseline", _fake_compute_baseline
+    )
+    monkeypatch.setattr("training.train_em.advance_baseline_to_json", _fake_to_json)
+
+    cfg = _r2_config()
+    client = cast("S3Client", _FakeS3())
+    start = date(2026, 6, 1)
+    end = date(2026, 6, 14)
+
+    result, n_cells = _movement_baseline(cfg, client, start, end)
+
+    assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
+    assert bodies_seen == [sentinel_bodies]
+    assert series_seen == [sentinel_series]
+    assert baseline_seen == [sentinel_baseline]
+    assert result == sentinel_json
+    assert n_cells == 2
+
+
+def test_movement_baseline_fails_soft_on_archive_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Any exception in the vehicle-archive chain must not propagate — the
+    movement channel is optional and a hiccup there can't block params publish."""
+
+    def _raise_fetch(
+        cfg: R2Config,
+        *,
+        start_date: date,
+        end_date: date,
+        client: object,
+    ) -> list[dict[str, Any]]:
+        raise RuntimeError("vehicle archive unavailable")
+
+    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _raise_fetch)
+
+    result, n_cells = _movement_baseline(
+        _r2_config(), cast("S3Client", _FakeS3()), date(2026, 6, 1), date(2026, 6, 14)
+    )
+
+    assert result == {}
+    assert n_cells == 0
+    assert "movement baseline skipped" in capsys.readouterr().err
+
+
+def test_main_passes_movement_baseline_through_to_write_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for compute-but-forget-to-pass: main() must thread the
+    baseline it computes into the write_params call, not just log it."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    series = {"R1": _quiet(10)}
+    corpus = CorpusStats(
+        start_tick=0,
+        end_tick=MIN_DATA_DAYS * 86_400 + 1,
+        n_observations=10,
+    )
+    sentinel_baseline: dict[str, Any] = {
+        "SENTINEL_ROUTE": {
+            "north": {"0": {"p0": 0.9, "alpha": 1.0, "beta": 1.0, "n": 1}}
+        }
+    }
+    captured_kwargs: dict[str, Any] = {}
+
+    def _fake_load_config() -> R2Config:
+        return cfg
+
+    def _fake_make_client(config: R2Config | None = None) -> S3Client:
+        return fake_client
+
+    def _fake_load_series_by_route(
+        cfg_arg: R2Config, start: date, end: date
+    ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
+        return series, corpus, {}
+
+    def _fake_load_transitions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[TransitionRecord]:
+        return []
+
+    def _fake_movement_baseline(
+        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+    ) -> tuple[dict[str, Any], int]:
+        return sentinel_baseline, 3
+
+    def _fake_write_params(*args: Any, **kwargs: Any) -> str:
+        captured_kwargs.update(kwargs)
+        return "state/params/v1.json"
+
+    monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
+    monkeypatch.setattr(
+        "training.train_em.load_series_by_route", _fake_load_series_by_route
+    )
+    monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
+    monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
+
+    exit_code = main(["--start", "2026-06-01", "--end", "2026-06-14"])
+
+    assert exit_code == 0
+    assert captured_kwargs["movement_baseline"] == sentinel_baseline

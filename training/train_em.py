@@ -39,8 +39,12 @@ from training.dwell import (
 )
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
+    advance_baseline_to_json,
+    build_movement_series_by_direction,
     build_tick_observations,
+    compute_advance_baseline,
     fetch_objects,
+    fetch_vehicle_metrics,
     input_manifest_hash,
     list_alert_keys,
     presence_mask_from_predictions,
@@ -324,6 +328,30 @@ def write_params(
     return versioned_key
 
 
+def _movement_baseline(
+    cfg: R2Config,
+    client: S3Client,
+    start_date: date,
+    end_date: date,
+) -> tuple[dict[str, Any], int]:
+    """Per-(route, direction, tod) advance-rate baseline over the training window,
+    serialized for params.json delivery to the Worker's movement posterior.
+
+    Uses the explicit training window — fetch_vehicle_metrics defaults to
+    yesterday..today, too narrow for a stable prior. Fail-soft: any vehicle-archive
+    error returns an empty baseline so a movement hiccup never blocks the params
+    publish (the channel is optional and back-compat). Returns (serialized, n_cells)."""
+    try:
+        bodies = fetch_vehicle_metrics(
+            cfg, start_date=start_date, end_date=end_date, client=client
+        )
+        baseline = compute_advance_baseline(build_movement_series_by_direction(bodies))
+        return advance_baseline_to_json(baseline), len(baseline)
+    except Exception as exc:
+        print(f"movement baseline skipped ({exc})", file=sys.stderr)
+        return {}, 0
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-route EM trainer")
     parser.add_argument(
@@ -409,6 +437,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         for by_alert in by_state.values()
     )
 
+    # Movement advance-rate baseline over the training window, delivered in
+    # params.json for the Worker's movement posterior (fail-soft — see helper).
+    movement_baseline, n_baseline_cells = _movement_baseline(
+        cfg, client, start_date, end_date
+    )
+
     if args.dry_run:
         dry_routes = {r: _params_to_json(p) for r, p in per_route.items()}
         for r, by_state in dwell_q.items():
@@ -424,6 +458,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "routes": dry_routes,
                     "dwell_cells": n_dwell_cells,
                     "dwell_alert_cells": n_dwell_alert_cells,
+                    "baseline_cells": n_baseline_cells,
                 },
                 indent=2,
             )
@@ -460,12 +495,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         dwell_quantiles_by_alert=dwell_q_by_alert,
         hyperparams=hyperparams,
         input_profile=input_profile,
+        movement_baseline=movement_baseline,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
-        f"dwell_alert_cells={n_dwell_alert_cells})"
+        f"dwell_alert_cells={n_dwell_alert_cells}, baseline_cells={n_baseline_cells})"
     )
     return 0
 

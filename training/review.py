@@ -44,6 +44,7 @@ from training.episodes import (
     extract_episodes,
 )
 from training.eval import (
+    PARAMS_KEY,
     TICK_SECONDS,
     PredictionRecord,
     TransitionRecord,
@@ -62,6 +63,7 @@ from training.load_r2 import (
     fetch_vehicle_metrics,
 )
 from training.r2_client import load_config, make_client
+from training.scorecard import dwell_lookup_from_params, episode_scorecard
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -509,6 +511,27 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     print(f"  {len(episodes)} incident episodes (severe-only truth)")
 
+    try:
+        params_doc: dict[str, Any] = json.loads(
+            client.get_object(Bucket=cfg.bucket, Key=PARAMS_KEY)["Body"].read()
+        )
+    except Exception:
+        params_doc = {}
+    scorecard = episode_scorecard(
+        episodes,
+        preds,
+        movement_truth,
+        dwell_lookup_from_params(params_doc),
+        window_start=window_start,
+        window_end=window_end,
+    )
+    onset = scorecard["onset_latency"]
+    print(
+        f"  scorecard: onset {onset['n_detected']}/{onset['n_episodes']} detected, "
+        f"recovery scored n={scorecard['recovery']['n_scored']}, "
+        f"false alarms {scorecard['false_alarms']['n_false_alarm']}"
+    )
+
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
     plot_confusion(
@@ -583,6 +606,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "truth_source": "vehicle_movement",
         },
         "episodes": episodes_summary(episodes),
+        "episode_scorecard": scorecard,
         "changepoint_alignment": {
             "window_minutes": CHANGEPOINT_WINDOW_MIN,
             "n_total": len(deltas),

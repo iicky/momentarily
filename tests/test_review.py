@@ -6,7 +6,10 @@ tick grid so alert-clear (recovery) changepoints exist. See momentarily-vk0.2.
 
 from __future__ import annotations
 
+import pytest
+
 from momentarily.hmm import Observation
+from momentarily.mapping import CANONICAL_SEVERITY_FLOOR
 from training.eval import TransitionRecord
 from training.load import TickObservation
 from training.review import (
@@ -130,3 +133,51 @@ def test_mta_truth_floor_tightens_truth():
     assert broad[("1", T0)] == "disrupted"
     assert graded[("1", T0)] == "normal"
     assert broad[("A", T0)] == graded[("A", T0)] == "disrupted"
+
+
+# ---------------------------------------------------------------------------
+# Canonical default severity floor: mta_truth(obs) with no severity_floor arg
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("types", "expected"),
+    [
+        (("Delays",), "normal"),
+        (("Trains Rerouted",), "normal"),
+        (("Severe Delays",), "disrupted"),
+        (("Suspended",), "suspended"),
+        (("Planned - Service Change",), "normal"),
+    ],
+)
+def test_mta_truth_default_uses_canonical_severe_only_floor(
+    types: tuple[str, ...], expected: str
+) -> None:
+    """With no severity_floor argument, mta_truth grades by the severe-only
+    canonical floor: a minor delay or routine reroute reads normal, and only
+    Severe Delays / a suspension registers as disrupted / suspended. Planned
+    work stays normal too, so it never masquerades as a stochastic episode."""
+    obs = [_tick_obs("1", T0, types)]
+    assert mta_truth(obs)[("1", T0)] == expected
+
+
+def test_mta_truth_default_matches_explicit_canonical_floor():
+    """Omitting severity_floor must be identical to passing
+    severity_floor=CANONICAL_SEVERITY_FLOOR explicitly — the default is an
+    alias for the canonical floor, not a separate code path that could drift
+    from it."""
+    obs = [
+        _tick_obs("1", T0, ("Delays",)),
+        _tick_obs("A", T0, ("Severe Delays",)),
+        _tick_obs("Q", T0, ("Suspended",)),
+        _tick_obs("N", T0, ("Planned - Service Change",)),
+    ]
+    assert mta_truth(obs) == mta_truth(obs, severity_floor=CANONICAL_SEVERITY_FLOOR)
+
+
+def test_mta_truth_explicit_floor_1_still_recovers_breadth_truth():
+    """Even though breadth is no longer the default, explicitly passing
+    severity_floor=1 must still reproduce the legacy breadth truth (any
+    delay counts as disrupted) — the sensitivity path stays reachable."""
+    obs = [_tick_obs("1", T0, ("Delays",))]
+    assert mta_truth(obs, severity_floor=1)[("1", T0)] == "disrupted"

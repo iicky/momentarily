@@ -128,6 +128,17 @@ def severity_tier(alert_type: str | None) -> int:
     return 0
 
 
+# --- Canonical ground-truth definition ---------------------------------------
+# The canonical MTA-derived truth grades a route-tick "disrupted" only when an
+# active alert reaches severity tier >= CANONICAL_SEVERITY_FLOOR. At floor 2
+# (Severe Delays / suspension) chronic minor alerts and planned work (tier 0)
+# read "normal", so planned windows are a deterministic schedule overlay rather
+# than stochastic disruption episodes. floor=1 is the legacy breadth truth,
+# retained only as a labeled sensitivity. Bump TRUTH_VERSION on any change here.
+CANONICAL_SEVERITY_FLOOR = 2
+TRUTH_VERSION = 2
+
+
 def coarse_condition(category: str) -> str:
     """Non-model severity fallback for the Python publisher.
 

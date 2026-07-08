@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from momentarily.mapping import TRUTH_VERSION
 from training.drift import unmapped_alert_type_drift
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
@@ -683,6 +684,10 @@ def build_eval(
     return {
         "generated_at": int(datetime.now(UTC).timestamp()),
         "provenance": code_provenance(),
+        # Truth-definition version in effect. Note the calibration/recovery blocks
+        # below still grade against the published condition stream (self-consistent),
+        # not the severity truth; moving them onto it is the episode-reframe work.
+        "truth_version": TRUTH_VERSION,
         "window": {"start": window_start, "end": window_end},
         "predictions_seen": len(predictions),
         "transitions_seen": len(transitions),
@@ -750,6 +755,7 @@ def build_calibration(
     """
     return {
         "generated_at": eval_doc["generated_at"],
+        "truth_version": eval_doc["truth_version"],
         "provenance": eval_doc["provenance"],
         "window": eval_doc["window"],
         "predictions_seen": eval_doc["predictions_seen"],

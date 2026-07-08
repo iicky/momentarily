@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from momentarily.mapping import (
+    CANONICAL_SEVERITY_FLOOR,
     NO_ALERTS_FALLBACK,
+    TRUTH_VERSION,
     coarse_status,
     is_known_alert_type,
     severity_tier,
@@ -99,3 +101,17 @@ def test_severity_tier(alert_type: str | None, expected: int) -> None:
 def test_severity_tier_unknown_is_zero() -> None:
     """Unknown alert_types don't inflate the graded truth — they read tier 0."""
     assert severity_tier("Brand New Mystery Type") == 0
+
+
+def test_canonical_severity_floor_is_severe_only():
+    """The canonical ground-truth floor must stay at severe-only (tier 2):
+    ordinary delays/reroutes (tier 1) are excluded from the default truth,
+    only Severe Delays and suspensions (tier >= 2) count as disrupted."""
+    assert CANONICAL_SEVERITY_FLOOR == 2
+
+
+def test_truth_version_reflects_canonical_definition():
+    """TRUTH_VERSION identifies the severe-only truth definition; any future
+    change to what counts as ground truth must bump it so downstream training
+    artifacts can detect a truth-definition mismatch."""
+    assert TRUTH_VERSION == 2

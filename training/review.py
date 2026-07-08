@@ -31,7 +31,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from momentarily.hmm import Observation
-from momentarily.mapping import category_for_label, coarse_status, severity_tier
+from momentarily.mapping import (
+    CANONICAL_SEVERITY_FLOOR,
+    TRUTH_VERSION,
+    category_for_label,
+    coarse_status,
+    severity_tier,
+)
 from training.eval import (
     TICK_SECONDS,
     PredictionRecord,
@@ -58,12 +64,6 @@ if TYPE_CHECKING:
 HMM_STATES = ("normal", "disrupted", "suspended")
 MTA_STATES = ("normal", "disrupted", "suspended")
 CHANGEPOINT_WINDOW_MIN = 30
-
-# Default severity floor for the graded truth: tier 2 (Severe Delays) and up
-# count as disrupted; ordinary delays / reroutes (tier 1) read normal. Lets the
-# confusion matrix judge the classifier on like-for-like severity instead of a
-# truth dominated by minor-alert breadth. See momentarily-zl6.
-SEVERE_FLOOR = 2
 
 
 def derive_mta_state(obs: Observation) -> str:
@@ -113,11 +113,13 @@ def load_truth_observations(
 
 
 def mta_truth(
-    obs_list: list[TickObservation], *, severity_floor: int = 1
+    obs_list: list[TickObservation], *, severity_floor: int = CANONICAL_SEVERITY_FLOOR
 ) -> dict[tuple[str, int], str]:
-    """(route, tick) → MTA-derived state. severity_floor <= 1 uses the original
-    breadth truth (any delays/service-change = disrupted); >= 2 grades by
-    alert-type severity. Ticks not in the dict had no active alerts → 'normal'."""
+    """(route, tick) → MTA-derived state. Defaults to the canonical severe-only
+    truth (severity_floor >= 2: only Severe Delays / suspension count as
+    disrupted). severity_floor <= 1 is the legacy breadth truth (any
+    delays/service-change = disrupted), kept as a sensitivity. Ticks not in the
+    dict had no active alerts → 'normal'."""
     if severity_floor <= 1:
         return {(o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list}
     return {
@@ -134,7 +136,7 @@ def build_mta_truth(
     start_date: Any,
     end_date: Any,
     *,
-    severity_floor: int = 1,
+    severity_floor: int = CANONICAL_SEVERITY_FLOOR,
 ) -> dict[tuple[str, int], str]:
     """Convenience: fetch + derive the truth in one call."""
     obs_list = load_truth_observations(client, bucket, start_date, end_date)
@@ -434,8 +436,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument(
         "--severity-floor",
         type=int,
-        default=SEVERE_FLOOR,
-        help="alert-severity tier (2=severe-only) for the graded truth confusion",
+        default=CANONICAL_SEVERITY_FLOOR,
+        help="alert-severity tier for the canonical truth (2=severe-only)",
     )
     args = parser.parse_args(argv)
 
@@ -453,13 +455,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(f"  {len(preds)} predictions, {len(trans)} transitions")
     print("loading alerts archive for MTA-state truth")
     truth_obs = load_truth_observations(client, cfg.bucket, start_date, today)
-    truth = mta_truth(truth_obs, severity_floor=1)
-    truth_graded = mta_truth(truth_obs, severity_floor=args.severity_floor)
-    regraded = sum(1 for k, v in truth.items() if truth_graded.get(k) != v)
+    truth = mta_truth(truth_obs, severity_floor=args.severity_floor)
+    truth_breadth = mta_truth(truth_obs, severity_floor=1)
+    reclassified = sum(1 for k, v in truth_breadth.items() if truth.get(k) != v)
     print(f"  {len(truth)} (route, tick) ground-truth states")
     print(
-        f"  severity-graded truth (floor={args.severity_floor}): "
-        f"{regraded} ticks reclassified vs the breadth truth"
+        f"  canonical truth (severity_floor={args.severity_floor}): "
+        f"{reclassified} ticks read normal vs the breadth truth"
     )
     print("loading vehicle-movement archive for independent current-state truth")
     movement_truth = build_movement_truth(
@@ -476,11 +478,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     eval_doc = build_eval(
         preds, trans, window_start=window_start, window_end=window_end
     )
+    # Canonical: HMM condition vs severe-only MTA truth. Sub-floor alerts (minor
+    # delays, routine reroutes) and planned work read normal, so predicted-normal
+    # cells are judged on whether real disruption was missed, not alert breadth.
     conf = confusion(preds, truth)
-    # Same HMM condition, scored against severity-graded truth: sub-floor alerts
-    # (minor delays, routine reroutes) read normal, so predicted-normal cells are
-    # judged on whether real disruption was missed, not on minor-alert breadth.
-    conf_graded = confusion(preds, truth_graded)
+    # Legacy breadth truth (any alert = disrupted), kept as a labeled sensitivity.
+    conf_breadth = confusion(preds, truth_breadth)
     # Same HMM condition, scored against where trains physically are instead of
     # the alert feed — an independent-in-derivation cross-check. Empty until the
     # vehicle archive has accumulated ticks (Worker side ships first).
@@ -497,12 +500,17 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
-    plot_confusion(conf, out_dir / "confusion.png")
     plot_confusion(
-        conf_graded,
-        out_dir / "confusion_graded.png",
-        truth_label=f"severity-graded MTA state (floor={args.severity_floor})",
+        conf,
+        out_dir / "confusion.png",
+        truth_label=f"severe-only MTA state (floor={args.severity_floor})",
         title="Regime confusion: HMM vs severe-only MTA truth (row-normalized)",
+    )
+    plot_confusion(
+        conf_breadth,
+        out_dir / "confusion_breadth.png",
+        truth_label="breadth MTA state (any alert = disrupted)",
+        title="Regime confusion: HMM vs breadth MTA truth (sensitivity)",
     )
     plot_confusion(
         conf_movement,
@@ -516,6 +524,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     abs_sorted = sorted(abs(d) for d in matched)
     summary = {
         "generated_at": int(datetime.now(UTC).timestamp()),
+        "truth_version": TRUTH_VERSION,
+        "truth_definition": {
+            "severity_floor": args.severity_floor,
+            "source": "mta_alerts_severity_graded",
+            "planned_work": "deterministic schedule overlay (tier 0 -> normal)",
+            "note": (
+                "canonical truth grades disrupted only at severity tier "
+                f">= {args.severity_floor}; breadth (floor 1) kept as a sensitivity"
+            ),
+        },
         "window": {"start": window_start, "end": window_end, "days": args.days},
         "counts": {
             "predictions": len(preds),
@@ -527,22 +545,24 @@ def main(argv: Iterable[str] | None = None) -> int:
         "recovery": eval_doc["recovery"],
         # Independent recovery truth from alert-feed clearance, beside the
         # argmax-based `recovery`. A feed-clearance proxy, not true service
-        # recovery (that's the trip-updates signal, momentarily-xum).
+        # recovery (that's the trip-updates signal).
         "recovery_clearance": {
             **recovery_as_dict(recovery_clearance),
             "truth_source": "alert_feed_clearance",
             "n_disruptions": len(clearance),
         },
         "current_params": eval_doc["current_params"],
+        # Canonical confusion matrix: HMM condition vs severe-only MTA truth
+        # (truth_version + severity_floor recorded in truth_definition above).
         "confusion": conf,
-        # HMM condition vs severity-graded MTA truth — sub-floor alerts read
-        # normal so the matrix judges severity like-for-like. severity_floor and
-        # the reclassified-tick count document how much the truth tightened.
-        "confusion_graded": {
-            "matrix": conf_graded,
-            "truth_source": "mta_alerts_severity_graded",
-            "severity_floor": args.severity_floor,
-            "reclassified_ticks": regraded,
+        # Breadth truth (any alert = disrupted), kept as a labeled sensitivity.
+        # reclassified_ticks = ticks the canonical truth reads normal that the
+        # breadth truth called disrupted.
+        "confusion_breadth": {
+            "matrix": conf_breadth,
+            "truth_source": "mta_alerts_breadth",
+            "severity_floor": 1,
+            "reclassified_ticks": reclassified,
         },
         # HMM condition vs vehicle-movement truth — independent in derivation from
         # the alert feed above (where trains physically are, not what the feed

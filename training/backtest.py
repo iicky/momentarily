@@ -65,6 +65,7 @@ from momentarily.hmm import (
     initial_published_state,
     project_forward,
 )
+from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, TRUTH_VERSION
 from training.dwell import compute_dwell_quantiles, dwell_cdf, dwell_samples_by_cell
 from training.eval import TICK_SECONDS, load_transitions, snap_tick
 from training.load_r2 import load_route_series_r2
@@ -260,7 +261,9 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
     )
 
     # --- truth over the eval window (current + future for outcome lookup) ---
-    truth = build_mta_truth(client, cfg.bucket, eval_start, today)
+    truth = build_mta_truth(
+        client, cfg.bucket, eval_start, today, severity_floor=CANONICAL_SEVERITY_FLOOR
+    )
 
     # --- replay held-out window per route, collect samples per horizon ---
     # samples[h] : list of (route, {model: p_normal}, persistence, outcome, disrupted_now)
@@ -377,6 +380,8 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
 
     doc = {
         "generated_at": now_epoch,
+        "truth_version": TRUTH_VERSION,
+        "truth_severity_floor": CANONICAL_SEVERITY_FLOOR,
         "train_window": {
             "start": str(train_start),
             "end": str(train_end),

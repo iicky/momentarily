@@ -38,6 +38,11 @@ from momentarily.mapping import (
     coarse_status,
     severity_tier,
 )
+from training.episodes import (
+    disruptive_types_by_key,
+    episodes_summary,
+    extract_episodes,
+)
 from training.eval import (
     TICK_SECONDS,
     PredictionRecord,
@@ -498,6 +503,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"n={recovery_clearance.overall.n} graded ticks"
     )
 
+    episode_types = disruptive_types_by_key(truth_obs)
+    episodes = extract_episodes(
+        truth, episode_types, window_start=window_start, window_end=window_end
+    )
+    print(f"  {len(episodes)} incident episodes (severe-only truth)")
+
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
     plot_confusion(
@@ -571,6 +582,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "matrix": conf_movement,
             "truth_source": "vehicle_movement",
         },
+        "episodes": episodes_summary(episodes),
         "changepoint_alignment": {
             "window_minutes": CHANGEPOINT_WINDOW_MIN,
             "n_total": len(deltas),

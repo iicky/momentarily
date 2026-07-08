@@ -375,6 +375,7 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
                 "km_fallback_rate": fallback[h] / total[h] if total[h] else 0.0,
                 "all": score(rows),
                 "disrupted_now": score([r for r in rows if r[4]]),
+                "normal_now": score([r for r in rows if not r[4]]),
             }
         )
 
@@ -445,6 +446,12 @@ def _print_report(doc: dict[str, Any]) -> None:
         "DISRUPTED-now ticks (where dwell timing matters — the meaningful stratum):",
         doc,
         "disrupted_now",
+    )
+    _stratum_table(
+        "NORMAL-now ticks (persistence predicts stay-normal ~1.0; the km-residual "
+        "normal branch must beat it here to graduate normal-condition p_normal):",
+        doc,
+        "normal_now",
     )
 
     # Lower Brier = better. Persistence is a degenerate yardstick on this sticky

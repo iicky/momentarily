@@ -766,6 +766,36 @@ def compute_advance_baseline(
     return out
 
 
+def compute_advance_baseline_by_route(
+    series: dict[tuple[str, str, int], dict[str, int]],
+    *,
+    min_matched: int = MIN_MATCHED_TRIPS,
+    min_samples: int = 20,
+) -> dict[str, float]:
+    """Per-route baseline (normal) advance rate — the median cross-tick advance
+    fraction pooled over both directions and all times of day.
+
+    Coarser than compute_advance_baseline: the trained emissions aren't
+    TOD-conditioned, so the EM prior anchors one normal-state advance_rate per
+    route, not a per-(direction, tod) grid. Same median-of-fractions estimator
+    and P0 floor. Routes below min_samples ticks are omitted so a route with
+    thin movement data gets no fabricated prior (the fit keeps the default).
+    """
+    buckets: dict[str, list[float]] = {}
+    for (route, _direction, _tick), row in series.items():
+        matched = row.get("advanced_n", 0) + row.get("stalled_n", 0)
+        if matched < min_matched:
+            continue
+        buckets.setdefault(route, []).append(row.get("advanced_n", 0) / matched)
+
+    out: dict[str, float] = {}
+    for route, fracs in buckets.items():
+        if len(fracs) < min_samples:
+            continue
+        out[route] = min(max(statistics.median(fracs), P0_FLOOR), 1.0 - P0_FLOOR)
+    return out
+
+
 def advance_baseline_to_json(
     baseline: dict[tuple[str, str, int], AdvanceBaseline],
 ) -> dict[str, dict[str, dict[str, dict[str, float]]]]:

@@ -26,11 +26,11 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from momentarily.hmm import HMMParams, Observation, fit_em
+from momentarily.hmm import EmissionParams, HMMParams, Observation, fit_em
 from training.drift import build_input_profile
 from training.dwell import (
     DwellQuantiles,
@@ -43,6 +43,7 @@ from training.load_r2 import (
     build_movement_series_by_direction,
     build_tick_observations,
     compute_advance_baseline,
+    compute_advance_baseline_by_route,
     fetch_objects,
     fetch_vehicle_metrics,
     input_manifest_hash,
@@ -214,10 +215,19 @@ def train(
     *,
     prior_strength: float = 100.0,
     min_ticks: int = MIN_TICKS_PER_ROUTE,
+    advance_priors: dict[str, float] | None = None,
 ) -> tuple[HMMParams, dict[str, HMMParams]]:
-    """Returns (global_prior, per_route_params). Doesn't touch R2."""
+    """Returns (global_prior, per_route_params). Doesn't touch R2.
+
+    `advance_priors` maps a route to its measured normal-state advance rate; when
+    present, that route's prior carries the measured rate instead of the
+    hardcoded default, so the movement emission's normal state anchors on the
+    line's real cross-tick advance fraction. Routes without a measured baseline
+    keep the global prior's default.
+    """
     if not series_by_route:
         raise ValueError("no observations to train on")
+    advance_priors = advance_priors or {}
 
     pooled: list[Observation] = []
     for series in series_by_route.values():
@@ -231,18 +241,44 @@ def train(
 
     out: dict[str, HMMParams] = {}
     for route, series in series_by_route.items():
+        rate = advance_priors.get(route)
+        prior = (
+            _apply_advance_prior(global_prior, rate)
+            if rate is not None
+            else global_prior
+        )
         if len(series) < min_ticks:
-            out[route] = global_prior
+            out[route] = prior
             continue
         fitted, _ = fit_em(
             series,
-            global_prior,
+            prior,
             max_iterations=30,
-            prior_params=global_prior,
+            prior_params=prior,
             prior_strength=prior_strength,
         )
         out[route] = _cap_self_loops(fitted)
     return global_prior, out
+
+
+def _apply_advance_prior(params: HMMParams, normal_rate: float) -> HMMParams:
+    """Return `params` with the normal state's advance-rate prior set to the
+    measured route baseline `normal_rate`, leaving disrupted/suspended alone.
+    The flat emissions carry it; per-bin emissions, if ever present, get the
+    same override so the prior survives a TOD-conditioned model."""
+
+    def override(em: EmissionParams) -> EmissionParams:
+        a = em.advance_rate
+        return replace(em, advance_rate=(normal_rate, a[1], a[2]))
+
+    by_bin = (
+        tuple(override(e) for e in params.emissions_by_bin)
+        if params.emissions_by_bin is not None
+        else None
+    )
+    return replace(
+        params, emissions=override(params.emissions), emissions_by_bin=by_bin
+    )
 
 
 def _params_to_json(params: HMMParams) -> dict[str, Any]:
@@ -333,23 +369,30 @@ def _movement_baseline(
     client: S3Client,
     start_date: date,
     end_date: date,
-) -> tuple[dict[str, Any], int]:
-    """Per-(route, direction, tod) advance-rate baseline over the training window,
-    serialized for params.json delivery to the Worker's movement posterior.
+) -> tuple[dict[str, Any], int, dict[str, float]]:
+    """Advance-rate baseline over the training window, in the two shapes the
+    pipeline needs from one vehicle-archive fetch:
+
+    - the per-(route, direction, tod) baseline, serialized for params.json
+      delivery to the Worker's movement posterior;
+    - the per-route normal advance rate that seeds each route's EM prior.
 
     Uses the explicit training window — fetch_vehicle_metrics defaults to
-    yesterday..today, too narrow for a stable prior. Fail-soft: any vehicle-archive
-    error returns an empty baseline so a movement hiccup never blocks the params
-    publish (the channel is optional and back-compat). Returns (serialized, n_cells)."""
+    yesterday..today, too narrow for a stable prior. Fail-soft: any
+    vehicle-archive error returns empty baselines so a movement hiccup never
+    blocks the params publish (the channel is optional and back-compat). Returns
+    (serialized, n_cells, route_advance_rates)."""
     try:
         bodies = fetch_vehicle_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
-        baseline = compute_advance_baseline(build_movement_series_by_direction(bodies))
-        return advance_baseline_to_json(baseline), len(baseline)
+        series = build_movement_series_by_direction(bodies)
+        baseline = compute_advance_baseline(series)
+        route_rates = compute_advance_baseline_by_route(series)
+        return advance_baseline_to_json(baseline), len(baseline), route_rates
     except Exception as exc:
         print(f"movement baseline skipped ({exc})", file=sys.stderr)
-        return {}, 0
+        return {}, 0, {}
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -408,14 +451,24 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             return 1
 
+    client = make_client(cfg)
+    # Movement advance-rate baseline over the training window: the per-cell form
+    # ships to the Worker in params.json; the per-route rates seed each route's
+    # normal-state advance prior below (fail-soft — see helper).
+    movement_baseline, n_baseline_cells, route_advance_rates = _movement_baseline(
+        cfg, client, start_date, end_date
+    )
+
     global_prior, per_route = train(
-        series, prior_strength=args.prior_strength, min_ticks=args.min_ticks
+        series,
+        prior_strength=args.prior_strength,
+        min_ticks=args.min_ticks,
+        advance_priors=route_advance_rates,
     )
 
     # Empirical dwell quantiles from the regime_transitions stream over the
     # same window. Cells below MIN_SAMPLES_FOR_EMPIRICAL fall back to the
     # geometric dwell in the Worker — no-op if the stream is empty.
-    client = make_client(cfg)
     from training.eval import load_transitions
 
     transitions = load_transitions(client, cfg.bucket, start_date, end_date)
@@ -435,12 +488,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         len(by_alert)
         for by_state in dwell_q_by_alert.values()
         for by_alert in by_state.values()
-    )
-
-    # Movement advance-rate baseline over the training window, delivered in
-    # params.json for the Worker's movement posterior (fail-soft — see helper).
-    movement_baseline, n_baseline_cells = _movement_baseline(
-        cfg, client, start_date, end_date
     )
 
     if args.dry_run:
@@ -474,7 +521,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
         return 1
 
-    n_routes_trained = sum(1 for p in per_route.values() if p is not global_prior)
+    n_routes_trained = sum(1 for s in series.values() if len(s) >= args.min_ticks)
     # The knobs that determine the fit — with code_sha + the immutable archive
     # these make a params_version re-derivable. Window is recorded as resolved
     # dates so it reproduces regardless of when --days was relative to.

@@ -36,4 +36,10 @@ CLAUDE.md
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 .beads-credential-key
+
+# Local agent memory (Mnemopi) — not for upstream
+banks/

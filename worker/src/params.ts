@@ -49,6 +49,11 @@ const EmissionParamsSchema = z.object({
   // Per-state matched-trip advance rate. Optional for back-compat with
   // params.json written before the movement channel (vhh.4).
   advance_rate: ProbVec3.optional(),
+  // Per-state service-ratio Gaussian (assigned_n / baseline): mu is a ratio
+  // (>=0, may exceed 1), sigma a std (>=0). Optional for back-compat with
+  // params.json written before the service channel.
+  service_mu: RateVec3.optional(),
+  service_sigma: RateVec3.optional(),
 });
 
 const DwellQuantilesSchema = z.object({

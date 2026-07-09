@@ -16,11 +16,15 @@ from momentarily.hmm import (
     N_STATES,
     N_TOD_BINS,
     PUBLISHED_UNKNOWN,
+    SERVICE_SIGMA_FLOOR,
     EmissionParams,
     FilterState,
     HMMParams,
     Observation,
     PublishedState,
+    _log_emission,  # pyright: ignore[reportPrivateUsage]
+    _log_gauss,  # pyright: ignore[reportPrivateUsage]
+    _reorder_emissions,  # pyright: ignore[reportPrivateUsage]
     canonicalize_states,
     expected_dwell_ticks,
     fit_em,
@@ -1111,3 +1115,199 @@ def test_canonicalize_ranks_across_tod_bins() -> None:
     # normal = summed-quietest (old idx1); suspended = summed-highest flag (old idx0).
     assert math.isclose(canon.emissions_by_bin[1].poisson_lambda[0], 0.1)
     assert math.isclose(canon.emissions_by_bin[1].bernoulli_p[2], 0.9)
+
+
+# ---------------------------------------------------------------------------
+# Service-ratio (assigned_n baseline) Gaussian channel
+# ---------------------------------------------------------------------------
+
+
+def test_log_gauss_matches_closed_form() -> None:
+    """Matches the analytic Gaussian log-density formula directly."""
+    x, mu, sigma = 0.82, 1.0, 0.3
+    expected = -0.5 * math.log(2.0 * math.pi * sigma * sigma) - (x - mu) ** 2 / (
+        2.0 * sigma * sigma
+    )
+    assert math.isclose(_log_gauss(x, mu, sigma), expected, rel_tol=1e-12)
+
+
+def test_log_gauss_floors_tiny_sigma() -> None:
+    """A sigma far below the floor scores identically to sigma == floor."""
+    assert math.isclose(
+        _log_gauss(0.9, 1.0, 1e-9), _log_gauss(0.9, 1.0, SERVICE_SIGMA_FLOOR)
+    )
+
+
+def test_log_emission_service_term_gated_off() -> None:
+    """The Gaussian term is skipped (not just near-zero) when has_service is
+    False or the ratio is None; the score matches an obs with no service info."""
+    params = EmissionParams(
+        poisson_lambda=(0.3, 4.0, 12.0),
+        gamma_alpha=(1.0, 3.0, 6.0),
+        gamma_beta=(2.0, 0.4, 0.2),
+        bernoulli_p=(0.001, 0.05, 0.95),
+        bernoulli_p_delays=(0.01, 0.45, 0.5),
+        bernoulli_p_service_change=(0.01, 0.5, 0.6),
+        bernoulli_p_planned=(0.05, 0.3, 0.4),
+    )
+    baseline = Observation(alert_count=3, severity_sum=0, has_suspended_alert=False)
+    off_no_flag = Observation(
+        alert_count=3,
+        severity_sum=0,
+        has_suspended_alert=False,
+        service_ratio=0.9,
+        has_service=False,
+    )
+    off_no_ratio = Observation(
+        alert_count=3,
+        severity_sum=0,
+        has_suspended_alert=False,
+        service_ratio=None,
+        has_service=True,
+    )
+    assert _log_emission(off_no_flag, params) == _log_emission(baseline, params)
+    assert _log_emission(off_no_ratio, params) == _log_emission(baseline, params)
+
+
+def test_log_emission_service_ratio_favors_matching_state() -> None:
+    """With every other channel tied across states, service_ratio=1.0 (normal's
+    mu) must outscore suspended (mu 0.05) by exactly the Gaussian log-density
+    gap."""
+    params = EmissionParams(
+        poisson_lambda=(2.0, 2.0, 2.0),
+        gamma_alpha=(1.0, 1.0, 1.0),
+        gamma_beta=(1.0, 1.0, 1.0),
+        bernoulli_p=(0.1, 0.1, 0.1),
+        bernoulli_p_delays=(0.2, 0.2, 0.2),
+        bernoulli_p_service_change=(0.2, 0.2, 0.2),
+        bernoulli_p_planned=(0.2, 0.2, 0.2),
+        advance_rate=(0.5, 0.5, 0.5),
+        service_mu=(1.0, 0.6, 0.05),
+        service_sigma=(0.3, 0.3, 0.15),
+    )
+    obs = Observation(
+        alert_count=2,
+        severity_sum=0,
+        has_suspended_alert=False,
+        service_ratio=1.0,
+        has_service=True,
+    )
+    log_lik = _log_emission(obs, params)
+    assert log_lik[0] > log_lik[2]
+    expected_gap = _log_gauss(1.0, 1.0, 0.3) - _log_gauss(1.0, 0.05, 0.15)
+    assert math.isclose(log_lik[0] - log_lik[2], expected_gap, rel_tol=1e-9)
+
+
+def test_em_fits_service_mu_normal_above_suspended() -> None:
+    """EM should learn a high normal service_mu and a low suspended service_mu
+    from synthetic service-ratio data, with sigma never below the floor."""
+    true_params = HMMParams(
+        transition=(
+            (0.95, 0.04, 0.01),
+            (0.08, 0.90, 0.02),
+            (0.02, 0.10, 0.88),
+        ),
+        initial=(0.6, 0.3, 0.1),
+        emissions=EmissionParams(
+            poisson_lambda=(0.2, 3.0, 9.0),
+            gamma_alpha=(1.0, 3.0, 6.0),
+            gamma_beta=(2.0, 0.5, 0.3),
+            bernoulli_p=(0.01, 0.10, 0.80),
+            service_mu=(1.0, 0.5, 0.02),
+            service_sigma=(0.15, 0.15, 0.05),
+        ),
+    )
+    rng = random.Random(11)
+    states: list[int] = [
+        rng.choices(range(N_STATES), weights=list(true_params.initial), k=1)[0]
+    ]
+    for _ in range(1499):
+        row = list(true_params.transition[states[-1]])
+        states.append(rng.choices(range(N_STATES), weights=row, k=1)[0])
+
+    em = true_params.emissions
+    obs: list[Observation] = []
+    for s in states:
+        ratio = rng.gauss(em.service_mu[s], em.service_sigma[s])
+        obs.append(
+            Observation(
+                alert_count=_sample_poisson(rng, em.poisson_lambda[s]),
+                severity_sum=0,
+                has_suspended_alert=rng.random() < em.bernoulli_p[s],
+                service_ratio=ratio,
+                has_service=True,
+            )
+        )
+
+    init = HMMParams(
+        transition=(
+            (0.8, 0.15, 0.05),
+            (0.15, 0.7, 0.15),
+            (0.05, 0.15, 0.8),
+        ),
+        initial=(0.6, 0.3, 0.1),
+        emissions=EmissionParams(
+            poisson_lambda=(1.0, 4.0, 8.0),
+            gamma_alpha=(1.5, 2.5, 4.0),
+            gamma_beta=(1.0, 0.5, 0.3),
+            bernoulli_p=(0.1, 0.3, 0.7),
+            service_mu=(0.5, 0.5, 0.5),
+            service_sigma=(0.3, 0.3, 0.3),
+        ),
+    )
+    fitted, _ = fit_em(obs, init, max_iterations=40, tolerance=1e-5)
+    mu = fitted.emissions.service_mu
+    sigma = fitted.emissions.service_sigma
+    # After canonicalize_states, index 0 is normal and index 2 suspended (see
+    # test_em_fits_advance_rate_per_state).
+    assert mu[0] > mu[2], f"service_mu not separated by state: {mu}"
+    assert all(sd >= SERVICE_SIGMA_FLOOR - 1e-12 for sd in sigma)
+
+
+def test_canonicalize_service_mu_breaks_ties() -> None:
+    """When two states tie on alert rate, suspended-flag probability, and
+    advance rate, service_mu decides which is normal (highest) and which is
+    suspended (lowest)."""
+    params = HMMParams(
+        transition=(
+            (0.9, 0.05, 0.05),
+            (0.05, 0.9, 0.05),
+            (0.05, 0.05, 0.9),
+        ),
+        initial=(0.4, 0.3, 0.3),
+        emissions=EmissionParams(
+            # States 0 and 2 tie on alert rate, suspended-flag probability,
+            # and advance rate; only service_mu separates them.
+            poisson_lambda=(1.0, 5.0, 1.0),
+            gamma_alpha=(1.0, 1.0, 1.0),
+            gamma_beta=(1.0, 1.0, 1.0),
+            bernoulli_p=(0.5, 0.01, 0.5),
+            advance_rate=(0.5, 0.5, 0.5),
+            service_mu=(0.05, 0.5, 0.9),
+            service_sigma=(0.2, 0.2, 0.2),
+        ),
+    )
+    canon = canonicalize_states(params)
+    # Highest service_mu (old state 2) becomes normal; its tie-mate with the
+    # lowest service_mu (old state 0) becomes suspended.
+    assert math.isclose(canon.emissions.service_mu[0], 0.9)
+    assert math.isclose(canon.emissions.service_mu[2], 0.05)
+
+
+def test_reorder_emissions_permutes_service_channel_in_lockstep() -> None:
+    """service_mu/service_sigma must move with the rest of a state's
+    per-state channels under a non-identity permutation, not independently."""
+    em = EmissionParams(
+        poisson_lambda=(0.1, 5.0, 3.0),
+        gamma_alpha=(1.0, 1.0, 1.0),
+        gamma_beta=(1.0, 1.0, 1.0),
+        bernoulli_p=(0.1, 0.1, 0.1),
+        advance_rate=(0.9, 0.4, 0.02),
+        service_mu=(0.95, 0.5, 0.05),
+        service_sigma=(0.13, 0.11, 0.12),
+    )
+    reordered = _reorder_emissions(em, (1, 2, 0))
+    assert reordered.poisson_lambda == (5.0, 3.0, 0.1)
+    assert reordered.advance_rate == (0.4, 0.02, 0.9)
+    assert reordered.service_mu == (0.5, 0.05, 0.95)
+    assert reordered.service_sigma == (0.11, 0.12, 0.13)

@@ -43,6 +43,8 @@ function toParams(p: (typeof fixture)['params']): HMMParams {
     bernoulli_p_service_change: vec3(e.bernoulli_p_service_change),
     bernoulli_p_planned: vec3(e.bernoulli_p_planned),
     advance_rate: vec3(e.advance_rate),
+    service_mu: vec3(e.service_mu),
+    service_sigma: vec3(e.service_sigma),
   };
   return {
     transition: [vec3(p.transition[0]!), vec3(p.transition[1]!), vec3(p.transition[2]!)],
@@ -62,10 +64,14 @@ type RawObs = {
   advanced_n?: number;
   matched_n?: number;
   has_movement?: boolean;
+  service_ratio?: number | null;
+  has_service?: boolean;
 };
 
 function toObs(o: RawObs | null): Observation | null {
-  return o === null ? null : { ...o };
+  if (o === null) return null;
+  const { service_ratio, ...rest } = o;
+  return service_ratio == null ? rest : { ...rest, service_ratio };
 }
 
 // Combined absolute + relative tolerance: probabilities span O(1) down to

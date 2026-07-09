@@ -70,3 +70,16 @@ export function logBinomial(k: number, n: number, p: number): number {
   const logCoef = lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1);
   return logCoef + k * Math.log(clipped) + (n - k) * Math.log1p(-clipped);
 }
+
+/** Floor on the service-ratio Gaussian's std, matching SERVICE_SIGMA_FLOOR in
+ * src/momentarily/hmm.py so a near-constant fitted channel can't collapse. */
+export const SERVICE_SIGMA_FLOOR = 0.05;
+
+/**
+ * log N(x; mu, sigma) with the sigma floor. Mirrors _log_gauss in
+ * src/momentarily/hmm.py.
+ */
+export function logGauss(x: number, mu: number, sigma: number): number {
+  const s = Math.max(sigma, SERVICE_SIGMA_FLOOR);
+  return -0.5 * Math.log(2 * Math.PI * s * s) - (x - mu) ** 2 / (2 * s * s);
+}

@@ -59,6 +59,8 @@ PARAMS = HMMParams(
         bernoulli_p_service_change=(0.02, 0.6, 0.4),
         bernoulli_p_planned=(0.05, 0.6, 0.35),
         advance_rate=(0.7, 0.3, 0.02),
+        service_mu=(1.0, 0.6, 0.05),
+        service_sigma=(0.25, 0.25, 0.15),
     ),
 )
 
@@ -77,6 +79,8 @@ def _quiet() -> Observation:
         advanced_n=10,
         matched_n=12,
         has_movement=True,
+        service_ratio=1.05,
+        has_service=True,
     )
 
 
@@ -93,6 +97,8 @@ def _delays() -> Observation:
         advanced_n=3,
         matched_n=12,
         has_movement=True,
+        service_ratio=0.6,
+        has_service=True,
     )
 
 
@@ -110,6 +116,8 @@ def _suspended() -> Observation:
         advanced_n=0,
         matched_n=8,
         has_movement=True,
+        service_ratio=0.02,
+        has_service=True,
     )
 
 

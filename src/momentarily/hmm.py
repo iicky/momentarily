@@ -93,6 +93,10 @@ class Observation:
     advanced_n: int = 0
     matched_n: int = 0
     has_movement: bool = False
+    # Service-level channel: assigned_n / (route, tod) baseline. has_service gates
+    # it out (no baseline or feed gap) so the tick scores on the other channels.
+    service_ratio: float | None = None
+    has_service: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,11 @@ class EmissionParams:
     # Per-state probability a matched trip advances a stop in one tick. Normal
     # sits near the route-direction baseline; disrupted below it; suspended ~0.
     advance_rate: tuple[float, float, float] = (0.6, 0.3, 0.02)
+    # Per-state service-ratio (assigned_n / baseline) Gaussian: normal ~1.0,
+    # disrupted below it, suspended ~0. Optional for back-compat with params
+    # written before the service channel.
+    service_mu: tuple[float, float, float] = (1.0, 0.6, 0.05)
+    service_sigma: tuple[float, float, float] = (0.3, 0.3, 0.15)
 
 
 @dataclass(frozen=True)
@@ -150,6 +159,8 @@ def _reorder_emissions(
         bernoulli_p_service_change=r(em.bernoulli_p_service_change),
         bernoulli_p_planned=r(em.bernoulli_p_planned),
         advance_rate=r(em.advance_rate),
+        service_mu=r(em.service_mu),
+        service_sigma=r(em.service_sigma),
     )
 
 
@@ -186,6 +197,7 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
         rank_lambda: tuple[float, ...] = em.poisson_lambda
         rank_p: tuple[float, ...] = em.bernoulli_p
         rank_advance: tuple[float, ...] = em.advance_rate
+        rank_service: tuple[float, ...] = em.service_mu
     else:
         rank_lambda = tuple(
             sum(e.poisson_lambda[s] for e in params.emissions_by_bin)
@@ -199,12 +211,22 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
             sum(e.advance_rate[s] for e in params.emissions_by_bin)
             for s in range(N_STATES)
         )
-    # Movement reinforces identity (normal moves most, suspended least) but only
-    # breaks ties: lowest alert rate wins normal, highest advance rate breaks a
-    # tie; highest suspended-flag wins suspended, lowest advance rate breaks one.
-    normal_idx = min(range(N_STATES), key=lambda s: (rank_lambda[s], -rank_advance[s]))
+        rank_service = tuple(
+            sum(e.service_mu[s] for e in params.emissions_by_bin)
+            for s in range(N_STATES)
+        )
+    # Movement + service reinforce identity (normal runs most trains and moves
+    # most, suspended least) but only break ties: lowest alert rate wins normal,
+    # then highest advance rate, then highest service ratio; highest suspended-flag
+    # wins suspended, then lowest advance rate, then lowest service ratio.
+    normal_idx = min(
+        range(N_STATES),
+        key=lambda s: (rank_lambda[s], -rank_advance[s], -rank_service[s]),
+    )
     rest = [s for s in range(N_STATES) if s != normal_idx]
-    suspended_idx = max(rest, key=lambda s: (rank_p[s], -rank_advance[s]))
+    suspended_idx = max(
+        rest, key=lambda s: (rank_p[s], -rank_advance[s], -rank_service[s])
+    )
     disrupted_idx = next(s for s in rest if s != suspended_idx)
     perm = (normal_idx, disrupted_idx, suspended_idx)
 
@@ -320,6 +342,17 @@ def _log_binomial(k: int, n: int, p: float) -> float:
     return log_coef + k * math.log(p) + (n - k) * math.log1p(-p)
 
 
+# Floor on the service-ratio Gaussian's std so a state whose fitted ratios were
+# near-constant (e.g. suspended ~0) doesn't collapse to a delta and reject any
+# deviation. Mirrors the spirit of BERNOULLI_FLOOR on the other channels.
+SERVICE_SIGMA_FLOOR = 0.05
+
+
+def _log_gauss(x: float, mu: float, sigma: float) -> float:
+    s = max(sigma, SERVICE_SIGMA_FLOOR)
+    return -0.5 * math.log(2.0 * math.pi * s * s) - (x - mu) ** 2 / (2.0 * s * s)
+
+
 def _log_emission(
     obs: Observation, params: EmissionParams
 ) -> tuple[float, float, float]:
@@ -330,9 +363,11 @@ def _log_emission(
     the bias is small relative to the signal gain from the extra channels.
     severity_sum is deliberately absent — see the module docstring
     (momentarily-vk0.8). The movement channel drops out (contributes 0) when
-    has_movement is False or no trips matched across the two ticks.
+    has_movement is False or no trips matched; the service channel drops out when
+    has_service is False or the ratio is unavailable.
     """
     has_movement = obs.has_movement and obs.matched_n > 0
+    has_service = obs.has_service and obs.service_ratio is not None
     out: list[float] = []
     for i in range(N_STATES):
         log_lik = (
@@ -347,6 +382,10 @@ def _log_emission(
         if has_movement:
             log_lik += _log_binomial(
                 obs.advanced_n, obs.matched_n, params.advance_rate[i]
+            )
+        if has_service and obs.service_ratio is not None:
+            log_lik += _log_gauss(
+                obs.service_ratio, params.service_mu[i], params.service_sigma[i]
             )
         out.append(log_lik)
     return (out[0], out[1], out[2])
@@ -637,6 +676,8 @@ def _estimate_emissions(
     advance_rate: list[float] = []
     gamma_alpha: list[float] = []
     gamma_beta: list[float] = []
+    service_mu: list[float] = []
+    service_sigma: list[float] = []
 
     kappa = max(prior_strength, 0.0)
     use_prior = prior is not None and kappa > 0.0
@@ -675,6 +716,8 @@ def _estimate_emissions(
             advance_rate.append(fallback.advance_rate[s])
             gamma_alpha.append(fallback.gamma_alpha[s])
             gamma_beta.append(fallback.gamma_beta[s])
+            service_mu.append(fallback.service_mu[s])
+            service_sigma.append(fallback.service_sigma[s])
             continue
 
         # Poisson λ: Gamma(κ·λ_prior, κ) prior → posterior mean below.
@@ -748,6 +791,37 @@ def _estimate_emissions(
             rate = fallback.advance_rate[s]
         advance_rate.append(min(max(rate, BERNOULLI_FLOOR), 1.0 - BERNOULLI_FLOOR))
 
+        # Service ratio: responsibility-weighted Gaussian over ticks where the
+        # service level is available. The prior acts as κ pseudo-observations at
+        # prior.service_mu/sigma so a state with little service data leans on it.
+        svc: list[tuple[float, float]] = []
+        for t in idx_list:
+            r = observations[t].service_ratio
+            if observations[t].has_service and r is not None:
+                svc.append((gamma[t][s], r))
+        svc_w = sum(g for g, _ in svc)
+        svc_sum = sum(g * r for g, r in svc)
+        if use_prior:
+            assert prior is not None
+            mu = (kappa * prior.service_mu[s] + svc_sum) / (kappa + svc_w)
+        elif svc_w > 0:
+            mu = svc_sum / svc_w
+        else:
+            mu = fallback.service_mu[s]
+        service_mu.append(mu)
+        if svc_w > 0:
+            var = sum(g * (r - mu) ** 2 for g, r in svc) / svc_w
+            sd = max(var**0.5, SERVICE_SIGMA_FLOOR)
+            if use_prior:
+                assert prior is not None
+                sd = (kappa * prior.service_sigma[s] + svc_w * sd) / (kappa + svc_w)
+        elif use_prior:
+            assert prior is not None
+            sd = prior.service_sigma[s]
+        else:
+            sd = fallback.service_sigma[s]
+        service_sigma.append(max(sd, SERVICE_SIGMA_FLOOR))
+
         # Gamma α/β are vestigial — severity_sum is no longer a likelihood
         # channel (momentarily-vk0.8) — so pass them through unchanged for
         # schema back-compat rather than fitting dead parameters.
@@ -780,6 +854,8 @@ def _estimate_emissions(
             bernoulli_p_planned[2],
         ),
         advance_rate=(advance_rate[0], advance_rate[1], advance_rate[2]),
+        service_mu=(service_mu[0], service_mu[1], service_mu[2]),
+        service_sigma=(service_sigma[0], service_sigma[1], service_sigma[2]),
     )
 
 

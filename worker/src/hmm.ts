@@ -16,7 +16,7 @@
  * Emissions can be conditioned on TOD bin via `HMMParams.emissionsByBin`.
  */
 
-import { logBernoulli, logBinomial, logPoisson } from './math';
+import { logBernoulli, logBinomial, logGauss, logPoisson } from './math';
 
 export const STATES = ['normal', 'disrupted', 'suspended'] as const;
 export type State = (typeof STATES)[number];
@@ -56,6 +56,8 @@ export interface Observation {
   advanced_n?: number;
   matched_n?: number;
   has_movement?: boolean;
+  service_ratio?: number;
+  has_service?: boolean;
 }
 
 type Vec3 = readonly [number, number, number];
@@ -72,6 +74,10 @@ export interface EmissionParams {
   // Per-state matched-trip advance rate. Optional for back-compat with
   // params.json written before the movement channel.
   advance_rate?: Vec3 | undefined;
+  // Per-state service-ratio (assigned_n / baseline) Gaussian. Optional for
+  // back-compat with params.json written before the service channel.
+  service_mu?: Vec3 | undefined;
+  service_sigma?: Vec3 | undefined;
 }
 
 export interface HMMParams {
@@ -108,6 +114,13 @@ function logEmission(obs: Observation, em: EmissionParams): Vec3 {
   // params actually carry an advance rate (absent in pre-movement params.json).
   const matched = obs.matched_n ?? 0;
   const hasMovement = !!obs.has_movement && matched > 0 && em.advance_rate !== undefined;
+  // Service channel drops out unless has_service, a ratio is present, and the
+  // params carry the Gaussian (absent in pre-service params.json).
+  const hasService =
+    !!obs.has_service
+    && obs.service_ratio !== undefined
+    && em.service_mu !== undefined
+    && em.service_sigma !== undefined;
   return [0, 1, 2].map(
     (s) =>
       logPoisson(obs.alert_count, em.poisson_lambda[s]!)
@@ -115,7 +128,10 @@ function logEmission(obs: Observation, em: EmissionParams): Vec3 {
       + logBernoulli(obs.has_delays, em.bernoulli_p_delays[s]!)
       + logBernoulli(obs.has_service_change, em.bernoulli_p_service_change[s]!)
       + logBernoulli(obs.has_planned, em.bernoulli_p_planned[s]!)
-      + (hasMovement ? logBinomial(obs.advanced_n ?? 0, matched, em.advance_rate![s]!) : 0),
+      + (hasMovement ? logBinomial(obs.advanced_n ?? 0, matched, em.advance_rate![s]!) : 0)
+      + (hasService
+        ? logGauss(obs.service_ratio!, em.service_mu![s]!, em.service_sigma![s]!)
+        : 0),
   ) as unknown as Vec3;
 }
 

@@ -52,6 +52,7 @@ from training.eval import (
     independent_recovery_metrics,
     load_predictions,
     load_transitions,
+    prequential_calibration,
     recovery_as_dict,
 )
 from training.load import TickObservation
@@ -491,9 +492,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     conf = confusion(preds, truth)
     # Legacy breadth truth (any alert = disrupted), kept as a labeled sensitivity.
     conf_breadth = confusion(preds, truth_breadth)
-    # Same HMM condition, scored against where trains physically are instead of
-    # the alert feed — an independent-in-derivation cross-check. Empty until the
-    # vehicle archive has accumulated ticks (Worker side ships first).
+    # Same HMM condition, scored against where trains physically are. Movement now
+    # feeds the HMM, so this is a self-consistency diagnostic, not an independent
+    # cross-check; the held-out yardstick is prequential_alert_truth.
     conf_movement = confusion(preds, movement_truth)
     deltas = changepoint_alignment(
         trans, truth, window_start=window_start, window_end=window_end
@@ -530,6 +531,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"  scorecard: onset {onset['n_detected']}/{onset['n_episodes']} detected, "
         f"recovery scored n={scorecard['recovery']['n_scored']}, "
         f"false alarms {scorecard['false_alarms']['n_false_alarm']}"
+    )
+
+    prequential = prequential_calibration(
+        preds, truth, severity_floor=args.severity_floor
+    )
+    print(
+        "  prequential (forecast vs held-out alert truth): "
+        f"{prequential['overall'][0]['n']} matched pairs at the primary horizon"
     )
 
     plot_reliability(eval_doc, out_dir / "reliability.png")
@@ -576,6 +585,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             "movement_truth_ticks": len(movement_truth),
         },
         "calibration": eval_doc["calibration"],
+        # Primary yardstick post-movement: temporal forecast skill vs held-out
+        # alert-clearance truth, segmented by params_version. `calibration` above
+        # is self-consistency (graded on the model's own future condition, which
+        # movement now feeds); this block is the out-of-sample-in-time view.
+        "prequential_alert_truth": prequential,
         "recovery": eval_doc["recovery"],
         # Independent recovery truth from alert-feed clearance, beside the
         # argmax-based `recovery`. A feed-clearance proxy, not true service
@@ -598,12 +612,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             "severity_floor": 1,
             "reclassified_ticks": reclassified,
         },
-        # HMM condition vs vehicle-movement truth — independent in derivation from
-        # the alert feed above (where trains physically are, not what the feed
-        # says). truth_source documents the column axis.
+        # HMM condition vs vehicle-movement state. Movement now feeds the HMM
+        # emission, so this is a self-consistency diagnostic, NOT an independent
+        # cross-check — the two axes share an input. Held-out validation is the
+        # prequential_alert_truth block above.
         "confusion_movement": {
             "matrix": conf_movement,
             "truth_source": "vehicle_movement",
+            "independence": "self_consistency (movement is an HMM input)",
         },
         "episodes": episodes_summary(episodes),
         "episode_scorecard": scorecard,

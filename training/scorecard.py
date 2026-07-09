@@ -121,8 +121,9 @@ def false_alarms(
     min_frac: float = 0.5,
 ) -> dict[str, Any]:
     """Model episodes with no overlapping truth episode, split by whether the
-    independent movement truth confirms (real incident the alert-truth missed) or
-    contradicts (a genuine over-call) them."""
+    movement state confirms (real incident the alert-truth missed) or contradicts
+    (a genuine over-call) them. Movement now feeds the HMM, so this split is a
+    self-consistency diagnostic, not an independent adjudication."""
     by_route: dict[str, list[Episode]] = defaultdict(list)
     for t in truth_eps:
         by_route[t.route].append(t)
@@ -143,6 +144,7 @@ def false_alarms(
         "movement_contradicted": verdicts.get("contradicted", 0),
         "movement_confirmed": verdicts.get("confirmed", 0),
         "movement_unjudgeable": verdicts.get("unjudgeable", 0),
+        "movement_cross_check": "self_consistency (movement is an HMM input)",
     }
 
 

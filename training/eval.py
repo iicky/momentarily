@@ -312,12 +312,28 @@ def _stratum(samples: list[tuple[float, float, float]]) -> StratumStats:
 
 
 def calibrate(
-    predictions: list[PredictionRecord], horizon_min: int
+    predictions: list[PredictionRecord],
+    horizon_min: int,
+    *,
+    truth_by_key: dict[tuple[str, int], str] | None = None,
+    coverage_predictions: list[PredictionRecord] | None = None,
 ) -> CalibrationResult:
-    """Pair each prediction at T with the actual condition at T + horizon_min."""
-    # Index predictions by (route, snapped_ts) so T+horizon lookup is O(1).
+    """Pair each prediction at T with the realized state at T + horizon_min.
+
+    By default the outcome and persistence come from the model's own published
+    condition — self-consistency. With `truth_by_key` (a sparse (route, tick) ->
+    state map, absent meaning normal) they come from that held-out truth instead,
+    turning this into a temporal forecast-skill test. Coverage is still gated on
+    a prediction existing at T + horizon (the window guard), not on truth
+    presence — a route-tick absent from the sparse truth is normal, not unknown.
+
+    `coverage_predictions` supplies the T+horizon lookup index; it defaults to
+    `predictions`. Pass the full stream when segmenting `predictions` (e.g. by
+    params_version) so a forecast whose T+horizon lands in another segment isn't
+    dropped for lack of a same-segment future row — the outcome is external."""
+    # Index by (route, snapped_ts) so T+horizon lookup is O(1).
     by_key: dict[tuple[str, int], PredictionRecord] = {}
-    for p in predictions:
+    for p in coverage_predictions if coverage_predictions is not None else predictions:
         by_key[(p.route, snap_tick(p.ts))] = p
 
     bins = [
@@ -335,19 +351,28 @@ def calibrate(
     route_outcome_n: dict[str, int] = {}
     excluded_schedule = 0
 
+    use_truth = truth_by_key is not None
     for p in predictions:
         # Deterministic planned-resume lookup, not an HMM forecast — skip as a
         # predictor (it can still be a future outcome; condition is HMM-derived).
         if p.recovery_source == "schedule":
             excluded_schedule += 1
             continue
-        future_key = (p.route, snap_tick(p.ts) + horizon_sec)
+        cur = snap_tick(p.ts)
+        future_key = (p.route, cur + horizon_sec)
         future = by_key.get(future_key)
         if future is None:
             continue
-        outcome = 1.0 if future.condition == "normal" else 0.0
+        if use_truth:
+            assert truth_by_key is not None
+            outcome = 1.0 if truth_by_key.get(future_key, "normal") == "normal" else 0.0
+            persistence = (
+                1.0 if truth_by_key.get((p.route, cur), "normal") == "normal" else 0.0
+            )
+        else:
+            outcome = 1.0 if future.condition == "normal" else 0.0
+            persistence = 1.0 if p.condition == "normal" else 0.0
         pred: float = getattr(p, pred_field)
-        persistence = 1.0 if p.condition == "normal" else 0.0
         matched.append((pred, persistence, outcome, p.route))
         route_outcome_sum[p.route] = route_outcome_sum.get(p.route, 0.0) + outcome
         route_outcome_n[p.route] = route_outcome_n.get(p.route, 0) + 1
@@ -394,6 +419,63 @@ def calibrate(
         by_current=by_current,
         excluded_schedule=excluded_schedule,
     )
+
+
+def prequential_calibration(
+    predictions: list[PredictionRecord],
+    truth_by_key: dict[tuple[str, int], str],
+    *,
+    severity_floor: int,
+    min_samples: int = 200,
+) -> dict[str, Any]:
+    """Temporal forecast skill against held-out alert-clearance truth: p_normal_in_H
+    made at T graded vs the alert state at T+H, across every horizon. The truth map
+    is whatever `truth_by_key` carries; `severity_floor` only labels the output.
+
+    This is the primary yardstick once movement (and, later, assigned_n) feed the
+    HMM — instantaneous agreement is no longer independent, but a forecast made H
+    ticks early is still out-of-sample in time. The truth is alert clearance, which
+    is itself a model input, so the independence here is temporal only, not signal.
+
+    Segmented by params_version so a pre-movement fit is never pooled with the
+    post-movement one; a version with fewer than `min_samples` matched pairs at the
+    primary (shortest) horizon is reported but flagged low_sample, not diluted.
+    """
+
+    def _blocks(preds: list[PredictionRecord]) -> list[CalibrationResult]:
+        # Coverage against the full stream so a forecast whose T+H lands in another
+        # params-version segment is still graded (its outcome is external truth).
+        return [
+            calibrate(
+                preds, h, truth_by_key=truth_by_key, coverage_predictions=predictions
+            )
+            for h in HORIZONS_MIN
+        ]
+
+    by_version: dict[str, Any] = {}
+    for version in sorted({p.params_version for p in predictions}):
+        seg = [p for p in predictions if p.params_version == version]
+        cals = _blocks(seg)
+        primary_n = cals[0].n if cals else 0
+        by_version[str(version)] = {
+            "n_predictions": len(seg),
+            "n_matched_primary": primary_n,
+            "low_sample": primary_n < min_samples,
+            "calibration": _calibration_as_dicts(cals),
+        }
+
+    return {
+        "truth_source": "alert_feed_clearance",
+        "severity_floor": severity_floor,
+        "independence": (
+            "temporal only — alert truth is a model input, so a forecast H ticks "
+            "ahead is out-of-sample but instantaneous agreement is not"
+        ),
+        "horizons_min": list(HORIZONS_MIN),
+        "min_samples": min_samples,
+        "overall": _calibration_as_dicts(_blocks(predictions)),
+        "by_params_version": by_version,
+    }
 
 
 # --- Recovery / dwell math ---

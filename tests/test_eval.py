@@ -12,6 +12,7 @@ from training.eval import (
     build_calibration,
     build_eval,
     calibrate,
+    prequential_calibration,
     recovery_metrics,
     snap_tick,
 )
@@ -586,3 +587,175 @@ def test_prediction_record_from_json_defaults_params_version():
     assert (
         PredictionRecord.from_json({**raw, "params_version": 17}).params_version == 17
     )
+
+
+def test_calibrate_truth_overrides_outcome_and_persistence():
+    """With truth_by_key, outcome and persistence come from the held-out truth
+    map, not the model's own condition — the load-bearing switch once the
+    train-movement channel feeds the HMM and can no longer self-grade."""
+    t0 = 1_700_000_100
+    h_sec = 30 * 60
+    preds = [
+        # Model's own condition says the opposite of truth at both ticks.
+        _pred(ts=t0, condition="normal", p_normal_in_30min=1.0),
+        _pred(ts=t0 + h_sec, condition="disrupted"),
+    ]
+    truth = {("1", t0): "disrupted", ("1", t0 + h_sec): "normal"}
+    result = calibrate(preds, horizon_min=30, truth_by_key=truth)
+    assert result.n == 1
+    assert result.brier == 0.0  # truth outcome "normal", not future.condition
+    assert (
+        result.brier_persistence == 1.0
+    )  # truth persistence "disrupted", not p.condition
+
+
+def test_calibrate_sparse_absent_truth_defaults_to_normal():
+    """A route-tick missing from the sparse truth map is normal, not unknown:
+    the sample is still graded (not skipped), and the missing side defaults to
+    outcome/persistence 1.0."""
+    t0 = 1_700_000_100
+    h_sec = 30 * 60
+    # Route A: T present ("disrupted"), T+H absent → outcome must default to
+    # normal (1.0), not drop the sample from grading.
+    # Route B: T+H present ("disrupted"), T absent → persistence must default
+    # to normal (1.0).
+    truth = {("A", t0): "disrupted", ("B", t0 + h_sec): "disrupted"}
+    preds = [
+        _pred(ts=t0, route="A", p_normal_in_30min=1.0),
+        _pred(ts=t0 + h_sec, route="A"),
+        _pred(ts=t0, route="B", p_normal_in_30min=0.0),
+        _pred(ts=t0 + h_sec, route="B"),
+    ]
+    result = calibrate(preds, horizon_min=30, truth_by_key=truth)
+    assert result.n == 2  # neither sample skipped despite the sparse gaps
+    assert result.brier == 0.0  # route A: outcome defaulted to normal (1.0)
+    assert (
+        result.brier_persistence == 1.0
+    )  # route B: persistence defaulted to normal (1.0)
+
+
+def test_calibrate_coverage_gated_on_prediction_not_truth():
+    # Truth present at both T and T+H, but no prediction at T+H → truth
+    # presence alone doesn't create coverage; the window guard still requires
+    # a future prediction to exist.
+    t0 = 1_700_000_100
+    h_sec = 30 * 60
+    preds = [_pred(ts=t0)]
+    truth = {("1", t0): "disrupted", ("1", t0 + h_sec): "normal"}
+    result = calibrate(preds, horizon_min=30, truth_by_key=truth)
+    assert result.n == 0
+    assert result.brier is None
+
+
+def test_calibrate_default_path_unchanged_without_truth_by_key():
+    # Same predictions as the truth-override test above, but no truth_by_key
+    # → must still grade against future.condition/p.condition (regression
+    # guard for the pre-existing self-consistency path).
+    t0 = 1_700_000_100
+    h_sec = 30 * 60
+    preds = [
+        _pred(ts=t0, condition="normal", p_normal_in_30min=1.0),
+        _pred(ts=t0 + h_sec, condition="disrupted"),
+    ]
+    result = calibrate(preds, horizon_min=30)
+    assert result.n == 1
+    assert result.brier == 1.0  # future.condition="disrupted" → outcome=0.0
+    assert result.brier_persistence == 1.0  # p.condition="normal" → persistence=1.0
+
+
+def test_calibrate_by_current_keys_off_truth_persistence():
+    """by_current splits on truth-derived persistence, not the model's own
+    condition. Each route's model condition is set to the opposite of its
+    truth persistence, so a regression to p.condition would flip which
+    stratum the sample lands in (and its mean_outcome)."""
+    t0 = 1_700_000_100
+    h_sec = 30 * 60
+    truth = {
+        ("N", t0): "normal",  # truth: normal now
+        ("N", t0 + h_sec): "disrupted",
+        ("D", t0): "disrupted",  # truth: not normal now
+        ("D", t0 + h_sec): "normal",
+    }
+    preds = [
+        _pred(ts=t0, route="N", condition="disrupted"),
+        _pred(ts=t0 + h_sec, route="N", condition="normal"),
+        _pred(ts=t0, route="D", condition="normal"),
+        _pred(ts=t0 + h_sec, route="D", condition="disrupted"),
+    ]
+    result = calibrate(preds, horizon_min=30, truth_by_key=truth)
+    normal_now = result.by_current["normal_now"]
+    not_normal_now = result.by_current["not_normal_now"]
+    assert normal_now.n == 1
+    assert not_normal_now.n == 1
+    assert normal_now.mean_outcome == 0.0  # route N, per truth (not condition)
+    assert not_normal_now.mean_outcome == 1.0  # route D, per truth (not condition)
+
+
+def test_prequential_calibration_segments_and_flags_low_sample():
+    """prequential_calibration segments by params_version, flags low_sample
+    below min_samples, and echoes the truth-source/floor metadata."""
+    t0 = 1_700_000_100
+    truth: dict[tuple[str, int], str] = {}  # empty sparse truth: all "normal"
+
+    # v100: 8 predictions, 5min apart → 2 have a T+30min future (i=0,1).
+    v100 = [_pred(ts=t0 + i * 300, route="V1", params_version=100) for i in range(8)]
+    # v200: 10 predictions → 4 have a T+30min future (i=0..3).
+    v200 = [_pred(ts=t0 + i * 300, route="V2", params_version=200) for i in range(10)]
+
+    result = prequential_calibration(
+        v100 + v200, truth, severity_floor=2, min_samples=3
+    )
+
+    assert result["truth_source"] == "alert_feed_clearance"
+    assert result["severity_floor"] == 2
+    assert len(result["overall"]) == 3
+    assert {c["horizon_min"] for c in result["overall"]} == {30, 60, 120}
+
+    by_version = result["by_params_version"]
+    assert set(by_version) == {"100", "200"}
+
+    v100_cal30 = next(
+        c for c in by_version["100"]["calibration"] if c["horizon_min"] == 30
+    )
+    v200_cal30 = next(
+        c for c in by_version["200"]["calibration"] if c["horizon_min"] == 30
+    )
+    assert v100_cal30["n"] == 2
+    assert v200_cal30["n"] == 4
+    assert by_version["100"]["n_predictions"] == 8
+    assert by_version["200"]["n_predictions"] == 10
+    assert by_version["100"]["n_matched_primary"] == 2
+    assert by_version["200"]["n_matched_primary"] == 4
+    assert by_version["100"]["low_sample"] is True  # 2 < min_samples=3
+    assert by_version["200"]["low_sample"] is False  # 4 >= min_samples=3
+
+
+def test_calibrate_coverage_predictions_spans_retrain_boundary():
+    """coverage_predictions supplies the T+horizon lookup index independently
+    of `predictions`: a v100 forecast whose only T+H row already retrained to
+    v200 isn't dropped for lack of a same-segment future — the lookup comes
+    from the full stream, the outcome from held-out truth."""
+    t0 = 1_700_000_100
+    h_sec = 30 * 60
+    v100_forecast = _pred(ts=t0, params_version=100)
+    v200_future = _pred(ts=t0 + h_sec, params_version=200)
+    both = [v100_forecast, v200_future]
+    truth = {("1", t0): "disrupted", ("1", t0 + h_sec): "normal"}
+
+    # Segment-only coverage: no same-set future → not graded.
+    solo = calibrate([v100_forecast], horizon_min=30, truth_by_key=truth)
+    assert solo.n == 0
+
+    # Full-stream coverage: the v200 row supplies the T+H lookup → graded.
+    spanned = calibrate(
+        [v100_forecast],
+        horizon_min=30,
+        truth_by_key=truth,
+        coverage_predictions=both,
+    )
+    assert spanned.n == 1
+
+    # prequential_calibration always passes the full stream as coverage, so
+    # the v100 segment picks up the boundary forecast too.
+    result = prequential_calibration(both, truth, severity_floor=2, min_samples=1)
+    assert result["by_params_version"]["100"]["calibration"][0]["n"] == 1

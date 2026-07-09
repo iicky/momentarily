@@ -136,6 +136,11 @@ const MovementBaselineSchema = z.record(
 export type AdvanceBaselineCell = z.infer<typeof AdvanceBaselineCellSchema>;
 export type MovementBaseline = z.infer<typeof MovementBaselineSchema>;
 
+// route -> tod_bin (stringified int) -> median assigned_n. The Worker divides
+// live assigned_n by this to form the service ratio the emission scores.
+const ServiceBaselineSchema = z.record(z.string(), z.record(z.string(), nonNeg));
+export type ServiceBaseline = z.infer<typeof ServiceBaselineSchema>;
+
 const TrainedParamsWrapperSchema = z.object({
   schema_version: z.string(),
   trained_at: z.number().finite(),
@@ -145,6 +150,9 @@ const TrainedParamsWrapperSchema = z.object({
   // Validated separately too, so a malformed baseline degrades the movement
   // channel only, not the whole params upload.
   movement_baseline: z.unknown().optional(),
+  // Validated separately too, so a malformed service baseline degrades the
+  // service channel only, not the whole params upload.
+  service_baseline: z.unknown().optional(),
 });
 
 // The three "kind of disruption" flags (delays/service_change/planned) all
@@ -192,6 +200,8 @@ export interface TrainedParams {
   // Per-(route, direction, tod_bin) advance-rate baseline for the movement
   // channel. Empty until the trainer has ~2wk of by_direction archive.
   movementBaseline: MovementBaseline;
+  // Per-(route, tod_bin) assigned_n baseline for the service emission channel.
+  serviceBaseline: ServiceBaseline;
 }
 
 /**
@@ -265,6 +275,17 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     }
   }
 
+  // Service baseline, validated on its own like the movement baseline.
+  let serviceBaseline: ServiceBaseline = {};
+  if (wrapper.data.service_baseline !== undefined) {
+    const parsed = ServiceBaselineSchema.safeParse(wrapper.data.service_baseline);
+    if (parsed.success) {
+      serviceBaseline = parsed.data;
+    } else {
+      console.warn('params.json service_baseline invalid; service channel off:', parsed.error.issues);
+    }
+  }
+
   return {
     schema_version: wrapper.data.schema_version,
     trained_at: wrapper.data.trained_at,
@@ -272,6 +293,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     dwell,
     dwellByAlert,
     movementBaseline,
+    serviceBaseline,
   };
 }
 
@@ -313,6 +335,19 @@ export function advanceBaselineFor(
   todBin: number,
 ): AdvanceBaselineCell | null {
   return trained?.movementBaseline?.[routeId]?.[direction]?.[String(todBin)] ?? null;
+}
+
+/**
+ * Median assigned_n for a (route, tod_bin) cell, or null when the trainer hasn't
+ * established one yet. A null baseline drops the service channel out for that
+ * cell (Observation.has_service = false).
+ */
+export function serviceBaselineFor(
+  trained: TrainedParams | null,
+  routeId: string,
+  todBin: number,
+): number | null {
+  return trained?.serviceBaseline?.[routeId]?.[String(todBin)] ?? null;
 }
 
 /**

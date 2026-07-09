@@ -13,6 +13,7 @@ import {
   paramsForRoute,
   dwellForRouteState,
   advanceBaselineFor,
+  serviceBaselineFor,
   BOOTSTRAP_PARAMS,
 } from '../src/params';
 
@@ -282,6 +283,45 @@ describe('movement_baseline delivery (vhh.5)', () => {
     );
     expect(result).not.toBeNull();
     expect(result!.movementBaseline).toEqual({});
+    // Routes survive the bad baseline.
+    expect(Object.keys(result!.routes)).toEqual(['1']);
+  });
+});
+
+describe('service_baseline delivery', () => {
+  function withServiceBaseline(baseline: unknown): Record<string, unknown> {
+    return {
+      schema_version: '1',
+      trained_at: 1_700_000_000,
+      routes: { '1': wellFormedRoute() },
+      service_baseline: baseline,
+    };
+  }
+
+  test('parses and looks up a median assigned_n cell', () => {
+    const result = parseTrainedParams(withServiceBaseline({ A: { '3': 42 } }));
+    expect(result).not.toBeNull();
+    expect(serviceBaselineFor(result, 'A', 3)).toBe(42);
+  });
+
+  test('missing cell or absent baseline returns null', () => {
+    const result = parseTrainedParams(withServiceBaseline({ A: { '3': 42 } }));
+    expect(serviceBaselineFor(result, 'A', 1)).toBeNull();
+    expect(serviceBaselineFor(result, 'B', 3)).toBeNull();
+  });
+
+  test('absent service_baseline yields an empty map, routes still intact', () => {
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute() }));
+    expect(result).not.toBeNull();
+    expect(result!.serviceBaseline).toEqual({});
+    expect(serviceBaselineFor(result, 'A', 3)).toBeNull();
+  });
+
+  test('malformed baseline disables the channel but keeps the params', () => {
+    // A negative assigned_n median — the whole baseline is rejected.
+    const result = parseTrainedParams(withServiceBaseline({ A: { '3': -1 } }));
+    expect(result).not.toBeNull();
+    expect(result!.serviceBaseline).toEqual({});
     // Routes survive the bad baseline.
     expect(Object.keys(result!.routes)).toEqual(['1']);
   });

@@ -24,9 +24,9 @@
 
 import { tod_bin } from './hmm';
 import type { Observation } from './hmm';
-import { advanceBaselineFor } from './params';
+import { advanceBaselineFor, serviceBaselineFor } from './params';
 import type { TrainedParams } from './params';
-import type { MovementMetricDoc } from './state';
+import type { MovementMetricDoc, ServiceMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
 
@@ -116,4 +116,30 @@ export function movementObservationFields(
     || advanceBaselineFor(trained, routeId, 'south', todBin) !== null;
   if (!hasBaseline) return null;
   return { advanced_n, matched_n, has_movement: true };
+}
+
+// A carried service metric older than this (seconds) is a feed gap, not "now".
+export const MAX_SERVICE_METRIC_LAG_SECONDS = 600;
+
+/**
+ * Service fields for a route's Observation at derive time, from the PREVIOUS
+ * tick's carried assigned_n (option B, ~5-min lag). Returns null — leave the
+ * service channel off — when there's no usable signal: no carried metric, a
+ * stale one, no assigned_n for the route, or no trainer baseline for the cell.
+ * The ratio is assigned_n / baseline(route, current-tick tod_bin); the gate keys
+ * off the current tick's bin so admit and score share the same bin.
+ */
+export function serviceObservationFields(
+  metric: ServiceMetricDoc | null,
+  trained: TrainedParams | null,
+  routeId: string,
+  observedAt: number,
+): Pick<Observation, 'service_ratio' | 'has_service'> | null {
+  if (!metric) return null;
+  if (observedAt - metric.observed_at > MAX_SERVICE_METRIC_LAG_SECONDS) return null;
+  const assigned = metric.rows[routeId];
+  if (assigned === undefined) return null;
+  const baseline = serviceBaselineFor(trained, routeId, tod_bin(observedAt));
+  if (baseline === null || baseline <= 0) return null;
+  return { service_ratio: assigned / baseline, has_service: true };
 }

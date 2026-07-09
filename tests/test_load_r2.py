@@ -16,6 +16,7 @@ from training.load_r2 import (
     compute_advance_baseline,
     input_manifest_hash,
     presence_mask_from_predictions,
+    service_baseline_to_json,
 )
 
 TICK = 300
@@ -294,3 +295,11 @@ def test_advance_baseline_to_json_nests_route_direction_todbin():
     assert abs(cell["beta"] - 15.0) < 1e-9
     # JSON object keys must be strings (tod_bin stringified for delivery).
     assert all(isinstance(k, str) for k in doc["A"]["north"])
+
+
+def test_service_baseline_to_json_nests_route_tod():
+    baseline = {("A", 1): 6.0, ("A", 3): 4.5, ("B", 1): 2.0}
+    doc = service_baseline_to_json(baseline)
+    assert doc == {"A": {"1": 6.0, "3": 4.5}, "B": {"1": 2.0}}
+    # JSON object keys must be strings (tod_bin stringified for delivery).
+    assert all(isinstance(k, str) for k in doc["A"])

@@ -2,14 +2,16 @@ import { describe, expect, test } from 'vitest';
 
 import type { MovementRow } from '../src/vehicles';
 import type { ServiceRow } from '../src/trip_updates';
-import type { AdvanceBaselineCell, MovementBaseline, TrainedParams } from '../src/params';
-import type { MovementMetricDoc } from '../src/state';
+import type { AdvanceBaselineCell, MovementBaseline, ServiceBaseline, TrainedParams } from '../src/params';
+import type { MovementMetricDoc, ServiceMetricDoc } from '../src/state';
 import { tod_bin } from '../src/hmm';
 import {
   deriveMovementState,
   deriveMovementStates,
   MAX_MOVEMENT_METRIC_LAG_SECONDS,
+  MAX_SERVICE_METRIC_LAG_SECONDS,
   movementObservationFields,
+  serviceObservationFields,
 } from '../src/movement_state';
 
 function move(over: Partial<MovementRow>): MovementRow {
@@ -125,7 +127,7 @@ describe('movementObservationFields', () => {
   }
 
   function trainedWithBaseline(movementBaseline: MovementBaseline): TrainedParams {
-    return { schema_version: 'test', trained_at: 0, routes: {}, dwell: {}, dwellByAlert: {}, movementBaseline };
+    return { schema_version: 'test', trained_at: 0, routes: {}, dwell: {}, dwellByAlert: {}, movementBaseline, serviceBaseline: {} };
   }
 
   test('aggregates both directions into advanced_n/matched_n when a baseline exists', () => {
@@ -224,6 +226,123 @@ describe('movementObservationFields', () => {
         [ROUTE]: { north: { [String(tod_bin(metricAt))]: baselineCell({}) } },
       });
       expect(movementObservationFields(metric, trained, ROUTE, tickAt)).toBeNull();
+    });
+  });
+});
+
+describe('serviceObservationFields', () => {
+  // 2026-06-15T16:00:00Z = 12:00 ET = tod_bin 2 (midday, 10-15h ET).
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000;
+  const ROUTE = 'Q';
+
+  function metricDoc(observedAt: number, rows: ServiceMetricDoc['rows']): ServiceMetricDoc {
+    return { observed_at: observedAt, rows };
+  }
+
+  function trainedWithServiceBaseline(serviceBaseline: ServiceBaseline): TrainedParams {
+    return {
+      schema_version: 'test',
+      trained_at: 0,
+      routes: {},
+      dwell: {},
+      dwellByAlert: {},
+      movementBaseline: {},
+      serviceBaseline,
+    };
+  }
+
+  test('service_ratio = assigned_n / baseline when a baseline exists', () => {
+    const metric = metricDoc(T0, { [ROUTE]: 8 });
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(T0))]: 10 } });
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toEqual({
+      service_ratio: 0.8,
+      has_service: true,
+    });
+  });
+
+  test('assigned_n 0 -> service_ratio 0 with has_service true (suspension signal, not dropped)', () => {
+    const metric = metricDoc(T0, { [ROUTE]: 0 });
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(T0))]: 10 } });
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toEqual({
+      service_ratio: 0,
+      has_service: true,
+    });
+  });
+
+  test('null metric -> null', () => {
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(T0))]: 10 } });
+    expect(serviceObservationFields(null, trained, ROUTE, T0)).toBeNull();
+  });
+
+  test('metric older than MAX_SERVICE_METRIC_LAG_SECONDS is stale -> null', () => {
+    const metricAt = T0 - MAX_SERVICE_METRIC_LAG_SECONDS - 1;
+    const metric = metricDoc(metricAt, { [ROUTE]: 8 });
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(metricAt))]: 10 } });
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toBeNull();
+  });
+
+  test('metric age exactly at MAX_SERVICE_METRIC_LAG_SECONDS is NOT stale (boundary inclusive)', () => {
+    const metricAt = T0 - MAX_SERVICE_METRIC_LAG_SECONDS;
+    const metric = metricDoc(metricAt, { [ROUTE]: 8 });
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(metricAt))]: 10 } });
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toEqual({
+      service_ratio: 0.8,
+      has_service: true,
+    });
+  });
+
+  test('route absent from metric.rows -> null', () => {
+    const metric = metricDoc(T0, {});
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(T0))]: 10 } });
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toBeNull();
+  });
+
+  test('no trainer baseline for the cell -> null', () => {
+    const metric = metricDoc(T0, { [ROUTE]: 8 });
+    const trained = trainedWithServiceBaseline({});
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toBeNull();
+  });
+
+  test('baseline of exactly 0 is treated as no baseline -> null (unlike assigned_n 0, which stays on)', () => {
+    const metric = metricDoc(T0, { [ROUTE]: 8 });
+    const trained = trainedWithServiceBaseline({ [ROUTE]: { [String(tod_bin(T0))]: 0 } });
+    expect(serviceObservationFields(metric, trained, ROUTE, T0)).toBeNull();
+  });
+
+  test('null trained -> null', () => {
+    const metric = metricDoc(T0, { [ROUTE]: 8 });
+    expect(serviceObservationFields(metric, null, ROUTE, T0)).toBeNull();
+  });
+
+  describe('baseline gate uses the current-tick tod bin, not the metric tod bin', () => {
+    // metric.observed_at 09:55 ET (tod_bin 1); the current tick is 10:03 ET
+    // (tod_bin 2), 8 minutes later — well within MAX_SERVICE_METRIC_LAG_SECONDS,
+    // so only the tod bin crosses, not staleness.
+    const metricAt = Date.parse('2026-06-15T13:55:00Z') / 1000;
+    const tickAt = Date.parse('2026-06-15T14:03:00Z') / 1000;
+
+    test('sanity: metricAt and tickAt fall in different tod bins', () => {
+      expect(tod_bin(metricAt)).toBe(1);
+      expect(tod_bin(tickAt)).toBe(2);
+    });
+
+    test('baseline built for the current-tick bin is found even though the metric sits in a different bin', () => {
+      const metric = metricDoc(metricAt, { [ROUTE]: 8 });
+      const trained = trainedWithServiceBaseline({
+        [ROUTE]: { [String(tod_bin(tickAt))]: 10 },
+      });
+      expect(serviceObservationFields(metric, trained, ROUTE, tickAt)).toEqual({
+        service_ratio: 0.8,
+        has_service: true,
+      });
+    });
+
+    test('baseline built only for the metric bin is NOT found (gate must use the current-tick bin)', () => {
+      const metric = metricDoc(metricAt, { [ROUTE]: 8 });
+      const trained = trainedWithServiceBaseline({
+        [ROUTE]: { [String(tod_bin(metricAt))]: 10 },
+      });
+      expect(serviceObservationFields(metric, trained, ROUTE, tickAt)).toBeNull();
     });
   });
 });

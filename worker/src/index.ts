@@ -29,7 +29,12 @@ import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
 import { deriveRouteMovementMetric, stopPositions } from './vehicles';
-import { MOVEMENT_STATE_PUBLISH, deriveMovementStates, movementObservationFields } from './movement_state';
+import {
+  MOVEMENT_STATE_PUBLISH,
+  deriveMovementStates,
+  movementObservationFields,
+  serviceObservationFields,
+} from './movement_state';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
@@ -42,10 +47,12 @@ import {
   readLastSeen,
   readMovementMetric,
   readMovementState,
+  readServiceMetric,
   readVehicleStops,
   writeLastSeen,
   writeMovementMetric,
   writeMovementState,
+  writeServiceMetric,
   writeVehicleStops,
 } from './state';
 
@@ -114,13 +121,19 @@ export default {
     // --- Step 1: read state ---
     // Capture etags so the write-back is a compare-and-swap — overlapping or
     // retried cron runs can't silently clobber each other. See momentarily-j0c.
-    const [lastSeenRead, alphaRead, trainedParams, prevMovementMetric] =
-      await Promise.all([
-        readLastSeen(env.MOMENTARILY),
-        readAlphaState(env.MOMENTARILY),
-        loadParams(env.MOMENTARILY),
-        readMovementMetric(env.MOMENTARILY),
-      ]);
+    const [
+      lastSeenRead,
+      alphaRead,
+      trainedParams,
+      prevMovementMetric,
+      prevServiceMetric,
+    ] = await Promise.all([
+      readLastSeen(env.MOMENTARILY),
+      readAlphaState(env.MOMENTARILY),
+      loadParams(env.MOMENTARILY),
+      readMovementMetric(env.MOMENTARILY),
+      readServiceMetric(env.MOMENTARILY),
+    ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
     step('1-read-state');
@@ -235,6 +248,15 @@ export default {
           observedAt,
         );
         if (mv) obs = { ...obs, ...mv };
+        // Fold in the previous tick's service level (assigned_n / baseline) the
+        // same way — an orthogonal "are trains dispatched" channel.
+        const sv = serviceObservationFields(
+          prevServiceMetric,
+          trainedParams,
+          routeId,
+          observedAt,
+        );
+        if (sv) obs = { ...obs, ...sv };
       }
       const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
@@ -463,6 +485,8 @@ export default {
           // Carry these counts one tick forward: next tick's derive step folds
           // them into each route's Observation as the movement emission channel.
           await writeMovementMetric(env.MOMENTARILY, observedAt, moveRows);
+          // Carry assigned_n forward too, for the service emission channel.
+          await writeServiceMetric(env.MOMENTARILY, observedAt, rows);
 
           // Movement-derived current state, read by next tick's snapshot build.
           // Gated off: the fixed-threshold derivation is biased per-route and not

@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { conditionalPut } from './r2';
 import type { VersionedRead } from './r2';
 import type { MovementRow } from './vehicles';
+import type { ServiceRow } from './trip_updates';
 
 export const STATE_KEY = 'state/last_seen.json';
 
@@ -244,6 +245,47 @@ export async function writeMovementMetric(
   }
   const doc: MovementMetricDoc = { observed_at: observedAt, rows };
   await bucket.put(MOVEMENT_METRIC_KEY, JSON.stringify(doc), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+}
+
+// Per-route assigned_n (dispatched trains), carried one tick forward to feed the
+// HMM service emission at derive time. Written at step 8b, read before the filter
+// next tick (option B lag), like movement_metric.json. Its own small object.
+export const SERVICE_METRIC_KEY = 'state/service_metric.json';
+
+const ServiceMetricSchema = z.object({
+  observed_at: z.number(),
+  rows: z.record(z.string(), z.number().int().nonnegative()),
+});
+export type ServiceMetricDoc = z.infer<typeof ServiceMetricSchema>;
+
+/** Read last tick's per-route assigned_n. Returns null when absent or corrupt —
+ * the service emission channel just drops out that tick. */
+export async function readServiceMetric(
+  bucket: R2Bucket,
+): Promise<ServiceMetricDoc | null> {
+  const obj = await bucket.get(SERVICE_METRIC_KEY);
+  if (!obj) return null;
+  try {
+    return ServiceMetricSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('service_metric.json corrupt; resetting:', err);
+    return null;
+  }
+}
+
+export async function writeServiceMetric(
+  bucket: R2Bucket,
+  observedAt: number,
+  svcRows: Map<string, ServiceRow>,
+): Promise<void> {
+  const rows: ServiceMetricDoc['rows'] = {};
+  for (const [route, row] of svcRows) {
+    rows[route] = row.assigned_n;
+  }
+  const doc: ServiceMetricDoc = { observed_at: observedAt, rows };
+  await bucket.put(SERVICE_METRIC_KEY, JSON.stringify(doc), {
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }

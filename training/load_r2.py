@@ -510,6 +510,18 @@ def compute_baseline(
     }
 
 
+def service_baseline_to_json(
+    baseline: dict[tuple[str, int], float],
+) -> dict[str, dict[str, float]]:
+    """Serialize the assigned_n baseline for params.json delivery to the Worker,
+    nested route -> tod_bin (stringified int) -> median. The Worker divides the
+    live assigned_n by this to form the service ratio the emission scores."""
+    out: dict[str, dict[str, float]] = {}
+    for (route, tod), median in baseline.items():
+        out.setdefault(route, {})[str(tod)] = median
+    return out
+
+
 @dataclass(frozen=True)
 class Disruption:
     """An independent disruption interval derived from the service metric."""

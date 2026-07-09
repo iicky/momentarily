@@ -6,8 +6,16 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { readMovementMetric, readVehicleStops, writeMovementMetric, writeVehicleStops } from '../src/state';
+import {
+  readMovementMetric,
+  readServiceMetric,
+  readVehicleStops,
+  writeMovementMetric,
+  writeServiceMetric,
+  writeVehicleStops,
+} from '../src/state';
 import type { MovementRow } from '../src/vehicles';
+import type { ServiceRow } from '../src/trip_updates';
 
 // Minimal in-memory R2 bucket — just the get/put these helpers touch.
 function fakeBucket() {
@@ -118,5 +126,41 @@ describe('movement metric carry doc', () => {
       }),
     );
     expect(await readMovementMetric(bucket)).toBeNull();
+  });
+});
+
+function svcRow(over: Partial<ServiceRow>): ServiceRow {
+  return { assigned_n: 10, trips_n: 12, with_movement_n: 9, dir_n: 5, dir_s: 5, ...over };
+}
+
+describe('service metric carry doc', () => {
+  test('round-trips per-route assigned_n, dropping the unused ServiceRow fields', async () => {
+    const { bucket } = fakeBucket();
+    const svcRows = new Map<string, ServiceRow>([
+      ['A', svcRow({ assigned_n: 9, trips_n: 11, with_movement_n: 8, dir_n: 5, dir_s: 4 })],
+      ['F', svcRow({ assigned_n: 0, trips_n: 6, with_movement_n: 0, dir_n: 0, dir_s: 0 })],
+    ]);
+    const observedAt = 1700000000;
+    await writeServiceMetric(bucket, observedAt, svcRows);
+    // toEqual is exact — it also proves trips_n/with_movement_n/dir_n/dir_s are
+    // dropped from the persisted doc, leaving just the assigned_n numbers.
+    expect(await readServiceMetric(bucket)).toEqual({
+      observed_at: observedAt,
+      rows: { A: 9, F: 0 },
+    });
+  });
+
+  test('returns null when the object is absent', async () => {
+    const { bucket } = fakeBucket();
+    expect(await readServiceMetric(bucket)).toBeNull();
+  });
+
+  test('returns null when the object is corrupt', async () => {
+    const { bucket, store } = fakeBucket();
+    // Wrong shape (assigned_n must be a nonnegative int) — schema parse should
+    // reject it and the reader return null so the service channel just drops
+    // out that tick.
+    store.set('state/service_metric.json', JSON.stringify({ observed_at: 1700000000, rows: { A: 'nope' } }));
+    expect(await readServiceMetric(bucket)).toBeNull();
   });
 });

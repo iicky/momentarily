@@ -41,14 +41,18 @@ from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     advance_baseline_to_json,
     build_movement_series_by_direction,
+    build_service_series,
     build_tick_observations,
     compute_advance_baseline,
     compute_advance_baseline_by_route,
+    compute_baseline,
     fetch_objects,
+    fetch_trip_update_metrics,
     fetch_vehicle_metrics,
     input_manifest_hash,
     list_alert_keys,
     presence_mask_from_predictions,
+    service_baseline_to_json,
 )
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
@@ -308,6 +312,7 @@ def write_params(
     hyperparams: dict[str, Any] | None = None,
     input_profile: dict[str, Any] | None = None,
     movement_baseline: dict[str, Any] | None = None,
+    service_baseline: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -351,6 +356,11 @@ def write_params(
     # assigned_n service baseline can sit beside it under the same delivery.
     if movement_baseline:
         doc["movement_baseline"] = movement_baseline
+    # Per-(route, tod_bin) assigned_n baseline the Worker divides live assigned_n
+    # by to form the service ratio the emission scores. Top-level beside
+    # movement_baseline.
+    if service_baseline:
+        doc["service_baseline"] = service_baseline
     body = json.dumps(doc).encode()
     versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
     for key in (PARAMS_KEY, versioned_key):
@@ -393,6 +403,27 @@ def _movement_baseline(
     except Exception as exc:
         print(f"movement baseline skipped ({exc})", file=sys.stderr)
         return {}, 0, {}
+
+
+def _service_baseline(
+    cfg: R2Config,
+    client: S3Client,
+    start_date: date,
+    end_date: date,
+) -> tuple[dict[str, Any], int]:
+    """Per-(route, tod) assigned_n baseline over the training window, serialized
+    for params.json so the Worker forms the service ratio live. Fail-soft: a
+    trip-updates archive error returns an empty baseline (the channel is optional
+    and back-compat). Returns (serialized, n_cells)."""
+    try:
+        bodies = fetch_trip_update_metrics(
+            cfg, start_date=start_date, end_date=end_date, client=client
+        )
+        baseline = compute_baseline(build_service_series(bodies))
+        return service_baseline_to_json(baseline), len(baseline)
+    except Exception as exc:
+        print(f"service baseline skipped ({exc})", file=sys.stderr)
+        return {}, 0
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -458,6 +489,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     movement_baseline, n_baseline_cells, route_advance_rates = _movement_baseline(
         cfg, client, start_date, end_date
     )
+    # Assigned_n service baseline (per route, tod) for the Worker's service
+    # emission channel — it divides live assigned_n by this to form the ratio.
+    service_baseline, n_service_cells = _service_baseline(
+        cfg, client, start_date, end_date
+    )
 
     global_prior, per_route = train(
         series,
@@ -506,6 +542,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "dwell_cells": n_dwell_cells,
                     "dwell_alert_cells": n_dwell_alert_cells,
                     "baseline_cells": n_baseline_cells,
+                    "service_cells": n_service_cells,
                 },
                 indent=2,
             )
@@ -543,12 +580,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         hyperparams=hyperparams,
         input_profile=input_profile,
         movement_baseline=movement_baseline,
+        service_baseline=service_baseline,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
-        f"dwell_alert_cells={n_dwell_alert_cells}, baseline_cells={n_baseline_cells})"
+        f"dwell_alert_cells={n_dwell_alert_cells}, baseline_cells={n_baseline_cells}, "
+        f"service_cells={n_service_cells})"
     )
     return 0
 

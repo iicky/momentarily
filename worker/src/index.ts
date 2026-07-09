@@ -29,7 +29,7 @@ import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
 import { deriveRouteMovementMetric, stopPositions } from './vehicles';
-import { MOVEMENT_STATE_PUBLISH, deriveMovementStates } from './movement_state';
+import { MOVEMENT_STATE_PUBLISH, deriveMovementStates, movementObservationFields } from './movement_state';
 import type { PredictionRecord } from './grading';
 import { detectTransitions, writePredictions, writeTransitions } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
@@ -40,9 +40,11 @@ import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import {
   readLastSeen,
+  readMovementMetric,
   readMovementState,
   readVehicleStops,
   writeLastSeen,
+  writeMovementMetric,
   writeMovementState,
   writeVehicleStops,
 } from './state';
@@ -112,11 +114,13 @@ export default {
     // --- Step 1: read state ---
     // Capture etags so the write-back is a compare-and-swap — overlapping or
     // retried cron runs can't silently clobber each other. See momentarily-j0c.
-    const [lastSeenRead, alphaRead, trainedParams] = await Promise.all([
-      readLastSeen(env.MOMENTARILY),
-      readAlphaState(env.MOMENTARILY),
-      loadParams(env.MOMENTARILY),
-    ]);
+    const [lastSeenRead, alphaRead, trainedParams, prevMovementMetric] =
+      await Promise.all([
+        readLastSeen(env.MOMENTARILY),
+        readAlphaState(env.MOMENTARILY),
+        loadParams(env.MOMENTARILY),
+        readMovementMetric(env.MOMENTARILY),
+      ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
     step('1-read-state');
@@ -219,7 +223,19 @@ export default {
         prevRoll?.published ?? initialPublishedState(baseFilter);
 
       const routeSnap = routeSnapshots.get(routeId);
-      const obs: Observation | null = routeSnap ? routeSnap.observation : quietObs;
+      let obs: Observation | null = routeSnap ? routeSnap.observation : quietObs;
+      // Fold in the previous tick's cross-tick movement (option B lag): an
+      // independent "are trains moving" channel the alerts feed can't see. Off
+      // (logEmission drops the channel) when there's no usable signal.
+      if (obs) {
+        const mv = movementObservationFields(
+          prevMovementMetric,
+          trainedParams,
+          routeId,
+          observedAt,
+        );
+        if (mv) obs = { ...obs, ...mv };
+      }
       const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
       // Carry alert_type_at_entry forward while the regime persists; refresh it
@@ -444,6 +460,9 @@ export default {
           );
           await writeVehicleStops(env.MOMENTARILY, stopPositions(vehicles));
           lastSeen.vehicles_at = observedAt;
+          // Carry these counts one tick forward: next tick's derive step folds
+          // them into each route's Observation as the movement emission channel.
+          await writeMovementMetric(env.MOMENTARILY, observedAt, moveRows);
 
           // Movement-derived current state, read by next tick's snapshot build.
           // Gated off: the fixed-threshold derivation is biased per-route and not

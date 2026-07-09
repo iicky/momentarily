@@ -22,6 +22,11 @@
  * signal and the offline series agree on what "frozen" means.
  */
 
+import { tod_bin } from './hmm';
+import type { Observation } from './hmm';
+import { advanceBaselineFor } from './params';
+import type { TrainedParams } from './params';
+import type { MovementMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
 
@@ -73,4 +78,42 @@ export function deriveMovementStates(
     if (state !== null) out[route] = state;
   }
   return out;
+}
+
+// A carried movement metric older than this (seconds) is a feed gap, not "now" —
+// don't fold a stale cross-tick sample into the filter. One tick of slack past
+// the intended ~5-min lag.
+export const MAX_MOVEMENT_METRIC_LAG_SECONDS = 600;
+
+/**
+ * Movement fields for a route's Observation at derive time, from the PREVIOUS
+ * tick's carried counts (option B, ~5-min lag). Returns null — leave the
+ * observation's movement channel off — when there's no usable signal: no carried
+ * metric, a stale one, no counts for the route, too few cross-tick matches, or
+ * no trainer baseline for the cell that produced the counts.
+ *
+ * The route-level filter takes one Observation per route, so both directions are
+ * aggregated. The baseline gate keys off the CURRENT tick's tod_bin — the same
+ * bin emissionsFor() scores the sample with — so a sample is never admitted
+ * under one bin's baseline and scored under another's advance_rate.
+ */
+export function movementObservationFields(
+  metric: MovementMetricDoc | null,
+  trained: TrainedParams | null,
+  routeId: string,
+  observedAt: number,
+): Pick<Observation, 'advanced_n' | 'matched_n' | 'has_movement'> | null {
+  if (!metric) return null;
+  if (observedAt - metric.observed_at > MAX_MOVEMENT_METRIC_LAG_SECONDS) return null;
+  const row = metric.rows[routeId];
+  if (!row) return null;
+  const advanced_n = row.north.advanced_n + row.south.advanced_n;
+  const matched_n = advanced_n + row.north.stalled_n + row.south.stalled_n;
+  if (matched_n < MIN_MATCHED_TRIPS) return null;
+  const todBin = tod_bin(observedAt);
+  const hasBaseline =
+    advanceBaselineFor(trained, routeId, 'north', todBin) !== null
+    || advanceBaselineFor(trained, routeId, 'south', todBin) !== null;
+  if (!hasBaseline) return null;
+  return { advanced_n, matched_n, has_movement: true };
 }

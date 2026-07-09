@@ -20,6 +20,7 @@ import { z } from 'zod';
 
 import { conditionalPut } from './r2';
 import type { VersionedRead } from './r2';
+import type { MovementRow } from './vehicles';
 
 export const STATE_KEY = 'state/last_seen.json';
 
@@ -183,6 +184,66 @@ export async function writeMovementState(
   doc: MovementStateDoc,
 ): Promise<void> {
   await bucket.put(MOVEMENT_STATE_KEY, JSON.stringify(doc), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+}
+
+// Per-route cross-tick movement counts, carried one tick forward to feed the
+// HMM movement emission at derive time (step 4). Written at step 8b like
+// movement_state.json / vehicle_stops.json and read before the filter next
+// tick — a ~5-min lag ("option B") that keeps the vehicle fetch off the
+// publish path. By-direction so a future per-direction filter can split it;
+// the route-level filter aggregates both. Its own small object (~28 routes).
+export const MOVEMENT_METRIC_KEY = 'state/movement_metric.json';
+
+const DirCountsSchema = z.object({
+  advanced_n: z.number().int().nonnegative(),
+  stalled_n: z.number().int().nonnegative(),
+});
+const MovementMetricSchema = z.object({
+  observed_at: z.number(),
+  rows: z.record(
+    z.string(),
+    z.object({ north: DirCountsSchema, south: DirCountsSchema }),
+  ),
+});
+export type MovementMetricDoc = z.infer<typeof MovementMetricSchema>;
+
+/** Read last tick's per-route cross-tick movement counts. Returns null when
+ * absent or corrupt — the movement emission channel just drops out that tick. */
+export async function readMovementMetric(
+  bucket: R2Bucket,
+): Promise<MovementMetricDoc | null> {
+  const obj = await bucket.get(MOVEMENT_METRIC_KEY);
+  if (!obj) return null;
+  try {
+    return MovementMetricSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('movement_metric.json corrupt; resetting:', err);
+    return null;
+  }
+}
+
+export async function writeMovementMetric(
+  bucket: R2Bucket,
+  observedAt: number,
+  moveRows: Map<string, MovementRow>,
+): Promise<void> {
+  const rows: MovementMetricDoc['rows'] = {};
+  for (const [route, row] of moveRows) {
+    rows[route] = {
+      north: {
+        advanced_n: row.by_direction.north.advanced_n,
+        stalled_n: row.by_direction.north.stalled_n,
+      },
+      south: {
+        advanced_n: row.by_direction.south.advanced_n,
+        stalled_n: row.by_direction.south.stalled_n,
+      },
+    };
+  }
+  const doc: MovementMetricDoc = { observed_at: observedAt, rows };
+  await bucket.put(MOVEMENT_METRIC_KEY, JSON.stringify(doc), {
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }

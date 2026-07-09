@@ -6,7 +6,8 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { readVehicleStops, writeVehicleStops } from '../src/state';
+import { readMovementMetric, readVehicleStops, writeMovementMetric, writeVehicleStops } from '../src/state';
+import type { MovementRow } from '../src/vehicles';
 
 // Minimal in-memory R2 bucket — just the get/put these helpers touch.
 function fakeBucket() {
@@ -46,5 +47,76 @@ describe('vehicle stops carry map', () => {
     // the reader fall back to {} so cross-tick counters just stay 0 that tick.
     store.set('state/vehicle_stops.json', JSON.stringify({ trip_a: 42 }));
     expect(await readVehicleStops(bucket)).toEqual({});
+  });
+});
+
+function moveRow(over: Partial<MovementRow>): MovementRow {
+  return {
+    vehicles_n: 10,
+    stopped_n: 4,
+    moving_n: 6,
+    advanced_n: 8,
+    stalled_n: 2,
+    by_direction: {
+      north: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+    },
+    ...over,
+  };
+}
+
+describe('movement metric carry doc', () => {
+  test('round-trips per-route by-direction advanced_n/stalled_n, dropping the unused MovementRow fields', async () => {
+    const { bucket } = fakeBucket();
+    const moveRows = new Map<string, MovementRow>([
+      [
+        'A',
+        moveRow({
+          by_direction: {
+            north: { vehicles_n: 5, advanced_n: 9, stalled_n: 1 },
+            south: { vehicles_n: 4, advanced_n: 3, stalled_n: 2 },
+          },
+        }),
+      ],
+      [
+        'F',
+        moveRow({
+          by_direction: {
+            north: { vehicles_n: 2, advanced_n: 0, stalled_n: 2 },
+            south: { vehicles_n: 3, advanced_n: 1, stalled_n: 0 },
+          },
+        }),
+      ],
+    ]);
+    const observedAt = 1700000000;
+    await writeMovementMetric(bucket, observedAt, moveRows);
+    // toEqual is exact — it also proves vehicles_n/stopped_n/moving_n and the
+    // by_direction vehicles_n counts are dropped from the persisted doc.
+    expect(await readMovementMetric(bucket)).toEqual({
+      observed_at: observedAt,
+      rows: {
+        A: { north: { advanced_n: 9, stalled_n: 1 }, south: { advanced_n: 3, stalled_n: 2 } },
+        F: { north: { advanced_n: 0, stalled_n: 2 }, south: { advanced_n: 1, stalled_n: 0 } },
+      },
+    });
+  });
+
+  test('returns null when the object is absent', async () => {
+    const { bucket } = fakeBucket();
+    expect(await readMovementMetric(bucket)).toBeNull();
+  });
+
+  test('returns null when the object is corrupt', async () => {
+    const { bucket, store } = fakeBucket();
+    // Wrong shape (counts must be numbers) — schema parse should reject it and
+    // the reader return null so the movement channel just drops out that tick.
+    store.set(
+      'state/movement_metric.json',
+      JSON.stringify({
+        observed_at: 1700000000,
+        rows: { A: { north: { advanced_n: 'nope', stalled_n: 1 }, south: { advanced_n: 1, stalled_n: 1 } } },
+      }),
+    );
+    expect(await readMovementMetric(bucket)).toBeNull();
   });
 });

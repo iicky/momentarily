@@ -167,9 +167,27 @@ def is_known_alert_type(alert_type: str) -> bool:
     return alert_type.startswith("No ") and "Service" in alert_type
 
 
-def is_hmm_excluded(alert_type: str) -> bool:
-    """True for alert_types the HMM deliberately ignores — extra service (good
-    news) and scheduled non-service (planned overnight/weekend/rush-only gaps).
-    They stay on the display surfaces but drop out of the observation so the
-    filter reads quiet. Drift metrics skip them: they're handled, not drift."""
-    return "Extra Service" in alert_type or "No Scheduled Service" in alert_type
+def is_planned_work_id(alert_id: str) -> bool:
+    """True for planned/scheduled work alerts (lmm:planned_work:*) — planned
+    changes, reroutes, stops-skipped, and reduced/special/no-scheduled/extra
+    service. These drop out of the HMM disruption observation (planned work isn't
+    a disruption to recover from); everything else — real-time lmm:alert:*
+    disruptions and any unrecognized id — is counted, so a real disruption is
+    never silently dropped. Mirrors worker/src/derive.ts isPlannedWorkId."""
+    return alert_id.startswith("lmm:planned_work:")
+
+
+def is_planned_or_scheduled_type(alert_type: str) -> bool:
+    """Type-based counterpart to is_planned_work_id for callers that only have
+    the alert_type string (drift metrics on prediction records): planned work,
+    reduced/special schedules, and scheduled non-service. Kept aligned with the
+    lmm:planned_work id namespace as closely as type strings allow."""
+    if alert_type.startswith("Planned"):
+        return True
+    scheduled = (
+        "Extra Service",
+        "No Scheduled Service",
+        "Reduced Service",
+        "Special Schedule",
+    )
+    return any(t in alert_type for t in scheduled)

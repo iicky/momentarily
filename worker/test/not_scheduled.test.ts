@@ -118,8 +118,75 @@ describe('derive: namespace split + scheduled resume', () => {
     expect(n.has_realtime_alert).toBe(true);
     expect(n.is_not_scheduled).toBe(false);
     expect(n.scheduled_resume_at).toBe(NOW + 5400);
-    // The Delays + Part Suspended both count toward the HMM observation.
-    expect(n.observation.alert_count).toBe(2);
+    // Only the real-time Delays counts toward the HMM observation; the
+    // planned Part Suspended drops out.
+    expect(n.observation.alert_count).toBe(1);
+  });
+
+  test('planned-only route → quiet observation (all flags false, incl. has_planned)', () => {
+    const snaps = deriveRouteSnapshots(
+      payload(
+        entity({
+          id: 'lmm:planned_work:1',
+          alertType: 'Planned - Part Suspended',
+          route: 'A',
+          sortOrder: 20,
+          periods: [{ start: NOW - 600, end: NOW + 600 }],
+        }),
+      ),
+      NOW,
+    );
+    const a = snaps.get('A')!;
+    expect(a.observation.alert_count).toBe(0);
+    expect(a.observation.severity_sum).toBe(0);
+    expect(a.observation.has_suspended_alert).toBe(false);
+    expect(a.observation.has_delays).toBe(false);
+    expect(a.observation.has_service_change).toBe(false);
+    expect(a.observation.has_planned).toBe(false);
+  });
+
+  test('real-time disruption still counts and sets its flag', () => {
+    const snaps = deriveRouteSnapshots(
+      payload(
+        entity({
+          id: 'lmm:alert:1',
+          alertType: 'Suspended',
+          route: 'B',
+          sortOrder: 20,
+          periods: [{ start: NOW - 600 }],
+        }),
+      ),
+      NOW,
+    );
+    const b = snaps.get('B')!;
+    expect(b.observation.alert_count).toBe(1);
+    expect(b.observation.has_suspended_alert).toBe(true);
+  });
+
+  test('mixed real-time + planned: only the real-time alert counts', () => {
+    const snaps = deriveRouteSnapshots(
+      payload(
+        entity({
+          id: 'lmm:alert:1',
+          alertType: 'Delays',
+          route: 'C',
+          sortOrder: 20,
+          periods: [{ start: NOW - 600 }],
+        }),
+        entity({
+          id: 'lmm:planned_work:2',
+          alertType: 'Planned - Part Suspended',
+          route: 'C',
+          sortOrder: 25,
+          periods: [{ start: NOW - 600, end: NOW + 600 }],
+        }),
+      ),
+      NOW,
+    );
+    const c = snaps.get('C')!;
+    expect(c.observation.alert_count).toBe(1);
+    expect(c.observation.has_delays).toBe(true);
+    expect(c.observation.has_suspended_alert).toBe(false);
   });
 });
 
@@ -199,21 +266,15 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     expect(snap.compat.subwaynow_routes['Z']!.scheduled).toBe(false);
   });
 
-  test('planned Part Suspended: HMM disrupted condition, schedule recovery (no indeterminate)', () => {
+  test('planned-only route: consistency guardrail forces normal condition even with a confident disrupted filter', () => {
     const snaps = new Map<string, RouteSnapshot>([
       [
         'A',
         routeSnap({
           route_id: 'A',
-          observation: {
-            alert_count: 1,
-            severity_sum: 25,
-            has_suspended_alert: false,
-            has_delays: false,
-            has_service_change: false,
-            has_planned: true,
-            tod_bin: 0,
-          },
+          // Realistic derive() output for a route whose only active alert is
+          // planned/scheduled work: alert_count 0 (see the derive-layer
+          // "planned-only route" test above).
           active_alert_ids: ['lmm:planned_work:20534'],
           severity_max: 25,
           primary_alert_type: 'Planned - Part Suspended',
@@ -224,14 +285,14 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     ]);
     const snap = build(snaps, { A: roll('disrupted', NOW - 7200) });
     const inf = snap.route_status['A']!.inference!;
-    expect(snap.route_status['A']!.condition).toBe('disrupted');
-    expect(inf.recovery_source).toBe('schedule');
-    expect(inf.resumes_at).toBe(NOW + 2700);
-    expect(inf.recovery_minutes).toBe(45);
-    expect(inf.recovery_indeterminate).toBe(false);
-    // A planned suspension is still a disruption — it counts.
-    expect(inf.is_disrupted).toBe(true);
-    expect(snap.system.lines_disrupted_count).toBe(1);
+    // The filter posterior is confidently `disrupted`, but the
+    // disruptiveAlertCount === 0 guardrail forces the published condition —
+    // and everything derived from it — back to normal. Planned work never
+    // publishes as disrupted/suspended.
+    expect(snap.route_status['A']!.condition).toBe('normal');
+    expect(inf.condition).toBe('normal');
+    expect(inf.is_disrupted).toBe(false);
+    expect(snap.system.lines_disrupted_count).toBe(0);
   });
 
   test('real-time alert wins precedence: HMM condition + HMM recovery even if planned also active', () => {
@@ -241,12 +302,14 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
         routeSnap({
           route_id: 'N',
           observation: {
-            alert_count: 2,
-            severity_sum: 50,
+            // Only the real-time Delays counts; the planned Part Suspended
+            // drops out of alert_count/severity_sum/has_planned entirely.
+            alert_count: 1,
+            severity_sum: 32,
             has_suspended_alert: false,
             has_delays: true,
             has_service_change: false,
-            has_planned: true,
+            has_planned: false,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:alert:535417', 'lmm:planned_work:20534'],
@@ -264,6 +327,8 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     expect(snap.route_status['N']!.condition).toBe('disrupted');
     expect(inf.recovery_source).toBe('hmm');
     expect(inf.resumes_at).toBeNull();
+    // A live real-time disruption counts, even with planned work also active.
+    expect(inf.is_disrupted).toBe(true);
   });
 
   test('overdue: resume already passed but alert still active → recovery clamped to 0', () => {

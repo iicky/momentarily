@@ -55,7 +55,7 @@ def test_no_scheduled_service_is_invisible_to_the_hmm():
     planned non-disruption, not something to recover from — like Extra Service
     it drops out of the HMM observation entirely so the filter stays normal and
     is ready at resume. The not_scheduled condition is applied downstream."""
-    obs = build_tick_observations([_body("a1", "No Scheduled Service")])
+    obs = build_tick_observations([_body("lmm:planned_work:1", "No Scheduled Service")])
     assert obs
     for o in obs:
         assert o.observation.alert_count == 0
@@ -63,7 +63,10 @@ def test_no_scheduled_service_is_invisible_to_the_hmm():
         assert not o.observation.has_suspended_alert
     # ...and it doesn't mask a real disruption alongside it.
     obs = build_tick_observations(
-        [_body("a1", "No Scheduled Service"), _body("a2", "Delays")]
+        [
+            _body("lmm:planned_work:1", "No Scheduled Service"),
+            _body("lmm:alert:2", "Delays"),
+        ]
     )
     assert obs
     for o in obs:
@@ -72,34 +75,94 @@ def test_no_scheduled_service_is_invisible_to_the_hmm():
 
 
 def test_suspended_and_no_trains_set_flag():
-    for alert_type in ("Suspended", "Part Suspended", "No Trains"):
-        obs = build_tick_observations([_body("a1", alert_type)])
+    for i, alert_type in enumerate(("Suspended", "Part Suspended", "No Trains")):
+        obs = build_tick_observations([_body(f"lmm:alert:{i}", alert_type)])
         assert obs
         assert all(o.observation.has_suspended_alert for o in obs), alert_type
 
 
 def test_planned_suspension_excluded():
-    obs = build_tick_observations([_body("a1", "Planned - Part Suspended")])
+    obs = build_tick_observations(
+        [_body("lmm:planned_work:1", "Planned - Part Suspended")]
+    )
     assert obs
     assert all(not o.observation.has_suspended_alert for o in obs)
-    assert all(o.observation.has_planned for o in obs)
+    # Planned work is excluded from the observation entirely now, not just the
+    # suspended flag — it never contributes to any channel.
+    assert all(not o.observation.has_planned for o in obs)
 
 
 def test_extra_service_is_invisible_to_the_hmm():
     """Extra Service is good news — it must not contribute to any observation
-    channel (count, severity, flags). See momentarily-vk0.11."""
-    obs = build_tick_observations([_body("a1", "Extra Service")])
+    channel (count, severity, flags)."""
+    obs = build_tick_observations([_body("lmm:planned_work:1", "Extra Service")])
     assert obs
     for o in obs:
         assert o.observation.alert_count == 0
         assert o.observation.severity_sum == 0
         assert not o.observation.has_service_change
     # ...and it doesn't mask a real disruption alongside it.
-    obs = build_tick_observations([_body("a1", "Extra Service"), _body("a2", "Delays")])
+    obs = build_tick_observations(
+        [_body("lmm:planned_work:1", "Extra Service"), _body("lmm:alert:2", "Delays")]
+    )
     assert obs
     for o in obs:
         assert o.observation.alert_count == 1
         assert o.observation.has_delays
+
+
+def test_planned_only_route_is_quiet_observation():
+    """A route whose only active alert is planned/scheduled work drops out of
+    the HMM observation entirely: count, severity, and every flag (including
+    has_planned) read as if nothing were active."""
+    planned_types = (
+        "Planned - Part Suspended",
+        "Planned - Stops Skipped",
+        "Reduced Service",
+        "Special Schedule",
+    )
+    for i, alert_type in enumerate(planned_types):
+        obs = build_tick_observations([_body(f"lmm:planned_work:{i}", alert_type)])
+        assert obs
+        for o in obs:
+            assert o.observation.alert_count == 0
+            assert o.observation.severity_sum == 0
+            assert not o.observation.has_suspended_alert
+            assert not o.observation.has_delays
+            assert not o.observation.has_service_change
+            assert not o.observation.has_planned
+
+
+def test_realtime_disruption_counts_and_sets_flag():
+    """A real-time (lmm:alert:) Delays/Suspended/Service Change sets
+    alert_count == 1 and its corresponding flag."""
+    cases = (
+        ("Delays", "has_delays"),
+        ("Suspended", "has_suspended_alert"),
+        ("Service Change", "has_service_change"),
+    )
+    for alert_type, flag in cases:
+        obs = build_tick_observations([_body("lmm:alert:1", alert_type)])
+        assert obs
+        for o in obs:
+            assert o.observation.alert_count == 1
+            assert getattr(o.observation, flag), alert_type
+
+
+def test_mixed_realtime_and_planned_only_realtime_counts():
+    """A real-time Delays alongside a planned suspension: only the real-time
+    alert counts, and the planned alert's flag never sets."""
+    obs = build_tick_observations(
+        [
+            _body("lmm:alert:1", "Delays"),
+            _body("lmm:planned_work:2", "Planned - Part Suspended"),
+        ]
+    )
+    assert obs
+    for o in obs:
+        assert o.observation.alert_count == 1
+        assert o.observation.has_delays
+        assert not o.observation.has_suspended_alert
 
 
 def _pred(ts: int, route: str, primary: str | None) -> Any:
@@ -135,7 +198,7 @@ def test_presence_mask_drops_over_extended_tail():
         covered=frozenset({T0, T0 + TICK, T0 + 2 * TICK}),
     )
     obs = build_tick_observations(
-        [_body("a1", "Delays", start=T0, end=T0 + 600)], active_mask=mask
+        [_body("lmm:alert:1", "Delays", start=T0, end=T0 + 600)], active_mask=mask
     )
     assert [o.tick for o in obs] == [T0]
     assert obs[0].observation.has_delays

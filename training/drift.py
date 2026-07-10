@@ -21,7 +21,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from typing import Any, Protocol
 
-from momentarily.mapping import is_hmm_excluded, is_known_alert_type
+from momentarily.mapping import is_known_alert_type, is_planned_or_scheduled_type
 from training.load import TickObservation
 
 
@@ -48,9 +48,9 @@ def unmapped_alert_type_drift(predictions: Sequence[_Typed]) -> dict[str, Any]:
 
     for p in predictions:
         at = p.primary_alert_type
-        if not at or is_hmm_excluded(at):
-            # No type signal, or a type the HMM deliberately ignores — neither
-            # is input drift, so they stay out of the denominator entirely.
+        if not at or is_planned_or_scheduled_type(at):
+            # No type signal, or a type the HMM ignores (handled/scheduled) —
+            # not input drift, so it stays out of the denominator entirely.
             continue
         total += 1
         by_route_total[p.route] += 1

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from momentarily.hmm import Observation, tod_bin
-from momentarily.mapping import is_hmm_excluded
+from momentarily.mapping import is_planned_work_id
 
 # Cron cadence — collector polls every 5 min, ticks align on this boundary.
 TICK_SECONDS = 300
@@ -115,11 +115,13 @@ def build_observations(
     out: list[TickObservation] = []
     for tick in sorted(bucket):
         for route_id, alerts in bucket[tick].items():
-            # Extra service (good news) and scheduled non-service drop out of the
-            # HMM observation so the filter reads quiet. Mirrors training/load_r2.py
-            # and worker/src/derive.ts.
+            # Planned/scheduled work (lmm:planned_work:*) drops out of the HMM
+            # disruption observation so the filter reads quiet; real-time alerts
+            # and any other id are counted. Mirrors load_r2.py + derive.ts.
             counted = [
-                (so, at) for so, at in alerts.values() if not is_hmm_excluded(at)
+                (so, at)
+                for aid, (so, at) in alerts.items()
+                if not is_planned_work_id(aid)
             ]
             alert_count = len(counted)
             severity_sum = sum(so for so, _at in counted)

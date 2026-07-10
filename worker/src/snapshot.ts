@@ -243,7 +243,7 @@ export function buildSnapshot(args: {
           args.tickSeconds,
           routeId,
           args.trainedParams,
-          activeAlerts.length,
+          snap?.observation.alert_count ?? 0,
           schedule,
         )
       : null;
@@ -476,7 +476,7 @@ function buildInference(
   tickSeconds: number,
   routeId: string,
   trained: TrainedParams | null,
-  activeAlertCount: number,
+  disruptiveAlertCount: number,
   schedule: ScheduleFacts,
 ): Inference {
   const probs = roll.filter.probabilities;
@@ -497,7 +497,7 @@ function buildInference(
 
   const argmaxIdx = argmaxOf(probs);
 
-  const condition = resolveCondition(roll, activeAlertCount, schedule);
+  const condition = resolveCondition(roll, disruptiveAlertCount, schedule);
 
   // Recovery_minutes is "time until back to normal." Two sources, in order
   // of preference:
@@ -625,11 +625,11 @@ function buildInference(
   return {
     condition,
     recovery_minutes,
-    // Tie to the gated condition so a no-alert route never counts as disrupted
-    // (keeps lines_disrupted_count consistent with the published condition).
-    // not_scheduled is a planned non-disruption — never counts.
-    is_disrupted:
-      condition !== 'not_scheduled' && activeAlertCount > 0 && probs[1] + probs[2] > 0.7,
+    // Rollup flag tied directly to the published condition so
+    // lines_disrupted_count can't disagree with what a route shows: disrupted
+    // iff the condition is a live disruption. normal (incl. planned-only, whose
+    // realtime disruptive count is zero) and not_scheduled never count.
+    is_disrupted: condition !== 'normal' && condition !== 'not_scheduled',
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],
@@ -675,21 +675,22 @@ function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {
  */
 function resolveCondition(
   roll: RouteRoll,
-  activeAlertCount: number,
+  disruptiveAlertCount: number,
   schedule: ScheduleFacts,
 ): string {
-  if (schedule.hasRealtimeAlert) return effectiveCondition(roll, activeAlertCount);
+  if (schedule.hasRealtimeAlert) return effectiveCondition(roll, disruptiveAlertCount);
   if (schedule.isNotScheduled) return 'not_scheduled';
-  return effectiveCondition(roll, activeAlertCount);
+  return effectiveCondition(roll, disruptiveAlertCount);
 }
 
-function effectiveCondition(roll: RouteRoll, activeAlertCount: number): PublishedLabel {
+function effectiveCondition(roll: RouteRoll, disruptiveAlertCount: number): PublishedLabel {
   // Consistency guardrail: every disruption signal the filter sees is derived
-  // from alerts, so with zero active alerts the honest condition is `normal`.
-  // This stops a stale or over-confident filter from publishing `disrupted`
-  // with no alert to explain it, and keeps system.overall_label consistent with
-  // lines_disrupted_count. See momentarily-13j.
-  if (activeAlertCount === 0) return 'normal';
+  // from real-time alerts, so with zero real-time disruptive alerts the honest
+  // condition is `normal` — planned/scheduled work never reads disrupted. It
+  // also stops a stale or over-confident filter from publishing `disrupted` with
+  // nothing live to explain it, and keeps system.overall_label consistent with
+  // lines_disrupted_count.
+  if (disruptiveAlertCount === 0) return 'normal';
   const argmaxState = STATES[argmaxOf(roll.filter.probabilities)]!;
   if (roll.published.label === PUBLISHED_UNKNOWN) return argmaxState;
   const peakProb = roll.filter.probabilities[argmaxOf(roll.filter.probabilities)];

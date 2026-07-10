@@ -251,17 +251,12 @@ function buildRouteSnapshot(
   todBinValue: number,
 ): RouteSnapshot {
   const primary = pickPrimary(alerts);
-  // Neither "Extra Service" nor "No Scheduled Service" is a disruption to
-  // recover from — extra service is good news, no-service is planned absence
-  // (overnight/weekend gaps, rush-only lines). Both stay in the display
-  // surfaces (alerts list, primary/coarse label) but drop out of the HMM
-  // observation so the filter reads quiet and stays normal. Mirrors
-  // training/load_r2.py.
-  const counted = alerts.filter(
-    (a) =>
-      !a.alert_type.includes('Extra Service')
-      && !a.alert_type.includes('No Scheduled Service'),
-  );
+  // Planned/scheduled work (lmm:planned_work:*, incl. reroutes/stops-skipped and
+  // reduced/special/no-scheduled/extra service) drops out of the HMM disruption
+  // observation so the filter reads quiet; real-time alerts and any other id are
+  // counted. Planned work isn't a disruption to recover from. Mirrors
+  // training/load.py + load_r2.py (is_planned_work_id).
+  const counted = alerts.filter((a) => !isPlannedWorkId(a.alert_id));
   const types = counted.map((a) => a.alert_type);
 
   const observation: Observation = {

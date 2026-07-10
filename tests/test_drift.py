@@ -20,13 +20,15 @@ def test_all_mapped_is_zero_drift():
     preds = [
         _Pred("1", "Delays"),
         _Pred("A", "Suspended"),
+        # Planned types aren't HMM input — excluded from the denominator
+        # entirely (not merely "known"); see test_hmm_excluded_types_are_not_drift.
         _Pred("F", "Planned - Work"),
     ]
     d = unmapped_alert_type_drift(preds)
     assert d["unmapped_rate"] == 0.0
     assert d["unmapped_types"] == {}
     assert d["by_route"] == {}
-    assert d["n_typed_ticks"] == 3
+    assert d["n_typed_ticks"] == 2
 
 
 def test_unmapped_types_are_named_and_rated():

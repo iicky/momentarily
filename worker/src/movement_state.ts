@@ -110,9 +110,13 @@ export function deriveMovementState(
 }
 
 /**
- * Per-route movement-derived condition across all routes either feed saw this
- * tick. Routes whose movement can't be judged are omitted (the caller falls back
- * to the alert/HMM condition for those).
+ * Per-route movement-derived condition for this tick. Routes either feed saw are
+ * judged from their movement/service (deriveMovementState); routes the trainer
+ * knows but neither feed saw are emitted as not_scheduled when their in-service
+ * rate at this schedule bin is confidently low (a planned gap, e.g. a rush-only
+ * line off-peak). Absences at a normally-running or unknown bin are left out —
+ * outage vs feed gap is ambiguous there, so the caller falls back to the
+ * alert/HMM condition.
  */
 export function deriveMovementStates(
   moveRows: Map<string, MovementRow>,
@@ -121,8 +125,8 @@ export function deriveMovementStates(
   observedAt: number,
 ): Record<string, MovementCondition> {
   const out: Record<string, MovementCondition> = {};
-  const routes = new Set<string>([...moveRows.keys(), ...svcRows.keys()]);
-  for (const route of routes) {
+  const seen = new Set<string>([...moveRows.keys(), ...svcRows.keys()]);
+  for (const route of seen) {
     const state = deriveMovementState(
       route,
       moveRows.get(route),
@@ -131,6 +135,16 @@ export function deriveMovementStates(
       observedAt,
     );
     if (state !== null) out[route] = state;
+  }
+  // Routes the trainer knows but neither feed saw this tick: a scheduled-off route
+  // (in-service rate below the gate at this bin) reads not_scheduled.
+  if (trained?.scheduleRate) {
+    const bin = schedule_bin(observedAt);
+    for (const route of Object.keys(trained.scheduleRate)) {
+      if (seen.has(route)) continue;
+      const rate = scheduleRateFor(trained, route, bin);
+      if (rate !== null && rate < NOT_SCHEDULED_MAX) out[route] = 'not_scheduled';
+    }
   }
   return out;
 }

@@ -281,6 +281,66 @@ describe('deriveMovementStates', () => {
   });
 });
 
+describe('deriveMovementStates absent routes', () => {
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000;
+  const TOD_BIN = String(tod_bin(T0));
+  const SCHED_BIN = schedule_bin(T0);
+  // A schedule_bin distinct from SCHED_BIN (same wd/we prefix, different hour) so a
+  // scheduleRate cell keyed by it never matches this tick's bin.
+  const OTHER_BIN = `${SCHED_BIN.slice(0, 2)}${String((Number(SCHED_BIN.slice(2)) + 1) % 24).padStart(2, '0')}`;
+
+  test('absent route with a low schedule rate at this bin reads not_scheduled', () => {
+    const trained = trainedWithBaseline({}, { LOW: { [SCHED_BIN]: 0.1 } });
+    expect(
+      deriveMovementStates(new Map<string, MovementRow>(), new Map<string, ServiceRow>(), trained, T0),
+    ).toEqual({ LOW: 'not_scheduled' });
+  });
+
+  test('absent route with a high schedule rate at this bin is omitted', () => {
+    const trained = trainedWithBaseline({}, { HIGH: { [SCHED_BIN]: 0.9 } });
+    expect(
+      deriveMovementStates(new Map<string, MovementRow>(), new Map<string, ServiceRow>(), trained, T0),
+    ).toEqual({});
+  });
+
+  test('absent route with no rate cell for this bin is omitted', () => {
+    const trained = trainedWithBaseline({}, { NOCELL: { [OTHER_BIN]: 0.1 } });
+    expect(
+      deriveMovementStates(new Map<string, MovementRow>(), new Map<string, ServiceRow>(), trained, T0),
+    ).toEqual({});
+  });
+
+  test('a route present in moveRows is judged normally, not overridden by a low schedule-rate cell', () => {
+    const moveRows = new Map<string, MovementRow>([
+      [
+        'A',
+        move({
+          by_direction: {
+            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+          },
+        }),
+      ],
+    ]);
+    const trained = trainedWithBaseline(
+      { A: { north: { [TOD_BIN]: baselineCell({}) } } },
+      { A: { [SCHED_BIN]: 0.1 } },
+    );
+    expect(deriveMovementStates(moveRows, new Map<string, ServiceRow>(), trained, T0)).toEqual({
+      A: 'normal',
+    });
+  });
+
+  test('trained: null skips the absent pass without throwing', () => {
+    expect(() =>
+      deriveMovementStates(new Map<string, MovementRow>(), new Map<string, ServiceRow>(), null, T0),
+    ).not.toThrow();
+    expect(
+      deriveMovementStates(new Map<string, MovementRow>(), new Map<string, ServiceRow>(), null, T0),
+    ).toEqual({});
+  });
+});
+
 describe('schedule_bin', () => {
   test('weekday hour maps to a wd-prefixed bin', () => {
     // 2026-06-15T16:00:00Z = Mon 12:00 ET.

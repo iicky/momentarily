@@ -753,6 +753,26 @@ def test_compute_schedule_rate_output_is_sorted() -> None:
     assert list(rate.keys()) == sorted(rate.keys())
 
 
+def test_compute_schedule_rate_absent_bin_gets_explicit_zero() -> None:
+    """A route that never appears in a bin's rows at all — not just present
+    but idle — still gets an explicit rate-0 cell for that bin, not an
+    omission. Route X only runs at wd06, route Y only at wd07; each must
+    read 0.0 (not missing) at the other's bin, alongside a real 1.0 where it
+    actually ran every tick."""
+    wd06_epochs = _weekday_epochs(6, MIN_SCHEDULE_TICKS)
+    wd07_epochs = _weekday_epochs(7, MIN_SCHEDULE_TICKS)
+    bin06 = schedule_bin(wd06_epochs[0])
+    bin07 = schedule_bin(wd07_epochs[0])
+    bodies = [
+        {"observed_at": ep, "rows": {"X": {"assigned_n": 1}}} for ep in wd06_epochs
+    ] + [{"observed_at": ep, "rows": {"Y": {"assigned_n": 1}}} for ep in wd07_epochs]
+    rate = compute_schedule_rate(bodies)
+    assert rate[("X", bin07)] == 0.0
+    assert rate[("Y", bin06)] == 0.0
+    assert rate[("X", bin06)] == 1.0
+    assert rate[("Y", bin07)] == 1.0
+
+
 def test_schedule_rate_to_json_nests_route_then_bin() -> None:
     rate = {("A", "wd06"): 0.75, ("A", "we22"): 0.2, ("B", "wd06"): 0.1}
     assert schedule_rate_to_json(rate) == {

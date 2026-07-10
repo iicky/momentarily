@@ -536,7 +536,7 @@ def compute_schedule_rate(
     """Per (route, schedule_bin) in-service rate: the share of usable ticks in that
     (weekend, hour) bin where the route was actually running — at least one
     dispatched train (assigned_n >= 1). Not running where it normally runs is a
-    suspension; not running where it rarely runs is a planned gap.
+    suspension; not running where it rarely runs (or never) is a planned gap.
 
     Uses dispatch (assigned_n), not mere timetable presence (trips_n >= 1): NYCT
     lists a rush-only route's scheduled trips at the fringe hours before/after it
@@ -546,12 +546,15 @@ def compute_schedule_rate(
     and read not_scheduled, but the multi-week window dilutes transient outages,
     callers default a missing/unconfident rate to suspended, and the next retrain
     corrects. The denominator is usable ticks only — a globally empty tick (feed
-    outage) is skipped so an outage doesn't depress every route's rate. A cell is
-    created for every (route, bin) the route appears in at all (rate 0 if it never
-    runs there); bins with fewer than `min_ticks` usable ticks are omitted (callers
-    treat a missing rate as unknown)."""
+    outage) is skipped so an outage doesn't depress every route's rate.
+
+    A cell is emitted for the full grid of known routes x bins with at least
+    `min_ticks` usable ticks — rate 0 where the route never ran at that bin. The
+    explicit zeros let a caller tell a route that's off by timetable (real 0, e.g.
+    a rush-only line at midday it never appears in) apart from a bin with too
+    little data (omitted, treated as unknown)."""
     denom: dict[str, int] = {}
-    present: set[tuple[str, str]] = set()
+    routes: set[str] = set()
     running: dict[tuple[str, str], int] = {}
     for body in bodies:
         rows = cast(dict[str, Any], body.get("rows") or {})
@@ -560,17 +563,17 @@ def compute_schedule_rate(
         sb = schedule_bin(int(body.get("observed_at") or 0))
         denom[sb] = denom.get(sb, 0) + 1
         for route, row in rows.items():
-            present.add((route, sb))
+            routes.add(route)
             if (
                 isinstance(row, dict)
                 and int(cast(dict[str, Any], row).get("assigned_n") or 0) >= 1
             ):
                 running[(route, sb)] = running.get((route, sb), 0) + 1
+    bins = sorted(sb for sb, total in denom.items() if total >= min_ticks)
     out: dict[tuple[str, str], float] = {}
-    for route, sb in sorted(present):
-        total = denom.get(sb, 0)
-        if total >= min_ticks:
-            out[(route, sb)] = running.get((route, sb), 0) / total
+    for route in sorted(routes):
+        for sb in bins:
+            out[(route, sb)] = running.get((route, sb), 0) / denom[sb]
     return out
 
 

@@ -8,14 +8,21 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from momentarily.hmm import EmissionParams, HMMParams, Observation
+from momentarily.hmm import EmissionParams, HMMParams, Observation, schedule_bin
 from training.eval import TransitionRecord
-from training.load_r2 import MIN_MATCHED_TRIPS, P0_FLOOR
+from training.load_r2 import (
+    MIN_MATCHED_TRIPS,
+    MIN_SCHEDULE_TICKS,
+    P0_FLOOR,
+    compute_schedule_rate,
+    schedule_rate_to_json,
+)
 from training.r2_client import R2Config
 from training.train_em import (
     MAX_SELF_LOOP,
@@ -312,6 +319,7 @@ def test_write_params_doc_shape_round_trips() -> None:
         "min_ticks": 288,
         "routes": None,
     }
+    schedule_rate = {"A": {"wd06": 0.5}}
     write_params(
         cast("S3Client", fake),
         "test-bucket",
@@ -319,6 +327,7 @@ def test_write_params_doc_shape_round_trips() -> None:
         corpus=corpus,
         n_routes_trained=1,
         hyperparams=hyperparams,
+        schedule_rate=schedule_rate,
         trained_at=42,
     )
     doc = json.loads(fake.objects[PARAMS_KEY])
@@ -339,6 +348,7 @@ def test_write_params_doc_shape_round_trips() -> None:
     assert len(route["transition"]) == 3
     assert len(route["initial"]) == 3
     assert "poisson_lambda" in route["emissions"]
+    assert doc["schedule_rate"] == schedule_rate
 
 
 def test_compute_advance_baseline_by_route_pools_direction_and_tod() -> None:
@@ -524,11 +534,14 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
 ) -> None:
     """_service_baseline must fetch the *explicit* training window (not
     fetch_trip_update_metrics' yesterday..today default) and thread the
-    build/compute/serialize chain's output straight through."""
+    build/compute/serialize chain's output straight through — including the
+    schedule-rate chain, from that same single trip-updates fetch."""
     fetch_calls: list[dict[str, Any]] = []
     bodies_seen: list[list[dict[str, Any]]] = []
     series_seen: list[dict[tuple[str, int], int]] = []
     baseline_seen: list[dict[tuple[str, int], float]] = []
+    schedule_bodies_seen: list[list[dict[str, Any]]] = []
+    schedule_rate_seen: list[dict[tuple[str, str], float]] = []
 
     sentinel_bodies: list[dict[str, Any]] = [{"marker": "body"}]
     sentinel_series: dict[tuple[str, int], int] = {("A", 0): 6}
@@ -537,6 +550,8 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
         ("A", 1): 5.0,
     }
     sentinel_json: dict[str, Any] = {"A": {"0": 6.0, "1": 5.0}}
+    sentinel_schedule_rate: dict[tuple[str, str], float] = {("A", "wd06"): 0.5}
+    sentinel_schedule_json: dict[str, Any] = {"A": {"wd06": 0.5}}
 
     def _fake_fetch(
         cfg: R2Config,
@@ -568,17 +583,37 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
         baseline_seen.append(baseline)
         return sentinel_json
 
+    def _fake_compute_schedule_rate(
+        bodies: list[dict[str, Any]],
+    ) -> dict[tuple[str, str], float]:
+        schedule_bodies_seen.append(bodies)
+        return sentinel_schedule_rate
+
+    def _fake_schedule_rate_to_json(
+        rate: dict[tuple[str, str], float],
+    ) -> dict[str, Any]:
+        schedule_rate_seen.append(rate)
+        return sentinel_schedule_json
+
     monkeypatch.setattr("training.train_em.fetch_trip_update_metrics", _fake_fetch)
     monkeypatch.setattr("training.train_em.build_service_series", _fake_build_series)
     monkeypatch.setattr("training.train_em.compute_baseline", _fake_compute_baseline)
     monkeypatch.setattr("training.train_em.service_baseline_to_json", _fake_to_json)
+    monkeypatch.setattr(
+        "training.train_em.compute_schedule_rate", _fake_compute_schedule_rate
+    )
+    monkeypatch.setattr(
+        "training.train_em.schedule_rate_to_json", _fake_schedule_rate_to_json
+    )
 
     cfg = _r2_config()
     client = cast("S3Client", _FakeS3())
     start = date(2026, 6, 1)
     end = date(2026, 6, 14)
 
-    result, n_cells = _service_baseline(cfg, client, start, end)
+    result, n_cells, schedule_result, n_schedule_cells = _service_baseline(
+        cfg, client, start, end
+    )
 
     assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
     assert bodies_seen == [sentinel_bodies]
@@ -586,6 +621,11 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     assert baseline_seen == [sentinel_baseline]
     assert result == sentinel_json
     assert n_cells == 2
+    # Schedule chain reuses the SAME fetch — not a second trip-updates call.
+    assert schedule_bodies_seen == [sentinel_bodies]
+    assert schedule_rate_seen == [sentinel_schedule_rate]
+    assert schedule_result == sentinel_schedule_json
+    assert n_schedule_cells == 1
 
 
 def test_service_baseline_fails_soft_on_archive_error(
@@ -606,13 +646,119 @@ def test_service_baseline_fails_soft_on_archive_error(
 
     monkeypatch.setattr("training.train_em.fetch_trip_update_metrics", _raise_fetch)
 
-    result, n_cells = _service_baseline(
+    result, n_cells, schedule_result, n_schedule_cells = _service_baseline(
         _r2_config(), cast("S3Client", _FakeS3()), date(2026, 6, 1), date(2026, 6, 14)
     )
 
     assert result == {}
     assert n_cells == 0
+    assert schedule_result == {}
+    assert n_schedule_cells == 0
     assert "service baseline skipped" in capsys.readouterr().err
+
+
+def _et_epoch(year: int, month: int, day: int, hour: int) -> int:
+    return int(
+        datetime(year, month, day, hour, tzinfo=ZoneInfo("America/New_York"))
+        .astimezone(UTC)
+        .timestamp()
+    )
+
+
+def _weekday_epochs(hour: int, n: int, *, start: date = date(2026, 7, 1)) -> list[int]:
+    """n distinct epochs at `hour` ET on n different weekdays (Mon-Fri)."""
+    out: list[int] = []
+    day = start
+    while len(out) < n:
+        if day.weekday() < 5:
+            out.append(_et_epoch(day.year, day.month, day.day, hour))
+        day += timedelta(days=1)
+    return out
+
+
+def test_schedule_bin_weekday_hour() -> None:
+    """Weekday ET hour maps to the wd{HH} bin — the brief's worked example."""
+    assert schedule_bin(_et_epoch(2026, 7, 15, 6)) == "wd06"  # Wednesday 6am ET
+
+
+def test_schedule_bin_weekend_hour() -> None:
+    """Weekend (Sat/Sun) ET hour maps to the we{HH} bin."""
+    assert schedule_bin(_et_epoch(2026, 7, 18, 22)) == "we22"  # Saturday 10pm ET
+
+
+def test_compute_schedule_rate_is_ran_over_usable_ticks() -> None:
+    """A route's in-service rate is exactly ran-ticks / usable-ticks."""
+    epochs = _weekday_epochs(6, MIN_SCHEDULE_TICKS)
+    bin_key = schedule_bin(epochs[0])
+    bodies = [
+        {"observed_at": ep, "rows": {"A": {"assigned_n": 1 if i < 15 else 0}}}
+        for i, ep in enumerate(epochs)
+    ]
+    rate = compute_schedule_rate(bodies)
+    assert rate[("A", bin_key)] == _approx(15 / MIN_SCHEDULE_TICKS)
+
+
+def test_compute_schedule_rate_present_but_never_running_is_zero() -> None:
+    """A route that's present in the feed all bin but never dispatches a
+    train gets an explicit 0.0 rate, not omission — the cell exists because
+    the route is scheduled there, it just never actually runs."""
+    epochs = _weekday_epochs(7, MIN_SCHEDULE_TICKS)
+    bin_key = schedule_bin(epochs[0])
+    bodies = [{"observed_at": ep, "rows": {"B": {"assigned_n": 0}}} for ep in epochs]
+    rate = compute_schedule_rate(bodies)
+    assert rate[("B", bin_key)] == 0.0
+
+
+def test_compute_schedule_rate_excludes_feed_outage_ticks_from_denominator() -> None:
+    """A globally-empty tick (`rows: {}`) is a feed outage, not evidence the
+    route wasn't running — it must not inflate the bin's denominator."""
+    epochs = _weekday_epochs(8, MIN_SCHEDULE_TICKS + 5)
+    bin_key = schedule_bin(epochs[0])
+    usable, outage = epochs[:MIN_SCHEDULE_TICKS], epochs[MIN_SCHEDULE_TICKS:]
+    bodies = [
+        {"observed_at": ep, "rows": {"C": {"assigned_n": 1 if i < 10 else 0}}}
+        for i, ep in enumerate(usable)
+    ] + [{"observed_at": ep, "rows": {}} for ep in outage]
+    rate = compute_schedule_rate(bodies)
+    assert rate[("C", bin_key)] == _approx(10 / MIN_SCHEDULE_TICKS)
+
+
+def test_compute_schedule_rate_omits_bin_below_min_ticks() -> None:
+    """A (route, bin) with fewer than MIN_SCHEDULE_TICKS usable ticks is
+    omitted entirely — callers must treat a missing rate as unknown, not 0."""
+    epochs = _weekday_epochs(9, MIN_SCHEDULE_TICKS - 1)
+    bin_key = schedule_bin(epochs[0])
+    bodies = [{"observed_at": ep, "rows": {"D": {"assigned_n": 1}}} for ep in epochs]
+    rate = compute_schedule_rate(bodies)
+    assert ("D", bin_key) not in rate
+
+
+def test_compute_schedule_rate_output_is_sorted() -> None:
+    """Output keys come out `(route, bin)`-sorted regardless of dict/set
+    iteration order, so params.json delivery is stable across runs."""
+    epochs = _weekday_epochs(10, MIN_SCHEDULE_TICKS)
+    bodies = [
+        {
+            "observed_at": ep,
+            "rows": {
+                "Z": {"assigned_n": 1},
+                "A": {"assigned_n": 1},
+                "M": {"assigned_n": 1},
+            },
+        }
+        for ep in epochs
+    ]
+    rate = compute_schedule_rate(bodies)
+    assert {route for route, _ in rate} == {"A", "M", "Z"}
+    assert list(rate.keys()) == sorted(rate.keys())
+
+
+def test_schedule_rate_to_json_nests_route_then_bin() -> None:
+    rate = {("A", "wd06"): 0.75, ("A", "we22"): 0.2, ("B", "wd06"): 0.1}
+    assert schedule_rate_to_json(rate) == {
+        "A": {"wd06": 0.75, "we22": 0.2},
+        "B": {"wd06": 0.1},
+    }
 
 
 def test_main_passes_movement_baseline_through_to_write_params(
@@ -679,8 +825,9 @@ def test_main_passes_service_baseline_through_to_write_params(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression guard for compute-but-forget-to-pass: main() must thread
-    the service baseline it computes into the write_params call, not just
-    log it. The service fake returns a 2-tuple (movement's is a 3-tuple)."""
+    both the service baseline and the schedule rate it computes into the
+    write_params call, not just log them. The service fake returns a
+    4-tuple (movement's is a 3-tuple)."""
     cfg = _r2_config()
     fake_client = cast("S3Client", _FakeS3())
     series = {"R1": _quiet(10)}
@@ -690,6 +837,7 @@ def test_main_passes_service_baseline_through_to_write_params(
         n_observations=10,
     )
     sentinel_baseline: dict[str, Any] = {"SENTINEL_ROUTE": {"0": 6.0}}
+    sentinel_schedule_rate: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 0.5}}
     captured_kwargs: dict[str, Any] = {}
 
     def _fake_load_config() -> R2Config:
@@ -710,8 +858,8 @@ def test_main_passes_service_baseline_through_to_write_params(
 
     def _fake_service_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
-    ) -> tuple[dict[str, Any], int]:
-        return sentinel_baseline, 4
+    ) -> tuple[dict[str, Any], int, dict[str, Any], int]:
+        return sentinel_baseline, 4, sentinel_schedule_rate, 6
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         captured_kwargs.update(kwargs)
@@ -730,6 +878,7 @@ def test_main_passes_service_baseline_through_to_write_params(
 
     assert exit_code == 0
     assert captured_kwargs["service_baseline"] == sentinel_baseline
+    assert captured_kwargs["schedule_rate"] == sentinel_schedule_rate
 
 
 def test_main_passes_advance_priors_through_to_train(

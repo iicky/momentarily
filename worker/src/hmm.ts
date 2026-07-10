@@ -34,13 +34,35 @@ const NYC_HOUR_FMT = new Intl.DateTimeFormat('en-US', {
   hourCycle: 'h23',
 });
 
+// ET local hour 0-23. The `% 24` guards the midnight quirk where some ICU builds
+// format hour 0 as "24"; both tod_bin and schedule_bin must read 0 there.
+function nycHour(epochSeconds: number): number {
+  return parseInt(NYC_HOUR_FMT.format(new Date(epochSeconds * 1000)), 10) % 24;
+}
+
 export function tod_bin(epochSeconds: number): number {
-  const hour = parseInt(NYC_HOUR_FMT.format(new Date(epochSeconds * 1000)), 10);
+  const hour = nycHour(epochSeconds);
   if (hour < 6) return 0;
   if (hour < 10) return 1;
   if (hour < 15) return 2;
   if (hour < 20) return 3;
   return 4;
+}
+
+const NYC_WEEKDAY_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  weekday: 'short',
+});
+
+// (weekend, ET-hour) key for the in-service rate — a finer, weekday/
+// weekend-aware bin than tod_bin. Format `wd06` / `we22`. Mirrors hmm.py
+// schedule_bin; keep in sync.
+export function schedule_bin(epochSeconds: number): string {
+  const d = new Date(epochSeconds * 1000);
+  const hour = nycHour(epochSeconds);
+  const wd = NYC_WEEKDAY_FMT.format(d);
+  const prefix = wd === 'Sat' || wd === 'Sun' ? 'we' : 'wd';
+  return `${prefix}${String(hour).padStart(2, '0')}`;
 }
 
 export interface Observation {

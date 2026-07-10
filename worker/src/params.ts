@@ -141,6 +141,12 @@ export type MovementBaseline = z.infer<typeof MovementBaselineSchema>;
 const ServiceBaselineSchema = z.record(z.string(), z.record(z.string(), nonNeg));
 export type ServiceBaseline = z.infer<typeof ServiceBaselineSchema>;
 
+// route -> schedule_bin (e.g. `wd06`) -> in-service rate in [0,1]: the share of
+// usable ticks the route was running at that (weekend, hour) bin. The Worker
+// reads it to split a no-service reading into suspended vs not_scheduled.
+const ScheduleRateSchema = z.record(z.string(), z.record(z.string(), prob));
+export type ScheduleRate = z.infer<typeof ScheduleRateSchema>;
+
 const TrainedParamsWrapperSchema = z.object({
   schema_version: z.string(),
   trained_at: z.number().finite(),
@@ -153,6 +159,9 @@ const TrainedParamsWrapperSchema = z.object({
   // Validated separately too, so a malformed service baseline degrades the
   // service channel only, not the whole params upload.
   service_baseline: z.unknown().optional(),
+  // Validated separately too, so a malformed schedule rate degrades the
+  // suspended/not_scheduled split only, not the whole params upload.
+  schedule_rate: z.unknown().optional(),
 });
 
 // The three "kind of disruption" flags (delays/service_change/planned) all
@@ -202,6 +211,9 @@ export interface TrainedParams {
   movementBaseline: MovementBaseline;
   // Per-(route, tod_bin) assigned_n baseline for the service emission channel.
   serviceBaseline: ServiceBaseline;
+  // Per-(route, schedule_bin) in-service rate; the Worker splits a no-service
+  // reading into suspended (normally runs now) vs not_scheduled (rush-only gap).
+  scheduleRate: ScheduleRate;
 }
 
 /**
@@ -286,6 +298,17 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     }
   }
 
+  // Schedule rate, validated on its own like the baselines.
+  let scheduleRate: ScheduleRate = {};
+  if (wrapper.data.schedule_rate !== undefined) {
+    const parsed = ScheduleRateSchema.safeParse(wrapper.data.schedule_rate);
+    if (parsed.success) {
+      scheduleRate = parsed.data;
+    } else {
+      console.warn('params.json schedule_rate invalid; suspended/not_scheduled split off:', parsed.error.issues);
+    }
+  }
+
   return {
     schema_version: wrapper.data.schema_version,
     trained_at: wrapper.data.trained_at,
@@ -294,6 +317,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     dwellByAlert,
     movementBaseline,
     serviceBaseline,
+    scheduleRate,
   };
 }
 
@@ -348,6 +372,19 @@ export function serviceBaselineFor(
   todBin: number,
 ): number | null {
   return trained?.serviceBaseline?.[routeId]?.[String(todBin)] ?? null;
+}
+
+/**
+ * In-service rate for a (route, schedule_bin) cell, or null when the trainer
+ * hasn't established one yet. A null rate means "unknown schedule" — the caller
+ * keeps a no-service reading as suspended rather than downgrading it.
+ */
+export function scheduleRateFor(
+  trained: TrainedParams | null,
+  routeId: string,
+  scheduleBin: string,
+): number | null {
+  return trained?.scheduleRate?.[routeId]?.[scheduleBin] ?? null;
 }
 
 /**

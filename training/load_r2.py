@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from blake3 import blake3
 
-from momentarily.hmm import Observation, tod_bin
+from momentarily.hmm import Observation, schedule_bin, tod_bin
 from momentarily.mapping import is_planned_work_id
 from training.load import TICK_SECONDS, TickObservation
 from training.r2_client import R2Config, load_config, make_client
@@ -524,6 +524,67 @@ def service_baseline_to_json(
     return out
 
 
+# Min usable ticks in a schedule bin before its in-service rate is trusted.
+MIN_SCHEDULE_TICKS = 20
+
+
+def compute_schedule_rate(
+    bodies: list[dict[str, Any]],
+    *,
+    min_ticks: int = MIN_SCHEDULE_TICKS,
+) -> dict[tuple[str, str], float]:
+    """Per (route, schedule_bin) in-service rate: the share of usable ticks in that
+    (weekend, hour) bin where the route was actually running — at least one
+    dispatched train (assigned_n >= 1). Not running where it normally runs is a
+    suspension; not running where it rarely runs is a planned gap.
+
+    Uses dispatch (assigned_n), not mere timetable presence (trips_n >= 1): NYCT
+    lists a rush-only route's scheduled trips at the fringe hours before/after it
+    actually runs, so presence stays high there while dispatch is ~0 — presence
+    can't separate the fringe from mid-service. The cost is a coupling to the
+    outcome: a route down for most of the training window would learn a low rate
+    and read not_scheduled, but the multi-week window dilutes transient outages,
+    callers default a missing/unconfident rate to suspended, and the next retrain
+    corrects. The denominator is usable ticks only — a globally empty tick (feed
+    outage) is skipped so an outage doesn't depress every route's rate. A cell is
+    created for every (route, bin) the route appears in at all (rate 0 if it never
+    runs there); bins with fewer than `min_ticks` usable ticks are omitted (callers
+    treat a missing rate as unknown)."""
+    denom: dict[str, int] = {}
+    present: set[tuple[str, str]] = set()
+    running: dict[tuple[str, str], int] = {}
+    for body in bodies:
+        rows = cast(dict[str, Any], body.get("rows") or {})
+        if not rows:  # feed-outage tick — don't let it depress the rate
+            continue
+        sb = schedule_bin(int(body.get("observed_at") or 0))
+        denom[sb] = denom.get(sb, 0) + 1
+        for route, row in rows.items():
+            present.add((route, sb))
+            if (
+                isinstance(row, dict)
+                and int(cast(dict[str, Any], row).get("assigned_n") or 0) >= 1
+            ):
+                running[(route, sb)] = running.get((route, sb), 0) + 1
+    out: dict[tuple[str, str], float] = {}
+    for route, sb in sorted(present):
+        total = denom.get(sb, 0)
+        if total >= min_ticks:
+            out[(route, sb)] = running.get((route, sb), 0) / total
+    return out
+
+
+def schedule_rate_to_json(
+    rate: dict[tuple[str, str], float],
+) -> dict[str, dict[str, float]]:
+    """Serialize the scheduled-presence rate for params.json delivery to the
+    Worker, nested route -> schedule_bin -> rate."""
+    out: dict[str, dict[str, float]] = {}
+    for (route, sb), r in rate.items():
+        out.setdefault(route, {})[sb] = r
+    return out
+
+
 @dataclass(frozen=True)
 class Disruption:
     """An independent disruption interval derived from the service metric."""
@@ -877,9 +938,12 @@ def derive_movement_state(
       disrupted — at least one direction reads frozen against its own baseline.
       normal    — trains present, at least one direction judgeable, none frozen.
 
-    Each direction is scored against its own (route, direction, tod_bin) baseline
-    via classify_direction; the route takes the worse of the two so a single
-    frozen direction disrupts the route. Mirrors worker deriveMovementState."""
+    Vehicle-only: a suspended route has no vehicles, so this is the sole no-service
+    reading here (and the vehicle archive omits routes with no trains, so it rarely
+    fires). The worker's deriveMovementState, which also sees the trip-updates feed
+    and the schedule rate, is what splits suspended vs not_scheduled. Each direction
+    is scored against its own (route, direction, tod_bin) baseline via
+    classify_direction; the route takes the worse of the two."""
     if route_row.get("vehicles_n", 0) <= 0:
         return "suspended"
     calls: list[str] = []

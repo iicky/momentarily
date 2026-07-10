@@ -22,9 +22,9 @@
  * signal and the offline series agree on what "frozen" means.
  */
 
-import { tod_bin } from './hmm';
+import { schedule_bin, tod_bin } from './hmm';
 import type { Observation } from './hmm';
-import { advanceBaselineFor, serviceBaselineFor } from './params';
+import { advanceBaselineFor, scheduleRateFor, serviceBaselineFor } from './params';
 import type { AdvanceBaselineCell, TrainedParams } from './params';
 import type { MovementMetricDoc, ServiceMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
@@ -46,9 +46,13 @@ const CLASSIFY_PRIOR_STRENGTH = 8;
 // rate. Baseline-relative, so shuttles and trunk lines are each judged against
 // their own normal instead of one global cutoff.
 const DISRUPTED_RATIO = 0.5;
+// A route in service (>=1 dispatched train) in fewer than this fraction of usable
+// ticks at its schedule bin reads not_scheduled — not suspended — when nothing is
+// running now. Applied to the trainer's per-bin in-service rate (schedule_rate).
+const NOT_SCHEDULED_MAX = 0.5;
 export const MIN_MATCHED_TRIPS = 3; // advanced_n + stalled_n floor to make a cross-tick call
 
-export type MovementCondition = 'normal' | 'disrupted' | 'suspended';
+export type MovementCondition = 'normal' | 'disrupted' | 'suspended' | 'not_scheduled';
 
 // Beta-Binomial call for one (route, direction) at one tick, or null when it
 // can't be judged (too few cross-tick matches, or no baseline prior for the
@@ -59,7 +63,7 @@ function classifyDirection(
   advancedN: number,
   stalledN: number,
   cell: AdvanceBaselineCell | null,
-): Exclude<MovementCondition, 'suspended'> | null {
+): 'normal' | 'disrupted' | null {
   const matched = advancedN + stalledN;
   if (matched < MIN_MATCHED_TRIPS) return null;
   if (!cell) return null;
@@ -75,16 +79,20 @@ export function deriveMovementState(
   trained: TrainedParams | null,
   observedAt: number,
 ): MovementCondition | null {
-  // Suspended: trips scheduled but none dispatched (assigned_n == 0). Primary
-  // signal from the trip-updates feed.
-  if (svc && svc.trips_n > 0 && svc.assigned_n === 0) return 'suspended';
-  // Secondary: no trains reporting position, and trip-updates doesn't contradict
-  // it (no assigned trains). Guards against a feed inconsistency where trains are
-  // assigned but absent from vehicle positions.
-  if (move && move.vehicles_n === 0 && (!svc || svc.assigned_n === 0)) {
-    return 'suspended';
+  // No trains physically present? A route with dispatched trains or vehicles is
+  // running — classify it by movement below, whatever the trip-updates lag says.
+  if (move === undefined || move.vehicles_n === 0) {
+    if (svc === undefined || svc.assigned_n === 0) {
+      // Nothing running and nothing dispatched: a planned gap where the route
+      // rarely runs at this bin, else a suspension. An unknown or normally-running
+      // schedule stays suspended — never downgrade a real outage.
+      const rate = scheduleRateFor(trained, routeId, schedule_bin(observedAt));
+      return rate !== null && rate < NOT_SCHEDULED_MAX ? 'not_scheduled' : 'suspended';
+    }
+    // trip-updates shows assigned trains but none in the vehicle feed: a feed
+    // inconsistency we can't confirm — abstain.
+    return null;
   }
-  if (!move) return null;
   // Disrupted/normal: score each direction against its own (route, direction,
   // tod_bin) baseline and take the worse — one frozen direction disrupts the
   // route. Abstain (null) when no direction is judgeable.

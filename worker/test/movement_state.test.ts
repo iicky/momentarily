@@ -3,8 +3,9 @@ import { describe, expect, test } from 'vitest';
 import type { MovementRow } from '../src/vehicles';
 import type { ServiceRow } from '../src/trip_updates';
 import type { AdvanceBaselineCell, MovementBaseline, ServiceBaseline, TrainedParams } from '../src/params';
+import { scheduleRateFor } from '../src/params';
 import type { MovementMetricDoc, ServiceMetricDoc } from '../src/state';
-import { tod_bin } from '../src/hmm';
+import { schedule_bin, tod_bin } from '../src/hmm';
 import {
   deriveMovementState,
   deriveMovementStates,
@@ -36,7 +37,10 @@ function baselineCell(over: Partial<AdvanceBaselineCell>): AdvanceBaselineCell {
   return { p0: 0.9, alpha: 9, beta: 1, n: 50, ...over };
 }
 
-function trainedWithBaseline(movementBaseline: MovementBaseline): TrainedParams {
+function trainedWithBaseline(
+  movementBaseline: MovementBaseline,
+  scheduleRate: TrainedParams['scheduleRate'] = {},
+): TrainedParams {
   return {
     schema_version: 'test',
     trained_at: 0,
@@ -45,7 +49,13 @@ function trainedWithBaseline(movementBaseline: MovementBaseline): TrainedParams 
     dwellByAlert: {},
     movementBaseline,
     serviceBaseline: {},
+    scheduleRate,
   };
+}
+
+// scheduleRate cell for (routeId, schedule_bin(observedAt)) = rate.
+function scheduleRateFixture(routeId: string, observedAt: number, rate: number): TrainedParams['scheduleRate'] {
+  return { [routeId]: { [schedule_bin(observedAt)]: rate } };
 }
 
 describe('deriveMovementState', () => {
@@ -143,16 +153,27 @@ describe('deriveMovementState', () => {
     expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('normal');
   });
 
-  test('assigned_n 0 with trips scheduled reads suspended', () => {
-    expect(deriveMovementState(ROUTE, move({}), svc({ assigned_n: 0, trips_n: 5 }), null, T0)).toBe('suspended');
+  test('trains present with assigned_n 0 reads normal (movement wins over dispatch lag)', () => {
+    // trains are physically advancing even though trip-updates shows nothing
+    // dispatched: movement classification wins over the suspended check.
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
+    expect(deriveMovementState(ROUTE, move({}), svc({ assigned_n: 0, trips_n: 5 }), trained, T0)).toBe('normal');
   });
 
-  test('suspended wins over a would-be normal movement reading', () => {
-    // trains technically advancing but nothing is dispatched — service is suspended
-    expect(deriveMovementState(ROUTE, move({}), svc({ assigned_n: 0, trips_n: 3 }), null, T0)).toBe('suspended');
+  test('movement wins over dispatch even when the movement call is disrupted', () => {
+    // same dispatch-lag premise, but the movement call itself is disrupted —
+    // proves suspended never overrides movement, whichever way movement calls it.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({ assigned_n: 0, trips_n: 3 }), trained, T0)).toBe('disrupted');
   });
 
-  test('no vehicles and no assigned trains reads suspended', () => {
+  test('no vehicles and no assigned trains reads suspended when the schedule rate is unknown', () => {
     expect(
       deriveMovementState(
         ROUTE,
@@ -165,7 +186,7 @@ describe('deriveMovementState', () => {
   });
 
   test('vehicles_n 0 does not read suspended when trains are assigned (feed inconsistency)', () => {
-    // assigned trains but none in the vehicle feed: fall through; no baseline -> null
+    // assigned trains but none in the vehicle feed: fall through; dispatched -> null
     expect(
       deriveMovementState(
         ROUTE,
@@ -175,6 +196,29 @@ describe('deriveMovementState', () => {
         T0,
       ),
     ).toBeNull();
+  });
+
+  test('no service and a low schedule rate reads not_scheduled', () => {
+    const trained = trainedWithBaseline({}, scheduleRateFixture(ROUTE, T0, 0.1));
+    expect(deriveMovementState(ROUTE, undefined, svc({ assigned_n: 0 }), trained, T0)).toBe('not_scheduled');
+  });
+
+  test('no service and a high schedule rate reads suspended', () => {
+    const trained = trainedWithBaseline({}, scheduleRateFixture(ROUTE, T0, 0.9));
+    expect(
+      deriveMovementState(
+        ROUTE,
+        move({ vehicles_n: 0, advanced_n: 0, stalled_n: 0 }),
+        svc({ assigned_n: 0 }),
+        trained,
+        T0,
+      ),
+    ).toBe('suspended');
+  });
+
+  test('no service and no schedule-rate cell for this route reads suspended (conservative)', () => {
+    const trained = trainedWithBaseline({}, scheduleRateFixture('OTHER', T0, 0.1));
+    expect(deriveMovementState(ROUTE, undefined, svc({ assigned_n: 0 }), trained, T0)).toBe('suspended');
   });
 });
 
@@ -237,6 +281,33 @@ describe('deriveMovementStates', () => {
   });
 });
 
+describe('schedule_bin', () => {
+  test('weekday hour maps to a wd-prefixed bin', () => {
+    // 2026-06-15T16:00:00Z = Mon 12:00 ET.
+    expect(schedule_bin(Date.parse('2026-06-15T16:00:00Z') / 1000)).toBe('wd12');
+  });
+
+  test('weekend hour maps to a we-prefixed bin', () => {
+    // 2026-06-21T02:00:00Z = Sat 22:00 ET.
+    expect(schedule_bin(Date.parse('2026-06-21T02:00:00Z') / 1000)).toBe('we22');
+  });
+});
+
+describe('scheduleRateFor', () => {
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000;
+  const BIN = schedule_bin(T0);
+
+  test('returns the trainer-set rate for a known (route, bin) cell', () => {
+    const trained = trainedWithBaseline({}, { A: { [BIN]: 0.35 } });
+    expect(scheduleRateFor(trained, 'A', BIN)).toBe(0.35);
+  });
+
+  test('returns null for an absent cell', () => {
+    const trained = trainedWithBaseline({}, { A: { [BIN]: 0.35 } });
+    expect(scheduleRateFor(trained, 'B', BIN)).toBeNull();
+  });
+});
+
 describe('movementObservationFields', () => {
   // 2026-06-15T16:00:00Z = 12:00 ET = tod_bin 2 (midday, 10-15h ET).
   const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000;
@@ -262,7 +333,16 @@ describe('movementObservationFields', () => {
   }
 
   function trainedWithBaseline(movementBaseline: MovementBaseline): TrainedParams {
-    return { schema_version: 'test', trained_at: 0, routes: {}, dwell: {}, dwellByAlert: {}, movementBaseline, serviceBaseline: {} };
+    return {
+      schema_version: 'test',
+      trained_at: 0,
+      routes: {},
+      dwell: {},
+      dwellByAlert: {},
+      movementBaseline,
+      serviceBaseline: {},
+      scheduleRate: {},
+    };
   }
 
   test('aggregates both directions into advanced_n/matched_n when a baseline exists', () => {
@@ -383,6 +463,7 @@ describe('serviceObservationFields', () => {
       dwellByAlert: {},
       movementBaseline: {},
       serviceBaseline,
+      scheduleRate: {},
     };
   }
 

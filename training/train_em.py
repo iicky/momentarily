@@ -46,12 +46,14 @@ from training.load_r2 import (
     compute_advance_baseline,
     compute_advance_baseline_by_route,
     compute_baseline,
+    compute_schedule_rate,
     fetch_objects,
     fetch_trip_update_metrics,
     fetch_vehicle_metrics,
     input_manifest_hash,
     list_alert_keys,
     presence_mask_from_predictions,
+    schedule_rate_to_json,
     service_baseline_to_json,
 )
 from training.provenance import code_provenance
@@ -313,6 +315,7 @@ def write_params(
     input_profile: dict[str, Any] | None = None,
     movement_baseline: dict[str, Any] | None = None,
     service_baseline: dict[str, Any] | None = None,
+    schedule_rate: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
@@ -361,6 +364,11 @@ def write_params(
     # movement_baseline.
     if service_baseline:
         doc["service_baseline"] = service_baseline
+    # Per-(route, schedule_bin) scheduled-presence rate the Worker uses to split a
+    # no-service reading into suspended vs not_scheduled. Top-level beside the
+    # baselines.
+    if schedule_rate:
+        doc["schedule_rate"] = schedule_rate
     body = json.dumps(doc).encode()
     versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
     for key in (PARAMS_KEY, versioned_key):
@@ -410,20 +418,28 @@ def _service_baseline(
     client: S3Client,
     start_date: date,
     end_date: date,
-) -> tuple[dict[str, Any], int]:
-    """Per-(route, tod) assigned_n baseline over the training window, serialized
-    for params.json so the Worker forms the service ratio live. Fail-soft: a
-    trip-updates archive error returns an empty baseline (the channel is optional
-    and back-compat). Returns (serialized, n_cells)."""
+) -> tuple[dict[str, Any], int, dict[str, Any], int]:
+    """Per-(route, tod) assigned_n baseline AND per-(route, schedule_bin)
+    scheduled-presence rate over the training window, from one trip-updates fetch,
+    serialized for params.json. The Worker forms the service ratio from the first
+    and splits suspended vs not_scheduled with the second. Fail-soft: a trip-updates
+    archive error returns empty sidecars (both optional and back-compat). Returns
+    (baseline, n_baseline_cells, schedule, n_schedule_cells)."""
     try:
         bodies = fetch_trip_update_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
         baseline = compute_baseline(build_service_series(bodies))
-        return service_baseline_to_json(baseline), len(baseline)
+        rate = compute_schedule_rate(bodies)
+        return (
+            service_baseline_to_json(baseline),
+            len(baseline),
+            schedule_rate_to_json(rate),
+            len(rate),
+        )
     except Exception as exc:
         print(f"service baseline skipped ({exc})", file=sys.stderr)
-        return {}, 0
+        return {}, 0, {}, 0
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -491,8 +507,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     # Assigned_n service baseline (per route, tod) for the Worker's service
     # emission channel — it divides live assigned_n by this to form the ratio.
-    service_baseline, n_service_cells = _service_baseline(
-        cfg, client, start_date, end_date
+    service_baseline, n_service_cells, schedule_rate, n_schedule_cells = (
+        _service_baseline(cfg, client, start_date, end_date)
     )
 
     global_prior, per_route = train(
@@ -581,13 +597,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         input_profile=input_profile,
         movement_baseline=movement_baseline,
         service_baseline=service_baseline,
+        schedule_rate=schedule_rate,
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
         f"dwell_alert_cells={n_dwell_alert_cells}, baseline_cells={n_baseline_cells}, "
-        f"service_cells={n_service_cells})"
+        f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells})"
     )
     return 0
 

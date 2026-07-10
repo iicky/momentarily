@@ -76,6 +76,16 @@ def tod_bin(epoch_seconds: int) -> int:
     return 4
 
 
+def schedule_bin(epoch_seconds: int) -> str:
+    """ET (weekend, hour) key for the in-service rate — a finer, weekday/
+    weekend-aware bin than tod_bin, so partial-hour rush service isn't smeared
+    across a whole TOD block. Format `wd06` / `we22`. Mirrors worker/src/hmm.ts
+    schedule_bin; keep in sync."""
+    dt = datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ)
+    prefix = "we" if dt.weekday() >= 5 else "wd"
+    return f"{prefix}{dt.hour:02d}"
+
+
 @dataclass(frozen=True)
 class Observation:
     """One cron-tick observation for a single entity."""

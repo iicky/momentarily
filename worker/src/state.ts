@@ -161,7 +161,7 @@ export const MOVEMENT_STATE_KEY = 'state/movement_state.json';
 
 const MovementStateSchema = z.object({
   observed_at: z.number(),
-  states: z.record(z.string(), z.enum(['normal', 'disrupted', 'suspended'])),
+  states: z.record(z.string(), z.enum(['normal', 'disrupted', 'suspended', 'not_scheduled'])),
 });
 export type MovementStateDoc = z.infer<typeof MovementStateSchema>;
 

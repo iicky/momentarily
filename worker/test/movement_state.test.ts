@@ -32,69 +32,204 @@ function svc(over: Partial<ServiceRow>): ServiceRow {
   return { assigned_n: 10, trips_n: 12, with_movement_n: 9, dir_n: 5, dir_s: 5, ...over };
 }
 
+function baselineCell(over: Partial<AdvanceBaselineCell>): AdvanceBaselineCell {
+  return { p0: 0.9, alpha: 9, beta: 1, n: 50, ...over };
+}
+
+function trainedWithBaseline(movementBaseline: MovementBaseline): TrainedParams {
+  return {
+    schema_version: 'test',
+    trained_at: 0,
+    routes: {},
+    dwell: {},
+    dwellByAlert: {},
+    movementBaseline,
+    serviceBaseline: {},
+  };
+}
+
 describe('deriveMovementState', () => {
-  test('advancing trains read normal', () => {
-    expect(deriveMovementState(move({ advanced_n: 8, stalled_n: 2 }), svc({}))).toBe('normal');
+  // 2026-06-15T16:00:00Z = 12:00 ET = tod_bin 2 (midday, 10-15h ET).
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000;
+  const ROUTE = 'A';
+  const BIN = String(tod_bin(T0));
+
+  test('trunk direction advancing at its own baseline rate reads normal', () => {
+    // p0=0.9, advanced=8, stalled=1 (matched=9): post = (8*0.9+8)/(8+9) = 15.2/17 ~ 0.894 > 0.45.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('normal');
   });
 
-  test('mostly-stalled trains read disrupted (<=25% advancing)', () => {
-    expect(deriveMovementState(move({ advanced_n: 1, stalled_n: 7 }), svc({}))).toBe('disrupted');
+  test('trunk direction far below its own baseline reads disrupted', () => {
+    // p0=0.9, advanced=0, stalled=12 (matched=12): post = 7.2/20 = 0.36 <= 0.45.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('disrupted');
   });
 
-  test('exactly 25% advancing is disrupted (threshold inclusive)', () => {
-    expect(deriveMovementState(move({ advanced_n: 1, stalled_n: 3 }), svc({}))).toBe('disrupted');
+  test('shuttle running at its own ~10% normal rate reads normal, not disrupted (debiasing)', () => {
+    // The whole point of the rewrite: p0=0.1, advanced=1, stalled=9 (matched=10,
+    // raw advance_frac 0.10) — the old fixed-0.25 rule called this disrupted.
+    // post = (8*0.1+1)/(8+10) = 1.8/18 = 0.10 > 0.05 (RATIO*p0) -> normal.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 1, stalled_n: 9 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.1 }) } } });
+    expect(deriveMovementState(ROUTE, move1, undefined, trained, T0)).toBe('normal');
+  });
+
+  test('too few cross-tick matches is unjudgeable (null), even with a baseline', () => {
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 1, stalled_n: 1 },
+        south: { vehicles_n: 5, advanced_n: 0, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBeNull();
+  });
+
+  test('no baseline cell for either direction is unjudgeable (null)', () => {
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trainedWithBaseline({}), T0)).toBeNull();
+  });
+
+  test('no movement row is unjudgeable (null)', () => {
+    expect(deriveMovementState(ROUTE, undefined, svc({}), null, T0)).toBeNull();
+  });
+
+  test('worst-of: one disrupted direction disrupts the whole route', () => {
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 }, // disrupted
+        south: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 }, // normal
+      },
+    });
+    const trained = trainedWithBaseline({
+      [ROUTE]: { north: { [BIN]: baselineCell({}) }, south: { [BIN]: baselineCell({}) } },
+    });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('disrupted');
+  });
+
+  test('both directions normal reads normal', () => {
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+        south: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({
+      [ROUTE]: { north: { [BIN]: baselineCell({}) }, south: { [BIN]: baselineCell({}) } },
+    });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('normal');
   });
 
   test('assigned_n 0 with trips scheduled reads suspended', () => {
-    expect(
-      deriveMovementState(move({ advanced_n: 8, stalled_n: 2 }), svc({ assigned_n: 0, trips_n: 5 })),
-    ).toBe('suspended');
+    expect(deriveMovementState(ROUTE, move({}), svc({ assigned_n: 0, trips_n: 5 }), null, T0)).toBe('suspended');
   });
 
   test('suspended wins over a would-be normal movement reading', () => {
     // trains technically advancing but nothing is dispatched — service is suspended
-    expect(deriveMovementState(move({ advanced_n: 4, stalled_n: 0 }), svc({ assigned_n: 0, trips_n: 3 }))).toBe(
-      'suspended',
-    );
+    expect(deriveMovementState(ROUTE, move({}), svc({ assigned_n: 0, trips_n: 3 }), null, T0)).toBe('suspended');
   });
 
   test('no vehicles and no assigned trains reads suspended', () => {
     expect(
-      deriveMovementState(move({ vehicles_n: 0, advanced_n: 0, stalled_n: 0 }), svc({ assigned_n: 0, trips_n: 4 })),
+      deriveMovementState(
+        ROUTE,
+        move({ vehicles_n: 0, advanced_n: 0, stalled_n: 0 }),
+        svc({ assigned_n: 0, trips_n: 4 }),
+        null,
+        T0,
+      ),
     ).toBe('suspended');
   });
 
-  test('too few cross-tick matches is unjudgeable (null)', () => {
-    expect(deriveMovementState(move({ advanced_n: 1, stalled_n: 1 }), svc({}))).toBeNull();
-  });
-
-  test('no movement row is unjudgeable (null)', () => {
-    expect(deriveMovementState(undefined, svc({}))).toBeNull();
-  });
-
   test('vehicles_n 0 does not read suspended when trains are assigned (feed inconsistency)', () => {
-    // assigned trains but none in the vehicle feed: fall through, no cross-tick matches -> null
+    // assigned trains but none in the vehicle feed: fall through; no baseline -> null
     expect(
-      deriveMovementState(move({ vehicles_n: 0, advanced_n: 0, stalled_n: 0 }), svc({ assigned_n: 8 })),
+      deriveMovementState(
+        ROUTE,
+        move({ vehicles_n: 0, advanced_n: 0, stalled_n: 0 }),
+        svc({ assigned_n: 8 }),
+        null,
+        T0,
+      ),
     ).toBeNull();
-  });
-
-  test('works with service row absent (movement only)', () => {
-    expect(deriveMovementState(move({ advanced_n: 1, stalled_n: 9 }), undefined)).toBe('disrupted');
   });
 });
 
 describe('deriveMovementStates', () => {
-  test('maps each judgeable route and omits unjudgeable ones', () => {
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000;
+  const BIN = String(tod_bin(T0));
+
+  test('maps each judgeable route and omits unjudgeable ones (too-few / no-baseline)', () => {
     const moveRows = new Map<string, MovementRow>([
-      ['A', move({ advanced_n: 8, stalled_n: 2 })], // normal
-      ['F', move({ advanced_n: 0, stalled_n: 6 })], // disrupted
-      ['G', move({ advanced_n: 1, stalled_n: 1 })], // too few -> omitted
+      [
+        'A',
+        move({
+          by_direction: {
+            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+          },
+        }),
+      ], // normal
+      [
+        'F',
+        move({
+          by_direction: {
+            north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+          },
+        }),
+      ], // disrupted
+      [
+        'G',
+        move({
+          by_direction: {
+            north: { vehicles_n: 5, advanced_n: 1, stalled_n: 1 },
+            south: { vehicles_n: 5, advanced_n: 0, stalled_n: 1 },
+          },
+        }),
+      ], // too few matches (baseline present) -> omitted
+      [
+        'N',
+        move({
+          by_direction: {
+            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+          },
+        }),
+      ], // enough matches but no baseline -> omitted
     ]);
     const svcRows = new Map<string, ServiceRow>([
       ['L', svc({ assigned_n: 0, trips_n: 4 })], // suspended, movement absent
     ]);
-    expect(deriveMovementStates(moveRows, svcRows)).toEqual({
+    const trained = trainedWithBaseline({
+      A: { north: { [BIN]: baselineCell({}) } },
+      F: { north: { [BIN]: baselineCell({}) } },
+      G: { north: { [BIN]: baselineCell({}) } },
+    });
+    expect(deriveMovementStates(moveRows, svcRows, trained, T0)).toEqual({
       A: 'normal',
       F: 'disrupted',
       L: 'suspended',

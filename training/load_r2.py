@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -705,12 +705,22 @@ def build_movement_series_by_direction(
     return series
 
 
-# Provisional thresholds for the movement→state call. NOT yet tuned against real
-# archived data (the Worker side ships first); treat the resulting truth as a
-# first-cut independent signal, not gospel, until a window of real ticks exists
-# to calibrate against. See momentarily-vy0.
+# Movement→state thresholds. MIN_MATCHED_TRIPS gates whether a direction has
+# enough cross-tick matches to judge at all; under it the direction abstains.
 MIN_MATCHED_TRIPS = 3  # advanced_n + stalled_n floor to make a cross-tick call
-FROZEN_ADVANCE_FRAC = 0.25  # advance fraction at/under which a route reads "frozen"
+
+# Classification-time prior strength in pseudo-trials, distinct from
+# ADVANCE_PRIOR_STRENGTH (which anchors the HMM emission accumulated over the
+# whole training window). This one regularizes a single live tick's advance
+# fraction toward the cell baseline so a thin sample can't swing the call; kept
+# light enough that a decisive tick still speaks.
+CLASSIFY_PRIOR_STRENGTH = 8.0
+
+# A direction reads disrupted when its posterior advance rate sits at/under this
+# fraction of the cell's own baseline p0 — advancing at under half its normal
+# rate. Baseline-relative, so a shuttle and a trunk line are each judged against
+# their own normal instead of one global cutoff.
+DISRUPTED_RATIO = 0.5
 
 
 # Pseudo-trials behind a baseline Beta prior — how much a cell's history outvotes
@@ -827,48 +837,106 @@ def advance_baseline_to_json(
     return out
 
 
-def derive_movement_state(
-    row: dict[str, int],
+def classify_direction(
+    advanced_n: int,
+    stalled_n: int,
+    baseline: AdvanceBaseline | None,
     *,
+    prior_strength: float = CLASSIFY_PRIOR_STRENGTH,
+    disrupted_ratio: float = DISRUPTED_RATIO,
     min_matched: int = MIN_MATCHED_TRIPS,
-    frozen_advance_frac: float = FROZEN_ADVANCE_FRAC,
 ) -> str | None:
-    """Independent current-state label from one tick's movement row, or None when
-    the row can't support a call (caller treats None as "can't judge", not
-    "normal", so it stays out of the confusion matrix).
+    """Beta-Binomial call for one (route, direction) at one tick, or None when it
+    can't be judged (fewer than `min_matched` cross-tick matches, or no baseline
+    prior for the cell). The posterior mean of the advance rate under a Beta prior
+    centered on the cell baseline p0 reads disrupted when it sits at/under
+    `disrupted_ratio * p0` — a drop relative to the direction's OWN normal, not a
+    global cutoff, so low-baseline lines aren't pinned disrupted."""
+    matched = advanced_n + stalled_n
+    if matched < min_matched:
+        return None
+    if baseline is None:
+        return None
+    post = (prior_strength * baseline.p0 + advanced_n) / (prior_strength + matched)
+    return "disrupted" if post <= disrupted_ratio * baseline.p0 else "normal"
+
+
+def derive_movement_state(
+    route_row: dict[str, int],
+    dir_rows: Mapping[str, dict[str, int] | None],
+    baselines: Mapping[str, AdvanceBaseline | None],
+    *,
+    prior_strength: float = CLASSIFY_PRIOR_STRENGTH,
+    disrupted_ratio: float = DISRUPTED_RATIO,
+    min_matched: int = MIN_MATCHED_TRIPS,
+) -> str | None:
+    """Independent current-state label for one route at one tick, or None when the
+    movement channel can't support a call.
 
       suspended — no trains physically on the route (vehicles_n == 0).
-      disrupted — trains present but the cross-tick advance fraction is at/under
-                  `frozen_advance_frac` (physically frozen/crawling), with at
-                  least `min_matched` trips matched across ticks to judge from.
-      normal    — trains present and advancing.
+      disrupted — at least one direction reads frozen against its own baseline.
+      normal    — trains present, at least one direction judgeable, none frozen.
 
-    Labels mirror derive_mta_state so this can be dropped into confusion() as an
-    alternate truth column."""
-    vehicles = row.get("vehicles_n", 0)
-    if vehicles <= 0:
+    Each direction is scored against its own (route, direction, tod_bin) baseline
+    via classify_direction; the route takes the worse of the two so a single
+    frozen direction disrupts the route. Mirrors worker deriveMovementState."""
+    if route_row.get("vehicles_n", 0) <= 0:
         return "suspended"
-    matched = row.get("advanced_n", 0) + row.get("stalled_n", 0)
-    if matched < min_matched:
-        return None  # trains present but too few cross-tick matches to judge
-    advance_frac = row.get("advanced_n", 0) / matched
-    return "disrupted" if advance_frac <= frozen_advance_frac else "normal"
+    calls: list[str] = []
+    for direction in _DIRECTIONS:
+        drow = dir_rows.get(direction)
+        if drow is None:
+            continue
+        call = classify_direction(
+            drow.get("advanced_n", 0),
+            drow.get("stalled_n", 0),
+            baselines.get(direction),
+            prior_strength=prior_strength,
+            disrupted_ratio=disrupted_ratio,
+            min_matched=min_matched,
+        )
+        if call is not None:
+            calls.append(call)
+    if not calls:
+        return None
+    return "disrupted" if "disrupted" in calls else "normal"
 
 
 def build_movement_truth(
     bodies: list[dict[str, Any]],
     *,
+    movement_baseline: Mapping[tuple[str, str, int], AdvanceBaseline],
+    prior_strength: float = CLASSIFY_PRIOR_STRENGTH,
+    disrupted_ratio: float = DISRUPTED_RATIO,
     min_matched: int = MIN_MATCHED_TRIPS,
-    frozen_advance_frac: float = FROZEN_ADVANCE_FRAC,
 ) -> dict[tuple[str, int], str]:
     """(route, tick) -> independent movement-derived state, judgeable ticks only.
     A drop-in alternate truth for confusion(): pass it where build_mta_truth's
-    output goes to score the HMM condition against where trains physically are."""
+    output goes to score the HMM condition against where trains physically are.
+
+    `movement_baseline` is the per-(route, direction, tod_bin) advance prior
+    applied to each tick — supply it explicitly (compute_advance_baseline over a
+    clean/earlier window) rather than deriving it from the labeled bodies, so the
+    truth stays causal and a sustained outage can't lower its own baseline."""
+    route_series = build_movement_series(bodies)
+    dir_series = build_movement_series_by_direction(bodies)
     truth: dict[tuple[str, int], str] = {}
-    for key, row in build_movement_series(bodies).items():
+    for (route, tick), route_row in route_series.items():
+        tb = tod_bin(tick)
+        dir_rows: dict[str, dict[str, int] | None] = {
+            d: dir_series.get((route, d, tick)) for d in _DIRECTIONS
+        }
+        baselines: dict[str, AdvanceBaseline | None] = {
+            d: movement_baseline.get((route, d, tb)) for d in _DIRECTIONS
+        }
         state = derive_movement_state(
-            row, min_matched=min_matched, frozen_advance_frac=frozen_advance_frac
+            route_row,
+            dir_rows,
+            baselines,
+            prior_strength=prior_strength,
+            disrupted_ratio=disrupted_ratio,
+            min_matched=min_matched,
         )
         if state is not None:
-            truth[key] = state
+            truth[(route, tick)] = state
     return truth

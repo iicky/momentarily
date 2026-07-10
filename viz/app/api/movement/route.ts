@@ -4,6 +4,7 @@ import { fetchDate } from "@/lib/r2cache";
 import {
   advanceBaselines,
   buildMovementTruth,
+  computeAdvanceBaseline,
   movementConfusion,
   type VehicleBody,
 } from "@/lib/movement";
@@ -14,6 +15,9 @@ export const dynamic = "force-dynamic";
 
 const MAX_DAYS = 21;
 const VEHICLE_PREFIX = "archive/vehicles";
+// Advance baseline is trained on this many days ENDING before the scored window
+// so a sustained outage can't lower its own normal reference.
+const BASELINE_DAYS = 14;
 
 // One vehicle archive object per file; tolerate a malformed object rather than
 // failing the whole window.
@@ -54,18 +58,29 @@ export async function GET(req: NextRequest) {
     let predictions = predArrays.flat();
     if (routeFilter) predictions = predictions.filter((p) => p.route === routeFilter);
 
-    const filteredBodies = routeFilter
-      ? bodies.map((body) => ({
-          ...body,
-          rows: body.rows
-            ? Object.fromEntries(
-                Object.entries(body.rows).filter(([r]) => r === routeFilter),
-              )
-            : {},
-        }))
-      : bodies;
+    const filterByRoute = (bs: VehicleBody[]): VehicleBody[] =>
+      routeFilter
+        ? bs.map((body) => ({
+            ...body,
+            rows: body.rows
+              ? Object.fromEntries(
+                  Object.entries(body.rows).filter(([r]) => r === routeFilter),
+                )
+              : {},
+          }))
+        : bs;
+    const filteredBodies = filterByRoute(bodies);
 
-    const truth = buildMovementTruth(filteredBodies);
+    // Causal baseline: train on a window ending before the oldest scored date.
+    const oldestScored = dates[dates.length - 1];
+    const baselineAnchorMs = Date.parse(`${oldestScored}T00:00:00Z`) - 86_400_000;
+    const baselineDates = utcDateWindow(BASELINE_DAYS, baselineAnchorMs);
+    const baselineArrays = await Promise.all(
+      baselineDates.map((d) => fetchDate(VEHICLE_PREFIX, d, parseVehicleBody)),
+    );
+    const baseline = computeAdvanceBaseline(filterByRoute(baselineArrays.flat()));
+
+    const truth = buildMovementTruth(filteredBodies, baseline);
     const confusion = movementConfusion(
       predictions.map((p) => ({ route: p.route, ts: p.ts, condition: p.condition })),
       truth,
@@ -79,6 +94,7 @@ export async function GET(req: NextRequest) {
         vehicleTicks: bodies.length,
         predictionRecords: predictions.length,
         judgeableTicks: truth.size,
+        baselineCells: baseline.size,
       },
       confusion,
       baselines,

@@ -1,27 +1,36 @@
 // Movement-vs-alerts analytics — pure functions over the archived vehicle
-// metrics, mirroring training/load_r2.py (compute_advance_baseline,
-// derive_movement_state, build_movement_truth) and worker/src/movement_state.ts.
+// metrics, mirroring the debiased movement classifier in training/load_r2.py
+// (compute_advance_baseline, classify_direction, derive_movement_state,
+// build_movement_truth) and worker/src/movement_state.ts.
 //
 // Two artifacts:
 //   1. A confusion matrix of the alert-derived HMM condition against the
 //      independent movement-derived state — "where do trains-on-the-ground and
-//      the alert feed disagree about right now?"
-//   2. Per-(route,direction,tod) baseline advance rates, which make the
-//      per-route bias of a single global threshold visible (shuttles sit near
-//      ~0.3 normal, trunk lines near ~0.7) — the motivation for the Bayesian
-//      per-direction model (momentarily-vhh).
+//      the alert feed disagree about right now?" The movement state is a
+//      per-(route,direction) Beta-Binomial call scored against each cell's own
+//      advance baseline, so a line is judged against its own normal rather than
+//      one global cutoff.
+//   2. Per-route advance-rate baselines plus the share a single global threshold
+//      would flag, which make the per-route bias of that threshold visible
+//      (shuttles sit low, trunk lines high) — the motivation for the per-
+//      direction model.
 //
 // Independent in DERIVATION from alerts (physical train positions vs. authored
 // alert text), not in source (same upstream MTA gateway).
 
 export const TICK_SECONDS = 300;
 // Thresholds mirror training/load_r2.py + worker/src/movement_state.ts so the
-// offline series and the live signal agree on what "frozen" means.
+// offline series and the live signal agree on the movement call.
 export const MIN_MATCHED_TRIPS = 3; // advanced_n + stalled_n floor to judge a tick
-export const FROZEN_ADVANCE_FRAC = 0.25; // advance frac at/under which a tick reads frozen
-export const ADVANCE_PRIOR_STRENGTH = 50; // Beta pseudo-trials behind the baseline
+export const CLASSIFY_PRIOR_STRENGTH = 8; // pseudo-trials regularizing a single tick toward the cell baseline
+export const DISRUPTED_RATIO = 0.5; // disrupted when posterior advance rate <= this * baseline p0
+export const ADVANCE_PRIOR_STRENGTH = 50; // Beta pseudo-trials behind the baseline prior
 export const P0_FLOOR = 1e-3; // keep p0 off the degenerate Beta endpoints
 export const BASELINE_MIN_SAMPLES = 20; // ticks needed to back a cell baseline
+// Legacy global-threshold reference: the advance frac a single cutoff would call
+// frozen. Retained only for the baseline strip's bias illustration, NOT the
+// classifier — the live call is baseline-relative (DISRUPTED_RATIO * p0).
+export const FROZEN_ADVANCE_FRAC = 0.25;
 
 export const STATES = ["normal", "disrupted", "suspended"] as const;
 export type MovementState = (typeof STATES)[number];
@@ -76,23 +85,114 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/** Independent current-state from one tick's movement row, or null when the row
- * can't support a call (caller treats null as "can't judge"). Vehicle-only, to
- * match build_movement_truth in load_r2.py. */
-export function deriveMovementState(row: MovementRow): MovementState | null {
-  if ((row.vehicles_n ?? 0) <= 0) return "suspended";
-  const matched = (row.advanced_n ?? 0) + (row.stalled_n ?? 0);
-  if (matched < MIN_MATCHED_TRIPS) return null;
-  return row.advanced_n / matched <= FROZEN_ADVANCE_FRAC ? "disrupted" : "normal";
+export interface AdvanceBaselineCell {
+  p0: number; // baseline (normal) advance rate for the cell
+  alpha: number; // Beta prior successes: ADVANCE_PRIOR_STRENGTH * p0
+  beta: number; // Beta prior failures: ADVANCE_PRIOR_STRENGTH * (1 - p0)
+  n: number; // ticks contributing to the cell
+}
+// route|direction|tod_bin -> baseline cell.
+export type AdvanceBaseline = Map<string, AdvanceBaselineCell>;
+
+function baselineKey(route: string, dir: Direction, tod: number): string {
+  return `${route}|${dir}|${tod}`;
 }
 
-/** (route|tick) -> independent movement-derived state, judgeable ticks only. */
-export function buildMovementTruth(bodies: VehicleBody[]): Map<string, MovementState> {
+/** Per-(route,direction,tod) advance-rate baseline as a Beta prior, mirroring
+ * compute_advance_baseline in load_r2.py. Train it on a window that precedes the
+ * scored window so a sustained outage can't lower its own reference. */
+export function computeAdvanceBaseline(bodies: VehicleBody[]): AdvanceBaseline {
+  const buckets = new Map<string, number[]>();
+  for (const body of bodies) {
+    const tod = todBin(snapTick(body.observed_at ?? 0));
+    for (const [route, row] of Object.entries(body.rows ?? {})) {
+      const bd = row.by_direction;
+      if (!bd) continue;
+      for (const dir of DIRECTIONS) {
+        const d = bd[dir];
+        if (!d) continue;
+        const advanced = d.advanced_n ?? 0;
+        const matched = advanced + (d.stalled_n ?? 0);
+        if (matched < MIN_MATCHED_TRIPS) continue;
+        const key = baselineKey(route, dir, tod);
+        const arr = buckets.get(key);
+        if (arr) arr.push(advanced / matched);
+        else buckets.set(key, [advanced / matched]);
+      }
+    }
+  }
+  const out: AdvanceBaseline = new Map();
+  for (const [key, fracs] of buckets.entries()) {
+    if (fracs.length < BASELINE_MIN_SAMPLES) continue;
+    const p0 = Math.min(Math.max(median(fracs), P0_FLOOR), 1 - P0_FLOOR);
+    out.set(key, {
+      p0,
+      alpha: ADVANCE_PRIOR_STRENGTH * p0,
+      beta: ADVANCE_PRIOR_STRENGTH * (1 - p0),
+      n: fracs.length,
+    });
+  }
+  return out;
+}
+
+/** Beta-Binomial call for one (route,direction) at one tick, or null when it
+ * can't be judged (too few matches, or no baseline cell). Posterior mean of the
+ * advance rate under a prior centered on p0; disrupted at/under DISRUPTED_RATIO *
+ * p0. Mirrors classify_direction in load_r2.py. */
+export function classifyDirection(
+  advancedN: number,
+  stalledN: number,
+  cell: AdvanceBaselineCell | undefined,
+): "normal" | "disrupted" | null {
+  const matched = advancedN + stalledN;
+  if (matched < MIN_MATCHED_TRIPS) return null;
+  if (!cell) return null;
+  const post =
+    (CLASSIFY_PRIOR_STRENGTH * cell.p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
+  return post <= DISRUPTED_RATIO * cell.p0 ? "disrupted" : "normal";
+}
+
+/** Independent current-state for one route at one tick, or null when movement
+ * can't support a call. Suspended when no trains are present; otherwise each
+ * direction is scored against its own (route,direction,tod) baseline and the
+ * route takes the worse. Vehicle-only, mirroring derive_movement_state in
+ * load_r2.py. */
+export function deriveMovementState(
+  route: string,
+  row: MovementRow,
+  tick: number,
+  baseline: AdvanceBaseline,
+): MovementState | null {
+  if ((row.vehicles_n ?? 0) <= 0) return "suspended";
+  const tod = todBin(tick);
+  const bd = row.by_direction;
+  const calls: MovementState[] = [];
+  for (const dir of DIRECTIONS) {
+    const d = bd?.[dir];
+    if (!d) continue;
+    const call = classifyDirection(
+      d.advanced_n ?? 0,
+      d.stalled_n ?? 0,
+      baseline.get(baselineKey(route, dir, tod)),
+    );
+    if (call) calls.push(call);
+  }
+  if (!calls.length) return null;
+  return calls.includes("disrupted") ? "disrupted" : "normal";
+}
+
+/** (route|tick) -> independent movement-derived state, judgeable ticks only.
+ * `baseline` is the per-cell advance prior; pass one trained on a preceding
+ * window (see computeAdvanceBaseline). */
+export function buildMovementTruth(
+  bodies: VehicleBody[],
+  baseline: AdvanceBaseline,
+): Map<string, MovementState> {
   const out = new Map<string, MovementState>();
   for (const body of bodies) {
     const tick = snapTick(body.observed_at ?? 0);
     for (const [route, row] of Object.entries(body.rows ?? {})) {
-      const state = deriveMovementState(row);
+      const state = deriveMovementState(route, row, tick, baseline);
       if (state) out.set(`${route}|${tick}`, state);
     }
   }
@@ -234,7 +334,7 @@ export interface RouteBaseline {
   route: string;
   p0: number; // median advance frac over all judgeable ticks (both directions)
   n: number; // judgeable ticks
-  disruptedShare: number; // share of judgeable ticks reading <= FROZEN_ADVANCE_FRAC
+  disruptedShare: number; // legacy global-threshold reference: share of judgeable ticks <= FROZEN_ADVANCE_FRAC
   fracs: number[]; // downsampled advance-fraction distribution for the strip
   north: DirBaseline | null;
   south: DirBaseline | null;

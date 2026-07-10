@@ -58,8 +58,10 @@ from training.eval import (
 from training.load import TickObservation
 from training.load_r2 import (
     Disruption,
+    build_movement_series_by_direction,
     build_movement_truth,
     build_tick_observations,
+    compute_advance_baseline,
     fetch_alert_versions,
     fetch_vehicle_metrics,
 )
@@ -472,8 +474,31 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"{reclassified} ticks read normal vs the breadth truth"
     )
     print("loading vehicle-movement archive for independent current-state truth")
+    # Train the advance baseline on a window that ENDS before the review window,
+    # so a sustained outage inside the review window can't lower its own normal
+    # reference (the build_movement_truth contract wants a causal baseline).
+    baseline_end = start_date - timedelta(days=1)
+    baseline_start = baseline_end - timedelta(days=13)
+    baseline_bodies = fetch_vehicle_metrics(
+        cfg, start_date=baseline_start, end_date=baseline_end, client=client
+    )
+    movement_baseline = compute_advance_baseline(
+        build_movement_series_by_direction(baseline_bodies)
+    )
+    print(
+        f"  advance baseline {baseline_start}..{baseline_end}: "
+        f"{len(baseline_bodies)} ticks -> {len(movement_baseline)} cells"
+    )
+    if not movement_baseline:
+        print(
+            "  WARNING: empty advance baseline (archive may not reach that far "
+            "back) -> movement truth will be mostly/entirely unjudgeable"
+        )
+    vehicle_bodies = fetch_vehicle_metrics(
+        cfg, start_date=start_date, end_date=today, client=client
+    )
     movement_truth = build_movement_truth(
-        fetch_vehicle_metrics(cfg, start_date=start_date, end_date=today, client=client)
+        vehicle_bodies, movement_baseline=movement_baseline
     )
     print(f"  {len(movement_truth)} (route, tick) movement-derived states")
 

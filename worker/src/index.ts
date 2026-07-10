@@ -495,7 +495,7 @@ export default {
           if (MOVEMENT_STATE_PUBLISH) {
             await writeMovementState(env.MOMENTARILY, {
               observed_at: observedAt,
-              states: deriveMovementStates(moveRows, rows),
+              states: deriveMovementStates(moveRows, rows, trainedParams, observedAt),
             });
           }
 

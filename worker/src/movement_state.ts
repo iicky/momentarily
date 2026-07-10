@@ -25,27 +25,55 @@
 import { tod_bin } from './hmm';
 import type { Observation } from './hmm';
 import { advanceBaselineFor, serviceBaselineFor } from './params';
-import type { TrainedParams } from './params';
+import type { AdvanceBaselineCell, TrainedParams } from './params';
 import type { MovementMetricDoc, ServiceMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
 
-// OFF: this fixed-threshold derivation has severe per-route bias (shuttles read
-// ~100% disrupted, trunk lines ~0%) and is NOT published. The Bayesian
-// per-direction model (momentarily-vhh) replaces the derivation; flip this on
-// once that lands. While off, movement state is never written and the published
-// condition stays HMM-derived. The direction-split archive accrues regardless,
-// so the baseline data clock runs.
+// OFF: the movement-derived condition is not published yet — the public flip is a
+// separate step. While off, movement state is never written and the published
+// condition stays HMM-derived. The direction-split archive accrues regardless, so
+// the baseline data clock runs.
 export const MOVEMENT_STATE_PUBLISH = false;
 
-export const FROZEN_ADVANCE_FRAC = 0.25; // advance fraction at/under which a route reads frozen
+// Classification-time prior strength in pseudo-trials — regularizes a single
+// tick's advance fraction toward the cell baseline so a thin sample can't swing
+// the call. Distinct from the trainer's advance-baseline prior strength, which
+// anchors the HMM emission accumulated over the whole training window.
+const CLASSIFY_PRIOR_STRENGTH = 8;
+// A direction reads disrupted when its posterior advance rate sits at/under this
+// fraction of the cell's own baseline p0 — advancing at under half its normal
+// rate. Baseline-relative, so shuttles and trunk lines are each judged against
+// their own normal instead of one global cutoff.
+const DISRUPTED_RATIO = 0.5;
 export const MIN_MATCHED_TRIPS = 3; // advanced_n + stalled_n floor to make a cross-tick call
 
 export type MovementCondition = 'normal' | 'disrupted' | 'suspended';
 
+// Beta-Binomial call for one (route, direction) at one tick, or null when it
+// can't be judged (too few cross-tick matches, or no baseline prior for the
+// cell). Posterior mean of the advance rate under a Beta prior centered on the
+// cell baseline p0; disrupted when that posterior sits at/under DISRUPTED_RATIO *
+// p0 — a drop relative to the direction's own normal, not a global cutoff.
+function classifyDirection(
+  advancedN: number,
+  stalledN: number,
+  cell: AdvanceBaselineCell | null,
+): Exclude<MovementCondition, 'suspended'> | null {
+  const matched = advancedN + stalledN;
+  if (matched < MIN_MATCHED_TRIPS) return null;
+  if (!cell) return null;
+  const post =
+    (CLASSIFY_PRIOR_STRENGTH * cell.p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
+  return post <= DISRUPTED_RATIO * cell.p0 ? 'disrupted' : 'normal';
+}
+
 export function deriveMovementState(
+  routeId: string,
   move: MovementRow | undefined,
   svc: ServiceRow | undefined,
+  trained: TrainedParams | null,
+  observedAt: number,
 ): MovementCondition | null {
   // Suspended: trips scheduled but none dispatched (assigned_n == 0). Primary
   // signal from the trip-updates feed.
@@ -57,9 +85,20 @@ export function deriveMovementState(
     return 'suspended';
   }
   if (!move) return null;
-  const matched = move.advanced_n + move.stalled_n;
-  if (matched < MIN_MATCHED_TRIPS) return null; // trains present but too few cross-tick matches
-  return move.advanced_n / matched <= FROZEN_ADVANCE_FRAC ? 'disrupted' : 'normal';
+  // Disrupted/normal: score each direction against its own (route, direction,
+  // tod_bin) baseline and take the worse — one frozen direction disrupts the
+  // route. Abstain (null) when no direction is judgeable.
+  const todBin = tod_bin(observedAt);
+  const calls: MovementCondition[] = [];
+  for (const dir of ['north', 'south'] as const) {
+    const drow = move.by_direction[dir];
+    if (!drow) continue; // partial by_direction payload — abstain this direction, mirroring load_r2.py
+    const cell = advanceBaselineFor(trained, routeId, dir, todBin);
+    const call = classifyDirection(drow.advanced_n, drow.stalled_n, cell);
+    if (call !== null) calls.push(call);
+  }
+  if (calls.length === 0) return null;
+  return calls.includes('disrupted') ? 'disrupted' : 'normal';
 }
 
 /**
@@ -70,11 +109,19 @@ export function deriveMovementState(
 export function deriveMovementStates(
   moveRows: Map<string, MovementRow>,
   svcRows: Map<string, ServiceRow>,
+  trained: TrainedParams | null,
+  observedAt: number,
 ): Record<string, MovementCondition> {
   const out: Record<string, MovementCondition> = {};
   const routes = new Set<string>([...moveRows.keys(), ...svcRows.keys()]);
   for (const route of routes) {
-    const state = deriveMovementState(moveRows.get(route), svcRows.get(route));
+    const state = deriveMovementState(
+      route,
+      moveRows.get(route),
+      svcRows.get(route),
+      trained,
+      observedAt,
+    );
     if (state !== null) out[route] = state;
   }
   return out;

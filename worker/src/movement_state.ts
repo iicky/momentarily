@@ -30,11 +30,10 @@ import type { MovementMetricDoc, ServiceMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
 
-// OFF: the movement-derived condition is not published yet — the public flip is a
-// separate step. While off, movement state is never written and the published
-// condition stays HMM-derived. The direction-split archive accrues regardless, so
-// the baseline data clock runs.
-export const MOVEMENT_STATE_PUBLISH = false;
+// ON: the movement-derived condition is the published current state (movement-
+// primary). Each tick's states are written for the next tick's snapshot to read;
+// routes movement can't judge fall through to 'unknown', never an alert fallback.
+export const MOVEMENT_STATE_PUBLISH = true;
 
 // Classification-time prior strength in pseudo-trials — regularizes a single
 // tick's advance fraction toward the cell baseline so a thin sample can't swing

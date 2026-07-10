@@ -286,12 +286,14 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     const snap = build(snaps, { A: roll('disrupted', NOW - 7200) });
     const inf = snap.route_status['A']!.inference!;
     // The filter posterior is confidently `disrupted`, but the
-    // disruptiveAlertCount === 0 guardrail forces the published condition —
+    // disruptiveAlertCount === 0 guardrail forces the shadow HMM condition —
     // and everything derived from it — back to normal. Planned work never
-    // publishes as disrupted/suspended.
-    expect(snap.route_status['A']!.condition).toBe('normal');
+    // drives the shadow toward disrupted/suspended.
     expect(inf.condition).toBe('normal');
     expect(inf.is_disrupted).toBe(false);
+    // No movement reading is wired through `build()`, so the published
+    // condition is an honest 'unknown' — movement-primary, not alert-primary.
+    expect(snap.route_status['A']!.condition).toBe('unknown');
     expect(snap.system.lines_disrupted_count).toBe(0);
   });
 
@@ -324,11 +326,15 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     ]);
     const snap = build(snaps, { N: roll('disrupted', NOW - 3600) });
     const inf = snap.route_status['N']!.inference!;
-    expect(snap.route_status['N']!.condition).toBe('disrupted');
+    expect(inf.condition).toBe('disrupted');
     expect(inf.recovery_source).toBe('hmm');
     expect(inf.resumes_at).toBeNull();
     // A live real-time disruption counts, even with planned work also active.
     expect(inf.is_disrupted).toBe(true);
+    // No movement reading is wired through `build()`, so the published
+    // condition is an honest 'unknown' — the alert-derived read lives on
+    // the shadow above.
+    expect(snap.route_status['N']!.condition).toBe('unknown');
   });
 
   test('overdue: resume already passed but alert still active → recovery clamped to 0', () => {

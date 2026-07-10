@@ -488,10 +488,9 @@ export default {
           // Carry assigned_n forward too, for the service emission channel.
           await writeServiceMetric(env.MOMENTARILY, observedAt, rows);
 
-          // Movement-derived current state, read by next tick's snapshot build.
-          // Gated off: the fixed-threshold derivation is biased per-route and not
-          // published; the Bayesian model (momentarily-vhh) replaces it. The
-          // direction-split archive above still accrues for baseline training.
+          // Movement-derived current state, read by next tick's snapshot build as
+          // the published movement-primary condition (debiased per-direction
+          // classifier; suspended/not_scheduled from the schedule rate).
           if (MOVEMENT_STATE_PUBLISH) {
             await writeMovementState(env.MOMENTARILY, {
               observed_at: observedAt,

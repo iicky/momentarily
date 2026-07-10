@@ -183,7 +183,6 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
     });
-    expect(snap.route_status['1']!.condition).toBe('normal');
     expect(snap.route_status['1']!.inference!.condition).toBe('normal');
   });
 
@@ -211,7 +210,6 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
     });
-    expect(snap.route_status['1']!.condition).toBe('disrupted');
     expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
   });
 
@@ -239,7 +237,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
     });
-    expect(snap.route_status['1']!.condition).toBe('disrupted');
+    expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
   });
 
   test('effectiveCondition: unknown label falls back to filter argmax', () => {
@@ -266,7 +264,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
     });
-    expect(snap.route_status['1']!.condition).toBe('normal');
+    expect(snap.route_status['1']!.inference!.condition).toBe('normal');
   });
 
   test('guardrail: confident disrupted filter with zero active alerts publishes normal', () => {
@@ -293,9 +291,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
     });
-    // No alert to explain a disruption → condition and inference are gated to
-    // normal, is_disrupted is false, and recovery collapses to 0.
-    expect(snap.route_status['1']!.condition).toBe('normal');
+    // No alert to explain a disruption → the shadow HMM condition is gated
+    // to normal, is_disrupted is false, and recovery collapses to 0.
     expect(snap.route_status['1']!.inference!.condition).toBe('normal');
     expect(snap.route_status['1']!.inference!.is_disrupted).toBe(false);
     expect(snap.route_status['1']!.inference!.recovery_minutes).toBe(0);

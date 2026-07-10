@@ -51,6 +51,10 @@ export const ATTRIBUTION =
   + 'Published by Momentarily (https://feed.momentarily.nyc). '
   + 'Not affiliated with the MTA.';
 
+// The HMM/alert forecast for a route — recovery timing (recovery_minutes,
+// p_normal_in_H) plus the alert-derived regime read. With movement-primary
+// publishing this is the SHADOW: its `condition`/`is_disrupted`/probabilities are
+// the alert view, not the published current state (route_status.condition).
 interface Inference {
   condition: string;
   recovery_minutes: number;
@@ -84,11 +88,14 @@ interface Inference {
 interface RouteStatusOut {
   route_id: string;
   alerts: string[];
-  // Severity axis — current state, observed from train movement when available,
-  // else the hysteresis-stable HMM published label.
+  // Severity axis — the published current state, movement-primary: observed from
+  // train movement where judgeable, a planned "No Scheduled Service" alert where
+  // flagged, else 'unknown'. Alerts never assert disruption here — that lives on
+  // the shadow (inference) and cause (category / primary_alert_type) axes.
   condition: string;
-  // Where `condition` came from this tick: 'movement' (observed), 'hmm' (alert-
-  // derived fallback), or 'unknown' (no inference yet).
+  // Where `condition` came from this tick: 'movement' (observed from train
+  // positions), 'schedule' (a planned "No Scheduled Service" alert), or 'unknown'
+  // (movement can't judge — an honest coverage gap, never an alert fallback).
   condition_source: string;
   // Cause axis — our vocabulary, derived from the MTA alert_type.
   category: string;
@@ -225,6 +232,7 @@ export function buildSnapshot(args: {
   const allRouteIds = new Set<string>([
     ...Object.keys(args.rolls),
     ...args.routeSnapshots.keys(),
+    ...Object.keys(movementStates?.states ?? {}),
   ]);
 
   for (const routeId of allRouteIds) {
@@ -249,20 +257,31 @@ export function buildSnapshot(args: {
       : null;
 
     const label = snap?.coarse_label ?? NO_ALERTS_FALLBACK;
-    // Current state is observed from train movement when we have a judgeable
-    // reading; the alert-derived HMM condition is the fallback (cold start, feed
-    // gap, too few cross-tick matches). not_scheduled is a planned non-run and
-    // always wins — a route that isn't meant to run now reads neither disrupted
-    // nor suspended just because no trains are moving.
-    const hmmCondition = inference ? inference.condition : 'unknown';
+    // Current state is movement-primary: train movement is the published answer to
+    // "is this route disrupted right now". Alerts never assert the condition — the
+    // alert-derived read lives on as the shadow (inference.condition) and the cause
+    // (category / primary_alert_type). A planned "No Scheduled Service" alert is the
+    // one exception: a planned non-run wins. When movement can't judge (cold start,
+    // feed gap, thin/absent signal) the condition is 'unknown' — an honest coverage
+    // gap, never an alert-derived fallback.
     const movementCondition = movementStates?.states[routeId];
-    const useMovement =
-      movementCondition !== undefined && hmmCondition !== 'not_scheduled';
+    let condition: string;
+    let condition_source: string;
+    if (schedule.isNotScheduled) {
+      condition = 'not_scheduled';
+      condition_source = 'schedule';
+    } else if (movementCondition !== undefined) {
+      condition = movementCondition;
+      condition_source = 'movement';
+    } else {
+      condition = 'unknown';
+      condition_source = 'unknown';
+    }
     route_status[routeId] = {
       route_id: routeId,
       alerts: activeAlerts,
-      condition: useMovement ? movementCondition : hmmCondition,
-      condition_source: useMovement ? 'movement' : inference ? 'hmm' : 'unknown',
+      condition,
+      condition_source,
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,
@@ -320,10 +339,10 @@ function buildSystemStatus(
       routes_with_alerts.push(routeId);
       alert_count += rs.alerts.length;
     }
-    // not_scheduled is a planned non-disruption — keep it out of the disruption
-    // rollups (severity_max here; lines_disrupted_count/most_degraded_line are
-    // gated by is_disrupted, which is already false for it).
-    if (rs.condition === 'not_scheduled') continue;
+    // severity_max is the alert severity of the worst movement-confirmed
+    // disruption — alerts explain a disruption's severity but never assert one, so
+    // a route reading normal/unknown/not_scheduled folds no alert severity in.
+    if (rs.condition !== 'disrupted' && rs.condition !== 'suspended') continue;
     const snap = routeSnapshots.get(routeId);
     if (snap && snap.severity_max > severity_max) severity_max = snap.severity_max;
   }
@@ -336,9 +355,10 @@ function buildSystemStatus(
   let mostRecoveredEnteredAt = -1;
   for (const [routeId, rs] of Object.entries(routeStatuses)) {
     const inf = rs.inference;
-    // Count what's published: condition is movement-observed when available,
-    // HMM-derived otherwise. Rank within (most degraded/recovered) still uses
-    // the HMM's continuous probabilities and regime age, which movement lacks.
+    // Count what's published: `condition` is the movement-primary current state
+    // (a movement-only route has inference null). Ranking within (most degraded /
+    // recovered) still uses the HMM's continuous probabilities and regime age when
+    // present — a movement-only disrupted route scores a flat 1.
     const disrupted = rs.condition === 'disrupted' || rs.condition === 'suspended';
     if (disrupted) {
       lines_disrupted_count += 1;
@@ -423,8 +443,11 @@ function buildCompat(
       south: [],
     };
 
-    // not_scheduled is a new condition value; render it as a scheduled gap so
-    // the HomeAssistant integration doesn't choke on an unknown status.
+    // not_scheduled renders as a scheduled gap so the HomeAssistant integration
+    // doesn't choke on an unknown status. Otherwise `status` stays the alert-derived
+    // coarse label (shadow) — this legacy compat surface intentionally lags the
+    // movement-primary route_status.condition; a movement-derived status mapping is
+    // deferred to the HA integration work so its contract isn't changed blind.
     const notScheduled = rs.condition === 'not_scheduled';
     subwaynow_routes[routeId] = {
       id: routeId,
@@ -625,10 +648,10 @@ function buildInference(
   return {
     condition,
     recovery_minutes,
-    // Rollup flag tied directly to the published condition so
-    // lines_disrupted_count can't disagree with what a route shows: disrupted
-    // iff the condition is a live disruption. normal (incl. planned-only, whose
-    // realtime disruptive count is zero) and not_scheduled never count.
+    // Shadow-HMM disruption flag: whether the alert-derived regime reads a live
+    // disruption. The PUBLISHED disruption is route_status.condition (movement-
+    // primary); this tracks the HMM view that also anchors the recovery forecast.
+    // normal (incl. planned-only, zero realtime alerts) and not_scheduled never count.
     is_disrupted: condition !== 'normal' && condition !== 'not_scheduled',
     p_normal: probs[0],
     p_disrupted: probs[1],

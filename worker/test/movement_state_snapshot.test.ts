@@ -1,7 +1,8 @@
 /**
  * Movement-determined current state in the snapshot: the published `condition`
- * comes from observed train movement when available, falls back to the HMM
- * otherwise, and never overrides a planned not_scheduled.
+ * is movement-primary — observed train movement drives it when a fresh reading
+ * exists, otherwise it's an honest `unknown` (no HMM fallback), and a planned
+ * not_scheduled always wins over movement.
  */
 
 import { describe, expect, test } from 'vitest';
@@ -60,7 +61,7 @@ describe('buildSnapshot: movement-determined condition', () => {
     expect(a.inference?.condition).toBe('normal');
   });
 
-  test('a route with no movement reading falls back to the HMM condition', () => {
+  test('a route with no movement reading has unknown condition', () => {
     const snaps = deriveRouteSnapshots(payload(entity({ id: 'b', alertType: 'Delays', route: 'B' })), NOW);
     const snap = buildSnapshot({
       generatedAt: NOW,
@@ -72,8 +73,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       movementStates: { observed_at: NOW - 300, states: {} }, // B absent
     });
     const b = snap.route_status.B!;
-    expect(b.condition_source).toBe('hmm');
-    expect(b.condition).toBe(b.inference?.condition);
+    expect(b.condition_source).toBe('unknown');
+    expect(b.condition).toBe('unknown');
   });
 
   test('movement is ignored without a movementStates arg (back-compat)', () => {
@@ -86,7 +87,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
     });
-    expect(snap.route_status.A!.condition_source).toBe('hmm');
+    expect(snap.route_status.A!.condition_source).toBe('unknown');
+    expect(snap.route_status.A!.condition).toBe('unknown');
   });
 
   test('not_scheduled is never overridden by movement', () => {
@@ -106,10 +108,10 @@ describe('buildSnapshot: movement-determined condition', () => {
     });
     const z = snap.route_status.Z!;
     expect(z.condition).toBe('not_scheduled');
-    expect(z.condition_source).toBe('hmm');
+    expect(z.condition_source).toBe('schedule');
   });
 
-  test('stale movement state is ignored (falls back to HMM)', () => {
+  test('stale movement state is ignored (condition is unknown)', () => {
     const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Delays', route: 'A' })), NOW);
     const snap = buildSnapshot({
       generatedAt: NOW,
@@ -120,8 +122,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 3600, states: { A: 'disrupted' } }, // 1h old
     });
-    expect(snap.route_status.A!.condition_source).toBe('hmm');
-    expect(snap.route_status.A!.condition).toBe('normal');
+    expect(snap.route_status.A!.condition_source).toBe('unknown');
+    expect(snap.route_status.A!.condition).toBe('unknown');
   });
 
   test('lines_disrupted_count reflects the movement-overridden conditions', () => {
@@ -140,5 +142,41 @@ describe('buildSnapshot: movement-determined condition', () => {
     });
     expect(snap.route_status.A!.condition).toBe('suspended');
     expect(snap.system.lines_disrupted_count).toBe(1); // A counted, B normal
+  });
+
+  test('a route present only in movementStates.states is published with its movement condition', () => {
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      movementStates: { observed_at: NOW - 300, states: { Q: 'disrupted' } },
+    });
+    const q = snap.route_status.Q!;
+    expect(q.condition).toBe('disrupted');
+    expect(q.condition_source).toBe('movement');
+    expect(q.inference).toBeNull();
+  });
+
+  test('a movement-only disrupted route (no HMM inference) is counted in lines_disrupted_count', () => {
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      movementStates: { observed_at: NOW - 300, states: { Q: 'disrupted' } },
+    });
+    const q = snap.route_status.Q!;
+    expect(q.inference).toBeNull();
+    expect(q.condition).toBe('disrupted');
+    // The system rollup gates on the published `condition`, not on HMM
+    // inference, so a movement-only route with no roll/snapshot must still
+    // be counted — and score a flat 1 as the most degraded line.
+    expect(snap.system.lines_disrupted_count).toBe(1);
+    expect(snap.system.most_degraded_line).toBe('Q');
   });
 });

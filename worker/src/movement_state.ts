@@ -45,6 +45,11 @@ const CLASSIFY_PRIOR_STRENGTH = 8;
 // rate. Baseline-relative, so shuttles and trunk lines are each judged against
 // their own normal instead of one global cutoff.
 const DISRUPTED_RATIO = 0.5;
+// A large posterior drop only reads disrupted when the low advance count is also
+// statistically significant against the cell baseline (binomial lower tail at or
+// under this). Guards degenerate-low baselines — a short shuttle advances ~0 even
+// when healthy, so a normal zero-advance tick would otherwise flip disrupted.
+const CLASSIFY_ALPHA = 0.05;
 // A route in service (>=1 dispatched train) in fewer than this fraction of usable
 // ticks at its schedule bin reads not_scheduled — not suspended — when nothing is
 // running now. Applied to the trainer's per-bin in-service rate (schedule_rate).
@@ -53,11 +58,29 @@ export const MIN_MATCHED_TRIPS = 3; // advanced_n + stalled_n floor to make a cr
 
 export type MovementCondition = 'normal' | 'disrupted' | 'suspended' | 'not_scheduled';
 
-// Beta-Binomial call for one (route, direction) at one tick, or null when it
-// can't be judged (too few cross-tick matches, or no baseline prior for the
-// cell). Posterior mean of the advance rate under a Beta prior centered on the
-// cell baseline p0; disrupted when that posterior sits at/under DISRUPTED_RATIO *
-// p0 — a drop relative to the direction's own normal, not a global cutoff.
+// P(X <= k) for X ~ Binomial(n, p) via an iterative pmf sum. Exact for the
+// tick-level counts here (n well under ~50) and free of special functions, so it
+// mirrors 1:1 in Python/viz. p is the cell baseline p0, floored off 0 upstream.
+function binomLowerTail(k: number, n: number, p: number): number {
+  if (k >= n) return 1;
+  if (k < 0) return 0;
+  const q = 1 - p;
+  let pmf = q ** n; // P(X = 0)
+  let cdf = pmf;
+  for (let i = 0; i < k; i++) {
+    pmf *= ((n - i) / (i + 1)) * (p / q);
+    cdf += pmf;
+  }
+  return cdf;
+}
+
+// Beta-Binomial call for one (route, direction) at one tick, three ways:
+//   normal    — posterior advance rate above DISRUPTED_RATIO * baseline p0.
+//   disrupted — posterior at/under DISRUPTED_RATIO * p0 AND the low advance count
+//               is significant against p0 (binomial lower tail <= CLASSIFY_ALPHA).
+//   null      — can't judge: too few matches, no baseline, OR a point-estimate
+//               drop not distinguishable from a low-p0 normal fluctuation (a
+//               degenerate-baseline shuttle's zero-advance tick, not a stall).
 function classifyDirection(
   advancedN: number,
   stalledN: number,
@@ -68,7 +91,8 @@ function classifyDirection(
   if (!cell) return null;
   const post =
     (CLASSIFY_PRIOR_STRENGTH * cell.p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
-  return post <= DISRUPTED_RATIO * cell.p0 ? 'disrupted' : 'normal';
+  if (post > DISRUPTED_RATIO * cell.p0) return 'normal';
+  return binomLowerTail(advancedN, matched, cell.p0) <= CLASSIFY_ALPHA ? 'disrupted' : null;
 }
 
 export function deriveMovementState(

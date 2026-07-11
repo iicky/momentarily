@@ -786,6 +786,12 @@ CLASSIFY_PRIOR_STRENGTH = 8.0
 # their own normal instead of one global cutoff.
 DISRUPTED_RATIO = 0.5
 
+# A large posterior drop only reads disrupted when the low advance count is also
+# statistically significant against the cell baseline (binomial lower tail at or
+# under this). Guards degenerate-low baselines — a short shuttle advances ~0 even
+# when healthy, so a normal zero-advance tick would otherwise flip disrupted.
+CLASSIFY_ALPHA = 0.05
+
 
 # Pseudo-trials behind a baseline Beta prior — how much a cell's history outvotes
 # the live tick when forming the posterior advance rate. ~50 trips is a few ticks
@@ -901,6 +907,24 @@ def advance_baseline_to_json(
     return out
 
 
+def _binom_lower_tail(k: int, n: int, p: float) -> float:
+    """P(X <= k) for X ~ Binomial(n, p), via an iterative pmf sum. Exact for the
+    tick-level counts here (n well under ~50) and free of special functions, so it
+    mirrors the worker/viz binomLowerTail 1:1. p is the cell baseline p0, floored
+    off 0 upstream."""
+    if k >= n:
+        return 1.0
+    if k < 0:
+        return 0.0
+    q = 1.0 - p
+    pmf = q**n  # P(X = 0)
+    cdf = pmf
+    for i in range(k):
+        pmf *= (n - i) / (i + 1) * (p / q)
+        cdf += pmf
+    return cdf
+
+
 def classify_direction(
     advanced_n: int,
     stalled_n: int,
@@ -909,20 +933,32 @@ def classify_direction(
     prior_strength: float = CLASSIFY_PRIOR_STRENGTH,
     disrupted_ratio: float = DISRUPTED_RATIO,
     min_matched: int = MIN_MATCHED_TRIPS,
+    alpha: float = CLASSIFY_ALPHA,
 ) -> str | None:
-    """Beta-Binomial call for one (route, direction) at one tick, or None when it
-    can't be judged (fewer than `min_matched` cross-tick matches, or no baseline
-    prior for the cell). The posterior mean of the advance rate under a Beta prior
-    centered on the cell baseline p0 reads disrupted when it sits at/under
-    `disrupted_ratio * p0` — a drop relative to the direction's OWN normal, not a
-    global cutoff, so low-baseline lines aren't pinned disrupted."""
+    """Beta-Binomial call for one (route, direction) at one tick, three ways:
+
+      normal    — posterior advance rate above `disrupted_ratio * p0`.
+      disrupted — posterior at/under `disrupted_ratio * p0` AND the low advance
+                  count is significant against p0 (binomial lower tail <= alpha).
+      None      — can't judge: fewer than `min_matched` matches, no baseline, OR a
+                  point-estimate drop not distinguishable from a low-p0 normal
+                  fluctuation (a degenerate-baseline shuttle's zero-advance tick,
+                  not a stall).
+
+    Baseline-relative, so low-baseline lines aren't pinned disrupted; the
+    significance gate additionally keeps a degenerate baseline from firing on its
+    own normal zero-advance noise."""
     matched = advanced_n + stalled_n
     if matched < min_matched:
         return None
     if baseline is None:
         return None
     post = (prior_strength * baseline.p0 + advanced_n) / (prior_strength + matched)
-    return "disrupted" if post <= disrupted_ratio * baseline.p0 else "normal"
+    if post > disrupted_ratio * baseline.p0:
+        return "normal"
+    if _binom_lower_tail(advanced_n, matched, baseline.p0) <= alpha:
+        return "disrupted"
+    return None
 
 
 def derive_movement_state(

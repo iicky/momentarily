@@ -102,6 +102,75 @@ describe('deriveMovementState', () => {
     expect(deriveMovementState(ROUTE, move1, undefined, trained, T0)).toBe('normal');
   });
 
+  // --- Three-way significance gate (momentarily-vhh.14): a degenerate-low
+  // baseline no longer misfires disrupted on ordinary low-advance noise unless
+  // the drop is also statistically significant against that baseline. ---
+
+  test('shuttle with a degenerate-low baseline and zero advances abstains, not disrupted (THE FIX)', () => {
+    // p0=0.125, advanced=0, stalled=8 (matched=8): post = (8*0.125+0)/(8+8) = 0.0625
+    // == 0.5*p0 (<=); tail = 0.875**8 ~= 0.3436 > 0.05 -> null, not the old false 'disrupted'.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 8 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.125 }) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBeNull();
+  });
+
+  test('shuttle freeze with enough matched trips reaches significance and still reads disrupted', () => {
+    // p0=0.125, advanced=0, stalled=25 (matched=25): tail = 0.875**25 ~= 0.0356 <= 0.05,
+    // post ~= 0.030 <= 0.0625 -> disrupted.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 25 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.125 }) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('disrupted');
+  });
+
+  test('mid-range trunk direction frozen for 17 matches reaches significance and reads disrupted', () => {
+    // p0=0.55, advanced=0, stalled=17 (matched=17): post = (8*0.55+0)/(8+17) = 0.176
+    // <= 0.275 (0.5*p0); tail = 0.45**17 ~= 1.2e-6 <= 0.05 -> disrupted.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 17 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.55 }) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('disrupted');
+  });
+
+  test('mid-range trunk direction advancing above half its own baseline reads normal', () => {
+    // p0=0.55, advanced=8, stalled=9 (matched=17): post = (8*0.55+8)/(8+17) = 0.496 > 0.275 -> normal.
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 9 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.55 }) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBe('normal');
+  });
+
+  test('shuttle below MIN_MATCHED_TRIPS abstains before the significance gate even runs', () => {
+    // p0=0.125, advanced=0, stalled=1 (matched=1 < MIN_MATCHED_TRIPS=3): the
+    // matched-floor guard short-circuits before the posterior/significance path
+    // is ever evaluated, however degenerate the baseline is (unchanged guard).
+    const move1 = move({
+      by_direction: {
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 1 },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      },
+    });
+    const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.125 }) } } });
+    expect(deriveMovementState(ROUTE, move1, svc({}), trained, T0)).toBeNull();
+  });
+
   test('too few cross-tick matches is unjudgeable (null), even with a baseline', () => {
     const move1 = move({
       by_direction: {

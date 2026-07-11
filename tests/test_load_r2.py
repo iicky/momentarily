@@ -5,19 +5,31 @@ Synthetic alert-version bodies — no R2 access.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Any
+
+import pytest
 
 from momentarily.hmm import tod_bin
 from training.load_r2 import (
+    AdvanceBaseline,
     PresenceMask,
+    _binom_lower_tail,  # pyright: ignore[reportPrivateUsage]
     advance_baseline_to_json,
     build_movement_series_by_direction,
     build_tick_observations,
+    classify_direction,
     compute_advance_baseline,
     input_manifest_hash,
     presence_mask_from_predictions,
     service_baseline_to_json,
 )
+
+
+def _approx(expected: float) -> object:
+    """Typed wrapper around ``pytest.approx`` (pins the Unknown return type)."""
+    return pytest.approx(expected)  # pyright: ignore[reportUnknownMemberType]
+
 
 TICK = 300
 T0 = 1_700_000_100  # tick-aligned
@@ -366,3 +378,72 @@ def test_service_baseline_to_json_nests_route_tod():
     assert doc == {"A": {"1": 6.0, "3": 4.5}, "B": {"1": 2.0}}
     # JSON object keys must be strings (tod_bin stringified for delivery).
     assert all(isinstance(k, str) for k in doc["A"])
+
+
+# --- classify_direction: three-way significance-gated call (momentarily-vhh.14) ---
+#
+# Case math (baseline p0 as given; prior_strength=8, disrupted_ratio=0.5, alpha=0.05):
+#   case1 p0=0.125 advanced=0 matched=8:  post=0.0625==0.5*p0 (<=); tail=0.875**8~=0.3436>alpha
+#         -> None. THE FIX: a short shuttle's degenerate baseline no longer misfires
+#         disrupted on an ordinary zero-advance tick.
+#   case2 p0=0.125 advanced=0 matched=25: post~=0.0303<=0.0625; tail=0.875**25~=0.0356<=alpha
+#         -> disrupted. The same degenerate baseline still fires once there's enough evidence.
+#   case3 p0=0.55  advanced=0 matched=17: post=0.176<=0.275; tail=0.45**17~=1.2e-6<=alpha
+#         -> disrupted (a healthy trunk frozen solid).
+#   case4 p0=0.55  advanced=8 matched=17: post=0.496>0.275 -> normal (posterior clears the
+#         cutoff outright, no significance test needed).
+#
+# This exact (advanced, stalled, p0) -> expected-label table is reused verbatim in
+# viz's classifyDirection tests (viz/tests/movement.test.ts) and the worker's
+# deriveMovementState tests (worker/test/movement_state.test.ts) as a cross-mirror
+# parity spot-check: the same inputs must resolve to the same label everywhere.
+@pytest.mark.parametrize(
+    ("advanced", "stalled", "p0", "expected"),
+    [
+        pytest.param(0, 8, 0.125, None, id="case1_shuttle_false_positive_now_abstains"),
+        pytest.param(
+            0, 25, 0.125, "disrupted", id="case2_sustained_shuttle_freeze_still_fires"
+        ),
+        pytest.param(0, 17, 0.55, "disrupted", id="case3_trunk_freeze_still_fires"),
+        pytest.param(8, 9, 0.55, "normal", id="case4_normal_above_ratio"),
+    ],
+)
+def test_classify_direction_three_way_cases(
+    advanced: int, stalled: int, p0: float, expected: str | None
+) -> None:
+    baseline = AdvanceBaseline(p0=p0, n=50, alpha=50 * p0, beta=50 * (1 - p0))
+    assert classify_direction(advanced, stalled, baseline) == expected
+
+
+def test_classify_direction_below_min_matched_is_none():
+    # Below MIN_MATCHED_TRIPS=3: the matched-floor guard short-circuits before the
+    # posterior/significance path is ever evaluated, unchanged by the three-way rewrite.
+    baseline = AdvanceBaseline(p0=0.9, n=50, alpha=45.0, beta=5.0)
+    assert classify_direction(1, 1, baseline) is None
+
+
+def test_classify_direction_no_baseline_is_none():
+    assert classify_direction(8, 1, None) is None
+
+
+# --- _binom_lower_tail: exact P(X<=k), boundaries, monotonicity (momentarily-vhh.14) ---
+
+
+def test_binom_lower_tail_exact_values():
+    assert _binom_lower_tail(0, 8, 0.125) == _approx(0.875**8)
+    assert _binom_lower_tail(0, 10, 0.5) == _approx(9.765625e-4)
+
+
+def test_binom_lower_tail_k_at_or_above_n_saturates_to_one():
+    assert _binom_lower_tail(17, 17, 0.55) == 1.0
+    assert _binom_lower_tail(20, 17, 0.55) == 1.0  # k > n also saturates
+
+
+def test_binom_lower_tail_negative_k_is_zero():
+    assert _binom_lower_tail(-1, 10, 0.5) == 0.0
+
+
+def test_binom_lower_tail_monotonic_nondecreasing_in_k():
+    n, p = 20, 0.3
+    tails = [_binom_lower_tail(k, n, p) for k in range(n + 1)]
+    assert all(b >= a for a, b in pairwise(tails))

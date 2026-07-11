@@ -81,6 +81,37 @@ test("classifyDirection: missing baseline cell is unjudgeable", () => {
   assert.equal(classifyDirection(5, 5, undefined), null);
 });
 
+// --- Three-way significance gate (momentarily-vhh.14): a degenerate-low
+// baseline no longer misfires disrupted on ordinary low-advance noise unless the
+// drop is also statistically significant against that baseline. This exact
+// (advanced, stalled, p0) -> expected-label table is reused verbatim in
+// Python's classify_direction tests (tests/test_load_r2.py) and the worker's
+// deriveMovementState tests (worker/test/movement_state.test.ts) as a
+// cross-mirror parity spot-check. ---
+
+test("classifyDirection: shuttle with a degenerate-low baseline and zero advances abstains, not disrupted (THE FIX)", () => {
+  // p0=0.125, advanced=0, stalled=8 (matched=8): post = (8*0.125+0)/(8+8) = 0.0625
+  // == 0.5*p0 (<=); tail = 0.875**8 ~= 0.3436 > 0.05 -> null.
+  assert.equal(classifyDirection(0, 8, cell(0.125)), null);
+});
+
+test("classifyDirection: shuttle freeze with enough matched trips reaches significance and reads disrupted", () => {
+  // p0=0.125, advanced=0, stalled=25 (matched=25): tail = 0.875**25 ~= 0.0356 <= 0.05,
+  // post ~= 0.030 <= 0.0625 -> disrupted.
+  assert.equal(classifyDirection(0, 25, cell(0.125)), "disrupted");
+});
+
+test("classifyDirection: mid-range trunk freeze reaches significance and reads disrupted", () => {
+  // p0=0.55, advanced=0, stalled=17 (matched=17): post = 0.176 <= 0.275 (0.5*p0);
+  // tail = 0.45**17 ~= 1.2e-6 <= 0.05.
+  assert.equal(classifyDirection(0, 17, cell(0.55)), "disrupted");
+});
+
+test("classifyDirection: mid-range trunk advancing above half its own baseline reads normal", () => {
+  // p0=0.55, advanced=8, stalled=9 (matched=17): post = (8*0.55+8)/(8+17) = 0.496 > 0.275.
+  assert.equal(classifyDirection(8, 9, cell(0.55)), "normal");
+});
+
 // --- computeAdvanceBaseline: per-(route,direction,tod) median-of-fractions prior ---
 
 test("computeAdvanceBaseline: cell p0 is the median advance fraction, with a matching Beta prior, excluding matched<3 ticks", () => {

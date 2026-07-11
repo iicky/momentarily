@@ -15,8 +15,10 @@ from training.load_r2 import (
     AdvanceBaseline,
     PresenceMask,
     _binom_lower_tail,  # pyright: ignore[reportPrivateUsage]
+    _snap_tick,  # pyright: ignore[reportPrivateUsage]
     advance_baseline_to_json,
     build_movement_series_by_direction,
+    build_segment_series,
     build_tick_observations,
     classify_direction,
     compute_advance_baseline,
@@ -315,6 +317,80 @@ def test_movement_series_skips_rows_without_by_direction():
     # A pre-vhh.2 archive row (no by_direction) contributes nothing.
     bodies = [{"observed_at": T0, "rows": {"A": {"advanced_n": 5, "stalled_n": 1}}}]
     assert build_movement_series_by_direction(bodies) == {}
+
+
+# --- Per-(route,direction,from,to,tick) segment leaf (momentarily-vhh.7) ---
+
+
+def _segment_body(
+    tick: int,
+    route: str,
+    *,
+    north: dict[str, int] | None = None,
+    south: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    def dir_row(transitions: dict[str, int] | None) -> dict[str, Any]:
+        return {"transitions": transitions or {}}
+
+    return {
+        "observed_at": tick,
+        "rows": {
+            route: {"by_direction": {"north": dir_row(north), "south": dir_row(south)}}
+        },
+    }
+
+
+def test_segment_series_round_trips_with_snapped_tick():
+    observed_at = T0 + 37  # not tick-aligned; _snap_tick floors it to T0
+    assert _snap_tick(observed_at) == T0
+    bodies = [
+        _segment_body(observed_at, "A", north={"A09N>A10N": 3}, south={"A09S>A09S": 1})
+    ]
+    assert build_segment_series(bodies) == {
+        ("A", "north", "A09N", "A10N", T0): 3,
+        ("A", "south", "A09S", "A09S", T0): 1,
+    }
+
+
+def test_segment_series_sums_same_key_across_bodies_and_keeps_ticks_separate():
+    bodies = [
+        _segment_body(T0, "A", north={"A09N>A10N": 2}),
+        _segment_body(T0, "A", north={"A09N>A10N": 5}),
+        _segment_body(T0 + TICK, "A", north={"A09N>A10N": 1}),
+    ]
+    series = build_segment_series(bodies)
+    assert series[("A", "north", "A09N", "A10N", T0)] == 7
+    assert series[("A", "north", "A09N", "A10N", T0 + TICK)] == 1
+
+
+def test_segment_series_skips_malformed_empty_and_nonpositive_entries():
+    bodies = [
+        _segment_body(
+            T0,
+            "A",
+            north={
+                "no-arrow": 5,
+                ">A01N": 4,
+                "A01N>": 3,
+                "A01N>A02N": 0,
+                "A01N>A03N": -2,
+                "A05N>A06N": 2,  # the only entry that should survive
+            },
+        )
+    ]
+    assert build_segment_series(bodies) == {("A", "north", "A05N", "A06N", T0): 2}
+
+
+def test_segment_series_missing_transitions_or_by_direction_yields_nothing():
+    bodies: list[dict[str, Any]] = [
+        {
+            "observed_at": T0,
+            "rows": {"A": {"by_direction": {"north": {}, "south": {}}}},
+        },  # no transitions key
+        {"observed_at": T0, "rows": {"A": {}}},  # no by_direction at all
+        {"observed_at": T0, "rows": {"A": None}},  # malformed row, not a dict
+    ]
+    assert build_segment_series(bodies) == {}
 
 
 def test_advance_baseline_median_resists_disrupted_minority():

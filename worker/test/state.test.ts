@@ -66,8 +66,8 @@ function moveRow(over: Partial<MovementRow>): MovementRow {
     advanced_n: 8,
     stalled_n: 2,
     by_direction: {
-      north: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
-      south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      north: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
+      south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
     },
     ...over,
   };
@@ -81,8 +81,8 @@ describe('movement metric carry doc', () => {
         'A',
         moveRow({
           by_direction: {
-            north: { vehicles_n: 5, advanced_n: 9, stalled_n: 1 },
-            south: { vehicles_n: 4, advanced_n: 3, stalled_n: 2 },
+            north: { vehicles_n: 5, advanced_n: 9, stalled_n: 1, transitions: {} },
+            south: { vehicles_n: 4, advanced_n: 3, stalled_n: 2, transitions: {} },
           },
         }),
       ],
@@ -90,8 +90,8 @@ describe('movement metric carry doc', () => {
         'F',
         moveRow({
           by_direction: {
-            north: { vehicles_n: 2, advanced_n: 0, stalled_n: 2 },
-            south: { vehicles_n: 3, advanced_n: 1, stalled_n: 0 },
+            north: { vehicles_n: 2, advanced_n: 0, stalled_n: 2, transitions: {} },
+            south: { vehicles_n: 3, advanced_n: 1, stalled_n: 0, transitions: {} },
           },
         }),
       ],

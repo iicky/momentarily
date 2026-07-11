@@ -769,6 +769,43 @@ def build_movement_series_by_direction(
     return series
 
 
+def build_segment_series(
+    bodies: list[dict[str, Any]],
+) -> dict[tuple[str, str, str, str, int], int]:
+    """(route, direction, from_stop, to_stop, tick) -> cross-tick transition count,
+    from the by_direction.transitions the Worker archives. The raw segment leaf for
+    the (route, direction, segment) hierarchical baseline; from==to is a stall in
+    place. Tick is kept so later phases can condition on tod/baseline windows;
+    canonical segment mapping (needs static GTFS stop ordering) is layered on top."""
+    series: dict[tuple[str, str, str, str, int], int] = {}
+    for body in bodies:
+        tick = _snap_tick(int(body.get("observed_at") or 0))
+        rows = cast(dict[str, Any], body.get("rows") or {})
+        for route, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            by_dir = cast(
+                dict[str, Any], cast(dict[str, Any], row).get("by_direction") or {}
+            )
+            for direction in _DIRECTIONS:
+                drow = by_dir.get(direction)
+                if not isinstance(drow, dict):
+                    continue
+                trans = cast(
+                    dict[str, Any], cast(dict[str, Any], drow).get("transitions") or {}
+                )
+                for pair, count in trans.items():
+                    if ">" not in pair:
+                        continue
+                    frm, to = pair.split(">", 1)
+                    n = int(count or 0)
+                    if not frm or not to or n <= 0:
+                        continue
+                    key = (route, direction, frm, to, tick)
+                    series[key] = series.get(key, 0) + n
+    return series
+
+
 # Movement→state thresholds. MIN_MATCHED_TRIPS gates whether a direction has
 # enough cross-tick matches to judge at all; under it the direction abstains.
 MIN_MATCHED_TRIPS = 3  # advanced_n + stalled_n floor to make a cross-tick call

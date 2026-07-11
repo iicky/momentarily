@@ -23,8 +23,8 @@ function move(over: Partial<MovementRow>): MovementRow {
     advanced_n: 8,
     stalled_n: 2,
     by_direction: {
-      north: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
-      south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+      north: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
+      south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
     },
     ...over,
   };
@@ -68,8 +68,8 @@ describe('deriveMovementState', () => {
     // p0=0.9, advanced=8, stalled=1 (matched=9): post = (8*0.9+8)/(8+9) = 15.2/17 ~ 0.894 > 0.45.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
@@ -80,8 +80,8 @@ describe('deriveMovementState', () => {
     // p0=0.9, advanced=0, stalled=12 (matched=12): post = 7.2/20 = 0.36 <= 0.45.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
@@ -94,8 +94,8 @@ describe('deriveMovementState', () => {
     // post = (8*0.1+1)/(8+10) = 1.8/18 = 0.10 > 0.05 (RATIO*p0) -> normal.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 1, stalled_n: 9 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 1, stalled_n: 9, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.1 }) } } });
@@ -111,8 +111,8 @@ describe('deriveMovementState', () => {
     // == 0.5*p0 (<=); tail = 0.875**8 ~= 0.3436 > 0.05 -> null, not the old false 'disrupted'.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 8 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 8, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.125 }) } } });
@@ -124,8 +124,8 @@ describe('deriveMovementState', () => {
     // post ~= 0.030 <= 0.0625 -> disrupted.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 25 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 25, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.125 }) } } });
@@ -137,8 +137,8 @@ describe('deriveMovementState', () => {
     // <= 0.275 (0.5*p0); tail = 0.45**17 ~= 1.2e-6 <= 0.05 -> disrupted.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 17 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 17, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.55 }) } } });
@@ -149,8 +149,8 @@ describe('deriveMovementState', () => {
     // p0=0.55, advanced=8, stalled=9 (matched=17): post = (8*0.55+8)/(8+17) = 0.496 > 0.275 -> normal.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 9 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 9, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.55 }) } } });
@@ -163,8 +163,8 @@ describe('deriveMovementState', () => {
     // is ever evaluated, however degenerate the baseline is (unchanged guard).
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 1 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 1, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({ p0: 0.125 }) } } });
@@ -174,8 +174,8 @@ describe('deriveMovementState', () => {
   test('too few cross-tick matches is unjudgeable (null), even with a baseline', () => {
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 1, stalled_n: 1 },
-        south: { vehicles_n: 5, advanced_n: 0, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 1, stalled_n: 1, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 0, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
@@ -185,8 +185,8 @@ describe('deriveMovementState', () => {
   test('no baseline cell for either direction is unjudgeable (null)', () => {
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     expect(deriveMovementState(ROUTE, move1, svc({}), trainedWithBaseline({}), T0)).toBeNull();
@@ -199,8 +199,8 @@ describe('deriveMovementState', () => {
   test('worst-of: one disrupted direction disrupts the whole route', () => {
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 }, // disrupted
-        south: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 }, // normal
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12, transitions: {} }, // disrupted
+        south: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} }, // normal
       },
     });
     const trained = trainedWithBaseline({
@@ -212,8 +212,8 @@ describe('deriveMovementState', () => {
   test('both directions normal reads normal', () => {
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
-        south: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({
@@ -234,8 +234,8 @@ describe('deriveMovementState', () => {
     // proves suspended never overrides movement, whichever way movement calls it.
     const move1 = move({
       by_direction: {
-        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
-        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+        north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12, transitions: {} },
+        south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
       },
     });
     const trained = trainedWithBaseline({ [ROUTE]: { north: { [BIN]: baselineCell({}) } } });
@@ -301,8 +301,8 @@ describe('deriveMovementStates', () => {
         'A',
         move({
           by_direction: {
-            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
-            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
           },
         }),
       ], // normal
@@ -310,8 +310,8 @@ describe('deriveMovementStates', () => {
         'F',
         move({
           by_direction: {
-            north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
-            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+            north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12, transitions: {} },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
           },
         }),
       ], // disrupted
@@ -319,8 +319,8 @@ describe('deriveMovementStates', () => {
         'G',
         move({
           by_direction: {
-            north: { vehicles_n: 5, advanced_n: 1, stalled_n: 1 },
-            south: { vehicles_n: 5, advanced_n: 0, stalled_n: 1 },
+            north: { vehicles_n: 5, advanced_n: 1, stalled_n: 1, transitions: {} },
+            south: { vehicles_n: 5, advanced_n: 0, stalled_n: 1, transitions: {} },
           },
         }),
       ], // too few matches (baseline present) -> omitted
@@ -328,8 +328,8 @@ describe('deriveMovementStates', () => {
         'N',
         move({
           by_direction: {
-            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
-            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
           },
         }),
       ], // enough matches but no baseline -> omitted
@@ -385,8 +385,8 @@ describe('deriveMovementStates absent routes', () => {
         'A',
         move({
           by_direction: {
-            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1 },
-            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1 },
+            north: { vehicles_n: 5, advanced_n: 8, stalled_n: 1, transitions: {} },
+            south: { vehicles_n: 5, advanced_n: 4, stalled_n: 1, transitions: {} },
           },
         }),
       ],

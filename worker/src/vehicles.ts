@@ -26,6 +26,10 @@ export interface DirMovementRow {
   vehicles_n: number;
   advanced_n: number; // present last tick AND stop_id changed
   stalled_n: number; // present last tick AND stop_id identical
+  // Raw cross-tick from_stop_id>to_stop_id counts (from==to = a stall in place).
+  // The segment-level leaf, archived for later hierarchical baselines; canonical
+  // segment mapping is deferred (GTFS-RT stop_ids can skip/express/reverse).
+  transitions: Record<string, number>;
 }
 
 export interface MovementRow {
@@ -61,7 +65,7 @@ function directionOf(v: VehicleLite): 'north' | 'south' | null {
 }
 
 function emptyDir(): DirMovementRow {
-  return { vehicles_n: 0, advanced_n: 0, stalled_n: 0 };
+  return { vehicles_n: 0, advanced_n: 0, stalled_n: 0, transitions: {} };
 }
 
 function emptyRow(): MovementRow {
@@ -122,6 +126,12 @@ export function deriveRouteMovementMetric(
       } else {
         row.advanced_n += 1;
         if (dirRow) dirRow.advanced_n += 1;
+      }
+      // Raw per-direction transition for the segment leaf. Skip empty stop_ids
+      // so a blank endpoint can't poison a segment cell downstream.
+      if (dirRow && prev && v.stopId) {
+        const key = `${prev}>${v.stopId}`;
+        dirRow.transitions[key] = (dirRow.transitions[key] ?? 0) + 1;
       }
     }
   }

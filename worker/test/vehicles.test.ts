@@ -28,8 +28,8 @@ describe('deriveRouteMovementMetric', () => {
       advanced_n: 0,
       stalled_n: 0,
       by_direction: {
-        north: { vehicles_n: 3, advanced_n: 0, stalled_n: 0 }, // default stop_id A01N
-        south: { vehicles_n: 0, advanced_n: 0, stalled_n: 0 },
+        north: { vehicles_n: 3, advanced_n: 0, stalled_n: 0, transitions: {} }, // default stop_id A01N
+        south: { vehicles_n: 0, advanced_n: 0, stalled_n: 0, transitions: {} },
       },
     });
   });
@@ -49,8 +49,18 @@ describe('deriveRouteMovementMetric', () => {
       prev,
     );
     const a = rows.get('A')!;
-    expect(a.by_direction.north).toEqual({ vehicles_n: 1, advanced_n: 1, stalled_n: 0 });
-    expect(a.by_direction.south).toEqual({ vehicles_n: 2, advanced_n: 1, stalled_n: 1 });
+    expect(a.by_direction.north).toEqual({
+      vehicles_n: 1,
+      advanced_n: 1,
+      stalled_n: 0,
+      transitions: { 'A05N>A06N': 1 },
+    });
+    expect(a.by_direction.south).toEqual({
+      vehicles_n: 2,
+      advanced_n: 1,
+      stalled_n: 1,
+      transitions: { 'A05S>A05S': 1, 'A07S>A09S': 1 },
+    });
     // route totals still aggregate both directions
     expect(a).toMatchObject({ vehicles_n: 3, advanced_n: 2, stalled_n: 1 });
   });
@@ -106,6 +116,79 @@ describe('deriveRouteMovementMetric', () => {
       prev,
     );
     expect(rows.get('F')).toMatchObject({ stalled_n: 2, advanced_n: 0, moving_n: 0 });
+  });
+
+  test('a matched advance records the from>to transition and increments advanced_n', () => {
+    const prev = stopPositions([veh({ tripId: 't1', stopId: 'A09N' })]);
+    const rows = deriveRouteMovementMetric([veh({ routeId: 'A', tripId: 't1', stopId: 'A10N' })], prev);
+    expect(rows.get('A')!.by_direction.north).toEqual({
+      vehicles_n: 1,
+      advanced_n: 1,
+      stalled_n: 0,
+      transitions: { 'A09N>A10N': 1 },
+    });
+  });
+
+  test('a matched stall records the A>A self-transition and increments stalled_n', () => {
+    const prev = stopPositions([veh({ tripId: 't1', stopId: 'A09N' })]);
+    const rows = deriveRouteMovementMetric([veh({ routeId: 'A', tripId: 't1', stopId: 'A09N' })], prev);
+    expect(rows.get('A')!.by_direction.north).toEqual({
+      vehicles_n: 1,
+      advanced_n: 0,
+      stalled_n: 1,
+      transitions: { 'A09N>A09N': 1 },
+    });
+  });
+
+  test('two trips making the same transition sum their counts', () => {
+    const prev = stopPositions([
+      veh({ tripId: 't1', stopId: 'A09N' }),
+      veh({ tripId: 't2', stopId: 'A09N' }),
+    ]);
+    const rows = deriveRouteMovementMetric(
+      [
+        veh({ routeId: 'A', tripId: 't1', stopId: 'A10N' }),
+        veh({ routeId: 'A', tripId: 't2', stopId: 'A10N' }),
+      ],
+      prev,
+    );
+    expect(rows.get('A')!.by_direction.north.transitions).toEqual({ 'A09N>A10N': 2 });
+  });
+
+  test('an unmatched trip (tripId not in prevStops) records no transition', () => {
+    const prev = stopPositions([veh({ tripId: 'other', stopId: 'A09N' })]);
+    const rows = deriveRouteMovementMetric([veh({ routeId: 'A', tripId: 'new-trip', stopId: 'A10N' })], prev);
+    const north = rows.get('A')!.by_direction.north;
+    expect(north.transitions).toEqual({});
+    expect(north.advanced_n).toBe(0);
+    expect(north.stalled_n).toBe(0);
+  });
+
+  test('an unknown-direction vehicle records no transition and no dir-row advance/stall', () => {
+    const prev = stopPositions([veh({ tripId: 'unknown_trip', stopId: 'R05' })]);
+    const rows = deriveRouteMovementMetric([veh({ routeId: 'R', tripId: 'unknown_trip', stopId: 'R06' })], prev);
+    const r = rows.get('R')!;
+    expect(r.advanced_n).toBe(1); // route-level cross-tick still counts
+    expect(r.by_direction.north).toEqual({ vehicles_n: 0, advanced_n: 0, stalled_n: 0, transitions: {} });
+    expect(r.by_direction.south).toEqual({ vehicles_n: 0, advanced_n: 0, stalled_n: 0, transitions: {} });
+  });
+
+  test('transitions attach to the correct direction and never to route-level', () => {
+    const prev = stopPositions([
+      veh({ tripId: 'n1', stopId: 'A09N' }),
+      veh({ tripId: 's1', stopId: 'A09S' }),
+    ]);
+    const rows = deriveRouteMovementMetric(
+      [
+        veh({ routeId: 'A', tripId: 'n1', stopId: 'A10N' }),
+        veh({ routeId: 'A', tripId: 's1', stopId: 'A10S' }),
+      ],
+      prev,
+    );
+    const a = rows.get('A')!;
+    expect(a.by_direction.north.transitions).toEqual({ 'A09N>A10N': 1 });
+    expect(a.by_direction.south.transitions).toEqual({ 'A09S>A10S': 1 });
+    expect(a).not.toHaveProperty('transitions');
   });
 });
 

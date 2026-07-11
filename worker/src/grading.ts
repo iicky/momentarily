@@ -51,6 +51,12 @@ export interface PredictionRecord {
   // The grader segments by this so a fresh retrain's predictions are judged
   // separately from old-params rows in the same window. See momentarily-vk0.5.
   params_version: number;
+  // The published movement-primary current-state condition and its source at
+  // this tick (the alert-shadow lives in `condition` above). Lets the grader
+  // score the escalation arm — movement disrupted where the alert feed read
+  // normal — against later alerts as delayed truth.
+  published_condition: string;
+  condition_source: string;
 }
 
 export interface TransitionRecord {

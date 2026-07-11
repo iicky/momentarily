@@ -43,6 +43,11 @@ from training.episodes import (
     episodes_summary,
     extract_episodes,
 )
+from training.escalation import (
+    DEFAULT_HORIZON_TICKS,
+    escalation_events,
+    escalation_summary,
+)
 from training.eval import (
     PARAMS_KEY,
     TICK_SECONDS,
@@ -566,6 +571,49 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"{prequential['overall'][0]['n']} matched pairs at the primary horizon"
     )
 
+    # Escalation arm: is a movement disruption that goes beyond the alert feed a
+    # genuine leading indicator? No contemporaneous signal can adjudicate it (the
+    # disrupted arm IS the vehicle feed), so score it temporally — how often a
+    # movement escalation is later confirmed by an alert catching up. Prefer the
+    # archived published condition; fall back to the offline recompute, never
+    # mixing the two (their baselines differ, so a boundary onset would be an
+    # artifact). "alerts read normal" uses the breadth truth (any alert flags).
+    published_map: dict[tuple[str, int], str] = {
+        (p.route, snap_tick(p.ts)): p.published_condition
+        for p in preds
+        if p.published_condition is not None
+    }
+    window_ticks = set(
+        range(snap_tick(window_start), snap_tick(window_end) + 1, TICK_SECONDS)
+    )
+    pub_ticks = {t for (_r, t) in published_map}
+    pub_coverage = len(pub_ticks & window_ticks) / max(1, len(window_ticks))
+    esc_state, esc_source = (
+        (published_map, "published_archive")
+        if pub_coverage >= 0.9
+        else (movement_truth, "offline_movement_rule")
+    )
+    alert_disrupted = {k for k, v in truth_breadth.items() if v != "normal"}
+    esc_events = escalation_events(
+        esc_state,
+        alert_disrupted,
+        horizon_ticks=DEFAULT_HORIZON_TICKS,
+        tick_seconds=TICK_SECONDS,
+    )
+    escalation = escalation_summary(
+        esc_events,
+        horizon_ticks=DEFAULT_HORIZON_TICKS,
+        tick_seconds=TICK_SECONDS,
+        source=esc_source,
+    )
+    print(
+        f"  escalation ({esc_source}): {escalation['n_escalations']} onsets, "
+        f"{escalation['n_alert_confirmed']} alert-confirmed "
+        f"(median lead {escalation['lead_minutes_median']} min), "
+        f"{escalation['n_evaporated']} evaporated, "
+        f"{escalation['n_post_alert_tail']} post-alert tails excluded"
+    )
+
     plot_reliability(eval_doc, out_dir / "reliability.png")
     plot_recovery_by_route(eval_doc, out_dir / "recovery_by_route.png")
     plot_confusion(
@@ -646,6 +694,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             "truth_source": "vehicle_movement",
             "independence": "self_consistency (movement is an HMM input)",
         },
+        # Escalation arm: movement disruptions beyond the alert feed, scored
+        # temporally (no contemporaneous signal can adjudicate the vehicle-derived
+        # disrupted arm). alert_confirmed_rate is a lower bound; source records
+        # whether the cohort came from the published archive or the offline recompute.
+        "escalation": escalation,
         "episodes": episodes_summary(episodes),
         "episode_scorecard": scorecard,
         "changepoint_alignment": {

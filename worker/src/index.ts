@@ -369,6 +369,8 @@ export default {
           resumes_at: inf.resumes_at,
           primary_alert_type: rs.primary_alert_type,
           params_version: paramsVersion,
+          published_condition: rs.condition,
+          condition_source: rs.condition_source,
         });
       }
       try {

@@ -87,6 +87,12 @@ class PredictionRecord:
     # schedule adherence elsewhere). None for JSONL written before schedule
     # recovery shipped; treated as "hmm".
     recovery_source: str | None = None
+    # The published movement-primary current-state condition + its source at this
+    # tick (the alert-shadow is `condition` above). None for JSONL written before
+    # escalation-arm grading shipped; the review scores movement escalations —
+    # disrupted where the alert feed read normal — against later alerts.
+    published_condition: str | None = None
+    condition_source: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -108,6 +114,8 @@ class PredictionRecord:
             primary_alert_type=raw.get("primary_alert_type"),
             params_version=int(raw.get("params_version") or 0),
             recovery_source=raw.get("recovery_source"),
+            published_condition=raw.get("published_condition"),
+            condition_source=raw.get("condition_source"),
         )
 
 

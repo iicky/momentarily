@@ -63,12 +63,14 @@ from training.eval import (
 from training.load import TickObservation
 from training.load_r2 import (
     Disruption,
+    PresenceMask,
     build_movement_series_by_direction,
     build_movement_truth,
     build_tick_observations,
     compute_advance_baseline,
     fetch_alert_versions,
     fetch_vehicle_metrics,
+    presence_mask_from_predictions,
 )
 from training.r2_client import load_config, make_client
 from training.scorecard import dwell_lookup_from_params, episode_scorecard
@@ -116,15 +118,19 @@ def load_truth_observations(
     bucket: str,
     start_date: Any,
     end_date: Any,
+    *,
+    mask: PresenceMask | None = None,
 ) -> list[TickObservation]:
     """Per-(route, tick) observations from the alerts archive, with the active
     alert_types retained for severity grading. Fetched once; both the broad and
-    graded truths derive from it."""
+    graded truths derive from it. With `mask` (built from the predictions
+    stream), over-extended open-ended alert tails are dropped so severe episodes
+    actually close -- otherwise every open alert runs to corpus end. See 06j."""
     del bucket  # client carries its own configured bucket via load_config
     bodies = fetch_alert_versions(
         start_date=start_date, end_date=end_date, client=client
     )
-    return build_tick_observations(bodies)
+    return build_tick_observations(bodies, active_mask=mask)
 
 
 def mta_truth(
@@ -152,9 +158,10 @@ def build_mta_truth(
     end_date: Any,
     *,
     severity_floor: int = CANONICAL_SEVERITY_FLOOR,
+    mask: PresenceMask | None = None,
 ) -> dict[tuple[str, int], str]:
     """Convenience: fetch + derive the truth in one call."""
-    obs_list = load_truth_observations(client, bucket, start_date, end_date)
+    obs_list = load_truth_observations(client, bucket, start_date, end_date, mask=mask)
     return mta_truth(obs_list, severity_floor=severity_floor)
 
 
@@ -469,7 +476,19 @@ def main(argv: Iterable[str] | None = None) -> int:
     trans = load_transitions(client, cfg.bucket, start_date, today)
     print(f"  {len(preds)} predictions, {len(trans)} transitions")
     print("loading alerts archive for MTA-state truth")
-    truth_obs = load_truth_observations(client, cfg.bucket, start_date, today)
+    mask = presence_mask_from_predictions(preds)
+    print(
+        f"  presence mask: {len(mask.covered)} covered ticks, "
+        f"{len(mask.active)} active (route, tick) cells"
+    )
+    if not mask.covered:
+        print(
+            "  WARNING: empty presence mask -> truth reconstruction falls back to "
+            "raw (over-extended) alert tails; severe episodes may not close."
+        )
+    truth_obs = load_truth_observations(
+        client, cfg.bucket, start_date, today, mask=mask
+    )
     truth = mta_truth(truth_obs, severity_floor=args.severity_floor)
     truth_breadth = mta_truth(truth_obs, severity_floor=1)
     reclassified = sum(1 for k, v in truth_breadth.items() if truth.get(k) != v)

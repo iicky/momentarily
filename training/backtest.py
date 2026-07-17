@@ -32,7 +32,12 @@ Read-only, offline. No R2 writes, no deploy.
 
 Run with:
     PYTHONPATH=. murk exec -- .venv/bin/python -m training.backtest \
-        [--eval-days 3] [--train-days 6]
+        [--eval-days 3] [--train-days 6] [--eval-end YYYY-MM-DD]
+
+--eval-end anchors the window on a past day (default today) so a historical
+incident-rich window can be replayed; truth is loaded one day past it so the
+last day's futures resolve to real outcomes, and scored ticks are bounded to
+the eval window.
 
 v1 approximations (deliberately crude — this is a go/no-go, not the HSMM itself):
   * single-jump: after the current regime ends we don't re-apply a duration, we
@@ -52,10 +57,10 @@ import json
 import math
 import sys
 from collections import defaultdict
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from momentarily.hmm import (
     STATES,
@@ -72,12 +77,30 @@ from training.competing_risks import (
     cif_curves,
     conditional_cif,
 )
-from training.dwell import compute_dwell_quantiles, dwell_cdf, dwell_samples_by_cell
-from training.eval import TICK_SECONDS, TransitionRecord, load_transitions, snap_tick
-from training.load_r2 import load_route_series_r2
+from training.dwell import (
+    compute_dwell_quantiles,
+    compute_dwell_quantiles_by_cause,
+    dwell_cdf,
+    dwell_samples_by_cell,
+)
+from training.episodes import disruptive_types_by_key, extract_episodes
+from training.eval import (
+    TICK_SECONDS,
+    TransitionRecord,
+    load_predictions,
+    load_transitions,
+    snap_tick,
+)
+from training.load_r2 import load_route_series_r2, presence_mask_from_predictions
 from training.r2_client import load_config, make_client
-from training.review import build_mta_truth, derive_mta_state
-from training.survival import ParametricFit, fit_loglogistic, loglogistic_survival
+from training.review import derive_mta_state, load_truth_observations, mta_truth
+from training.scorecard import cause_dwell_lookup, episode_recovery
+from training.survival import (
+    ParametricFit,
+    fit_loglogistic,
+    loglogistic_survival,
+    loglogistic_tail,
+)
 from training.train_em import load_series_by_route, train
 
 HORIZONS_MIN = (30, 60, 120)
@@ -217,29 +240,131 @@ def _bss(model: float | None, base: float | None) -> float | None:
     return 1.0 - model / base
 
 
-def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]:
-    today = datetime.now(UTC).date()
-    eval_start = today - timedelta(days=eval_days - 1)
+@dataclass(frozen=True)
+class BacktestWindow:
+    """Resolved train/eval bounds for one backtest run (see compute_window)."""
+
+    train_start: date
+    train_end: date
+    eval_start: date
+    eval_end: date
+    warmup_start: date
+    truth_end: date
+    is_historical: bool
+    eval_start_epoch: int
+    train_end_epoch: int
+    eval_end_epoch: int
+    outcome_bound_epoch: int
+
+
+def _midnight_epoch(d: date) -> int:
+    return int(datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp())
+
+
+def compute_window(
+    eval_days: int,
+    train_days: int,
+    eval_end: date | None,
+    *,
+    now: datetime,
+) -> BacktestWindow:
+    """Derive every date/epoch bound for a backtest from the eval-end anchor.
+
+    A live run (eval_end omitted or today) scores only futures that have already
+    elapsed. A historical run loads truth one day past eval_end so the last day's
+    +max-horizon futures resolve to real outcomes instead of defaulting normal,
+    and bounds scored ticks to [eval_start, eval_end] so reconstruction spillover
+    into eval_end+1 is never scored.
+    """
+    today = now.date()
+    eval_end = eval_end or today
+    eval_start = eval_end - timedelta(days=eval_days - 1)
     train_end = eval_start - timedelta(days=1)
     train_start = train_end - timedelta(days=train_days - 1)
     warmup_start = eval_start - timedelta(days=1)
+    is_historical = eval_end < today
+    truth_end = eval_end + timedelta(days=1) if is_historical else eval_end
+    outcome_bound_epoch = (
+        int(now.timestamp())
+        if not is_historical
+        else _midnight_epoch(truth_end + timedelta(days=1))
+    )
+    return BacktestWindow(
+        train_start=train_start,
+        train_end=train_end,
+        eval_start=eval_start,
+        eval_end=eval_end,
+        warmup_start=warmup_start,
+        truth_end=truth_end,
+        is_historical=is_historical,
+        eval_start_epoch=_midnight_epoch(eval_start),
+        train_end_epoch=_midnight_epoch(train_end + timedelta(days=1)),
+        eval_end_epoch=_midnight_epoch(eval_end + timedelta(days=1)),
+        outcome_bound_epoch=outcome_bound_epoch,
+    )
 
-    eval_start_epoch = int(
-        datetime(
-            eval_start.year, eval_start.month, eval_start.day, tzinfo=UTC
-        ).timestamp()
+
+# Extra days of truth loaded past eval_end so an incident that onsets late in the
+# eval window and clears shortly after is graded as a recovery, not censored.
+RECOVERY_TAIL_DAYS = 2
+
+
+def grade_recovery_timing(
+    train_trans: list[TransitionRecord],
+    truth: dict[tuple[str, int], str],
+    types: dict[tuple[str, int], tuple[str, ...]],
+    *,
+    train_end_epoch: int,
+    eval_start_epoch: int,
+    eval_end_epoch: int,
+    window_end_epoch: int,
+) -> dict[str, Any]:
+    """Grade the current recovery model's timing on held-out incident episodes.
+
+    Dwell curves are fit on the TRAIN transitions only (cause -> state -> pooled,
+    each with a log-logistic tail), matching the episode grader's cause buckets
+    and the production tail splice -- no leakage. Episodes are the severe-only
+    truth incidents whose onset falls in the eval window; recovery may land in the
+    loaded tail past eval_end, so incidents that clear soon after aren't censored.
+    """
+    by_cause = compute_dwell_quantiles_by_cause(train_trans, tail_fn=loglogistic_tail)
+    by_state = compute_dwell_quantiles(
+        train_trans, window_end=train_end_epoch, tail_fn=loglogistic_tail
     )
-    train_end_epoch = int(
-        (
-            datetime(train_end.year, train_end.month, train_end.day, tzinfo=UTC)
-            + timedelta(days=1)
-        ).timestamp()
+    pooled = compute_dwell_quantiles(
+        [replace(t, route="*") for t in train_trans],
+        window_end=train_end_epoch,
+        tail_fn=loglogistic_tail,
+    ).get("*", {})
+    lookup = cause_dwell_lookup(by_cause, by_state, pooled)
+    eps = extract_episodes(
+        truth, types, window_start=eval_start_epoch, window_end=window_end_epoch
     )
-    now_epoch = int(datetime.now(UTC).timestamp())
+    eval_eps = [e for e in eps if eval_start_epoch <= e.onset < eval_end_epoch]
+    rec = episode_recovery(eval_eps, lookup)
+    return {"n_eval_episodes": len(eval_eps), **rec}
+
+
+def run(
+    eval_days: int,
+    train_days: int,
+    out_dir: Path | None,
+    eval_end: date | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    now_epoch = int(now.timestamp())
+    w = compute_window(eval_days, train_days, eval_end, now=now)
+    train_start, train_end = w.train_start, w.train_end
+    eval_start, eval_end = w.eval_start, w.eval_end
+    warmup_start = w.warmup_start
+    eval_start_epoch = w.eval_start_epoch
+    train_end_epoch = w.train_end_epoch
+    eval_end_epoch = w.eval_end_epoch
+    outcome_bound_epoch = w.outcome_bound_epoch
 
     print(
         f"train {train_start}..{train_end} ({train_days}d)  |  "
-        f"eval {eval_start}..{today} ({eval_days}d, +1d warmup lead)",
+        f"eval {eval_start}..{eval_end} ({eval_days}d, +1d warmup lead)",
         file=sys.stderr,
     )
 
@@ -312,10 +437,20 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
         file=sys.stderr,
     )
 
-    # --- truth over the eval window (current + future for outcome lookup) ---
-    truth = build_mta_truth(
-        client, cfg.bucket, eval_start, today, severity_floor=CANONICAL_SEVERITY_FLOOR
+    # --- truth over the eval window, plus a recovery tail so incidents that clear
+    # shortly after eval_end aren't censored (truth also feeds outcome lookup) ---
+    episode_truth_end = min(eval_end + timedelta(days=RECOVERY_TAIL_DAYS), now.date())
+    mask_preds = load_predictions(client, cfg.bucket, eval_start, episode_truth_end)
+    mask = presence_mask_from_predictions(mask_preds)
+    print(
+        f"presence mask: {len(mask.covered)} covered ticks, "
+        f"{len(mask.active)} active cells (from {len(mask_preds)} predictions)",
+        file=sys.stderr,
     )
+    truth_obs = load_truth_observations(
+        client, cfg.bucket, eval_start, episode_truth_end, mask=mask
+    )
+    truth = mta_truth(truth_obs, severity_floor=CANONICAL_SEVERITY_FLOOR)
 
     # --- replay held-out window per route, collect samples per horizon ---
     # samples[h] : list of (route, {model: p_normal}, persistence, outcome, disrupted_now)
@@ -327,7 +462,7 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
 
     for route, params in sorted(params_by_route.items()):
         series = load_route_series_r2(
-            route, start_date=warmup_start, end_date=today, config=cfg
+            route, start_date=warmup_start, end_date=eval_end, config=cfg
         )
         if not series:
             continue
@@ -343,13 +478,13 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
                 geom_state, published, tick_obs.observation, params, now=tick_obs.tick
             )
             tick = tick_obs.tick
-            if tick < eval_start_epoch:
-                continue  # warmup lead, don't score
+            if tick < eval_start_epoch or tick >= eval_end_epoch:
+                continue  # warmup lead or reconstruction spillover, don't score
             cur_state = truth.get((route, snap_tick(tick)), "normal")
             persistence = 1.0 if cur_state == "normal" else 0.0
             for h in HORIZONS_MIN:
                 future = snap_tick(tick) + h * 60
-                if future > now_epoch:
+                if future > outcome_bound_epoch:
                     continue  # no observed outcome yet
                 outcome = (
                     1.0 if truth.get((route, future), "normal") == "normal" else 0.0
@@ -434,6 +569,29 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
             }
         )
 
+    types = disruptive_types_by_key(truth_obs)
+    # extract_episodes loops tick <= snap_tick(window_end): use the last grid tick
+    # of the loaded truth so the next day's first tick isn't swept in.
+    episode_window_end_epoch = min(
+        now_epoch,
+        _midnight_epoch(episode_truth_end + timedelta(days=1)) - TICK_SECONDS,
+    )
+    recovery = grade_recovery_timing(
+        train_trans,
+        truth,
+        types,
+        train_end_epoch=train_end_epoch,
+        eval_start_epoch=eval_start_epoch,
+        eval_end_epoch=eval_end_epoch,
+        window_end_epoch=episode_window_end_epoch,
+    )
+    recovery["window"] = {
+        "recovery_tail_days": RECOVERY_TAIL_DAYS,
+        "episode_truth_end": str(episode_truth_end),
+        "onset_from": str(eval_start),
+        "onset_to": str(eval_end),
+    }
+
     doc = {
         "generated_at": now_epoch,
         "truth_version": TRUTH_VERSION,
@@ -443,18 +601,40 @@ def run(eval_days: int, train_days: int, out_dir: Path | None) -> dict[str, Any]
             "end": str(train_end),
             "days": train_days,
         },
-        "eval_window": {"start": str(eval_start), "end": str(today), "days": eval_days},
+        "eval_window": {
+            "start": str(eval_start),
+            "end": str(eval_end),
+            "days": eval_days,
+        },
         "train_observations": corpus.n_observations,
         "horizons": results,
+        "recovery_timing": recovery,
     }
 
     _print_report(doc)
 
-    out_dir = out_dir or Path("docs/review") / f"{today.isoformat()}-backtest-hsmm"
+    out_dir = out_dir or Path("docs/review") / f"{eval_end.isoformat()}-backtest-hsmm"
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "summary.json").write_text(json.dumps(doc, indent=2))
+    (out_dir / "summary.json").write_text(
+        json.dumps(_json_safe(doc), indent=2, allow_nan=False)
+    )
     print(f"\nwrote {out_dir}/summary.json", file=sys.stderr)
     return doc
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/inf) with None so the summary
+    is valid strict JSON -- json.dumps writes bare NaN/Infinity otherwise, which
+    JS and strict parsers reject."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        items = cast("dict[Any, Any]", obj).items()
+        return {k: _json_safe(v) for k, v in items}
+    if isinstance(obj, list | tuple):
+        seq = cast("list[Any] | tuple[Any, ...]", obj)
+        return [_json_safe(v) for v in seq]
+    return obj
 
 
 def _stratum_table(title: str, doc: dict[str, Any], key: str) -> None:
@@ -509,8 +689,9 @@ def _print_report(doc: dict[str, Any]) -> None:
         "normal_now",
     )
 
-    # Lower Brier = better. Persistence is a degenerate yardstick on this sticky
-    # truth, so rank the arms against each other on the disrupted-now stratum.
+    # Lower Brier = better. When disruptions persist through every horizon,
+    # persistence is a degenerate 0 yardstick, so rank the arms against each
+    # other on the disrupted-now stratum.
     strata = [r["disrupted_now"] for r in doc["horizons"] if r.get("disrupted_now")]
 
     def _mean(model: str) -> float | None:
@@ -520,12 +701,31 @@ def _print_report(doc: dict[str, Any]) -> None:
         return sum(vals) / len(vals) if vals else None
 
     means = {m: _mean(m) for m in MODELS}
+    # Persistence Brier == 0 across the stratum means no disrupted tick recovered
+    # within any horizon: the arm ranking then only reflects how confidently each
+    # predicts CONTINUED disruption, not recovery timing.
+    persist_vals = [
+        s["brier_persistence"] for s in strata if s.get("brier_persistence") is not None
+    ]
+    no_recoveries = bool(persist_vals) and max(persist_vals) < 1e-9
+    if no_recoveries:
+        print(
+            "\n  NOTE: no disrupted-now tick recovered within any horizon "
+            "(persistence Brier 0)."
+        )
+        print(
+            "  The ranking below measures continued-disruption prediction, "
+            "NOT recovery timing."
+        )
     print("\n  mean Brier (disrupted-now, lower=better):")
     for m, v in sorted(means.items(), key=lambda kv: (kv[1] is None, kv[1])):
         print(f"    {m:>8}: {v:.4f}" if v is not None else f"    {m:>8}:   n/a")
     valid = {m: v for m, v in means.items() if v is not None}
     best = min(valid, key=valid.__getitem__)
-    print(f"\n  BEST FORECAST ARM: {best} (mean Brier {means[best]:.4f})")
+    best_label = (
+        "BEST ARM (continued-disruption)" if no_recoveries else "BEST FORECAST ARM"
+    )
+    print(f"\n  {best_label}: {best} (mean Brier {means[best]:.4f})")
     if means.get("geom") and means.get("km"):
         print(
             f"  projection effect (geom proj -> KM-residual proj): "
@@ -534,11 +734,48 @@ def _print_report(doc: dict[str, Any]) -> None:
     m_km, m_ll = means.get("km"), means.get("km_ll")
     if m_km is not None and m_ll is not None:
         delta = m_ll - m_km
-        verdict = "ship" if delta < 0 else "no ship"
+        if no_recoveries:
+            direction = "lower" if delta < 0 else "higher" if delta > 0 else "equal"
+            verdict = f"{direction} on continued-disruption only"
+        else:
+            verdict = "ship" if delta < 0 else "no ship"
         print(
             f"  tail splice effect (exp tail -> log-logistic tail): "
             f"{m_km:.4f} -> {m_ll:.4f} (Δ {delta:+.4f}, {verdict})"
         )
+    rec: dict[str, Any] = doc.get("recovery_timing") or {}
+    print("\nRECOVERY TIMING (current model, no-leakage temporal split):")
+    n_scored = rec.get("n_scored", 0)
+    print(
+        f"  episodes: {rec.get('n_eval_episodes', 0)} onset-in-window, "
+        f"{n_scored} scored, {rec.get('n_censored_excluded', 0)} censored, "
+        f"{rec.get('n_no_curve', 0)} no-curve"
+    )
+    report: dict[str, Any] = rec.get("report") or {}
+    pr: dict[str, Any] = report.get("per_regime") or {}
+    if n_scored and pr:
+        print(
+            f"  CRPS/min per-incident {pr['mean_crps']:.1f} "
+            f"(climatology {pr['baseline_crps']:.1f}, skill {pr['skill']:+.2f})"
+        )
+        print(
+            f"  PIT mean per-incident {pr['mean_pit']:.2f} "
+            "(<0.5 pessimistic / >0.5 optimistic / 0.5 calibrated)"
+        )
+        horizons: list[dict[str, float]] = report.get("horizons") or []
+        for hz in horizons:
+            print(
+                f"    recover-by-{int(hz['h'])}min: predicted "
+                f"{hz['predicted']:.2f} vs observed {hz['observed']:.2f}"
+            )
+        rec_verdict: dict[str, Any] = rec.get("verdict") or {}
+        if rec_verdict.get("verdict"):
+            print(
+                f"  verdict: {rec_verdict['verdict']} — "
+                f"{rec_verdict.get('explain', '')}"
+            )
+    else:
+        print("  not enough uncensored episodes with a dwell curve to grade timing.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -553,8 +790,14 @@ def main(argv: list[str] | None = None) -> int:
         help="training window length (precedes eval)",
     )
     p.add_argument("--out", type=Path, default=None, help="output dir")
+    p.add_argument(
+        "--eval-end",
+        type=date.fromisoformat,
+        default=None,
+        help="last eval day (YYYY-MM-DD); default today, for a historical window",
+    )
     args = p.parse_args(argv)
-    run(args.eval_days, args.train_days, args.out)
+    run(args.eval_days, args.train_days, args.out, eval_end=args.eval_end)
     return 0
 
 

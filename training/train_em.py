@@ -36,6 +36,7 @@ from training.dwell import (
     DwellQuantiles,
     compute_dwell_quantiles,
     compute_dwell_quantiles_by_alert,
+    compute_dwell_quantiles_by_cause,
 )
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
@@ -311,6 +312,9 @@ def write_params(
     dwell_quantiles_by_alert: (
         dict[str, dict[str, dict[str, DwellQuantiles]]] | None
     ) = None,
+    dwell_quantiles_by_cause: (
+        dict[str, dict[str, dict[str, DwellQuantiles]]] | None
+    ) = None,
     hyperparams: dict[str, Any] | None = None,
     input_profile: dict[str, Any] | None = None,
     movement_baseline: dict[str, Any] | None = None,
@@ -338,6 +342,14 @@ def write_params(
         for r, by_state_alert in dwell_quantiles_by_alert.items():
             if r in routes_doc:
                 routes_doc[r]["dwell_quantiles_by_alert"] = by_state_alert
+    if dwell_quantiles_by_cause:
+        # Cause-CATEGORY dwell for the episode-recovery grader (Episode.cause is a
+        # coarse category, not a raw alert_type). The Worker ignores this key
+        # (zod strips it); scorecard.dwell_lookup_from_params reads it so the
+        # grade stops silently falling back to the (route, state) aggregate. 1a6.
+        for r, by_state_cause in dwell_quantiles_by_cause.items():
+            if r in routes_doc:
+                routes_doc[r]["dwell_quantiles_by_cause"] = by_state_cause
     doc = {
         "schema_version": SCHEMA_VERSION,
         "trained_at": trained_at,
@@ -474,6 +486,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="print learned params instead of writing to R2",
     )
+    parser.add_argument(
+        "--allow-empty-baseline",
+        action="store_true",
+        help="publish even if the movement advance-baseline is empty (0 cells); "
+        "the movement-primary condition stays off. Default: refuse to publish.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -505,6 +523,22 @@ def main(argv: Iterable[str] | None = None) -> int:
     movement_baseline, n_baseline_cells, route_advance_rates = _movement_baseline(
         cfg, client, start_date, end_date
     )
+    if n_baseline_cells == 0 and not (args.dry_run or args.allow_empty_baseline):
+        print(
+            "ERROR: movement advance-baseline is EMPTY (0 cells) -- refusing to "
+            "publish params that would silently disable the movement-primary "
+            "condition (every route reads 'unknown'). Check vehicle-archive "
+            "by_direction coverage over the training window, or pass "
+            "--allow-empty-baseline to publish an alerts-only params set.",
+            file=sys.stderr,
+        )
+        return 1
+    if n_baseline_cells == 0:
+        print(
+            "WARNING: movement advance-baseline is EMPTY (0 cells) -- the "
+            "movement-primary condition will publish 'unknown' for every route.",
+            file=sys.stderr,
+        )
     # Assigned_n service baseline (per route, tod) for the Worker's service
     # emission channel — it divides live assigned_n by this to form the ratio.
     service_baseline, n_service_cells, schedule_rate, n_schedule_cells = (
@@ -535,11 +569,19 @@ def main(argv: Iterable[str] | None = None) -> int:
     dwell_q_by_alert = compute_dwell_quantiles_by_alert(
         transitions, tail_fn=loglogistic_tail
     )
+    dwell_q_by_cause = compute_dwell_quantiles_by_cause(
+        transitions, tail_fn=loglogistic_tail
+    )
     n_dwell_cells = sum(len(by_state) for by_state in dwell_q.values())
     n_dwell_alert_cells = sum(
         len(by_alert)
         for by_state in dwell_q_by_alert.values()
         for by_alert in by_state.values()
+    )
+    n_dwell_cause_cells = sum(
+        len(by_cause)
+        for by_state in dwell_q_by_cause.values()
+        for by_cause in by_state.values()
     )
 
     if args.dry_run:
@@ -550,6 +592,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         for r, by_state_alert in dwell_q_by_alert.items():
             if r in dry_routes:
                 dry_routes[r]["dwell_quantiles_by_alert"] = by_state_alert
+        for r, by_state_cause in dwell_q_by_cause.items():
+            if r in dry_routes:
+                dry_routes[r]["dwell_quantiles_by_cause"] = by_state_cause
         print(
             json.dumps(
                 {
@@ -557,6 +602,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "routes": dry_routes,
                     "dwell_cells": n_dwell_cells,
                     "dwell_alert_cells": n_dwell_alert_cells,
+                    "dwell_cause_cells": n_dwell_cause_cells,
                     "baseline_cells": n_baseline_cells,
                     "service_cells": n_service_cells,
                 },
@@ -593,6 +639,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         n_routes_trained=n_routes_trained,
         dwell_quantiles=dwell_q,
         dwell_quantiles_by_alert=dwell_q_by_alert,
+        dwell_quantiles_by_cause=dwell_q_by_cause,
         hyperparams=hyperparams,
         input_profile=input_profile,
         movement_baseline=movement_baseline,
@@ -603,7 +650,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
-        f"dwell_alert_cells={n_dwell_alert_cells}, baseline_cells={n_baseline_cells}, "
+        f"dwell_alert_cells={n_dwell_alert_cells}, "
+        f"dwell_cause_cells={n_dwell_cause_cells}, baseline_cells={n_baseline_cells}, "
         f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells})"
     )
     return 0

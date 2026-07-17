@@ -894,7 +894,9 @@ def test_main_passes_service_baseline_through_to_write_params(
     monkeypatch.setattr("training.train_em._service_baseline", _fake_service_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
-    exit_code = main(["--start", "2026-06-01", "--end", "2026-06-14"])
+    exit_code = main(
+        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+    )
 
     assert exit_code == 0
     assert captured_kwargs["service_baseline"] == sentinel_baseline
@@ -964,7 +966,136 @@ def test_main_passes_advance_priors_through_to_train(
     monkeypatch.setattr("training.train_em.train", _fake_train)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
-    exit_code = main(["--start", "2026-06-01", "--end", "2026-06-14"])
+    exit_code = main(
+        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+    )
 
     assert exit_code == 0
     assert captured_kwargs["advance_priors"] == sentinel_route_rates
+
+
+def test_main_refuses_empty_movement_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0 baseline cells silently disables the movement-primary condition, so
+    main() refuses to publish unless --allow-empty-baseline is passed."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    series = {"R1": _quiet(10)}
+    corpus = CorpusStats(
+        start_tick=0, end_tick=MIN_DATA_DAYS * 86_400 + 1, n_observations=10
+    )
+    published: list[str] = []
+
+    def _fake_load_config() -> R2Config:
+        return cfg
+
+    def _fake_make_client(config: R2Config | None = None) -> S3Client:
+        return fake_client
+
+    def _fake_load_series_by_route(
+        cfg_arg: R2Config, start: date, end: date
+    ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
+        return series, corpus, {}
+
+    def _fake_load_transitions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[TransitionRecord]:
+        return []
+
+    def _fake_movement_baseline(
+        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+    ) -> tuple[dict[str, Any], int, dict[str, float]]:
+        return {}, 0, {}
+
+    def _fake_write_params(*args: Any, **kwargs: Any) -> str:
+        published.append("wrote")
+        return "state/params/v1.json"
+
+    monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
+    monkeypatch.setattr(
+        "training.train_em.load_series_by_route", _fake_load_series_by_route
+    )
+    monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
+    monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
+
+    assert main(["--start", "2026-06-01", "--end", "2026-06-14"]) == 1
+    assert published == []
+    assert (
+        main(["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"])
+        == 0
+    )
+    assert published == ["wrote"]
+
+
+def test_main_passes_dwell_by_cause_through_to_write_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main() threads cause-conditioned dwell quantiles into write_params so the
+    episode-recovery grader's dwell_quantiles_by_cause lookup resolves (1a6)."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    series = {"R1": _quiet(10)}
+    corpus = CorpusStats(
+        start_tick=0, end_tick=MIN_DATA_DAYS * 86_400 + 1, n_observations=10
+    )
+    transitions = [
+        TransitionRecord(
+            ts=i * 10_000,
+            route="R1",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=i * 10_000 - 300 * i,
+            exited_at=i * 10_000,
+            dwell_sec=300 * i,
+            alert_type_at_entry="Delays",
+        )
+        for i in range(1, 7)
+    ]
+    captured: dict[str, Any] = {}
+
+    def _fake_load_config() -> R2Config:
+        return cfg
+
+    def _fake_make_client(config: R2Config | None = None) -> S3Client:
+        return fake_client
+
+    def _fake_load_series_by_route(
+        cfg_arg: R2Config, start: date, end: date
+    ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
+        return series, corpus, {}
+
+    def _fake_load_transitions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[TransitionRecord]:
+        return transitions
+
+    def _fake_movement_baseline(
+        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+    ) -> tuple[dict[str, Any], int, dict[str, float]]:
+        return {}, 0, {}
+
+    def _fake_write_params(*args: Any, **kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "state/params/v1.json"
+
+    monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
+    monkeypatch.setattr(
+        "training.train_em.load_series_by_route", _fake_load_series_by_route
+    )
+    monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
+    monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
+
+    exit_code = main(
+        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+    )
+    assert exit_code == 0
+    by_cause = captured["dwell_quantiles_by_cause"]
+    assert "R1" in by_cause
+    causes = by_cause["R1"]["disrupted"]
+    assert len(causes) == 1
+    assert next(iter(causes.values()))["n"] == 6

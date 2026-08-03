@@ -20,7 +20,7 @@ Two views, both terminal-robust:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from training.hierarchical import PooledCell
 from training.load_r2 import AdvanceBaseline
@@ -179,23 +179,3 @@ def segment_reliability(
         )
     scores.sort(key=lambda s: s.deficit, reverse=True)
     return scores
-
-
-def peer_scorecard(
-    direction_baseline: Mapping[tuple[str, str, int], AdvanceBaseline],
-    direction_observed: Mapping[tuple[str, str], tuple[int, int]],
-    segment_baseline: Mapping[tuple[str, str, str], PooledCell],
-    segment_observed: Mapping[tuple[str, str, str], tuple[int, int]],
-    adjacency: Mapping[tuple[str, str, str], Adjacency],
-) -> dict[str, list[dict[str, object]]]:
-    """Serialize both leaderboards for summary.json (viz Models page)."""
-    return {
-        "directions": [
-            asdict(s)
-            for s in direction_reliability(direction_baseline, direction_observed)
-        ],
-        "segments": [
-            asdict(s)
-            for s in segment_reliability(segment_baseline, segment_observed, adjacency)
-        ],
-    }

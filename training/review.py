@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -75,9 +76,10 @@ from training.load_r2 import (
     presence_mask_from_predictions,
 )
 from training.r2_client import load_config, make_client
-from training.reliability import peer_scorecard
+from training.reliability import direction_reliability, segment_reliability
 from training.scorecard import dwell_lookup_from_params, episode_scorecard
 from training.segments import canonical_adjacency
+from training.station_flow import station_flow_json
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -583,16 +585,25 @@ def main(argv: Iterable[str] | None = None) -> int:
     adjacency = canonical_adjacency(
         baseline_bodies
     )  # causal: successors from the pre-window
-    scorecard_peers = peer_scorecard(
-        movement_baseline,
-        {k: (a, m) for k, (a, m) in dir_observed.items()},
+    dir_scores = direction_reliability(
+        movement_baseline, {k: (a, m) for k, (a, m) in dir_observed.items()}
+    )
+    seg_scores = segment_reliability(
         segment_baseline,
         {k: (a, m) for k, (a, m) in seg_observed.items()},
         adjacency,
     )
+    scorecard_peers = {
+        "directions": [asdict(s) for s in dir_scores],
+        "segments": [asdict(s) for s in seg_scores],
+    }
+    # Roll the segment scores up to per-station service flow (vhh.8): is MY station
+    # moving, the question riders actually ask.
+    station_flows = station_flow_json(seg_scores)
     print(
-        f"  peer scorecard: {len(scorecard_peers['directions'])} directions, "
-        f"{len(scorecard_peers['segments'])} segments ranked by advance deficit"
+        f"  peer scorecard: {len(dir_scores)} directions, {len(seg_scores)} segments; "
+        f"station flow: {sum(1 for s in station_flows if s['status'] == 'degraded')}"
+        f"/{len(station_flows)} stations degraded"
     )
 
     window_end = int(datetime.now(UTC).timestamp())
@@ -787,6 +798,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "episodes": episodes_summary(episodes),
         "episode_scorecard": scorecard,
         "peer_scorecard": scorecard_peers,
+        "station_flow": station_flows,
         "changepoint_alignment": {
             "window_minutes": CHANGEPOINT_WINDOW_MIN,
             "n_total": len(deltas),

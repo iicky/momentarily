@@ -66,6 +66,8 @@ from training.load_r2 import (
     PresenceMask,
     build_movement_series_by_direction,
     build_movement_truth,
+    build_segment_baseline,
+    build_segment_series,
     build_tick_observations,
     compute_advance_baseline,
     fetch_alert_versions,
@@ -73,7 +75,9 @@ from training.load_r2 import (
     presence_mask_from_predictions,
 )
 from training.r2_client import load_config, make_client
+from training.reliability import peer_scorecard
 from training.scorecard import dwell_lookup_from_params, episode_scorecard
+from training.segments import canonical_adjacency
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -554,6 +558,43 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     print(f"  {len(movement_truth)} (route, tick) movement-derived states")
 
+    # Peer-comparison reliability scorecard (vhh.10): rank line-directions and
+    # segments by held-out advance deficit — observed advance over the review
+    # window vs the causal baseline. Baselines are fit on baseline_bodies (the
+    # pre-window), the deficit is measured on the review window, so a place is
+    # judged against its OWN normal, not the network average.
+    segment_baseline = build_segment_baseline(baseline_bodies)
+    dir_observed: dict[tuple[str, str], list[int]] = {}
+    for (route, direction, _tick), drow in build_movement_series_by_direction(
+        vehicle_bodies
+    ).items():
+        acc = dir_observed.setdefault((route, direction), [0, 0])
+        adv, stall = drow.get("advanced_n", 0), drow.get("stalled_n", 0)
+        acc[0] += adv
+        acc[1] += adv + stall  # matched = advanced + stalled
+    seg_observed: dict[tuple[str, str, str], list[int]] = {}
+    for (route, direction, frm, to, _tick), n in build_segment_series(
+        vehicle_bodies
+    ).items():
+        acc = seg_observed.setdefault((route, direction, frm), [0, 0])
+        if frm != to:
+            acc[0] += n
+        acc[1] += n  # matched includes stalls
+    adjacency = canonical_adjacency(
+        baseline_bodies
+    )  # causal: successors from the pre-window
+    scorecard_peers = peer_scorecard(
+        movement_baseline,
+        {k: (a, m) for k, (a, m) in dir_observed.items()},
+        segment_baseline,
+        {k: (a, m) for k, (a, m) in seg_observed.items()},
+        adjacency,
+    )
+    print(
+        f"  peer scorecard: {len(scorecard_peers['directions'])} directions, "
+        f"{len(scorecard_peers['segments'])} segments ranked by advance deficit"
+    )
+
     window_end = int(datetime.now(UTC).timestamp())
     window_start = int(
         datetime(
@@ -745,6 +786,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "escalation": escalation,
         "episodes": episodes_summary(episodes),
         "episode_scorecard": scorecard,
+        "peer_scorecard": scorecard_peers,
         "changepoint_alignment": {
             "window_minutes": CHANGEPOINT_WINDOW_MIN,
             "n_total": len(deltas),

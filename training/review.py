@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -446,6 +446,34 @@ def plot_changepoint_alignment(deltas: list[float | None], out: Path) -> None:
     plt.close(fig)
 
 
+def select_escalation_source(
+    published_map: Mapping[tuple[str, int], str],
+    movement_truth: Mapping[tuple[str, int], str],
+    window_ticks: Iterable[int],
+    *,
+    min_coverage: float = 0.9,
+    min_usable: float = 0.5,
+) -> tuple[Mapping[tuple[str, int], str], str]:
+    """Pick the escalation-arm movement source, never mixing the two (their
+    baselines differ, so a boundary onset would be an artifact).
+
+    Prefer the archived published condition, but only when it covers the window
+    AND actually carries real calls: a published archive that is effectively all
+    'unknown' (e.g. a params gap that disabled the movement classifier) has no
+    signal, so fall back to the offline recompute rather than score a spurious
+    zero. A healthy but quiet archive (mostly 'normal') stays on the archive and
+    legitimately yields few/no escalations -- absence of disruption is a true
+    negative, not a reason to switch sources.
+    """
+    win = set(window_ticks)
+    in_window = [v for (_r, t), v in published_map.items() if t in win]
+    coverage = len({t for (_r, t) in published_map if t in win}) / max(1, len(win))
+    usable = sum(1 for v in in_window if v != "unknown") / max(1, len(in_window))
+    if coverage >= min_coverage and usable >= min_usable:
+        return published_map, "published_archive"
+    return movement_truth, "offline_movement_rule"
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="HMM shadow-log validation review")
     parser.add_argument("--days", type=int, default=5, help="window length in days")
@@ -593,10 +621,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Escalation arm: is a movement disruption that goes beyond the alert feed a
     # genuine leading indicator? No contemporaneous signal can adjudicate it (the
     # disrupted arm IS the vehicle feed), so score it temporally — how often a
-    # movement escalation is later confirmed by an alert catching up. Prefer the
-    # archived published condition; fall back to the offline recompute, never
-    # mixing the two (their baselines differ, so a boundary onset would be an
-    # artifact). "alerts read normal" uses the breadth truth (any alert flags).
+    # movement escalation is later confirmed by an alert catching up. Source is
+    # chosen by select_escalation_source (published archive when usable, else the
+    # offline recompute). "alerts read normal" uses the canonical severe-only
+    # truth, matching the graduation target — the breadth truth flags ~all ticks,
+    # so a movement escalation could never land in an alert-silent window.
     published_map: dict[tuple[str, int], str] = {
         (p.route, snap_tick(p.ts)): p.published_condition
         for p in preds
@@ -605,14 +634,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     window_ticks = set(
         range(snap_tick(window_start), snap_tick(window_end) + 1, TICK_SECONDS)
     )
-    pub_ticks = {t for (_r, t) in published_map}
-    pub_coverage = len(pub_ticks & window_ticks) / max(1, len(window_ticks))
-    esc_state, esc_source = (
-        (published_map, "published_archive")
-        if pub_coverage >= 0.9
-        else (movement_truth, "offline_movement_rule")
+    esc_state, esc_source = select_escalation_source(
+        published_map, movement_truth, window_ticks
     )
-    alert_disrupted = {k for k, v in truth_breadth.items() if v != "normal"}
+    alert_disrupted = {k for k, v in truth.items() if v != "normal"}
     esc_events = escalation_events(
         esc_state,
         alert_disrupted,

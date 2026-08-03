@@ -16,6 +16,7 @@ from training.review import (
     changepoint_alignment,
     derive_graded_mta_state,
     mta_truth,
+    select_escalation_source,
 )
 
 TICK = 300
@@ -181,3 +182,67 @@ def test_mta_truth_explicit_floor_1_still_recovers_breadth_truth():
     delay counts as disrupted) — the sensitivity path stays reachable."""
     obs = [_tick_obs("1", T0, ("Delays",))]
     assert mta_truth(obs, severity_floor=1)[("1", T0)] == "disrupted"
+
+
+def _window(n: int) -> set[int]:
+    return {T0 + i * TICK for i in range(n)}
+
+
+def test_escalation_source_prefers_usable_published_archive():
+    # Full coverage, real calls (normal/disrupted) -> use the published archive.
+    win = _window(10)
+    pub = {
+        ("1", t): ("disrupted" if i == 3 else "normal")
+        for i, t in enumerate(sorted(win))
+    }
+    off = {("1", t): "normal" for t in win}
+    state, source = select_escalation_source(pub, off, win)
+    assert source == "published_archive"
+    assert state is pub
+
+
+def test_escalation_source_falls_back_when_archive_all_unknown():
+    # Full coverage but every call is 'unknown' (movement disabled) -> fall back
+    # to the offline recompute rather than score a spurious zero.
+    win = _window(10)
+    pub = {("1", t): "unknown" for t in win}
+    off = {
+        ("1", t): ("disrupted" if i < 3 else "normal")
+        for i, t in enumerate(sorted(win))
+    }
+    state, source = select_escalation_source(pub, off, win)
+    assert source == "offline_movement_rule"
+    assert state is off
+
+
+def test_escalation_source_quiet_healthy_archive_stays_on_archive():
+    # A healthy but calm window (all 'normal', no disruption) is a true negative,
+    # NOT a reason to switch sources -- usability is about real calls, not events.
+    win = _window(10)
+    pub = {("1", t): "normal" for t in win}
+    off = {("1", t): "normal" for t in win}
+    _state, source = select_escalation_source(pub, off, win)
+    assert source == "published_archive"
+
+
+def test_escalation_source_falls_back_on_thin_coverage():
+    # Archive carries real calls but covers <90% of the window -> fall back.
+    win = _window(10)
+    pub = {("1", t): "normal" for t in sorted(win)[:5]}
+    off = {("1", t): "normal" for t in win}
+    _state, source = select_escalation_source(pub, off, win)
+    assert source == "offline_movement_rule"
+
+
+def test_escalation_source_usability_is_window_scoped():
+    # Real calls OUTSIDE the window must not rescue an all-'unknown' window: the
+    # usability check is scoped to in-window ticks, else it scores a spurious zero.
+    win = _window(10)
+    pub = {("1", t): "unknown" for t in win}
+    pub |= {("1", T0 - (i + 1) * TICK): "normal" for i in range(50)}  # before window
+    off = {
+        ("1", t): ("disrupted" if i < 3 else "normal")
+        for i, t in enumerate(sorted(win))
+    }
+    _state, source = select_escalation_source(pub, off, win)
+    assert source == "offline_movement_rule"

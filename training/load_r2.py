@@ -27,6 +27,7 @@ from blake3 import blake3
 
 from momentarily.hmm import Observation, schedule_bin, tod_bin
 from momentarily.mapping import is_planned_work_id
+from training.hierarchical import PooledCell, partially_pool
 from training.load import TICK_SECONDS, TickObservation
 from training.r2_client import R2Config, load_config, make_client
 
@@ -804,6 +805,29 @@ def build_segment_series(
                     key = (route, direction, frm, to, tick)
                     series[key] = series.get(key, 0) + n
     return series
+
+
+def build_segment_baseline(
+    bodies: list[dict[str, Any]],
+) -> dict[tuple[str, str, str], PooledCell]:
+    """Hierarchical partial-pooling advance-rate baseline per (route, direction,
+    from_stop) segment leaf, from the archived cross-tick transitions.
+
+    Aggregates build_segment_series over the window into per-leaf advanced/stalled
+    counts — a from>to pair with from!=to is an advance out of from_stop, from==to
+    is a stall there — then shrinks each leaf toward its line-direction / route /
+    system normal via the empirical-Bayes estimator (training.hierarchical). Sparse
+    leaves borrow strength; data-rich leaves (e.g. terminals that dwell) keep their
+    own low rate. The finer leaf for the segment-aware classifier and station
+    roll-ups; canonical from_stop->to_stop labelling layers on top."""
+    leaves: dict[tuple[str, str, str], list[int]] = {}
+    for (route, direction, frm, to, _tick), n in build_segment_series(bodies).items():
+        cell = leaves.setdefault((route, direction, frm), [0, 0])
+        if frm == to:
+            cell[1] += n  # stall in place
+        else:
+            cell[0] += n  # advanced out of frm
+    return partially_pool({k: (adv, stall) for k, (adv, stall) in leaves.items()})
 
 
 # Movement→state thresholds. MIN_MATCHED_TRIPS gates whether a direction has

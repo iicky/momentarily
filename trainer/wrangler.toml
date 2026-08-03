@@ -8,11 +8,12 @@ compatibility_date = "2026-06-11"
 workers_dev = false
 preview_urls = false
 
-# Weekly retrain — Sunday 05:00 UTC. The cron starts the trainer container,
-# which runs Baum-Welch EM to completion and republishes params to R2.
+# Weekly retrain PAUSED — the cron is disabled so params stay pinned while a
+# single version accrues a clean evaluation window. Retrain deliberately with
+# `murk exec -- uv run python -m training.train_em`; restore `crons` to resume.
 # Cloudflare's cron parser wants SUN/7 for Sunday, not 0.
 [triggers]
-crons = ["0 5 * * SUN"]
+crons = []
 
 # Trainer container. Build context is the repo root so training/ can import
 # `momentarily` from src/. instance_type basic = 1/4 vCPU / 1 GiB — overkill

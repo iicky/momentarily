@@ -289,3 +289,118 @@ export async function writeServiceMetric(
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }
+
+
+// Segment baseline + canonical adjacency, written by the trainer as its OWN object
+// (not folded into params.json — the Worker parses that on the hot per-tick path).
+// Read at step 8b to score per-segment movement for the station-flow surface.
+export const SEGMENT_PARAMS_KEY = 'state/segment_params.json';
+
+const SegmentParamsSchema = z.object({
+  schema_version: z.literal('1'),
+  trained_at: z.number(),
+  min_share: z.number().min(0).max(1),
+  cells: z.record(
+    z.string(),
+    z.object({ p0: z.number().min(0).max(1), n: z.number().int().nonnegative() }),
+  ),
+  adjacency: z.record(
+    z.string(),
+    z.object({
+      to: z.string(),
+      share: z.number().min(0).max(1),
+      n: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type SegmentParamsDoc = z.infer<typeof SegmentParamsSchema>;
+
+/** Read the segment baseline object. Null when absent or corrupt — the station-
+ * flow surface just isn't produced that tick. */
+export async function readSegmentParams(
+  bucket: R2Bucket,
+): Promise<SegmentParamsDoc | null> {
+  const obj = await bucket.get(SEGMENT_PARAMS_KEY);
+  if (!obj) return null;
+  try {
+    return SegmentParamsSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('segment_params.json corrupt; station flow off:', err);
+    return null;
+  }
+}
+
+// Decaying per-segment advance/matched accumulator, carried tick to tick so a
+// ~1-train-per-tick segment accrues enough to judge. Its own object, step 8b.
+export const SEGMENT_FLOW_KEY = 'state/segment_flow.json';
+
+const SegmentFlowSchema = z.object({
+  observed_at: z.number(),
+  cells: z.record(z.string(), z.object({ a: z.number(), m: z.number() })),
+});
+export type SegmentFlowDoc = z.infer<typeof SegmentFlowSchema>;
+
+export async function readSegmentFlow(
+  bucket: R2Bucket,
+): Promise<SegmentFlowDoc | null> {
+  const obj = await bucket.get(SEGMENT_FLOW_KEY);
+  if (!obj) return null;
+  try {
+    return SegmentFlowSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('segment_flow.json corrupt; resetting:', err);
+    return null;
+  }
+}
+
+export async function writeSegmentFlow(
+  bucket: R2Bucket,
+  doc: SegmentFlowDoc,
+): Promise<void> {
+  await bucket.put(SEGMENT_FLOW_KEY, JSON.stringify(doc), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+}
+
+// Per-station service-flow, computed at step 8b and read by the next tick's
+// snapshot build (one tick / ~5-min lag, like movement_state).
+export const STATION_FLOW_KEY = 'state/station_flow.json';
+
+const StationFlowSchema = z.object({
+  observed_at: z.number(),
+  stations: z.record(
+    z.string(),
+    z.object({
+      status: z.enum(['flowing', 'degraded']),
+      worst_deficit: z.number(),
+      worst_segment: z.tuple([z.string(), z.string()]).nullable(),
+      routes: z.array(z.string()),
+      n_segments: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type StationFlowDoc = z.infer<typeof StationFlowSchema>;
+
+/** Read last tick's per-station service flow. Null when absent or corrupt — the
+ * snapshot publishes without the station-flow surface. */
+export async function readStationFlow(
+  bucket: R2Bucket,
+): Promise<StationFlowDoc | null> {
+  const obj = await bucket.get(STATION_FLOW_KEY);
+  if (!obj) return null;
+  try {
+    return StationFlowSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('station_flow.json corrupt; resetting:', err);
+    return null;
+  }
+}
+
+export async function writeStationFlow(
+  bucket: R2Bucket,
+  doc: StationFlowDoc,
+): Promise<void> {
+  await bucket.put(STATION_FLOW_KEY, JSON.stringify(doc), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+}

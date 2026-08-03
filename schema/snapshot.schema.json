@@ -1113,6 +1113,84 @@
       "title": "Station",
       "type": "object"
     },
+    "StationFlow": {
+      "description": "The station-flow surface: per-station verdicts and when they were computed\n(one tick / ~5 min lagged, like the movement condition).",
+      "properties": {
+        "observed_at": {
+          "title": "Observed At",
+          "type": "integer"
+        },
+        "stations": {
+          "additionalProperties": {
+            "$ref": "#/$defs/StationServiceFlow"
+          },
+          "title": "Stations",
+          "type": "object"
+        }
+      },
+      "required": [
+        "observed_at"
+      ],
+      "title": "StationFlow",
+      "type": "object"
+    },
+    "StationServiceFlow": {
+      "description": "Per-station service flow: is train service advancing through this station,\nrolled up from the segment movement model (vhh.8). Distinct from\nStationStatus (accessibility/alerts).",
+      "properties": {
+        "n_segments": {
+          "title": "N Segments",
+          "type": "integer"
+        },
+        "routes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "flowing",
+            "degraded"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "worst_deficit": {
+          "title": "Worst Deficit",
+          "type": "number"
+        },
+        "worst_segment": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Worst Segment"
+        }
+      },
+      "required": [
+        "status",
+        "worst_deficit",
+        "n_segments"
+      ],
+      "title": "StationServiceFlow",
+      "type": "object"
+    },
     "StationStatus": {
       "description": "Derived per-station view from alerts + equipment + static + optional HMM inference.",
       "properties": {
@@ -1439,6 +1517,17 @@
       "default": "1",
       "title": "Schema Version",
       "type": "string"
+    },
+    "station_flow": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StationFlow"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "station_status": {
       "additionalProperties": {

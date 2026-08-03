@@ -40,6 +40,7 @@ import { detectTransitions, writePredictions, writeTransitions } from './grading
 import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
 import { loadParams, paramsForRoute } from './params';
+import { deriveStationFlow, updateSegmentFlow } from './segment_flow';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
@@ -47,14 +48,20 @@ import {
   readLastSeen,
   readMovementMetric,
   readMovementState,
+  readSegmentFlow,
+  readSegmentParams,
   readServiceMetric,
+  readStationFlow,
   readVehicleStops,
   writeLastSeen,
   writeMovementMetric,
   writeMovementState,
+  writeSegmentFlow,
   writeServiceMetric,
+  writeStationFlow,
   writeVehicleStops,
 } from './state';
+import type { StationFlowDoc } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -318,6 +325,13 @@ export default {
       } catch (err) {
         console.error('movement_state read failed; publishing without it:', err);
       }
+      // Last tick's per-station service flow (vhh.8), same one-tick lag.
+      let stationFlow: StationFlowDoc | null = null;
+      try {
+        stationFlow = await readStationFlow(env.MOMENTARILY);
+      } catch (err) {
+        console.error('station_flow read failed; publishing without it:', err);
+      }
       const snapshot = buildSnapshot({
         generatedAt: observedAt,
         alertsFreshness: alertsFeedFresh,
@@ -333,6 +347,7 @@ export default {
         stations: stationsCache?.stations ?? {},
         stationsStaticFreshness: stationsCache?.fetched_at ?? null,
         movementStates,
+        stationFlow,
       });
       step('6a-build-snapshot');
       try {
@@ -498,6 +513,27 @@ export default {
               observed_at: observedAt,
               states: deriveMovementStates(moveRows, rows, trainedParams, observedAt),
             });
+          }
+
+          // Segment-level station service flow (vhh.8): decay-smoothed per-segment
+          // advance -> classify -> roll up to stations. Its own R2 objects, read
+          // off the segment baseline (own object too), so the ~1.8k-cell baseline
+          // never touches the hot per-tick params parse. Read next tick by the
+          // snapshot build (one-tick lag, like movement_state). Fail-soft.
+          try {
+            const segParams = await readSegmentParams(env.MOMENTARILY);
+            if (segParams) {
+              const flow = updateSegmentFlow(
+                await readSegmentFlow(env.MOMENTARILY),
+                moveRows,
+                observedAt,
+                segParams,
+              );
+              await writeSegmentFlow(env.MOMENTARILY, flow);
+              await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
+            }
+          } catch (err) {
+            console.error('station flow update failed; skipping:', err);
           }
 
           console.log(

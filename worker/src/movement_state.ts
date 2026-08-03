@@ -61,7 +61,7 @@ export type MovementCondition = 'normal' | 'disrupted' | 'suspended' | 'not_sche
 // P(X <= k) for X ~ Binomial(n, p) via an iterative pmf sum. Exact for the
 // tick-level counts here (n well under ~50) and free of special functions, so it
 // mirrors 1:1 in Python/viz. p is the cell baseline p0, floored off 0 upstream.
-function binomLowerTail(k: number, n: number, p: number): number {
+export function binomLowerTail(k: number, n: number, p: number): number {
   if (k >= n) return 1;
   if (k < 0) return 0;
   const q = 1 - p;
@@ -74,25 +74,39 @@ function binomLowerTail(k: number, n: number, p: number): number {
   return cdf;
 }
 
-// Beta-Binomial call for one (route, direction) at one tick, three ways:
-//   normal    — posterior advance rate above DISRUPTED_RATIO * baseline p0.
+// Beta-Binomial call against a baseline advance rate p0, three ways:
+//   normal    — posterior advance rate above DISRUPTED_RATIO * p0.
 //   disrupted — posterior at/under DISRUPTED_RATIO * p0 AND the low advance count
 //               is significant against p0 (binomial lower tail <= CLASSIFY_ALPHA).
-//   null      — can't judge: too few matches, no baseline, OR a point-estimate
-//               drop not distinguishable from a low-p0 normal fluctuation (a
-//               degenerate-baseline shuttle's zero-advance tick, not a stall).
+//   null      — too few matches, or a point-estimate drop not distinguishable from
+//               a low-p0 normal fluctuation (a degenerate-baseline zero-advance
+//               tick, not a stall).
+// The one decision rule shared by the direction classifier and the segment
+// classifier (segment_flow.ts), so the two never disagree. NOTE: with smoothed
+// (decayed) counts the binomial tail is a tuned score, not a calibrated p-value —
+// CLASSIFY_ALPHA is an empirical threshold.
+export function classifyAdvance(
+  advancedN: number,
+  stalledN: number,
+  p0: number,
+): 'normal' | 'disrupted' | null {
+  const matched = advancedN + stalledN;
+  if (matched < MIN_MATCHED_TRIPS) return null;
+  const post =
+    (CLASSIFY_PRIOR_STRENGTH * p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
+  if (post > DISRUPTED_RATIO * p0) return 'normal';
+  return binomLowerTail(advancedN, matched, p0) <= CLASSIFY_ALPHA ? 'disrupted' : null;
+}
+
+// Beta-Binomial call for one (route, direction) at one tick, keyed on the cell's
+// own baseline. null cell -> can't judge.
 function classifyDirection(
   advancedN: number,
   stalledN: number,
   cell: AdvanceBaselineCell | null,
 ): 'normal' | 'disrupted' | null {
-  const matched = advancedN + stalledN;
-  if (matched < MIN_MATCHED_TRIPS) return null;
   if (!cell) return null;
-  const post =
-    (CLASSIFY_PRIOR_STRENGTH * cell.p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
-  if (post > DISRUPTED_RATIO * cell.p0) return 'normal';
-  return binomLowerTail(advancedN, matched, cell.p0) <= CLASSIFY_ALPHA ? 'disrupted' : null;
+  return classifyAdvance(advancedN, stalledN, cell.p0);
 }
 
 export function deriveMovementState(

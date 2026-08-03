@@ -393,6 +393,33 @@ class Provenance(BaseModel):
     producer: str = "unknown"
 
 
+class StationServiceFlow(BaseModel):
+    """Per-station service flow: is train service advancing through this station,
+    rolled up from the segment movement model (vhh.8). Distinct from
+    StationStatus (accessibility/alerts)."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    status: Literal["flowing", "degraded"]
+    # Worst incident segment's live advance shortfall vs its normal (0=normal,
+    # 1=frozen), from the decay-smoothed movement signal.
+    worst_deficit: float
+    # (from_stop, to_stop) of the worst incident segment, or null.
+    worst_segment: tuple[str, str] | None = None
+    routes: list[str] = Field(default_factory=list)
+    n_segments: int
+
+
+class StationFlow(BaseModel):
+    """The station-flow surface: per-station verdicts and when they were computed
+    (one tick / ~5 min lagged, like the movement condition)."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    observed_at: int
+    stations: dict[str, StationServiceFlow] = Field(default_factory=dict)
+
+
 class Snapshot(BaseModel):
     """The full published snapshot. The contract."""
 
@@ -423,6 +450,9 @@ class Snapshot(BaseModel):
     # Derived views
     route_status: dict[str, RouteStatus] = Field(default_factory=dict)
     station_status: dict[str, StationStatus] = Field(default_factory=dict)
+    # Per-station service flow, rolled up from the segment movement model (vhh.8).
+    # Null before the first vehicle tick after deploy or when stale.
+    station_flow: StationFlow | None = None
     system: SystemStatus = Field(default_factory=SystemStatus)
 
     # Legacy compat — preserves zero-breakage upgrade for HA 0.x consumers

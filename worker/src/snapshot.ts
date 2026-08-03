@@ -23,6 +23,7 @@ import type { TrainedParams } from './params';
 import { dwellForRouteState, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
+import type { StationFlowDoc } from './state';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -186,6 +187,10 @@ interface Snapshot {
   tunnels: unknown[];
   route_status: Record<string, RouteStatusOut>;
   station_status: Record<string, unknown>;
+  // Per-station service flow ("is my station moving"), rolled up from the segment
+  // movement model. Distinct from station_status (accessibility/alerts). Null when
+  // absent or stale. See vhh.8.
+  station_flow: StationFlowDoc | null;
   system: SystemStatus;
   compat: Compat;
 }
@@ -216,6 +221,9 @@ export function buildSnapshot(args: {
    * back to the alert/HMM condition. Null/undefined before the first vehicle tick
    * after deploy. Lagged one tick (~5 min) — see state.MOVEMENT_STATE_KEY. */
   movementStates?: { observed_at: number; states: Record<string, string> } | null;
+  /** Last tick's per-station service flow, one-tick lagged like movementStates.
+   * Null/undefined before the first vehicle tick after deploy. See vhh.8. */
+  stationFlow?: StationFlowDoc | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -225,6 +233,9 @@ export function buildSnapshot(args: {
     args.movementStates != null &&
     args.generatedAt - args.movementStates.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
   const movementStates = movementFresh ? args.movementStates : null;
+  const stationFlowFresh =
+    args.stationFlow != null &&
+    args.generatedAt - args.stationFlow.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
 
   // Publish every route we have alpha for — good-service lines get their
   // inference too. Union with current routeSnapshots in case a route just got
@@ -321,6 +332,7 @@ export function buildSnapshot(args: {
     tunnels: [],
     route_status,
     station_status: args.stationStatuses ?? {},
+    station_flow: stationFlowFresh ? (args.stationFlow ?? null) : null,
     system,
     compat,
   };

@@ -42,6 +42,7 @@ from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     advance_baseline_to_json,
     build_movement_series_by_direction,
+    build_segment_baseline,
     build_service_series,
     build_tick_observations,
     compute_advance_baseline,
@@ -59,7 +60,9 @@ from training.load_r2 import (
 )
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
+from training.reliability import MIN_SHARE
 from training.run_filter import BOOTSTRAP_PARAMS
+from training.segments import canonical_adjacency
 from training.survival import loglogistic_tail
 
 if TYPE_CHECKING:
@@ -394,6 +397,70 @@ def write_params(
     return versioned_key
 
 
+SEGMENT_PARAMS_KEY = "state/segment_params.json"
+VERSIONED_SEGMENT_PREFIX = "state/segment_params/"
+
+
+def write_segment_params(
+    cfg: R2Config,
+    client: S3Client,
+    bucket: str,
+    start_date: date,
+    end_date: date,
+    trained_at: int,
+) -> int:
+    """Write the segment baseline + canonical adjacency as their OWN R2 object
+    (not folded into params.json, which the Worker parses on the hot per-tick
+    path). The Worker reads this at step 8b, off the publish path, to score
+    per-segment movement and roll it up to station service flow (vhh.8).
+
+    Only through-segments are shipped: a leaf needs a pooled baseline AND a
+    dominant canonical successor (share >= MIN_SHARE), which drops terminals and
+    branch/express points where advance is ill-defined. Keyed 'route|dir|from'.
+    Fail-soft: a vehicle-archive hiccup skips the object, leaving the last good
+    one; the station-flow surface just goes stale, never blocks the params run.
+    """
+    try:
+        bodies = fetch_vehicle_metrics(
+            cfg, start_date=start_date, end_date=end_date, client=client
+        )
+        baseline = build_segment_baseline(bodies)
+        adjacency = canonical_adjacency(bodies)
+        cells: dict[str, dict[str, Any]] = {}
+        adj_doc: dict[str, dict[str, Any]] = {}
+        for key, cell in baseline.items():
+            adj = adjacency.get(key)
+            if adj is None or adj.share < MIN_SHARE:
+                continue
+            k = "|".join(key)
+            cells[k] = {"p0": round(cell.p0, 6), "n": cell.n}
+            adj_doc[k] = {"to": adj.to_stop, "share": round(adj.share, 4), "n": adj.n}
+        if not cells:
+            print("segment params skipped (no through-segments)", file=sys.stderr)
+            return 0
+        doc = {
+            "schema_version": SCHEMA_VERSION,
+            "trained_at": trained_at,
+            "min_share": MIN_SHARE,
+            "cells": cells,
+            "adjacency": adj_doc,
+        }
+        body = json.dumps(doc).encode()
+        versioned = f"{VERSIONED_SEGMENT_PREFIX}v{trained_at}.json"
+        for key in (SEGMENT_PARAMS_KEY, versioned):
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+                CacheControl="no-store",
+            )
+        return len(cells)
+    except Exception as exc:
+        print(f"segment params skipped ({exc})", file=sys.stderr)
+        return 0
+
+
 def _movement_baseline(
     cfg: R2Config,
     client: S3Client,
@@ -631,6 +698,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "min_ticks": args.min_ticks,
         "routes": sorted(args.routes.split(",")) if args.routes else None,
     }
+    trained_at = int(datetime.now(UTC).timestamp())
     versioned_key = write_params(
         client,
         cfg.bucket,
@@ -645,6 +713,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         movement_baseline=movement_baseline,
         service_baseline=service_baseline,
         schedule_rate=schedule_rate,
+        trained_at=trained_at,
+    )
+    n_segment_cells = write_segment_params(
+        cfg, client, cfg.bucket, start_date, end_date, trained_at
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
@@ -652,7 +724,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
         f"dwell_alert_cells={n_dwell_alert_cells}, "
         f"dwell_cause_cells={n_dwell_cause_cells}, baseline_cells={n_baseline_cells}, "
-        f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells})"
+        f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells}, "
+        f"segment_cells={n_segment_cells})"
     )
     return 0
 

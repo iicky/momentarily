@@ -10,11 +10,13 @@ plain env vars at container start, and those take precedence.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -71,3 +73,29 @@ def make_client(config: R2Config | None = None) -> S3Client:
         region_name="auto",
         config=Config(signature_version="s3v4", retries={"max_attempts": 3}),
     )
+
+
+# Under concurrent GETs, R2 intermittently answers with NoSuchKey (or
+# MethodNotAllowed) for an object that exists — HEAD and the listing both return
+# its size and etag, and an immediate retry succeeds. botocore's retry mode
+# treats those codes as definitive client errors, so they are never retried for
+# us. Swallowing them instead would silently drop real data from an eval window.
+_SPURIOUS_GET_CODES = frozenset({"NoSuchKey", "MethodNotAllowed", "404", "405"})
+
+
+def get_object_bytes(
+    client: S3Client, bucket: str, key: str, *, attempts: int = 5
+) -> bytes:
+    """GET an object body, retrying R2's spurious not-found answers.
+
+    A key that is genuinely absent still raises, after the retries are spent.
+    """
+    for attempt in range(attempts):
+        try:
+            return client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code not in _SPURIOUS_GET_CODES or attempt == attempts - 1:
+                raise
+            time.sleep(0.1 * 2**attempt)
+    raise AssertionError("unreachable")

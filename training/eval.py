@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from momentarily.mapping import TRUTH_VERSION
 from training.drift import unmapped_alert_type_drift
 from training.provenance import code_provenance
-from training.r2_client import R2Config, load_config, make_client
+from training.r2_client import R2Config, get_object_bytes, load_config, make_client
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -179,8 +179,28 @@ def _list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
 
 
 def _read_jsonl(client: S3Client, bucket: str, key: str) -> list[dict[str, Any]]:
-    body = client.get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+    body = get_object_bytes(client, bucket, key).decode()
     return [json.loads(line) for line in body.splitlines() if line.strip()]
+
+
+def _read_listed_jsonl(
+    client: S3Client,
+    bucket: str,
+    prefixes: Iterable[str],
+) -> list[dict[str, Any]]:
+    """Read every key listed under the prefixes, in parallel."""
+    keys: list[str] = []
+    for prefix in prefixes:
+        keys.extend(_list_keys(client, bucket, prefix))
+
+    def fetch(k: str) -> list[dict[str, Any]]:
+        return _read_jsonl(client, bucket, k)
+
+    out: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for rows in pool.map(fetch, keys):
+            out.extend(rows)
+    return out
 
 
 def load_predictions(
@@ -189,18 +209,12 @@ def load_predictions(
     start_date: date,
     end_date: date,
 ) -> list[PredictionRecord]:
-    keys: list[str] = []
-    for d in _date_range(start_date, end_date):
-        keys.extend(_list_keys(client, bucket, f"v1/predictions/{d.isoformat()}/"))
-    out: list[PredictionRecord] = []
-
-    def fetch(k: str) -> list[dict[str, Any]]:
-        return _read_jsonl(client, bucket, k)
-
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        for rows in pool.map(fetch, keys):
-            out.extend(PredictionRecord.from_json(r) for r in rows)
-    return out
+    rows = _read_listed_jsonl(
+        client,
+        bucket,
+        (f"v1/predictions/{d.isoformat()}/" for d in _date_range(start_date, end_date)),
+    )
+    return [PredictionRecord.from_json(r) for r in rows]
 
 
 def load_transitions(
@@ -209,20 +223,15 @@ def load_transitions(
     start_date: date,
     end_date: date,
 ) -> list[TransitionRecord]:
-    keys: list[str] = []
-    for d in _date_range(start_date, end_date):
-        keys.extend(
-            _list_keys(client, bucket, f"v1/regime_transitions/{d.isoformat()}/")
-        )
-    out: list[TransitionRecord] = []
-
-    def fetch(k: str) -> list[dict[str, Any]]:
-        return _read_jsonl(client, bucket, k)
-
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        for rows in pool.map(fetch, keys):
-            out.extend(TransitionRecord.from_json(r) for r in rows)
-    return out
+    rows = _read_listed_jsonl(
+        client,
+        bucket,
+        (
+            f"v1/regime_transitions/{d.isoformat()}/"
+            for d in _date_range(start_date, end_date)
+        ),
+    )
+    return [TransitionRecord.from_json(r) for r in rows]
 
 
 # --- Calibration math ---

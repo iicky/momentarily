@@ -29,7 +29,7 @@ from momentarily.hmm import Observation, schedule_bin, tod_bin
 from momentarily.mapping import is_planned_work_id
 from training.hierarchical import PooledCell, partially_pool
 from training.load import TICK_SECONDS, TickObservation
-from training.r2_client import R2Config, load_config, make_client
+from training.r2_client import R2Config, get_object_bytes, load_config, make_client
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -81,7 +81,7 @@ def _list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
 
 
 def _fetch_object(client: S3Client, bucket: str, key: str) -> dict[str, Any]:
-    body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    body = get_object_bytes(client, bucket, key)
     return cast(dict[str, Any], json.loads(body))
 
 
@@ -470,17 +470,7 @@ def fetch_trip_update_metrics(
         keys.extend(
             _list_keys(client, cfg.bucket, f"archive/trip_updates/{d.isoformat()}/")
         )
-
-    bucket = cfg.bucket
-    fetched_client = client
-
-    def _fetch(k: str) -> dict[str, Any]:
-        return _fetch_object(fetched_client, bucket, k)
-
-    out: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        out.extend(pool.map(_fetch, keys))
-    return out
+    return fetch_objects(client, cfg.bucket, keys)
 
 
 def build_service_series(bodies: list[dict[str, Any]]) -> dict[tuple[str, int], int]:
@@ -701,17 +691,7 @@ def fetch_vehicle_metrics(
         keys.extend(
             _list_keys(client, cfg.bucket, f"archive/vehicles/{d.isoformat()}/")
         )
-
-    bucket = cfg.bucket
-    fetched_client = client
-
-    def _fetch(k: str) -> dict[str, Any]:
-        return _fetch_object(fetched_client, bucket, k)
-
-    out: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        out.extend(pool.map(_fetch, keys))
-    return out
+    return fetch_objects(client, cfg.bucket, keys)
 
 
 def build_movement_series(

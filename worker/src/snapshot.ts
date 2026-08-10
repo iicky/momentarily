@@ -35,7 +35,7 @@ const MAX_RECOVERY_MINUTES = 1440;
 // published label, we surface the filter's view instead of the lagged
 // label. Hysteresis still protects the underlying publish state machine
 // from flapping on ambiguous evidence; this only governs what consumers
-// see. See momentarily-8ga.
+// see.
 const FAST_ATTACK_PROB = 0.9;
 
 // Movement state is carried from the prior tick, normally ~5 min old. If the
@@ -189,7 +189,7 @@ interface Snapshot {
   station_status: Record<string, unknown>;
   // Per-station service flow ("is my station moving"), rolled up from the segment
   // movement model. Distinct from station_status (accessibility/alerts). Null when
-  // absent or stale. See vhh.8.
+  // absent or stale.
   station_flow: StationFlowDoc | null;
   system: SystemStatus;
   compat: Compat;
@@ -222,7 +222,7 @@ export function buildSnapshot(args: {
    * after deploy. Lagged one tick (~5 min) — see state.MOVEMENT_STATE_KEY. */
   movementStates?: { observed_at: number; states: Record<string, string> } | null;
   /** Last tick's per-station service flow, one-tick lagged like movementStates.
-   * Null/undefined before the first vehicle tick after deploy. See vhh.8. */
+   * Null/undefined before the first vehicle tick after deploy. */
   stationFlow?: StationFlowDoc | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
@@ -543,7 +543,7 @@ function buildInference(
   //      included the cell (sample size above its floor).
   //   2. Geometric dwell from the trained transition self-loop — works
   //      everywhere but saturates at the clamp ceiling for any route with
-  //      sustained planned-work alerts. See momentarily-w97.
+  //      sustained planned-work alerts.
   let recovery_minutes = 0;
   let recovery_minutes_low = 0;
   let recovery_minutes_high = 0;
@@ -647,6 +647,28 @@ function buildInference(
       recovery_minutes_low = clamp(dwellToMinutes(dwellTicks.q25));
       recovery_minutes_high = clamp(dwellToMinutes(dwellTicks.q75));
     }
+  } else {
+    // Normal now. The geometric projection decays a per-tick self-loop, so it
+    // reads P(still normal) down with the horizon even though a normal regime
+    // that has already run for hours is very unlikely to end in the next one —
+    // the projection has no elapsed term. Use the same conditional survival the
+    // recovery side uses, off this route's normal-regime dwell curve: exits from
+    // normal go to disrupted or suspended, never to normal, so P(normal at
+    // elapsed+H) is just the survival, with no destination split.
+    //
+    // Slight under-estimate: a route that leaves normal and returns inside the
+    // horizon counts as an exit. Over 30-120min against multi-hour normal
+    // regimes that is far smaller than the bias it replaces.
+    const empirical = dwellForRouteState(trained, routeId, 'normal');
+    const curve = empirical?.curve_sec;
+    if (empirical !== null && curve !== undefined) {
+      const elapsedSec = Math.max(0, now - roll.filter.regime_entered_at);
+      const staysNormalFor = (horizonSec: number): number =>
+        1 - pLeaveBy(curve, elapsedSec, horizonSec, empirical.tail_ll);
+      p_normal_in_30 = staysNormalFor(1800);
+      p_normal_in_60 = staysNormalFor(3600);
+      p_normal_in_120 = staysNormalFor(7200);
+    }
   }
 
   // The filter is still settling when: the route just appeared (regime younger
@@ -698,7 +720,7 @@ function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {
  *   - otherwise → use the hysteresis-gated published.label
  *
  * The underlying publish state machine still respects HYSTERESIS_TICKS;
- * this only governs what we render. See momentarily-8ga.
+ * this only governs what we render.
  */
 /**
  * Apply the condition precedence on top of the HMM label:

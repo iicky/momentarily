@@ -125,7 +125,7 @@ def loglogistic_loglik(samples: list[DwellSample], shape: float, scale: float) -
 # --- Fitting -------------------------------------------------------------------
 
 
-def _km_sup_distance(
+def km_sup_distance(
     samples: list[DwellSample], survival: Callable[[float], float]
 ) -> float:
     """sup_t |S_param(t) - S_km(t)| over the KM event times."""
@@ -178,7 +178,7 @@ def fit_weibull(samples: list[DwellSample]) -> ParametricFit | None:
         n_events=d,
         n_censored=len(samples) - d,
         aic=2.0 * 2 - 2.0 * loglik,
-        km_sup_distance=_km_sup_distance(
+        km_sup_distance=km_sup_distance(
             samples, lambda t: weibull_survival(t, shape, scale)
         ),
     )
@@ -265,7 +265,7 @@ def fit_loglogistic(samples: list[DwellSample]) -> ParametricFit | None:
         n_events=d,
         n_censored=len(samples) - d,
         aic=2.0 * 2 - 2.0 * loglik,
-        km_sup_distance=_km_sup_distance(
+        km_sup_distance=km_sup_distance(
             samples, lambda t: loglogistic_survival(t, shape, scale)
         ),
     )
@@ -288,8 +288,7 @@ def quantile_of(fit: ParametricFit, p: float) -> float:
 def loglogistic_tail(samples: list[DwellSample]) -> list[float] | None:
     """[shape, scale] of the log-logistic fit, or None if it doesn't converge.
     The compact tail descriptor stored on each dwell cell for the Worker's
-    past-the-curve splice (dwell.p_leave_by / worker pLeaveBy). See
-    momentarily-gtq.5."""
+    past-the-curve splice (dwell.p_leave_by / worker pLeaveBy)."""
     fit = fit_loglogistic(samples)
     return [fit.shape, fit.scale] if fit is not None else None
 

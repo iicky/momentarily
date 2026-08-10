@@ -58,6 +58,7 @@ from training.load_r2 import (
     schedule_rate_to_json,
     service_baseline_to_json,
 )
+from training.pooled_dwell import pooled_dwell_cells
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 from training.reliability import MIN_SHARE
@@ -94,13 +95,12 @@ class CorpusStats:
         return self.end_tick - self.start_tick
 
 
-# EM on a thin or mostly-quiet corpus drives transition self-loops toward 1.0,
-# which pins the forward filter so a route can never leave a regime. Cap the
-# diagonal, and refuse to publish at all under a week of archive. The original
-# bound was two weeks; once the EM variance/Bernoulli floors landed (momentarily-p8y)
-# the dominant risk of thin data — degenerate emissions — was no longer in
-# play, so we relaxed the gate. _cap_self_loops still bounds the transition
-# self-loops independently. See momentarily-625.
+# EM on a thin or mostly-quiet corpus drives transition self-loops toward 1.0, which
+# pins the forward filter so a route can never leave a regime. Cap the diagonal, and
+# refuse to publish at all under a week of archive. The original bound was two weeks;
+# once the EM variance/Bernoulli floors landed the dominant risk of thin data —
+# degenerate emissions — was no longer in play, so we relaxed the gate. _cap_self_loops
+# still bounds the transition self-loops independently.
 #
 # Per-state ceilings, set from the actual median regime dwell in the
 # v1/regime_transitions stream (14d): normal ~135min, disrupted ~45min,
@@ -108,7 +108,7 @@ class CorpusStats:
 # the filter 2.5x too pessimistic about recovery from disruption (it predicted
 # 17% recovered-in-30min against 35% actual). self_loop = exp(ln(0.5) / (median
 # dwell minutes / 5)) reproduces each regime's real persistence. Indexed
-# (normal, disrupted, suspended). See momentarily-2jt.
+# (normal, disrupted, suspended).
 MAX_SELF_LOOP: tuple[float, float, float] = (0.975, 0.93, 0.93)
 MIN_DATA_DAYS = 5
 
@@ -171,10 +171,10 @@ def load_series_by_route(
     keys = list_alert_keys(client, cfg.bucket, start, end)
     bodies = fetch_objects(client, cfg.bucket, keys)
     input_blake3 = input_manifest_hash(keys)
-    # Mask the reconstruction against what the live Worker actually saw active,
-    # so an alert that left the feed without a superseding version doesn't train
-    # as still-active to its active_period end. See momentarily-1a7. Degrades to
-    # the raw reconstruction if predictions are unavailable (e.g. pre-stream).
+    # Mask the reconstruction against what the live Worker actually saw active, so an
+    # alert that left the feed without a superseding version doesn't train as
+    # still-active to its active_period end. Degrades to the raw reconstruction if
+    # predictions are unavailable (e.g. pre-stream).
     mask = None
     try:
         from training.eval import load_predictions
@@ -245,8 +245,7 @@ def train(
     global_prior, _ = fit_em(pooled, BOOTSTRAP_PARAMS, max_iterations=50)
     # fit_em returns canonical state order (normal/disrupted/suspended), so the
     # per-state self-loop caps land on the regimes they were tuned for. Capping
-    # before canonicalization applied them to arbitrary EM indices. See
-    # momentarily-vk0.7.
+    # before canonicalization applied them to arbitrary EM indices.
     global_prior = _cap_self_loops(global_prior)
 
     out: dict[str, HMMParams] = {}
@@ -341,7 +340,7 @@ def write_params(
     if dwell_quantiles_by_alert:
         # Cause-segmented dwell, layered on top of the (route, state) aggregate.
         # The Worker prefers (route, state, alert_type) and falls back to the
-        # aggregate above when a cause cell is absent. See momentarily-alu.
+        # aggregate above when a cause cell is absent.
         for r, by_state_alert in dwell_quantiles_by_alert.items():
             if r in routes_doc:
                 routes_doc[r]["dwell_quantiles_by_alert"] = by_state_alert
@@ -349,7 +348,7 @@ def write_params(
         # Cause-CATEGORY dwell for the episode-recovery grader (Episode.cause is a
         # coarse category, not a raw alert_type). The Worker ignores this key
         # (zod strips it); scorecard.dwell_lookup_from_params reads it so the
-        # grade stops silently falling back to the (route, state) aggregate. 1a6.
+        # grade stops silently falling back to the (route, state) aggregate.
         for r, by_state_cause in dwell_quantiles_by_cause.items():
             if r in routes_doc:
                 routes_doc[r]["dwell_quantiles_by_cause"] = by_state_cause
@@ -369,9 +368,9 @@ def write_params(
         },
         "routes": routes_doc,
     }
-    # Per-(route, direction, tod_bin) advance-rate baseline the Worker needs live
-    # to gate and score the movement channel. Top-level (not per-route) so 8zp's
-    # assigned_n service baseline can sit beside it under the same delivery.
+    # Per-(route, direction, tod_bin) advance-rate baseline the Worker needs live to
+    # gate and score the movement channel. Top-level (not per-route) so the assigned_n
+    # service baseline can sit beside it under the same delivery.
     if movement_baseline:
         doc["movement_baseline"] = movement_baseline
     # Per-(route, tod_bin) assigned_n baseline the Worker divides live assigned_n
@@ -412,7 +411,7 @@ def write_segment_params(
     """Write the segment baseline + canonical adjacency as their OWN R2 object
     (not folded into params.json, which the Worker parses on the hot per-tick
     path). The Worker reads this at step 8b, off the publish path, to score
-    per-segment movement and roll it up to station service flow (vhh.8).
+    per-segment movement and roll it up to station service flow.
 
     Only through-segments are shipped: a leaf needs a pooled baseline AND a
     dominant canonical successor (share >= MIN_SHARE), which drops terminals and
@@ -622,6 +621,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Empirical dwell quantiles from the regime_transitions stream over the
     # same window. Cells below MIN_SAMPLES_FOR_EMPIRICAL fall back to the
     # geometric dwell in the Worker — no-op if the stream is empty.
+    #
+    # `normal` is the exception: its cells come from the partially-pooled
+    # estimator instead, for every route and with no min-samples gate. A route
+    # only completes a normal regime by leaving normal, so that gate admits the
+    # flappiest routes and drops the steadiest ones onto a memoryless geometric
+    # projection. See training/pooled_dwell.py.
     from training.eval import load_transitions
 
     transitions = load_transitions(client, cfg.bucket, start_date, end_date)
@@ -639,6 +644,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     dwell_q_by_cause = compute_dwell_quantiles_by_cause(
         transitions, tail_fn=loglogistic_tail
     )
+    dwell_q_normal = pooled_dwell_cells(
+        transitions, state="normal", window_end=window_end
+    )
+    for route, cell in dwell_q_normal.items():
+        dwell_q.setdefault(route, {})["normal"] = cell
     n_dwell_cells = sum(len(by_state) for by_state in dwell_q.values())
     n_dwell_alert_cells = sum(
         len(by_alert)

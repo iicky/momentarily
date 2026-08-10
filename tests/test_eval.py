@@ -173,7 +173,7 @@ def test_calibrate_by_current_splits_normal_vs_recovery():
 
 def test_calibrate_by_current_flags_underconfident_normal():
     """A normal-now route that stays normal but is forecast under-confidently
-    (p_normal_in_30 = 0.8) loses to persistence on that slice — the eeh signature:
+    (p_normal_in_30 = 0.8) loses to persistence on that slice — the failure signature:
     the forecast trails the realized rate, so its Brier is worse than the hard
     persistence call."""
     ts0 = 1_700_000_000
@@ -268,7 +268,7 @@ def test_recovery_skips_ongoing_regimes():
 
 def test_recovery_skips_indeterminate_predictions():
     """Indeterminate rows are clamps, not predictions — including them would
-    bias MAE toward the recovery_minutes ceiling. See momentarily-x25."""
+    bias MAE toward the recovery_minutes ceiling."""
     t0 = 1_700_000_000
     preds = [
         _pred(
@@ -318,8 +318,8 @@ def test_recovery_skips_indeterminate_predictions():
 
 
 def test_prediction_record_from_json_defaults_indeterminate() -> None:
-    """Predictions written before momentarily-x25 didn't carry the field;
-    from_json must default it to False so old archives still parse."""
+    """Older predictions didn't carry the field; from_json must default it to False so
+    old archives still parse."""
     raw = {
         "ts": 1_700_000_000,
         "route": "1",
@@ -389,7 +389,7 @@ def test_recovery_iqr_coverage():
 def test_recovery_skips_normal_predictions():
     """A route already in `normal` isn't recovering — its recovery_minutes=0
     prediction must not be graded against time-until-the-next-disruption, which
-    would swamp the metric. See momentarily-qsl."""
+    would swamp the metric."""
     t0 = 1_700_000_000
     preds = [
         _pred(
@@ -418,7 +418,7 @@ def test_recovery_skips_normal_predictions():
 
 def test_recovery_per_regime_macro_average():
     """A long regime contributes many ticks; per-tick MAE is dominated by it,
-    per-regime weights both regimes equally. See momentarily-vk0.9."""
+    per-regime weights both regimes equally."""
     t0 = 1_700_000_000
     # Regime A: 10 ticks, each off by 10 min. Regime B: 1 tick, off by 100 min.
     preds = [
@@ -491,7 +491,7 @@ def test_build_eval_structure():
 def test_build_eval_segments_by_latest_params_version():
     # 12 ticks under params v100, then 12 under v200. The current-params
     # segment must grade only the v200 predictions — full-window metrics mix
-    # model versions and dilute the latest retrain. See momentarily-vk0.5.
+    # model versions and dilute the latest retrain.
     t0 = 1_700_000_000
     preds = [
         _pred(ts=t0 + i * 300, params_version=100 if i < 12 else 200) for i in range(24)
@@ -759,3 +759,86 @@ def test_calibrate_coverage_predictions_spans_retrain_boundary():
     # the v100 segment picks up the boundary forecast too.
     result = prequential_calibration(both, truth, severity_floor=2, min_samples=1)
     assert result["by_params_version"]["100"]["calibration"][0]["n"] == 1
+
+
+# --- discrimination: the failure mode Brier cannot see -------------------------
+
+
+def _alternating(preds_by_outcome: list[tuple[float, bool]]) -> list[PredictionRecord]:
+    """One route, 5-min grid. Each (forecast, stays_normal) becomes a prediction at
+    T whose realized condition at T+30min matches `stays_normal`.
+
+    The horizon is 6 ticks, so the outcome for tick i is read at tick i+6. Blocks
+    are spaced 8 ticks apart, not 12: at 12 the outcome tick's own +6 lookup lands
+    exactly on the next block's base and silently contributes extra matched pairs.
+    8 divides neither 6 nor 12, so no block can reach another one.
+    """
+    ts0 = 1_700_000_100  # already tick-aligned
+    preds: list[PredictionRecord] = []
+    for block, (forecast, stays) in enumerate(preds_by_outcome):
+        base = ts0 + block * 8 * 300
+        preds.append(_pred(ts=base, condition="normal", p_normal_in_30min=forecast))
+        preds.append(
+            _pred(
+                ts=base + 6 * 300,
+                condition="normal" if stays else "disrupted",
+                p_normal_in_30min=forecast,
+            )
+        )
+    return preds
+
+
+def test_auc_is_none_without_both_outcomes():
+    """Discrimination is undefined when nothing ever leaves normal — which is the
+    common case on a short window, and must not be reported as 0.5."""
+    result = calibrate(_alternating([(0.9, True), (0.8, True)]), horizon_min=30)
+    assert result.auc is None
+
+
+def test_auc_rewards_a_forecast_that_ranks_exits_lower():
+    """The forecast reads low exactly when the route is about to leave."""
+    samples = [(0.99, True), (0.98, True), (0.10, False), (0.20, False)]
+    result = calibrate(_alternating(samples), horizon_min=30)
+    assert result.auc == 1.0
+
+
+def test_auc_is_half_for_a_constant_forecast():
+    """Persistence and any other constant predictor discriminate nothing. Ties
+    must land exactly at 0.5 rather than being scored by input order."""
+    samples = [(0.9, True), (0.9, True), (0.9, False), (0.9, False)]
+    result = calibrate(_alternating(samples), horizon_min=30)
+    assert result.auc == 0.5
+
+
+def test_auc_catches_an_anti_predictive_forecast_that_brier_praises():
+    """The regression guard, and the reason this metric exists.
+
+    This forecast is confidently high everywhere and *highest* right before the
+    route leaves normal — it is ranked backwards. Because leaving is rare, Brier
+    still looks respectable and the persistence skill score stays unalarming, so
+    every pre-existing metric passes it. Only the rank statistic reports it.
+    """
+    stays = [(0.90, True)] * 18
+    leaves = [(0.97, False), (0.98, False)]
+    result = calibrate(_alternating(stays + leaves), horizon_min=30)
+
+    assert result.brier is not None
+    assert result.brier < 0.12  # respectable against a 90%-stay base rate
+    assert result.auc is not None
+    assert result.auc < 0.5  # ranked backwards — the thing Brier missed
+
+
+def test_auc_reported_per_stratum_and_serialized():
+    """normal_now is the slice where persistence is pinned at 1.0 and therefore
+    cannot discriminate at all, so the stratum needs its own number — and it has
+    to survive into the published doc."""
+    samples = [(0.99, True), (0.98, True), (0.10, False), (0.20, False)]
+    preds = _alternating(samples)
+    result = calibrate(preds, horizon_min=30)
+
+    assert result.by_current["normal_now"].auc == 1.0
+
+    doc = build_eval(preds, [], window_start=0, window_end=1_800_000_000)
+    published = doc["calibration"][0]
+    assert "auc" in published
+    assert "auc" in published["by_current"]["normal_now"]

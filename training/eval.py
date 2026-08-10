@@ -70,14 +70,13 @@ class PredictionRecord:
     recovery_minutes_low: int
     recovery_minutes_high: int
     # True when the dwell estimate saturated the clamp; recovery_minutes is not
-    # a real prediction for these rows. Defaults False so JSONL written before
-    # momentarily-x25 still parses.
+    # a real prediction for these rows. Defaults False so older JSONL still parses.
     recovery_indeterminate: bool = False
-    # primary_alert_type at this tick. Defaults None for JSONL written before
-    # momentarily-22k. Lets the grader segment calibration by cause.
+    # primary_alert_type at this tick. Defaults None for older JSONL. Lets the grader
+    # segment calibration by cause.
     primary_alert_type: str | None = None
     # trained_at of the params.json active when this prediction was made.
-    # 0 for bootstrap params or JSONL written before momentarily-vk0.5.
+    # 0 for bootstrap params or older JSONL.
     # Predictions are prequential (params are always trained on data strictly
     # before the prediction), so this is a version tag for segmentation, not a
     # leakage guard.
@@ -128,9 +127,8 @@ class TransitionRecord:
     regime_entered_at: int
     exited_at: int
     dwell_sec: int
-    # primary_alert_type when prev_state began. None for records written before
-    # momentarily-22k or when no alert was active at regime start. Phase 2
-    # (momentarily-alu) segments dwell quantiles on this.
+    # primary_alert_type when prev_state began. None for older records or when no alert
+    # was active at regime start. Phase 2 segments dwell quantiles on this.
     alert_type_at_entry: str | None = None
 
     @classmethod
@@ -264,7 +262,7 @@ class StratumStats:
     where the persistence baseline beats the model. mean_pred vs mean_outcome is
     the sharpness/bias view: a forecast that under-shoots a near-certain outcome
     (low mean_pred, high mean_outcome) is exactly what loses to a hard
-    persistence call on a sticky regime. See momentarily-eeh."""
+    persistence call on a sticky regime."""
 
     n: int
     brier: float | None
@@ -272,6 +270,11 @@ class StratumStats:
     bss_persistence: float | None
     mean_pred: float | None  # average forecast (sharpness)
     mean_outcome: float | None  # realized P(normal at T+horizon) in this subset
+    # Rank discrimination within the stratum. The normal_now slice is the one
+    # that matters: persistence is pinned at 1.0 there and cannot discriminate at
+    # all, so this is the only number that says whether the model's p_normal
+    # actually falls ahead of a route leaving normal.
+    auc: float | None = None
 
 
 def _empty_strata() -> dict[str, StratumStats]:
@@ -287,7 +290,7 @@ class CalibrationResult:
     # current condition holds at T+horizon (the baseline to beat for a sticky
     # process on short horizons); climatology predicts the per-route base rate
     # of normal over the eval window (in-sample, the standard reference).
-    # A raw Brier score is uninterpretable without these. See momentarily-vk0.4.
+    # A raw Brier score is uninterpretable without these.
     brier_persistence: float | None
     brier_climatology: float | None
     # Brier skill scores: 1 − brier/brier_ref. Positive = beats the baseline.
@@ -295,6 +298,12 @@ class CalibrationResult:
     bss_persistence: float | None
     bss_climatology: float | None
     bins: list[ReliabilityBin]
+    # Rank discrimination over all matched samples. Brier answers "how close are
+    # the numbers"; this answers "are they pointed the right way at all". A
+    # forecast can post a competitive Brier against a rare outcome while ranking
+    # backwards, so neither number is interpretable without the other.
+    # 0.5 = none, < 0.5 = anti-predictive.
+    auc: float | None = None
     # Persistence loss decomposed by the current condition at T: "normal_now"
     # (persistence predicts 1.0 — the sticky-regime case that dominates the
     # corpus) vs "not_normal_now" (persistence predicts 0.0 — the recovery
@@ -311,8 +320,42 @@ def _skill(brier: float | None, reference: float | None) -> float | None:
     return 1.0 - brier / reference
 
 
+def _auc(samples: list[tuple[float, float]]) -> float | None:
+    """Rank-based AUC over (pred, outcome): P(pred | stayed > pred | left), ties
+    counted as half. None when one class is absent — discrimination is undefined
+    without both.
+
+    This is the metric Brier cannot supply. When the outcome is rare (normal
+    routes stay normal ~99.8% of the time over these horizons) Brier is dominated
+    by the calibration-to-1 term, so a forecast that is *anti*-predictive — one
+    that reads p_normal higher right before a route leaves normal — can score
+    close to a well-behaved one and better than a hedged one. AUC separates them:
+    0.5 is no discrimination, below 0.5 is backwards.
+
+    Mann-Whitney U with midranks, so tied forecasts (a constant predictor, say)
+    land exactly at 0.5 rather than being scored by input order.
+    """
+    pos = [pred for pred, outcome in samples if outcome == 1.0]
+    neg = [pred for pred, outcome in samples if outcome != 1.0]
+    if not pos or not neg:
+        return None
+    ordered = sorted(pos + neg)
+    midrank: dict[float, float] = {}
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and ordered[j + 1] == ordered[i]:
+            j += 1
+        # 1-based ranks; ties share the average of the positions they span.
+        midrank[ordered[i]] = (i + j) / 2.0 + 1.0
+        i = j + 1
+    rank_sum = sum(midrank[pred] for pred in pos)
+    n_pos, n_neg = len(pos), len(neg)
+    return (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+
+
 def _stratum(samples: list[tuple[float, float, float]]) -> StratumStats:
-    """Brier/persistence/sharpness over a subset of (pred, persistence, outcome)."""
+    """Brier/persistence/sharpness/discrimination over (pred, persistence, outcome)."""
     n = len(samples)
     if n == 0:
         return StratumStats(0, None, None, None, None, None)
@@ -325,6 +368,7 @@ def _stratum(samples: list[tuple[float, float, float]]) -> StratumStats:
         bss_persistence=_skill(brier, persistence),
         mean_pred=sum(pred for pred, _per, _out in samples) / n,
         mean_outcome=sum(out for _pred, _per, out in samples) / n,
+        auc=_auc([(pred, out) for pred, _per, out in samples]),
     )
 
 
@@ -432,6 +476,7 @@ def calibrate(
         brier_climatology=brier_climatology,
         bss_persistence=_skill(brier, brier_persistence),
         bss_climatology=_skill(brier, brier_climatology),
+        auc=_auc([(pred, out) for pred, _per, out, _route in matched]),
         bins=bins,
         by_current=by_current,
         excluded_schedule=excluded_schedule,
@@ -514,8 +559,7 @@ class RecoveryResult:
     # Macro-average with one sample per regime (each regime's per-tick errors
     # are averaged first, then regimes weighted equally). The per-tick view
     # weights a 6-hour regime ~72x a 30-minute one, so a couple of marathon
-    # planned-work regimes dominate MAE. n = number of regimes. See
-    # momentarily-vk0.9.
+    # planned-work regimes dominate MAE. n = number of regimes.
     per_regime: RecoveryStats = field(
         default_factory=lambda: RecoveryStats(
             n=0, mae_min=None, rmse_min=None, iqr_coverage=None
@@ -524,10 +568,9 @@ class RecoveryResult:
     by_route: dict[str, RecoveryStats] = field(
         default_factory=lambda: {}  # noqa: PIE807
     )
-    # Recovery accuracy segmented by the prediction-tick's primary_alert_type.
-    # Surfaces whether cause-conditioned dwell quantiles (momentarily-alu) are
-    # actually tightening the interval per cause. Predictions with no alert type
-    # are omitted from this breakdown.
+    # Recovery accuracy segmented by the prediction-tick's primary_alert_type. Surfaces
+    # whether cause-conditioned dwell quantiles are actually tightening the interval per
+    # cause. Predictions with no alert type are omitted from this breakdown.
     by_alert_type: dict[str, RecoveryStats] = field(
         default_factory=lambda: {}  # noqa: PIE807
     )
@@ -567,11 +610,11 @@ def _grade_recovery(
         # already normal isn't "recovering" — it predicts recovery_minutes=0, and
         # grading that against time-until-the-next-disruption (the end of the
         # current normal regime) swamps MAE and pins IQR coverage near zero. Skip
-        # them so the metric reflects actual recoveries. See momentarily-qsl.
+        # them so the metric reflects actual recoveries.
         if p.condition == "normal":
             continue
         # Indeterminate rows are clamped, not predicted — including them would
-        # bias MAE toward the clamp ceiling. See momentarily-x25.
+        # bias MAE toward the clamp ceiling.
         if p.recovery_indeterminate:
             continue
         # Schedule recoveries are deterministic resume lookups, graded for
@@ -648,7 +691,7 @@ def recovery_metrics(
 ) -> RecoveryResult:
     """Grade recovery_minutes against the HMM's OWN regime transitions (the
     filter's argmax flips). Self-consistent — a sanity check, not an independent
-    validation. See momentarily-9bm and independent_recovery_metrics."""
+    validation. See independent_recovery_metrics."""
     exits: dict[tuple[str, int], int] = {}
     for t in transitions:
         exits[(t.route, t.regime_entered_at)] = t.exited_at
@@ -669,7 +712,7 @@ def independent_recovery_metrics(
     against the model's own argmax. A prediction is matched to the disruption
     interval [start_tick, recovered_tick) covering its tick. Same exclusions
     (normal / indeterminate / schedule). Truth is service LEVEL, a strong proxy,
-    not service quality. See momentarily-xum / up0."""
+    not service quality."""
     by_route: dict[str, list[Disruption]] = {}
     for d in disruptions:
         by_route.setdefault(d.route, []).append(d)
@@ -711,6 +754,7 @@ def _calibration_as_dicts(
             "brier_climatology": c.brier_climatology,
             "bss_persistence": c.bss_persistence,
             "bss_climatology": c.bss_climatology,
+            "auc": c.auc,
             "excluded_schedule": c.excluded_schedule,
             "by_current": {
                 stratum: {
@@ -720,6 +764,7 @@ def _calibration_as_dicts(
                     "bss_persistence": s.bss_persistence,
                     "mean_pred": s.mean_pred,
                     "mean_outcome": s.mean_outcome,
+                    "auc": s.auc,
                 }
                 for stratum, s in c.by_current.items()
             },
@@ -765,7 +810,7 @@ def build_eval(
     # the latest retrain. The pipeline is prequential — params are always
     # trained on data strictly before the prediction — so this is isolation of
     # the current model's performance, not a leakage guard. Empty/None when no
-    # prediction carries a version tag (pre-vk0.5 JSONL). See momentarily-vk0.5.
+    # prediction carries a version tag (older JSONL).
     latest_version = max((p.params_version for p in predictions), default=0)
     current_params: dict[str, Any] | None = None
     if latest_version > 0:
@@ -894,7 +939,7 @@ def build_independent_recovery(
     grade recovery_minutes against them — a recovery truth independent of the
     HMM's own argmax. Returns None until the archive accumulates (the metric
     ships archive-first; ~2 weeks before the baseline is trustworthy). A load
-    failure is non-fatal. See momentarily-xum / up0."""
+    failure is non-fatal."""
     from training.load_r2 import (
         build_service_series,
         compute_baseline,

@@ -8,6 +8,7 @@ no network — everything here is a hand-built fixture.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from training.scorecard import (
     false_alarms,
     model_episodes,
     onset_latency,
+    published_condition_coverage,
 )
 
 WS = 1_700_000_100  # grid-aligned: snap_tick(WS) == WS
@@ -149,9 +151,13 @@ def test_onset_latency_no_overlapping_model_episode_counts_as_missed() -> None:
     assert result["mean_latency_min"] is None
 
 
-def test_onset_latency_model_episode_before_truth_onset_does_not_detect() -> None:
-    """A model episode that recovers strictly before the truth episode's onset
-    has no time overlap — it does not count as a detection."""
+def test_onset_latency_credits_a_model_episode_that_led_the_alert() -> None:
+    """A model episode that closed before the alert landed is a lead, not a miss.
+
+    Movement calls the stall first and the MTA posts minutes later; requiring
+    bare overlap scored that as a miss AND a false alarm. Within the lead
+    tolerance it counts as a detection with negative latency.
+    """
     truth_eps = extract_episodes(
         {("A", g(5)): "disrupted", ("A", g(6)): "disrupted"},
         {},
@@ -163,6 +169,30 @@ def test_onset_latency_model_episode_before_truth_onset_does_not_detect() -> Non
         window_start=g(0),
         window_end=g(9),
     )
+    result = onset_latency(truth_eps, model_eps)
+
+    assert result["n_detected"] == 1
+    assert result["n_missed"] == 0
+    # Model onset g1, truth onset g5 -> 20 minutes of lead on a 5-min grid.
+    assert result["median_latency_min"] == -20.0
+    assert result["n_detected_leading"] == 1
+    assert result["median_lead_min"] == 20.0
+
+
+def test_onset_latency_does_not_credit_a_lead_beyond_the_tolerance() -> None:
+    """The lead window is bounded — an unrelated earlier call is still a miss."""
+    truth_eps = extract_episodes(
+        {("A", g(20)): "disrupted", ("A", g(21)): "disrupted"},
+        {},
+        window_start=g(0),
+        window_end=g(30),
+    )
+    model_eps = model_episodes(
+        [_pred("A", g(1), "disrupted"), _pred("A", g(2), "disrupted")],
+        window_start=g(0),
+        window_end=g(30),
+    )
+    # Model recovers at g3; truth onsets at g20 — 85 minutes later.
     result = onset_latency(truth_eps, model_eps)
 
     assert result["n_detected"] == 0
@@ -488,6 +518,10 @@ def test_episode_scorecard_matches_the_verified_oracle() -> None:
     assert set(card) == {
         "n_truth_episodes",
         "n_model_episodes",
+        "n_standing_excluded",
+        "n_model_episodes_in_standing",
+        "graded_arm",
+        "published_coverage",
         "onset_latency",
         "recovery",
         "false_alarms",
@@ -500,3 +534,159 @@ def test_episode_scorecard_matches_the_verified_oracle() -> None:
     assert card["false_alarms"]["n_false_alarm"] == 1
     assert card["false_alarms"]["movement_contradicted"] == 1
     assert card["recovery"]["n_scored"] == 1
+
+
+# --- standing advisories are held out of grading, not silently dropped ----------
+
+
+def _standing_truth(route: str, n_ticks: int) -> dict[tuple[str, int], str]:
+    return {(route, g(k)): "disrupted" for k in range(n_ticks)}
+
+
+def test_a_standing_advisory_is_excluded_from_onset_and_recovery() -> None:
+    """A severe-tier alert held past a day measures the alert feed, not the model.
+
+    It stays in n_truth_episodes and is counted in n_standing_excluded, but the
+    model is not scored as having missed it.
+    """
+    # 24h at 5-min ticks = 288 ticks; go one past the threshold.
+    ticks = (24 * 3600) // TICK_SECONDS + 1
+    truth_eps = extract_episodes(
+        _standing_truth("A", ticks), {}, window_start=g(0), window_end=g(ticks + 10)
+    )
+    assert len(truth_eps) == 1
+    assert truth_eps[0].standing
+
+    card = episode_scorecard(
+        truth_eps,
+        [],
+        {},
+        lambda _r, _s, _c: None,
+        window_start=g(0),
+        window_end=g(ticks + 10),
+    )
+    assert card["n_truth_episodes"] == 1
+    assert card["n_standing_excluded"] == 1
+    # Not graded as a miss — the denominator is empty, not 1.
+    assert card["onset_latency"]["n_episodes"] == 0
+    assert card["recovery"]["n_scored"] == 0
+
+
+def test_an_acute_episode_is_still_graded_alongside_a_standing_one() -> None:
+    ticks = (24 * 3600) // TICK_SECONDS + 1
+    truth = _standing_truth("A", ticks)
+    truth[("B", g(3))] = "disrupted"
+    truth[("B", g(4))] = "disrupted"
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(ticks + 10))
+    card = episode_scorecard(
+        truth_eps,
+        [_pred("B", g(3), "disrupted"), _pred("B", g(4), "disrupted")],
+        {},
+        lambda _r, _s, _c: None,
+        window_start=g(0),
+        window_end=g(ticks + 10),
+    )
+    assert card["n_standing_excluded"] == 1
+    assert card["onset_latency"]["n_episodes"] == 1
+    assert card["onset_latency"]["n_detected"] == 1
+
+
+def test_a_model_call_inside_a_standing_advisory_is_not_a_false_alarm() -> None:
+    """The alert feed says that route is impaired, so calling it is not an
+    over-call — it just isn't gradeable as an acute detection either."""
+    ticks = (24 * 3600) // TICK_SECONDS + 1
+    truth_eps = extract_episodes(
+        _standing_truth("A", ticks), {}, window_start=g(0), window_end=g(ticks + 10)
+    )
+    card = episode_scorecard(
+        truth_eps,
+        [_pred("A", g(5), "disrupted"), _pred("A", g(6), "disrupted")],
+        {("A", g(5)): "normal", ("A", g(6)): "normal"},
+        lambda _r, _s, _c: None,
+        window_start=g(0),
+        window_end=g(ticks + 10),
+    )
+    assert card["n_model_episodes"] == 1
+    assert card["n_model_episodes_in_standing"] == 1
+    assert card["false_alarms"]["n_false_alarm"] == 0
+
+
+def test_an_episode_just_under_the_threshold_is_still_graded() -> None:
+    ticks = (24 * 3600) // TICK_SECONDS - 2
+    truth_eps = extract_episodes(
+        _standing_truth("A", ticks), {}, window_start=g(0), window_end=g(ticks + 10)
+    )
+    assert not truth_eps[0].standing
+    card = episode_scorecard(
+        truth_eps,
+        [],
+        {},
+        lambda _r, _s, _c: None,
+        window_start=g(0),
+        window_end=g(ticks + 10),
+    )
+    assert card["n_standing_excluded"] == 0
+    assert card["onset_latency"]["n_episodes"] == 1
+
+
+# --- the graded arm is the published one, not the alert shadow -------------------
+
+
+def _pred_arms(
+    route: str, ts: int, condition: str, published: str | None
+) -> PredictionRecord:
+    p = _pred(route, ts, condition)
+    return replace(p, published_condition=published)
+
+
+def test_model_episodes_grade_the_published_arm_not_the_shadow() -> None:
+    """The shadow `condition` and the movement-primary `published_condition` are
+    different arms; consumers read the published one, so that is what is graded."""
+    preds = [
+        _pred_arms("A", g(1), "disrupted", "normal"),
+        _pred_arms("A", g(2), "disrupted", "normal"),
+        _pred_arms("B", g(1), "normal", "disrupted"),
+        _pred_arms("B", g(2), "normal", "disrupted"),
+    ]
+    eps = model_episodes(preds, window_start=g(0), window_end=g(6))
+
+    assert [e.route for e in eps] == ["B"]
+
+
+def test_model_episodes_fall_back_to_condition_for_pre_published_rows() -> None:
+    """Rows written before published_condition existed carry None; those still
+    grade off `condition` rather than vanishing."""
+    preds = [
+        _pred_arms("A", g(1), "disrupted", None),
+        _pred_arms("A", g(2), "disrupted", None),
+    ]
+    eps = model_episodes(preds, window_start=g(0), window_end=g(6))
+
+    assert [e.route for e in eps] == ["A"]
+
+
+def test_unknown_published_condition_closes_a_run() -> None:
+    """`unknown` is no reading, not a disruption — it ends a run like normal."""
+    preds = [
+        _pred_arms("A", g(1), "normal", "disrupted"),
+        _pred_arms("A", g(2), "normal", "unknown"),
+        _pred_arms("A", g(3), "normal", "disrupted"),
+    ]
+    eps = model_episodes(preds, window_start=g(0), window_end=g(6))
+
+    assert len(eps) == 2
+
+
+def test_published_coverage_reports_the_unknown_share() -> None:
+    preds = [
+        _pred_arms("A", g(1), "normal", "unknown"),
+        _pred_arms("A", g(2), "normal", "normal"),
+        _pred_arms("A", g(3), "normal", "disrupted"),
+        _pred_arms("A", g(4), "normal", "normal"),
+    ]
+    cov = published_condition_coverage(preds)
+
+    assert cov["n_ticks"] == 4
+    assert cov["unknown_share"] == 0.25
+    assert cov["gradeable_share"] == 0.75
+    assert cov["by_condition"]["disrupted"] == 1

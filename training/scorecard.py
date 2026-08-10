@@ -40,6 +40,13 @@ from training.recovery_dist import (
 
 NOT_NORMAL = ("disrupted", "suspended")
 
+# How far ahead of a truth onset a model episode may fire and still count as a
+# detection of it. Requiring bare overlap penalises the exact behaviour the
+# movement signal exists for: the model calls a stall, the MTA posts the alert
+# 20 minutes later, and if the model episode closed in between it scored as a
+# miss AND a false alarm. Matches the changepoint alignment's +/-30min window.
+ONSET_LEAD_TOLERANCE_SEC = 30 * 60
+
 # Curve + optional log-logistic tail for a (route, state, cause) dwell cell. A
 # cause-aware lookup falls back cause -> state -> pooled, so an unknown cause
 # degrades to the state-level curve rather than missing.
@@ -50,27 +57,79 @@ def model_episodes(
     predictions: list[PredictionRecord], *, window_start: int, window_end: int
 ) -> list[Episode]:
     """Segment the model's published-condition stream into episodes, the same way
-    the truth is segmented (absent/normal tick ends a run)."""
+    the truth is segmented (absent/normal tick ends a run).
+
+    Grades `published_condition` — the movement-primary state consumers actually
+    read — not the `condition` alert-shadow. The two are different arms and
+    disagree: over 08-04..08-07 the shadow called disrupted on 58 route-ticks and
+    the published arm on 12, so grading the shadow scored something no consumer
+    sees. Falls back to `condition` only for rows written before the published
+    field existed.
+
+    `unknown` (no movement reading) is not not-normal, so it closes a run the
+    same as normal. That is a real limitation, not a neutral gap — see
+    published_condition_coverage for how much of the window it covers.
+    """
     state: dict[tuple[str, int], str] = {}
     for p in predictions:
-        if p.condition in NOT_NORMAL:
-            state[(p.route, snap_tick(p.ts))] = p.condition
+        published = p.published_condition or p.condition
+        if published in NOT_NORMAL:
+            state[(p.route, snap_tick(p.ts))] = published
     return extract_episodes(state, {}, window_start=window_start, window_end=window_end)
 
 
-def _overlaps(a: Episode, b: Episode) -> bool:
-    return a.route == b.route and a.onset < b.recovery and b.onset < a.recovery
+def published_condition_coverage(
+    predictions: list[PredictionRecord],
+) -> dict[str, Any]:
+    """How much of the window the published arm could actually call.
+
+    A tick with no movement reading publishes `unknown`; it is neither a
+    detection opportunity nor evidence of calm, so a detection rate computed
+    over a window that is largely unknown is not what it appears to be.
+    """
+    n = len(predictions)
+    counts = Counter(p.published_condition or p.condition for p in predictions)
+    unknown = counts.get("unknown", 0)
+    return {
+        "n_ticks": n,
+        "by_condition": dict(counts),
+        "unknown_share": unknown / n if n else None,
+        "gradeable_share": (n - unknown) / n if n else None,
+    }
+
+
+def _matches(
+    model: Episode, truth: Episode, *, lead_sec: int = ONSET_LEAD_TOLERANCE_SEC
+) -> bool:
+    """Whether a model episode is a detection of a truth episode.
+
+    Overlap, with the model episode's window extended forward by `lead_sec` so an
+    early call that closed before the alert landed still counts. lead_sec=0 is
+    bare overlap.
+    """
+    return (
+        model.route == truth.route
+        and model.onset < truth.recovery
+        and truth.onset < model.recovery + lead_sec
+    )
 
 
 def onset_latency(
     truth_eps: list[Episode],
     model_eps: list[Episode],
+    *,
+    lead_sec: int = ONSET_LEAD_TOLERANCE_SEC,
 ) -> dict[str, Any]:
     """Signed onset latency (model minus truth, minutes) per truth episode, with
-    detection rate. A truth episode is detected iff a model episode overlaps it —
-    the same overlap predicate false_alarms uses, so a model episode is either a
-    detection or a false alarm, never both; latency uses the overlapping model
-    episode whose onset is nearest."""
+    detection rate. A truth episode is detected iff a model episode matches it —
+    the same predicate false_alarms uses, so a model episode is either a
+    detection or a false alarm, never both; latency uses the matching model
+    episode whose onset is nearest.
+
+    Negative latency is the model leading the alert feed. `n_detected_leading`
+    counts detections whose model onset preceded the truth onset — the headline
+    number for the early-warning claim.
+    """
     by_route: dict[str, list[Episode]] = defaultdict(list)
     for m in model_eps:
         by_route[m.route].append(m)
@@ -78,13 +137,16 @@ def onset_latency(
     latencies: list[float] = []
     detected = 0
     for t in truth_eps:
-        covering = [m for m in by_route.get(t.route, []) if _overlaps(m, t)]
+        covering = [
+            m for m in by_route.get(t.route, []) if _matches(m, t, lead_sec=lead_sec)
+        ]
         if covering:
             nearest = min(covering, key=lambda m: abs(m.onset - t.onset))
             latencies.append((nearest.onset - t.onset) / 60.0)
             detected += 1
 
     n = len(truth_eps)
+    leading = [x for x in latencies if x < 0]
     return {
         "n_episodes": n,
         "n_detected": detected,
@@ -92,6 +154,9 @@ def onset_latency(
         "detection_rate": detected / n if n else None,
         "median_latency_min": median(latencies) if latencies else None,
         "mean_latency_min": sum(latencies) / len(latencies) if latencies else None,
+        "lead_tolerance_min": lead_sec // 60,
+        "n_detected_leading": len(leading),
+        "median_lead_min": -median(leading) if leading else None,
     }
 
 
@@ -119,11 +184,15 @@ def false_alarms(
     movement_truth: dict[tuple[str, int], str],
     *,
     min_frac: float = 0.5,
+    lead_sec: int = ONSET_LEAD_TOLERANCE_SEC,
 ) -> dict[str, Any]:
-    """Model episodes with no overlapping truth episode, split by whether the
-    movement state confirms (real incident the alert-truth missed) or contradicts
-    (a genuine over-call) them. Movement now feeds the HMM, so this split is a
-    self-consistency diagnostic, not an independent adjudication."""
+    """Model episodes matching no truth episode, split by whether the movement
+    state confirms (real incident the alert-truth missed) or contradicts (a
+    genuine over-call) them. Movement now feeds the HMM, so this split is a
+    self-consistency diagnostic, not an independent adjudication.
+
+    Uses the same predicate as onset_latency, so an early call credited there as
+    a lead is not also counted here as a false alarm."""
     by_route: dict[str, list[Episode]] = defaultdict(list)
     for t in truth_eps:
         by_route[t.route].append(t)
@@ -131,7 +200,7 @@ def false_alarms(
     fa = [
         m
         for m in model_eps
-        if not any(_overlaps(m, t) for t in by_route.get(m.route, []))
+        if not any(_matches(m, t, lead_sec=lead_sec) for t in by_route.get(m.route, []))
     ]
     verdicts = Counter(
         _movement_verdict(m, movement_truth, min_frac=min_frac) for m in fa
@@ -253,14 +322,35 @@ def episode_scorecard(
     window_end: int,
 ) -> dict[str, Any]:
     """Assemble the event-based scorecard: onset latency, per-episode recovery,
-    and false-alarm episodes, each with its event count."""
+    and false-alarm episodes, each with its event count.
+
+    Standing advisories (Episode.standing) are held out of every metric: they are
+    a property of how long the MTA leaves an alert posted, not of the incident,
+    and their tick mass otherwise swamps the acute events the model exists to
+    call. They stay in `n_truth_episodes` and get their own count so the holdout
+    is visible rather than silent. A model episode overlapping only a standing
+    advisory is likewise not scored as a false alarm — the alert feed says
+    something is wrong there, so it is not evidence of an over-call.
+    """
     model_eps = model_episodes(
         predictions, window_start=window_start, window_end=window_end
     )
+    graded = [t for t in truth_eps if not t.standing]
+    standing = [t for t in truth_eps if t.standing]
+    # Bare overlap, not the detection predicate: the lead tolerance exists to
+    # credit an early call against a truth onset, and reusing it here would
+    # excuse a model episode that closed before the advisory ever went up.
+    gradeable_model_eps = [
+        m for m in model_eps if not any(_matches(m, s, lead_sec=0) for s in standing)
+    ]
     return {
         "n_truth_episodes": len(truth_eps),
         "n_model_episodes": len(model_eps),
-        "onset_latency": onset_latency(truth_eps, model_eps),
-        "recovery": episode_recovery(truth_eps, dwell_lookup),
-        "false_alarms": false_alarms(model_eps, truth_eps, movement_truth),
+        "n_standing_excluded": len(standing),
+        "n_model_episodes_in_standing": len(model_eps) - len(gradeable_model_eps),
+        "graded_arm": "published_condition (movement-primary)",
+        "published_coverage": published_condition_coverage(predictions),
+        "onset_latency": onset_latency(graded, model_eps),
+        "recovery": episode_recovery(graded, dwell_lookup),
+        "false_alarms": false_alarms(gradeable_model_eps, graded, movement_truth),
     }

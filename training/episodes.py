@@ -22,6 +22,11 @@ from typing import Any
 from momentarily.mapping import category_for_label, coarse_status, severity_tier
 from training.eval import TICK_SECONDS, snap_tick
 
+# An episode at least this long is a standing advisory, not an incident. One
+# full day: a bright line, not a quantile of the observed durations, so the
+# threshold can't be read as tuned to the metric it improves.
+STANDING_ADVISORY_SEC = 24 * 3600
+
 
 @dataclass(frozen=True)
 class Episode:
@@ -47,6 +52,20 @@ class Episode:
     @property
     def duration_sec(self) -> int:
         return self.recovery - self.onset
+
+    @property
+    def standing(self) -> bool:
+        """A standing advisory rather than an acute incident.
+
+        The MTA leaves severe-tier alerts up long past any acute event — over a
+        21-day sample the median episode ran 45 minutes, but 4% ran past a day
+        (one F-train "Severe Delays" held for 459 hours) and those carried 62% of
+        all not-normal ticks. Grading a nowcast as "missing" a two-week-old
+        standing delay measures the alert feed, not the model, so these are
+        counted and reported but not graded. Bright line, deliberately not a
+        percentile of the observed distribution.
+        """
+        return self.duration_sec >= STANDING_ADVISORY_SEC
 
 
 def _dominant_cause(types_per_tick: list[tuple[str, ...]]) -> str | None:
@@ -194,10 +213,18 @@ def episodes_summary(episodes: list[Episode]) -> dict[str, Any]:
     """Per-window episode counts plus the full episode table."""
     by_cause: Counter[str] = Counter(ep.cause for ep in episodes)
     by_peak: Counter[str] = Counter(ep.peak_state for ep in episodes)
+    standing = [ep for ep in episodes if ep.standing]
+    total_ticks = sum(ep.n_ticks for ep in episodes)
+    standing_ticks = sum(ep.n_ticks for ep in standing)
     return {
         "n": len(episodes),
         "n_left_censored": sum(ep.left_censored for ep in episodes),
         "n_right_censored": sum(ep.right_censored for ep in episodes),
+        # Standing advisories are reported, never silently dropped: their tick
+        # share is what a per-tick recall number is really measuring.
+        "n_standing": len(standing),
+        "standing_tick_share": standing_ticks / total_ticks if total_ticks else None,
+        "standing_threshold_hours": STANDING_ADVISORY_SEC // 3600,
         "by_cause": dict(by_cause),
         "by_peak_state": dict(by_peak),
         "table": [episode_as_dict(ep) for ep in episodes],

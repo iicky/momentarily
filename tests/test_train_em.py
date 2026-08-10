@@ -1034,7 +1034,7 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """main() threads cause-conditioned dwell quantiles into write_params so the
-    episode-recovery grader's dwell_quantiles_by_cause lookup resolves (1a6)."""
+    episode-recovery grader's dwell_quantiles_by_cause lookup resolves."""
     cfg = _r2_config()
     fake_client = cast("S3Client", _FakeS3())
     series = {"R1": _quiet(10)}

@@ -47,7 +47,7 @@ const EmissionParamsSchema = z.object({
   bernoulli_p_service_change: ProbVec3,
   bernoulli_p_planned: ProbVec3,
   // Per-state matched-trip advance rate. Optional for back-compat with
-  // params.json written before the movement channel (vhh.4).
+  // params.json written before the movement channel.
   advance_rate: ProbVec3.optional(),
   // Per-state service-ratio Gaussian (assigned_n / baseline): mu is a ratio
   // (>=0, may exceed 1), sigma a std (>=0). Optional for back-compat with
@@ -68,12 +68,12 @@ const DwellQuantilesSchema = z.object({
   recover_by_120: z.number().min(0).max(1).optional(),
   // Full dwell distribution as quantiles at evenly spaced probabilities — lets
   // the Worker condition recovery outputs on elapsed regime age (see
-  // worker/src/dwell.ts). Optional for back-compat. See momentarily-vk0.1.
+  // worker/src/dwell.ts). Optional for back-compat.
   curve_sec: z.array(z.number().nonnegative()).min(2).optional(),
   // [shape, scale] of a log-logistic fit to this cell's dwells. pLeaveBy uses it
   // to extrapolate the tail past the last observed quantile instead of the
   // constant-hazard exponential patch. Optional for back-compat with older
-  // params.json. See momentarily-gtq.5.
+  // params.json.
   tail_ll: z.tuple([z.number().positive(), z.number().positive()]).optional(),
 });
 
@@ -81,12 +81,12 @@ const DwellQuantilesSchema = z.object({
 // Keys are the same state names the worker uses: "normal" / "disrupted" /
 // "suspended". Cells the trainer didn't include (sample size below its
 // floor) simply aren't here and the worker falls back to its geometric
-// estimate. See momentarily-w97.
+// estimate.
 const DwellByStateSchema = z.record(z.string(), DwellQuantilesSchema).optional();
 
 // Cause-segmented dwell: state -> alert_type -> quantiles. Layered on top of
 // dwell_quantiles; the worker prefers a (state, alert_type) cell and falls back
-// to the (state) aggregate when one is absent. See momentarily-alu.
+// to the (state) aggregate when one is absent.
 const DwellByStateAlertSchema = z
   .record(z.string(), z.record(z.string(), DwellQuantilesSchema))
   .optional();
@@ -117,7 +117,7 @@ export type DwellByState = Record<string, DwellQuantiles>;
 // state -> alert_type -> quantiles
 export type DwellByStateAlert = Record<string, Record<string, DwellQuantiles>>;
 
-// Per-(route, direction, tod_bin) advance-rate baseline (momentarily-vhh.3/vhh.5).
+// Per-(route, direction, tod_bin) advance-rate baseline.
 // p0 is the cell's normal cross-tick advance fraction; alpha/beta carry it as a
 // Beta prior for the movement emission. The Worker uses it live to gate and
 // score the movement channel.
@@ -168,7 +168,7 @@ const TrainedParamsWrapperSchema = z.object({
 // indicate `disrupted`, not `suspended` — only has_suspended_alert
 // (bernoulli_p) should pull hard toward suspended. Before this, all three
 // leaned suspended, so any persistent planned-work/delay alert drifted routes
-// into `suspended`. See momentarily-x5b.
+// into `suspended`.
 const BOOTSTRAP_EMISSIONS: EmissionParams = {
   poisson_lambda: [0.3, 4.0, 12.0],
   gamma_alpha: [1.0, 3.0, 6.0],
@@ -241,7 +241,7 @@ function toHMMParams(p: z.infer<typeof HMMParamsSchema>): HMMParams {
  * shape) returns null and the Worker falls back to bootstrap for every route.
  * A failed *route* is dropped from the returned map and that single route
  * falls back to bootstrap via paramsForRoute, so one bad upload row can't
- * NaN-poison the rest of the fleet. See momentarily-30o.
+ * NaN-poison the rest of the fleet.
  */
 export function parseTrainedParams(data: unknown): TrainedParams | null {
   const wrapper = TrainedParamsWrapperSchema.safeParse(data);
@@ -396,7 +396,6 @@ export function scheduleRateFor(
  *
  * The cause-conditioned cell is preferred because dwell under e.g. planned work
  * is structurally different from delays; conditioning tightens the interval.
- * See momentarily-alu.
  */
 export function dwellForRouteState(
   trained: TrainedParams | null,

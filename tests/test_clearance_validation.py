@@ -3,7 +3,7 @@
 Synthetic prediction streams — no R2. The disruption interval comes from the raw
 feed (primary_alert_type), independent of the HMM argmax; grading reuses
 independent_recovery_metrics. A feed-clearance proxy, not true service recovery
-(that's the trip-updates signal). See momentarily-up0 / momentarily-xum.
+(that's the trip-updates signal).
 """
 
 from __future__ import annotations

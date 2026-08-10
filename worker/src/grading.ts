@@ -12,7 +12,7 @@
  *     write no file. Provides ground-truth dwell times for recovery_minutes
  *     calibration.
  *
- * Both prefixes are listable by date for the Python grader (momentarily-3lb).
+ * Both prefixes are listable by date for the Python grader.
  */
 
 import type { RouteRoll } from './alpha';
@@ -36,7 +36,7 @@ export interface PredictionRecord {
   // True when the dwell estimate saturated MAX_RECOVERY_MINUTES — the geometric
   // self-loop projection is uninformative and the recovery_minutes value is a
   // clamp, not a real prediction. The grader must skip these rows so they don't
-  // drag MAE around. See momentarily-x25.
+  // drag MAE around.
   recovery_indeterminate: boolean;
   // "schedule" recoveries are deterministic lookups of the planned resume time,
   // not dwell estimates — the grader excludes them from HMM calibration and
@@ -45,11 +45,11 @@ export interface PredictionRecord {
   resumes_at: number | null;
   // primary_alert_type at this tick (the cause label currently associated with
   // the route). null when no alert is active. Lets the grader segment
-  // calibration by cause. See momentarily-22k.
+  // calibration by cause.
   primary_alert_type: string | null;
   // trained_at of the params.json that produced this prediction (0 = bootstrap).
   // The grader segments by this so a fresh retrain's predictions are judged
-  // separately from old-params rows in the same window. See momentarily-vk0.5.
+  // separately from old-params rows in the same window.
   params_version: number;
   // The published movement-primary current-state condition and its source at
   // this tick (the alert-shadow lives in `condition` above). Lets the grader
@@ -69,7 +69,7 @@ export interface TransitionRecord {
   dwell_sec: number;
   // primary_alert_type when the prev_state regime *began*. Together with
   // (route, prev_state) this is the cell the trainer keys empirical dwell
-  // quantiles on once enough data accumulates. See momentarily-alu.
+  // quantiles on once enough data accumulates.
   alert_type_at_entry: string | null;
 }
 

@@ -193,12 +193,12 @@ def clearance_disruptions(
     disrupted while its primary_alert_type maps to a disruptive category and
     recovered when that clears. The signal is the raw feed (primary_alert_type in
     v1/predictions), upstream of and independent of the HMM's own argmax — a
-    lighter recovery truth than the trip-updates service level (momentarily-xum).
+    lighter recovery truth than the trip-updates service level.
 
     This validates against "when the alert cleared in the feed," NOT true service
     recovery (trains actually moving) — label it a feed-clearance proxy. Same
     debounce/hysteresis shape as derive_actual_recovery; disruptions still open at
-    the window end are censored (dropped). See momentarily-up0.
+    the window end are censored (dropped).
     """
     by_route: dict[str, dict[int, bool]] = {}
     for p in predictions:
@@ -273,7 +273,7 @@ def changepoint_alignment(
     never sees the change *back* to normal when alerts clear, making every
     recovery changepoint invisible (the 2026-06-09 review matched 25/1401
     transitions largely because of this). Walk the full tick grid instead,
-    treating absent ticks as 'normal'. See momentarily-vk0.2.
+    treating absent ticks as 'normal'.
     """
     routes = {route for route, _tick in truth}
     first_tick = snap_tick(window_start)
@@ -560,7 +560,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     print(f"  {len(movement_truth)} (route, tick) movement-derived states")
 
-    # Peer-comparison reliability scorecard (vhh.10): rank line-directions and
+    # Peer-comparison reliability scorecard: rank line-directions and
     # segments by held-out advance deficit — observed advance over the review
     # window vs the causal baseline. Baselines are fit on baseline_bodies (the
     # pre-window), the deficit is measured on the review window, so a place is
@@ -597,7 +597,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "directions": [asdict(s) for s in dir_scores],
         "segments": [asdict(s) for s in seg_scores],
     }
-    # Roll the segment scores up to per-station service flow (vhh.8): is MY station
+    # Roll the segment scores up to per-station service flow: is MY station
     # moving, the question riders actually ask.
     station_flows = station_flow_json(seg_scores)
     print(

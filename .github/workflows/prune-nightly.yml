@@ -6,7 +6,7 @@ name: Prune R2 (nightly)
 # (trainer/, Sunday 05:00 UTC) as the single source of state/params.json. This
 # workflow used to also retrain nightly, which made params retrain daily and
 # raced the container on Sundays; that was retired in favour of the weekly
-# container. See ADR 0001 and momentarily-eb3.
+# container. See ADR 0001.
 
 on:
   schedule:

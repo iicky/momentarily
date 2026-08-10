@@ -1,7 +1,7 @@
 """Changepoint alignment against grid-filled MTA truth (training/review.py).
 
 The truth dict only holds alert-bearing ticks; the matcher must walk the full
-tick grid so alert-clear (recovery) changepoints exist. See momentarily-vk0.2.
+tick grid so alert-clear (recovery) changepoints exist.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def test_route_without_truth_entries_is_unmatched():
 
 
 # ---------------------------------------------------------------------------
-# Severity-graded MTA truth (momentarily-zl6)
+# Severity-graded MTA truth
 # ---------------------------------------------------------------------------
 
 

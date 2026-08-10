@@ -81,7 +81,7 @@ test("classifyDirection: missing baseline cell is unjudgeable", () => {
   assert.equal(classifyDirection(5, 5, undefined), null);
 });
 
-// --- Three-way significance gate (momentarily-vhh.14): a degenerate-low
+// --- Three-way significance gate: a degenerate-low
 // baseline no longer misfires disrupted on ordinary low-advance noise unless the
 // drop is also statistically significant against that baseline. This exact
 // (advanced, stalled, p0) -> expected-label table is reused verbatim in

@@ -264,7 +264,7 @@ function buildRouteSnapshot(
     severity_sum: counted.reduce((acc, a) => acc + a.sort_order, 0),
     // "No Scheduled Service" is scheduled absence (overnight/weekend
     // non-service), not a suspension — keep it out of this flag. Mirrors
-    // training/load_r2.py. See momentarily-vk0.3.
+    // training/load_r2.py.
     has_suspended_alert: anyMatch(
       types,
       ['Suspend', 'No Trains'],

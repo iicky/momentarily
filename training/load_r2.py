@@ -172,7 +172,7 @@ class PresenceMask:
     (open-ended/early-cleared alerts run to corpus_end). The predictions stream
     records, per (route, tick), whether the live Worker counted any active alert
     (primary_alert_type non-null). Intersecting against it drops the
-    hallucinated tail. See momentarily-1a7.
+    hallucinated tail.
 
     `active` is the set of (route, tick) the Worker saw active; `covered` is
     every tick the stream spans. A cell is only dropped when its tick is covered
@@ -226,7 +226,6 @@ def build_tick_observations(
 
     `active_mask`, when given, drops (route, tick) cells the live Worker never
     saw active — correcting the archive's over-extension past feed presence.
-    See momentarily-1a7.
     """
     if not bodies:
         return []
@@ -437,7 +436,7 @@ def load_route_series_r2(
     return out
 
 
-# --- Trip-updates service metric: independent recovery truth (momentarily-xum) ---
+# --- Trip-updates service metric: independent recovery truth ---
 #
 # The Worker archives a compact per-route service metric each tick at
 # archive/trip_updates/<date>/<observed_at>.json:
@@ -651,7 +650,7 @@ def derive_actual_recovery(
     return out
 
 
-# --- Vehicle-movement metric: independent current-state truth (momentarily-vy0) ---
+# --- Vehicle-movement metric: independent current-state truth ---
 #
 # The Worker archives a compact per-route movement metric each tick at
 # archive/vehicles/<date>/<observed_at>.json:

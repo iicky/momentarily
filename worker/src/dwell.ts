@@ -6,7 +6,7 @@
  * probabilities. Every recovery output must be conditioned on how long the
  * regime has already lasted — the unconditional quantiles are only correct at
  * elapsed=0, and for heavy-tailed dwells P(recover in 30min | disrupted 3h
- * already) is far below P(dwell <= 30min). See momentarily-vk0.1.
+ * already) is far below P(dwell <= 30min).
  *
  * Mirrors the reference implementation in training/dwell.py; keep in sync.
  */
@@ -87,9 +87,9 @@ export function conditionalRecovery(
  * exit *probability* meaningful in the long-lived tail.
  *
  * Past the curve the tail is the fitted log-logistic conditional survival when
- * `tailLl` ([shape, scale]) is supplied, else a constant-hazard exponential patch
- * read off the top segment. The log-logistic's decreasing hazard fits the heavy
- * dwell tail better, so a long-calm regime stays confident (gtq.5 Brier
+ * `tailLl` ([shape, scale]) is supplied, else a constant-hazard exponential
+ * patch read off the top segment. The log-logistic's decreasing hazard fits the
+ * heavy dwell tail better, so a long-calm regime stays confident (per the Brier
  * backtest). The body stays empirical either way. Mirrors training/dwell.py.
  */
 export function pLeaveBy(

@@ -12,10 +12,9 @@
  * same payload like the legacy Python collector did.
  *
  * Object keys are deterministic (alert version / hour bucket, not wall-clock
- * tick time) so an overlapping or retried scheduled run overwrites the same
- * key instead of producing a duplicate object. See momentarily-j0c. The date
- * folder still tracks the observation date so the Python loader's date-prefix
- * listing keeps working.
+ * tick time) so an overlapping or retried scheduled run overwrites the same key
+ * instead of producing a duplicate object. The date folder still tracks the
+ * observation date so the Python loader's date-prefix listing keeps working.
  *
  * E&E is written as a full snapshot per hourly tick (per feed). Volume is low
  * (~3 PUTs/hour × 24 = 72/day) so no dedupe needed yet.
@@ -56,7 +55,7 @@ export async function archiveNewAlerts(
 
   // Rebuilt from this tick's feed only. Replaces lastSeen.alerts at the end so
   // the dedupe map stays bounded to the live alert set instead of growing
-  // forever with ids that will never appear again. See momentarily-wuq.
+  // forever with ids that will never appear again.
   const seen: Record<string, number> = {};
 
   for (const entity of entities) {

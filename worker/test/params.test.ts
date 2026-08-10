@@ -1,5 +1,5 @@
 /**
- * Shape validation for state/params.json — momentarily-30o.
+ * Shape validation for state/params.json.
  *
  * Forward inference does non-null assertions on emission arrays, so a malformed
  * trainer upload would crash or NaN-propagate without these guards. parseTrainedParams
@@ -241,7 +241,7 @@ describe('parseTrainedParams', () => {
   });
 });
 
-describe('movement_baseline delivery (vhh.5)', () => {
+describe('movement_baseline delivery', () => {
   function withBaseline(baseline: unknown): Record<string, unknown> {
     return {
       schema_version: '1',

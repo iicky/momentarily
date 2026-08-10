@@ -1,5 +1,5 @@
 /**
- * Conditional survival math over the empirical dwell curve — momentarily-vk0.1.
+ * Conditional survival math over the empirical dwell curve.
  *
  * Mirrors tests/test_dwell.py (Python reference implementation); the fixtures
  * and expected values are intentionally identical so the two implementations

@@ -431,10 +431,9 @@ def test_em_empty_observations_rejected() -> None:
 
 
 def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
-    """Regression: emission params must stay bounded on a quiet corpus so the
-    forward filter can always leave a state. Originally about gamma_alpha
-    exploding (momentarily-p8y); the Gamma channel is gone (momentarily-vk0.8)
-    but the Bernoulli floors must still hold.
+    """Regression: emission params must stay bounded on a quiet corpus so the forward
+    filter can always leave a state. Originally about gamma_alpha exploding; the
+    Gamma channel is gone but the Bernoulli floors must still hold.
     """
     quiet = Observation(
         alert_count=0,
@@ -872,9 +871,8 @@ def test_canonicalize_advance_rate_breaks_ties() -> None:
 
 
 def test_tod_bin_is_dst_aware() -> None:
-    """Same UTC hour, different ET bin across the DST boundary — the old
-    UTC-based bins were off by an hour all winter. See momentarily-vk0.10.
-    Mirrored in worker/test/parity.test.ts."""
+    """Same UTC hour, different ET bin across the DST boundary — the old UTC-based bins
+    were off by an hour all winter. Mirrored in worker/test/parity.test.ts."""
     from datetime import UTC, datetime
 
     # 10:00 UTC = 05:00 EST (bin 0, overnight) in January
@@ -1062,7 +1060,7 @@ def test_canonicalize_quiet_but_flagged_cluster_is_normal() -> None:
     quietest cluster carries a small suspended-flag rate (overnight blips)
     while a busy planned-spam cluster never trips the flag. Sorting by
     bernoulli_p first put the spam cluster on `normal`; the consolidated rule
-    keys normal on alert rate. See momentarily-vk0.7."""
+    keys normal on alert rate."""
     params = HMMParams(
         transition=(
             (0.97, 0.02, 0.01),

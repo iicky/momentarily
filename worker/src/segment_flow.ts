@@ -1,5 +1,5 @@
 /**
- * Segment-level movement -> per-station service flow (vhh.8): "is MY station
+ * Segment-level movement -> per-station service flow: "is MY station
  * moving", the question riders actually ask.
  *
  * A single 5-minute tick sees ~1 tracked train per segment — far too few to judge.

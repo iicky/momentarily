@@ -5,7 +5,7 @@
  * it back. Overlapping or retried scheduled invocations can interleave those
  * steps and clobber each other's updates. Capturing the etag at read time and
  * writing with `onlyIf` turns the write into compare-and-swap: a stale write
- * is rejected rather than silently overwriting a newer one. See momentarily-j0c.
+ * is rejected rather than silently overwriting a newer one.
  */
 
 export interface VersionedRead<T> {

@@ -11,7 +11,7 @@
  * catalog carries elevatorsgtfsstopid, but a complete picture also wants
  * station-platform stop_ids the alerts feed actually references). For
  * now `alerts: []` ships and downstream consumers fall back to
- * route-level alerts. See momentarily-dik.
+ * route-level alerts.
  */
 
 import type { ActiveOutage, EquipmentCatalogEntry, EquipmentOutage, EquipmentType } from './ene';

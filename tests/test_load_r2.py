@@ -272,7 +272,7 @@ def test_manifest_hash_empty_is_stable():
     assert input_manifest_hash([]) != input_manifest_hash([""])
 
 
-# --- Per-(route,direction,tod_bin) advance-rate baseline (momentarily-vhh.3) ---
+# --- Per-(route,direction,tod_bin) advance-rate baseline ---
 
 
 def _movement_body(
@@ -314,12 +314,12 @@ def test_movement_series_by_direction_splits_north_south():
 
 
 def test_movement_series_skips_rows_without_by_direction():
-    # A pre-vhh.2 archive row (no by_direction) contributes nothing.
+    # An older archive row (no by_direction) contributes nothing.
     bodies = [{"observed_at": T0, "rows": {"A": {"advanced_n": 5, "stalled_n": 1}}}]
     assert build_movement_series_by_direction(bodies) == {}
 
 
-# --- Per-(route,direction,from,to,tick) segment leaf (momentarily-vhh.7) ---
+# --- Per-(route,direction,from,to,tick) segment leaf ---
 
 
 def _segment_body(
@@ -456,7 +456,7 @@ def test_service_baseline_to_json_nests_route_tod():
     assert all(isinstance(k, str) for k in doc["A"])
 
 
-# --- classify_direction: three-way significance-gated call (momentarily-vhh.14) ---
+# --- classify_direction: three-way significance-gated call ---
 #
 # Case math (baseline p0 as given; prior_strength=8, disrupted_ratio=0.5, alpha=0.05):
 #   case1 p0=0.125 advanced=0 matched=8:  post=0.0625==0.5*p0 (<=); tail=0.875**8~=0.3436>alpha
@@ -502,7 +502,7 @@ def test_classify_direction_no_baseline_is_none():
     assert classify_direction(8, 1, None) is None
 
 
-# --- _binom_lower_tail: exact P(X<=k), boundaries, monotonicity (momentarily-vhh.14) ---
+# --- _binom_lower_tail: exact P(X<=k), boundaries, monotonicity ---
 
 
 def test_binom_lower_tail_exact_values():

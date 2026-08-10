@@ -1,8 +1,7 @@
 """Reference-only: R2 upload via boto3.
 
-The live publish path is the TypeScript Cloudflare Worker (see bead c72.8) using
-the R2 binding, not boto3. This module is kept as a comparison reference while
-the Worker is being built; remove once c72.8 ships.
+The live publish path is the TypeScript Cloudflare Worker using the R2 binding,
+not boto3. This module is kept only as a comparison reference for that path.
 """
 
 from __future__ import annotations

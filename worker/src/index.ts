@@ -127,7 +127,7 @@ export default {
 
     // --- Step 1: read state ---
     // Capture etags so the write-back is a compare-and-swap — overlapping or
-    // retried cron runs can't silently clobber each other. See momentarily-j0c.
+    // retried cron runs can't silently clobber each other.
     const [
       lastSeenRead,
       alphaRead,
@@ -148,7 +148,7 @@ export default {
     // --- Step 2: fetch alerts feed ---
     let alertsPayload: unknown = null;
     // On failure, fall back to the last successful alerts fetch so the
-    // snapshot reports the feed gap honestly. See momentarily-g24.
+    // snapshot reports the feed gap honestly.
     let alertsFeedFresh = lastSeen.alerts_at;
     try {
       alertsPayload = await fetchJson(FEEDS.alerts);
@@ -232,8 +232,7 @@ export default {
       // Fresh-reset seed: the trained params.initial often collapses to a
       // one-hot vector (training corpus starts in normal). Use the stationary
       // distribution of the transition matrix instead — a single tick of
-      // evidence then settles smoothly rather than snapping to one-hot. See
-      // momentarily-d78.
+      // evidence then settles smoothly rather than snapping to one-hot.
       const baseFilter: FilterState = prevRoll?.filter ?? {
         probabilities: stationaryDistribution(params),
         regime_entered_at: observedAt,
@@ -268,7 +267,7 @@ export default {
       const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
       // Carry alert_type_at_entry forward while the regime persists; refresh it
-      // when the regime just advanced (or on fresh reset). See momentarily-22k.
+      // when the regime just advanced (or on fresh reset).
       const regimeAdvanced =
         result.state.regime_entered_at > baseFilter.regime_entered_at;
       const alertTypeAtEntry =
@@ -287,7 +286,7 @@ export default {
     // --- Step 5: persist new alpha state (CAS) ---
     // Write before publishing so a concurrent tick that loses the etag race
     // doesn't ship snapshot.json / predictions / transitions derived from
-    // state that never landed in R2. See momentarily-uc4.
+    // state that never landed in R2.
     let alphaWritten = false;
     try {
       alphaWritten = await writeAlphaState(
@@ -325,7 +324,7 @@ export default {
       } catch (err) {
         console.error('movement_state read failed; publishing without it:', err);
       }
-      // Last tick's per-station service flow (vhh.8), same one-tick lag.
+      // Last tick's per-station service flow, same one-tick lag.
       let stationFlow: StationFlowDoc | null = null;
       try {
         stationFlow = await readStationFlow(env.MOMENTARILY);
@@ -515,7 +514,7 @@ export default {
             });
           }
 
-          // Segment-level station service flow (vhh.8): decay-smoothed per-segment
+          // Segment-level station service flow: decay-smoothed per-segment
           // advance -> classify -> roll up to stations. Its own R2 objects, read
           // off the segment baseline (own object too), so the ~1.8k-cell baseline
           // never touches the hot per-tick params parse. Read next tick by the

@@ -1,4 +1,4 @@
-"""Peer-comparison reliability scorecard from the movement baselines (vhh.10).
+"""Peer-comparison reliability scorecard from the movement baselines.
 
 Descriptive, not predictive. It answers "which line-directions and which places on
 a line ran worse than they normally do" — the reliability question — rather than

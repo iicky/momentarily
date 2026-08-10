@@ -18,7 +18,7 @@ it's a near-deterministic function of the same alert list as alert_count and
 the flags, so treating it as an independent Gamma channel double-counted the
 count evidence and saturated the posterior (reliability mass piled at the
 extremes). The gamma_alpha/gamma_beta params remain in the schema for
-back-compat but are vestigial. See momentarily-vk0.8.
+back-compat but are vestigial.
 
 Hand-rolled — no extra deps. Forward algorithm for filtering, Baum-Welch for the
 weekly refit (training loop will live separately and call into here).
@@ -46,9 +46,9 @@ State = Literal["normal", "disrupted", "suspended"]
 STATES: tuple[State, ...] = ("normal", "disrupted", "suspended")
 N_STATES = len(STATES)
 
-# Time-of-day bins for emission conditioning, in America/New_York local time
-# (DST-aware — the old UTC bins drifted an hour for the EST half of the year
-# and their labels never matched; see momentarily-vk0.10):
+# Time-of-day bins for emission conditioning, in America/New_York local time (DST-aware
+# — the old UTC bins drifted an hour for the EST half of the year and their labels never
+# matched):
 #   0 overnight      00-06 ET — late-night planned work window
 #   1 morning_rush   06-10 ET
 #   2 midday         10-15 ET
@@ -200,7 +200,7 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
     statistically identical — only the index<->label mapping changes. This is
     the single state-ordering rule — fit_em applies it before returning, and
     any post-processing keyed by state index (e.g. per-state self-loop caps)
-    must run after it. See momentarily-13j, momentarily-vk0.7.
+    must run after it.
     """
     em = params.emissions
     if params.emissions_by_bin is None:
@@ -371,10 +371,9 @@ def _log_emission(
     Channels treated as conditionally independent given state. Real-world
     independence is imperfect (planned + delays correlate), but with 3 states
     the bias is small relative to the signal gain from the extra channels.
-    severity_sum is deliberately absent — see the module docstring
-    (momentarily-vk0.8). The movement channel drops out (contributes 0) when
-    has_movement is False or no trips matched; the service channel drops out when
-    has_service is False or the ratio is unavailable.
+    severity_sum is deliberately absent — see the module docstring. The movement channel
+    drops out (contributes 0) when has_movement is False or no trips matched; the
+    service channel drops out when has_service is False or the ratio is unavailable.
     """
     has_movement = obs.has_movement and obs.matched_n > 0
     has_service = obs.has_service and obs.service_ratio is not None
@@ -832,9 +831,9 @@ def _estimate_emissions(
             sd = fallback.service_sigma[s]
         service_sigma.append(max(sd, SERVICE_SIGMA_FLOOR))
 
-        # Gamma α/β are vestigial — severity_sum is no longer a likelihood
-        # channel (momentarily-vk0.8) — so pass them through unchanged for
-        # schema back-compat rather than fitting dead parameters.
+        # Gamma α/β are vestigial — severity_sum is no longer a likelihood channel — so
+        # pass them through unchanged for schema back-compat rather than fitting dead
+        # parameters.
         if use_prior:
             assert prior is not None
             gamma_alpha.append(prior.gamma_alpha[s])
@@ -1011,7 +1010,7 @@ def fit_em(
 
     The output is passed through canonicalize_states so the index<->label
     mapping (normal/disrupted/suspended) is stable across runs — there is
-    exactly one ordering rule; don't add another. See momentarily-vk0.7.
+    exactly one ordering rule; don't add another.
     """
     if not observations:
         raise ValueError("fit_em requires at least one observation")

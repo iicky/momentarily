@@ -149,8 +149,8 @@ def _p_leave_ll(
     """Like _p_leave, but past the last observed quantile the tail is the fitted
     log-logistic conditional survival 1 - S(elapsed+h)/S(elapsed) rather than a
     constant-hazard exponential. The body (elapsed within the curve) is still the
-    empirical KM curve — this is a tail splice, not a parametric body fit, which
-    gtq.4 showed is a worse in-body match. Falls back to the exponential patch
+    empirical KM curve — this is a tail splice, not a parametric body fit, which is a
+    worse in-body match. Falls back to the exponential patch
     when no fit converged."""
     pe = dwell_cdf(curve_sec, elapsed)
     if pe < 1.0:

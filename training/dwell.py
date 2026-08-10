@@ -48,7 +48,7 @@ class DwellQuantiles(TypedDict):
     output on how long the regime has *already* lasted — the unconditional
     quantiles/fractions above are only correct at elapsed=0, and for a
     heavy-tailed dwell distribution P(recover in 30min | disrupted 3h already)
-    is far below P(dwell <= 30min). See momentarily-vk0.1.
+    is far below P(dwell <= 30min).
     """
 
     n: int  # completed (event) observations — the min-samples floor keys on this
@@ -63,7 +63,7 @@ class DwellQuantiles(TypedDict):
     # [shape, scale] of a log-logistic fit to this cell's censored dwells, used by
     # p_leave_by to extrapolate the tail past the last observed quantile instead
     # of the coarse constant-hazard exponential patch. Absent when no fit
-    # converged (no completed events). See momentarily-gtq.5.
+    # converged (no completed events).
     tail_ll: NotRequired[list[float]]
 
 
@@ -133,7 +133,7 @@ def _make_cell(
 ) -> DwellQuantiles:
     """Build a DwellQuantiles from (duration, completed) samples via
     Kaplan-Meier, so right-censored (still-running) regimes push the tail up
-    instead of silently vanishing. See momentarily-vk0.6.
+    instead of silently vanishing.
 
     With `tail_fn`, a log-logistic [shape, scale] tail is fit to the same
     samples and stored on the cell for the Worker's past-the-curve splice.
@@ -251,7 +251,7 @@ def p_leave_by(
     `tail_ll` ([shape, scale]) is supplied, else a constant-hazard exponential
     patch read off the top segment. The log-logistic's decreasing hazard models
     the heavy dwell tail better — a long-calm regime stays confident rather than
-    being told it's about to leave (gtq.5 Brier backtest). The body stays
+    being told it's about to leave (per the Brier backtest). The body stays
     empirical either way. Mirrored in worker/src/dwell.ts; keep in sync."""
     k = len(curve_sec)
     if k < 2:
@@ -329,9 +329,9 @@ def compute_dwell_quantiles(
 
     With `window_end`, each route's still-open final regime joins its cell as
     a right-censored observation (Kaplan-Meier), so a marathon regime in
-    progress pushes the tail up instead of being invisible until it ends.
-    See momentarily-vk0.6. With `tail_fn`, each cell carries a log-logistic
-    tail for the Worker's past-the-curve splice.
+    progress pushes the tail up instead of being invisible until it ends. With
+    `tail_fn`, each cell carries a log-logistic tail for the Worker's
+    past-the-curve splice.
     """
     by_cell = dwell_samples_by_cell(transitions, window_end=window_end)
     out: dict[str, dict[str, DwellQuantiles]] = defaultdict(dict)
@@ -356,7 +356,7 @@ def compute_dwell_quantiles_by_alert(
     began with no active alert) are skipped — they're already represented in
     the (route, state) aggregate from `compute_dwell_quantiles`, which the
     consumer falls back to when a (route, state, alert_type) cell is absent.
-    This is the recovery-by-cause segmentation (momentarily-alu): a route's
+    This is the recovery-by-cause segmentation: a route's
     dwell under "Planned - Stops Skipped" is structurally different from the
     same route under "Delays", so conditioning on the cause tightens the
     recovery interval.

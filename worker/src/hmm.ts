@@ -25,7 +25,7 @@ export const N_STATES = 3;
 // Time-of-day bins in America/New_York local time (DST-aware) — match
 // hmm.py's tod_bin() exactly; keep the bin edges in sync:
 //   0: 00-06 ET overnight, 1: 06-10 morning rush, 2: 10-15 midday,
-//   3: 15-20 evening rush, 4: 20-24 evening. See momentarily-vk0.10.
+//   3: 15-20 evening rush, 4: 20-24 evening.
 export const N_TOD_BINS = 5;
 
 const NYC_HOUR_FMT = new Intl.DateTimeFormat('en-US', {
@@ -130,7 +130,7 @@ function emissionsFor(params: HMMParams, obs: Observation): EmissionParams {
 // of the same alert list as alert_count + the flags, so a Gamma channel on it
 // double-counted the count evidence and saturated the posterior. gamma_alpha/
 // gamma_beta stay in the params schema but are vestigial. Mirrors
-// src/momentarily/hmm.py. See momentarily-vk0.8.
+// src/momentarily/hmm.py.
 function logEmission(obs: Observation, em: EmissionParams): Vec3 {
   // Movement channel drops out unless has_movement, trips matched, and the
   // params actually carry an advance rate (absent in pre-movement params.json).
@@ -212,8 +212,7 @@ export function forwardUpdate(
  * starts in normal), so a single tick of evidence after reset throws the
  * filter all the way to one-hot in some other state. The stationary
  * distribution gives a smoother prior that reflects the route's long-run
- * regime mix, so the first post-reset tick converges less violently. See
- * momentarily-d78.
+ * regime mix, so the first post-reset tick converges less violently.
  */
 export function stationaryDistribution(params: HMMParams): Vec3 {
   const a = params.transition;

@@ -90,10 +90,3 @@ About 125 KB/day raw, ~45 MB/year. Trivial.
 **No new entries in the alerts file:** confirm the container is actually running with `docker compose -f collector/docker-compose.yml ps`. If polls succeed but no entries appear, MTA may currently have zero active alerts — verify by tailing `data/meta/poll_log.jsonl` for `"status":"ok"` lines.
 
 **Container restart loop:** the most common cause is a wrong `DATA_DIR` path or a permission issue on the bind-mounted volume. The container runs as user `collector` (uid 10001) and writes to `/data`. If your host directory has restrictive permissions, fix with `chmod -R u+rwX data/`.
-
-## Related project tracker beads
-
-- `homeassistant-mta-subway-5w0.8` — this work
-- `homeassistant-mta-subway-5w0.5` — eventual publisher (will reuse this fetch logic)
-- `homeassistant-mta-subway-5w0.6` — shadow rollout (corpus from here seeds Phase 1)
-- `homeassistant-mta-subway-5w0.7` — HMM methodology that this corpus trains

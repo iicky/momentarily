@@ -102,7 +102,7 @@ describe('deriveMovementState', () => {
     expect(deriveMovementState(ROUTE, move1, undefined, trained, T0)).toBe('normal');
   });
 
-  // --- Three-way significance gate (momentarily-vhh.14): a degenerate-low
+  // --- Three-way significance gate: a degenerate-low
   // baseline no longer misfires disrupted on ordinary low-advance noise unless
   // the drop is also statistically significant against that baseline. ---
 

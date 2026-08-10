@@ -2,7 +2,7 @@
 
 Synthetic series — no R2. Covers the load_r2 derivation (build_service_series,
 compute_baseline, derive_actual_recovery) and the eval grading
-(independent_recovery_metrics). See momentarily-xum / up0.
+(independent_recovery_metrics).
 """
 
 from __future__ import annotations

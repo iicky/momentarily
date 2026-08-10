@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Project pre-commit gate. Lints + typechecks only the subtrees that have
 # staged changes, mirroring CI (.github/workflows/ci.yml) plus viz. Auto-fixes
-# formatting/lint and re-stages the result. Runs after the beads + codex review
-# gate (chained from .beads/hooks/pre-commit).
+# formatting/lint and re-stages the result. Runs last in the local hook chain,
+# after any earlier review gates.
 #
 # The gate checks the WORKING TREE, which equals the index only for fully-staged
 # files. So if a checked file is partially staged (staged AND has unstaged edits)

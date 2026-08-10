@@ -2,7 +2,7 @@
 
 Synthetic series — no R2. Covers the load_r2 derivation (build_movement_series,
 derive_movement_state, build_movement_truth) that holds vehicle positions out as
-a contemporaneous truth for the regime confusion matrix. See momentarily-vy0.
+a contemporaneous truth for the regime confusion matrix.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def test_classify_direction_disrupted_trunk():
 
 
 def test_classify_direction_shuttle_debiasing():
-    # The whole point of vhh.11: a shuttle running at its own ~10% normal
+    # The whole point: a shuttle running at its own ~10% normal
     # advance rate must read normal — the old fixed-0.25 rule called this
     # disrupted. post = (8*0.1+1)/(8+10) = 1.8/18 = 0.10 > 0.05 (ratio*p0).
     baseline = AdvanceBaseline(p0=0.1, n=50, alpha=5, beta=45)

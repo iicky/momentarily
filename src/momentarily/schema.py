@@ -115,8 +115,8 @@ class DirectionStatus(BaseModel):
 class Inference(BaseModel):
     """HMM-derived state inference.
 
-    Per 5w0.6, populated only after the shadow review (Phase 3+). During Phase 1
-    this field stays None on every entity status object.
+    Populated only after the shadow review (Phase 3+). During Phase 1 this field
+    stays None on every entity status object.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -394,9 +394,9 @@ class Provenance(BaseModel):
 
 
 class StationServiceFlow(BaseModel):
-    """Per-station service flow: is train service advancing through this station,
-    rolled up from the segment movement model (vhh.8). Distinct from
-    StationStatus (accessibility/alerts)."""
+    """Per-station service flow: is train service advancing through this station, rolled
+    up from the segment movement model. Distinct from StationStatus
+    (accessibility/alerts)."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -450,7 +450,7 @@ class Snapshot(BaseModel):
     # Derived views
     route_status: dict[str, RouteStatus] = Field(default_factory=dict)
     station_status: dict[str, StationStatus] = Field(default_factory=dict)
-    # Per-station service flow, rolled up from the segment movement model (vhh.8).
+    # Per-station service flow, rolled up from the segment movement model.
     # Null before the first vehicle tick after deploy or when stale.
     station_flow: StationFlow | None = None
     system: SystemStatus = Field(default_factory=SystemStatus)

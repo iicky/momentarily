@@ -131,7 +131,7 @@ def test_by_alert_thin_cause_cell_is_omitted() -> None:
     assert set(out["A"]["disrupted"].keys()) == {"Delays"}
 
 
-# --- Kaplan-Meier right-censoring (momentarily-vk0.6) ---
+# --- Kaplan-Meier right-censoring ---
 
 
 def test_open_regime_censors_the_tail() -> None:
@@ -180,7 +180,7 @@ def test_open_regime_censors_only_its_own_state() -> None:
     assert "normal" not in out["A"]
 
 
-# --- curve_sec + conditional survival (momentarily-vk0.1) ---
+# --- curve_sec + conditional survival ---
 
 
 def test_cell_includes_monotone_curve() -> None:

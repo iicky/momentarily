@@ -605,7 +605,7 @@
       "type": "object"
     },
     "Inference": {
-      "description": "HMM-derived state inference.\n\nPer 5w0.6, populated only after the shadow review (Phase 3+). During Phase 1\nthis field stays None on every entity status object.",
+      "description": "HMM-derived state inference.\n\nPopulated only after the shadow review (Phase 3+). During Phase 1 this field\nstays None on every entity status object.",
       "properties": {
         "condition": {
           "title": "Condition",
@@ -1135,7 +1135,7 @@
       "type": "object"
     },
     "StationServiceFlow": {
-      "description": "Per-station service flow: is train service advancing through this station,\nrolled up from the segment movement model (vhh.8). Distinct from\nStationStatus (accessibility/alerts).",
+      "description": "Per-station service flow: is train service advancing through this station, rolled\nup from the segment movement model. Distinct from StationStatus\n(accessibility/alerts).",
       "properties": {
         "n_segments": {
           "title": "N Segments",

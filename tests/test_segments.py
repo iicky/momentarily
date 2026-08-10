@@ -26,7 +26,7 @@ def test_classify_segment_abstains_below_min_matched():
 
 def test_classify_segment_abstains_on_degenerate_baseline():
     # Low baseline + thin sample: the drop isn't significant against a stop that
-    # barely advances when healthy, so abstain rather than false-flag (vhh.14).
+    # barely advances when healthy, so abstain rather than false-flag.
     assert classify_segment(0, 8, _cell(0.3)) is None
 
 

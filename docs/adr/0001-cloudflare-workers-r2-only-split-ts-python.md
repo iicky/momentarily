@@ -10,9 +10,8 @@ Momentarily turns the MTA GTFS-Realtime Mercury alerts stream into a per-line
 HMM estimate of each subway line's operational state (normal / disrupted /
 suspended) plus an expected recovery time, published as a public JSON feed.
 
-The original design (issues c72.3, c72.6) put the live publisher in **Python on
-GitHub Actions cron**, writing the snapshot to R2 with boto3. That shape had two
-problems:
+The original design put the live publisher in **Python on GitHub Actions cron**,
+writing the snapshot to R2 with boto3. That shape had two problems:
 
 1. GitHub Actions cron is best-effort with minute-plus jitter, and the MTA
    alerts feed moves on a 5-minute cadence — the live path wants a scheduler
@@ -56,7 +55,7 @@ Build on **all Cloudflare, R2 as the only state store, split by language**:
 
 ### Evolution from the original plan
 
-The plan in c72/rbk described training and calibration as **laptop** work
+That plan described training and calibration as **laptop** work
 ("OFFLINE PATH — Python on laptop"). That was never deployed that way. Training
 moved into a Cloudflare Container cron (`trainer/`) and eval into GitHub Actions,
 so **live operation has no laptop dependency** — the whole pipeline is
@@ -81,7 +80,7 @@ Actions workflow (`train-nightly.yml`) also retrained nightly and wrote the same
 key — retraining params daily and racing the container on Sundays. That trainer
 was retired (the workflow is now prune-only, `prune-nightly.yml`); the weekly
 container is the sole trainer, so params provenance and the documented weekly
-cadence are deterministic. See momentarily-eb3.
+cadence are deterministic.
 
 The Worker's per-tick scheduled handler (`worker/src/index.ts`):
 
@@ -190,7 +189,7 @@ Negative / watch items:
 
 ## Supersedes
 
-- The Python-publisher-on-GitHub-Actions live path (c72.3 "build Python
-  publisher", c72.6 local data-collection container as production source). The
+- The Python-publisher-on-GitHub-Actions live path, with the local
+  data-collection container as the production source. The
   local collector's accumulated data became the bootstrap corpus for the first
   EM run; production archive is now the Worker's R2 writes.

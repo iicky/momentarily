@@ -1,4 +1,4 @@
-"""Per-station service-flow roll-up from the segment reliability model (vhh.8).
+"""Per-station service-flow roll-up from the segment reliability model.
 
 The rider question is "is MY station moving", not "is the A line disrupted". A
 station's service flow is the throughput of the segments that touch it: a segment

@@ -36,7 +36,9 @@ TERMINAL_P0 = 0.15
 
 # A through-segment needs a dominant canonical successor (>= this share) to be
 # ranked. Below it the from_stop is a branch/express/reversal point where advance
-# to "the" next stop is ambiguous, so the deficit would be an artifact.
+# to "the" next stop is ambiguous, so the deficit would be an artifact. Ranking
+# eligibility only — segment_params.json topology comes from static GTFS now
+# (training.gtfs_static) and no longer depends on this at all.
 MIN_SHARE = 0.5
 
 

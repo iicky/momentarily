@@ -12,7 +12,11 @@ from momentarily.schema import (
     Inference,
     Observation,
     RouteStatus,
+    SegmentFlow,
+    SegmentRecovery,
+    SegmentStatus,
     Snapshot,
+    StationServiceFlow,
     StationStatus,
     Tunnel,
 )
@@ -117,3 +121,69 @@ def test_snapshot_with_supported_modes() -> None:
     snap = Snapshot(generated_at=0, supported_modes=["subway", "ene"])
     payload = json.loads(snap.model_dump_json())
     assert payload["supported_modes"] == ["subway", "ene"]
+
+
+def test_snapshot_segment_flow_defaults_none() -> None:
+    """Absent before the first vehicle tick after deploy, or when stale."""
+    snap = Snapshot(generated_at=0)
+    assert snap.segment_flow is None
+
+
+def test_segment_status_recovery_optional() -> None:
+    """A cell with no trained curve, or whose clock never started, publishes
+    status without a fabricated recovery."""
+    seg = SegmentStatus(
+        route="F",
+        direction="south",
+        from_stop="A09S",
+        to="A10S",
+        status="disrupted",
+        entered_at=0,
+    )
+    assert seg.recovery is None
+    payload = json.loads(seg.model_dump_json())
+    assert payload["recovery"] is None
+
+
+def test_segment_flow_serializes() -> None:
+    recovery = SegmentRecovery(
+        recovery_minutes=40,
+        recovery_minutes_low=9,
+        recovery_minutes_high=180,
+        p_normal_in_30min=0.2,
+        p_normal_in_60min=0.5,
+        p_normal_in_120min=0.8,
+    )
+    flow = SegmentFlow(
+        observed_at=1_700_000_000,
+        segments={
+            "F|south|A09S": SegmentStatus(
+                route="F",
+                direction="south",
+                from_stop="A09S",
+                to="A10S",
+                status="disrupted",
+                entered_at=1_699_998_200,
+                recovery=recovery,
+            )
+        },
+    )
+    payload = json.loads(flow.model_dump_json())
+    assert payload["observed_at"] == 1_700_000_000
+    seg = payload["segments"]["F|south|A09S"]
+    assert seg["to"] == "A10S"
+    assert seg["recovery"]["recovery_minutes"] == 40
+    assert seg["recovery"]["recovery_indeterminate"] is False  # default
+
+
+def test_station_service_flow_worst_recovery_optional() -> None:
+    """worst_recovery is additive — a doc built before this landed (or a
+    consumer on the old shape) must still validate with it absent."""
+    flow = StationServiceFlow(status="degraded", worst_deficit=0.9, n_segments=1)
+    assert flow.worst_recovery is None
+    payload = json.loads(flow.model_dump_json())
+    assert payload["worst_recovery"] is None
+    # existing fields untouched
+    assert payload["status"] == "degraded"
+    assert payload["worst_deficit"] == 0.9
+    assert payload["n_segments"] == 1

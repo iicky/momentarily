@@ -147,6 +147,14 @@ export type ServiceBaseline = z.infer<typeof ServiceBaselineSchema>;
 const ScheduleRateSchema = z.record(z.string(), z.record(z.string(), prob));
 export type ScheduleRate = z.infer<typeof ScheduleRateSchema>;
 
+// Per-route, per-movement-state empirical dwell quantiles from the movement
+// clock (training.regime), keyed the same way as `dwell_quantiles` above but
+// off the movement transitions stream instead of the alert HMM's. Top-level,
+// like the baselines — not nested under the per-route HMM params, since the
+// movement clock isn't part of HMMParamsSchema.
+const DwellMovementSchema = z.record(z.string(), z.record(z.string(), DwellQuantilesSchema));
+export type DwellMovement = z.infer<typeof DwellMovementSchema>;
+
 const TrainedParamsWrapperSchema = z.object({
   schema_version: z.string(),
   trained_at: z.number().finite(),
@@ -162,6 +170,10 @@ const TrainedParamsWrapperSchema = z.object({
   // Validated separately too, so a malformed schedule rate degrades the
   // suspended/not_scheduled split only, not the whole params upload.
   schedule_rate: z.unknown().optional(),
+  // Validated separately too, so a malformed movement-dwell sidecar disables
+  // the movement recovery arm only, not the whole params upload. Absent
+  // entirely for params.json written before the movement recovery arm existed.
+  dwell_movement: z.unknown().optional(),
 });
 
 // The three "kind of disruption" flags (delays/service_change/planned) all
@@ -214,6 +226,10 @@ export interface TrainedParams {
   // Per-(route, schedule_bin) in-service rate; the Worker splits a no-service
   // reading into suspended (normally runs now) vs not_scheduled (rush-only gap).
   scheduleRate: ScheduleRate;
+  // Per-(route, movement-state) empirical dwell quantiles off the movement
+  // clock. Empty until the trainer publishes dwell_movement; the Worker falls
+  // back to the alert-HMM dwell (`dwell` above) when a cell is absent.
+  dwellMovement: DwellMovement;
 }
 
 /**
@@ -309,6 +325,17 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     }
   }
 
+  // Movement dwell, validated on its own like the baselines.
+  let dwellMovement: DwellMovement = {};
+  if (wrapper.data.dwell_movement !== undefined) {
+    const parsed = DwellMovementSchema.safeParse(wrapper.data.dwell_movement);
+    if (parsed.success) {
+      dwellMovement = parsed.data;
+    } else {
+      console.warn('params.json dwell_movement invalid; movement recovery arm off:', parsed.error.issues);
+    }
+  }
+
   return {
     schema_version: wrapper.data.schema_version,
     trained_at: wrapper.data.trained_at,
@@ -318,6 +345,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     movementBaseline,
     serviceBaseline,
     scheduleRate,
+    dwellMovement,
   };
 }
 
@@ -408,4 +436,18 @@ export function dwellForRouteState(
     if (byCause) return byCause;
   }
   return trained?.dwell?.[routeId]?.[state] ?? null;
+}
+
+/**
+ * Empirical dwell quantiles for a (route, movement-state) cell off the
+ * movement clock — see C2/C3. Optional in params: absent trainer output or a
+ * missing cell returns null (never throws), and the caller falls back to the
+ * alert-HMM dwell / geometric estimate.
+ */
+export function movementDwellFor(
+  trained: TrainedParams | null,
+  routeId: string,
+  state: string,
+): DwellQuantiles | null {
+  return trained?.dwellMovement?.[routeId]?.[state] ?? null;
 }

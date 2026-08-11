@@ -8,12 +8,16 @@ import { describe, expect, test } from 'vitest';
 
 import {
   readMovementMetric,
+  readMovementState,
+  readSegmentDwell,
   readServiceMetric,
   readVehicleStops,
   writeMovementMetric,
+  writeMovementState,
   writeServiceMetric,
   writeVehicleStops,
 } from '../src/state';
+import type { SegmentDwellDoc } from '../src/state';
 import type { MovementRow } from '../src/vehicles';
 import type { ServiceRow } from '../src/trip_updates';
 
@@ -55,6 +59,44 @@ describe('vehicle stops carry map', () => {
     // the reader fall back to {} so cross-tick counters just stay 0 that tick.
     store.set('state/vehicle_stops.json', JSON.stringify({ trip_a: 42 }));
     expect(await readVehicleStops(bucket)).toEqual({});
+  });
+});
+
+describe('movement regime state', () => {
+  test('round-trips the per-route regime clock', async () => {
+    const { bucket } = fakeBucket();
+    const doc = {
+      observed_at: 1_700_000_000,
+      regimes: {
+        A: {
+          state: 'disrupted' as const,
+          entered_at: 1_699_999_700,
+          last_seen_at: 1_700_000_000,
+          pending: null,
+          pending_since: 0,
+          pending_run: 0,
+        },
+      },
+    };
+    await writeMovementState(bucket, doc);
+    expect(await readMovementState(bucket)).toEqual(doc);
+  });
+
+  test('a pre-clock document is rejected so the clocks restart clean', async () => {
+    // The shape deployed before the regime clock had `states` and no per-route
+    // entered_at. There is no honest way to back-fill when a regime began, so
+    // the reader drops it: one tick of 'unknown', then the clocks re-open.
+    const { bucket, store } = fakeBucket();
+    store.set(
+      'state/movement_state.json',
+      JSON.stringify({ observed_at: 1_700_000_000, states: { A: 'disrupted' } }),
+    );
+    expect(await readMovementState(bucket)).toBeNull();
+  });
+
+  test('returns null when absent', async () => {
+    const { bucket } = fakeBucket();
+    expect(await readMovementState(bucket)).toBeNull();
   });
 });
 
@@ -162,5 +204,53 @@ describe('service metric carry doc', () => {
     // out that tick.
     store.set('state/service_metric.json', JSON.stringify({ observed_at: 1700000000, rows: { A: 'nope' } }));
     expect(await readServiceMetric(bucket)).toBeNull();
+  });
+});
+
+function dwellCell(over: Partial<SegmentDwellDoc['cells']['x']['normal']> = {}) {
+  return {
+    n: 4,
+    n_censored: 1,
+    q25_sec: 60,
+    median_sec: 120,
+    q75_sec: 300,
+    recover_by_30: 0.5,
+    recover_by_60: 0.7,
+    recover_by_120: 0.9,
+    curve_sec: [0, 60, 120, 300, 900],
+    ...over,
+  };
+}
+
+describe('segment dwell curves', () => {
+  test('round-trips a hierarchically pooled cell', async () => {
+    const { bucket, store } = fakeBucket();
+    const doc: SegmentDwellDoc = {
+      schema_version: '1',
+      trained_at: 1_700_000_000,
+      cells: { 'F|south|A09S': { disrupted: dwellCell() } },
+    };
+    store.set('state/segment_dwell.json', JSON.stringify(doc));
+    expect(await readSegmentDwell(bucket)).toEqual(doc);
+  });
+
+  test('returns null when the object is absent', async () => {
+    const { bucket } = fakeBucket();
+    expect(await readSegmentDwell(bucket)).toBeNull();
+  });
+
+  test('returns null when the object is corrupt', async () => {
+    const { bucket, store } = fakeBucket();
+    // n_censored missing — schema parse should reject it so a bad publish
+    // just leaves segment dwell curves unavailable, not half-parsed.
+    store.set(
+      'state/segment_dwell.json',
+      JSON.stringify({
+        schema_version: '1',
+        trained_at: 1,
+        cells: { 'F|south|A09S': { disrupted: { n: 4 } } },
+      }),
+    );
+    expect(await readSegmentDwell(bucket)).toBeNull();
   });
 });

@@ -1,0 +1,363 @@
+{
+  "debounce_ticks": 2,
+  "max_idle_sec": 3600,
+  "steps": [
+    {
+      "observed_at": 1700000000,
+      "observed": {
+        "A": "normal",
+        "Q|north|Q05N": "normal"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000000,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000000,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700000300,
+      "observed": {
+        "A": "normal",
+        "Q|north|Q05N": "normal"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000300,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000300,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700000600,
+      "observed": {
+        "A": "disrupted",
+        "Q|north|Q05N": "normal"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000600,
+          "pending": "disrupted",
+          "pending_since": 1700000600,
+          "pending_run": 1
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000600,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700000900,
+      "observed": {
+        "A": "normal",
+        "Q|north|Q05N": "disrupted"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000900,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700000900,
+          "pending": "disrupted",
+          "pending_since": 1700000900,
+          "pending_run": 1
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700001200,
+      "observed": {
+        "A": "disrupted",
+        "Q|north|Q05N": "disrupted"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700001200,
+          "pending": "disrupted",
+          "pending_since": 1700001200,
+          "pending_run": 1
+        },
+        "Q|north|Q05N": {
+          "state": "disrupted",
+          "entered_at": 1700000900,
+          "last_seen_at": 1700001200,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": [
+        {
+          "key": "Q|north|Q05N",
+          "prev_state": "normal",
+          "new_state": "disrupted",
+          "entered_at": 1700000000,
+          "exited_at": 1700000900,
+          "dwell_sec": 900
+        }
+      ]
+    },
+    {
+      "observed_at": 1700001500,
+      "observed": {
+        "Q|north|Q05N": "disrupted"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700001200,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "disrupted",
+          "entered_at": 1700000900,
+          "last_seen_at": 1700001500,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700001800,
+      "observed": {
+        "A": "disrupted",
+        "Q|north|Q05N": "disrupted"
+      },
+      "entries": {
+        "A": {
+          "state": "normal",
+          "entered_at": 1700000000,
+          "last_seen_at": 1700001800,
+          "pending": "disrupted",
+          "pending_since": 1700001800,
+          "pending_run": 1
+        },
+        "Q|north|Q05N": {
+          "state": "disrupted",
+          "entered_at": 1700000900,
+          "last_seen_at": 1700001800,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700002100,
+      "observed": {
+        "A": "disrupted",
+        "Q|north|Q05N": "normal"
+      },
+      "entries": {
+        "A": {
+          "state": "disrupted",
+          "entered_at": 1700001800,
+          "last_seen_at": 1700002100,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "disrupted",
+          "entered_at": 1700000900,
+          "last_seen_at": 1700002100,
+          "pending": "normal",
+          "pending_since": 1700002100,
+          "pending_run": 1
+        }
+      },
+      "changes": [
+        {
+          "key": "A",
+          "prev_state": "normal",
+          "new_state": "disrupted",
+          "entered_at": 1700000000,
+          "exited_at": 1700001800,
+          "dwell_sec": 1800
+        }
+      ]
+    },
+    {
+      "observed_at": 1700002400,
+      "observed": {
+        "A": "suspended",
+        "Q|north|Q05N": "normal"
+      },
+      "entries": {
+        "A": {
+          "state": "disrupted",
+          "entered_at": 1700001800,
+          "last_seen_at": 1700002400,
+          "pending": "suspended",
+          "pending_since": 1700002400,
+          "pending_run": 1
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700002100,
+          "last_seen_at": 1700002400,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": [
+        {
+          "key": "Q|north|Q05N",
+          "prev_state": "disrupted",
+          "new_state": "normal",
+          "entered_at": 1700000900,
+          "exited_at": 1700002100,
+          "dwell_sec": 1200
+        }
+      ]
+    },
+    {
+      "observed_at": 1700002700,
+      "observed": {
+        "A": "suspended",
+        "Q|north|Q05N": "normal"
+      },
+      "entries": {
+        "A": {
+          "state": "suspended",
+          "entered_at": 1700002400,
+          "last_seen_at": 1700002700,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700002100,
+          "last_seen_at": 1700002700,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": [
+        {
+          "key": "A",
+          "prev_state": "disrupted",
+          "new_state": "suspended",
+          "entered_at": 1700001800,
+          "exited_at": 1700002400,
+          "dwell_sec": 600
+        }
+      ]
+    },
+    {
+      "observed_at": 1700003000,
+      "observed": {
+        "A": "suspended",
+        "Q|north|Q05N": "normal",
+        "G|south|G22S": "disrupted"
+      },
+      "entries": {
+        "A": {
+          "state": "suspended",
+          "entered_at": 1700002400,
+          "last_seen_at": 1700003000,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "G|south|G22S": {
+          "state": "disrupted",
+          "entered_at": 1700003000,
+          "last_seen_at": 1700003000,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        },
+        "Q|north|Q05N": {
+          "state": "normal",
+          "entered_at": 1700002100,
+          "last_seen_at": 1700003000,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    },
+    {
+      "observed_at": 1700006900,
+      "observed": {
+        "G|south|G22S": "disrupted"
+      },
+      "entries": {
+        "G|south|G22S": {
+          "state": "disrupted",
+          "entered_at": 1700006900,
+          "last_seen_at": 1700006900,
+          "pending": null,
+          "pending_since": 0,
+          "pending_run": 0
+        }
+      },
+      "changes": []
+    }
+  ],
+  "final_entries": {
+    "G|south|G22S": {
+      "state": "disrupted",
+      "entered_at": 1700006900,
+      "last_seen_at": 1700006900,
+      "pending": null,
+      "pending_since": 0,
+      "pending_run": 0
+    }
+  }
+}

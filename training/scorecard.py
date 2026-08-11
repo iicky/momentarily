@@ -28,7 +28,16 @@ from statistics import median
 from typing import Any
 
 from training.episodes import Episode, extract_episodes
-from training.eval import TICK_SECONDS, PredictionRecord, snap_tick
+from training.eval import (
+    MOVEMENT_ARM_LABEL,
+    NOT_NORMAL,
+    SHADOW_ARM_LABEL,
+    TICK_SECONDS,
+    PredictionRecord,
+    published_arm,
+    published_condition_coverage,
+    snap_tick,
+)
 from training.recovery_dist import (
     RecoveryDistSample,
     predicted_recovery_curve,
@@ -37,8 +46,6 @@ from training.recovery_dist import (
     report_as_dict,
     verdict_as_dict,
 )
-
-NOT_NORMAL = ("disrupted", "suspended")
 
 # How far ahead of a truth onset a model episode may fire and still count as a
 # detection of it. Requiring bare overlap penalises the exact behaviour the
@@ -72,30 +79,10 @@ def model_episodes(
     """
     state: dict[tuple[str, int], str] = {}
     for p in predictions:
-        published = p.published_condition or p.condition
+        published = published_arm(p)
         if published in NOT_NORMAL:
             state[(p.route, snap_tick(p.ts))] = published
     return extract_episodes(state, {}, window_start=window_start, window_end=window_end)
-
-
-def published_condition_coverage(
-    predictions: list[PredictionRecord],
-) -> dict[str, Any]:
-    """How much of the window the published arm could actually call.
-
-    A tick with no movement reading publishes `unknown`; it is neither a
-    detection opportunity nor evidence of calm, so a detection rate computed
-    over a window that is largely unknown is not what it appears to be.
-    """
-    n = len(predictions)
-    counts = Counter(p.published_condition or p.condition for p in predictions)
-    unknown = counts.get("unknown", 0)
-    return {
-        "n_ticks": n,
-        "by_condition": dict(counts),
-        "unknown_share": unknown / n if n else None,
-        "gradeable_share": (n - unknown) / n if n else None,
-    }
 
 
 def _matches(
@@ -218,11 +205,25 @@ def false_alarms(
 
 
 def episode_recovery(
-    truth_eps: list[Episode], dwell_lookup: DwellLookup
+    truth_eps: list[Episode],
+    dwell_lookup: DwellLookup,
+    *,
+    graded_arm: str = SHADOW_ARM_LABEL,
 ) -> dict[str, Any]:
     """Per-episode recovery CRPS/PIT over uncensored episodes with a dwell curve.
     The predicted curve is the model's recovery forecast for the episode's peak
-    state and cause at onset (elapsed 0); the outcome is the realized duration."""
+    state and cause at onset (elapsed 0); the outcome is the realized duration.
+
+    `graded_arm` tags which dwell-curve population fed `dwell_lookup` — the
+    alert-shadow HMM regime by default (dwell_lookup_from_params /
+    cause_dwell_lookup, existing callers), or MOVEMENT_ARM_LABEL when the
+    caller passes movement_dwell_lookup_from_params. recovery_dist_report's
+    CRPS baseline is the empirical CDF of THIS call's own `truth_eps`
+    durations (recovery_dist.py:160) — grading the two arms via separate
+    calls, as episode_scorecard does, keeps each arm's baseline built only
+    from its own episode population; movement's minutes-long episodes never
+    dilute the alert shadow's hours-long baseline or vice versa.
+    """
     samples: list[RecoveryDistSample] = []
     n_censored = 0
     n_no_curve = 0
@@ -244,6 +245,7 @@ def episode_recovery(
         )
     report = recovery_dist_report(samples)
     return {
+        "graded_arm": graded_arm,
         "n_scored": len(samples),
         "n_censored_excluded": n_censored,
         "n_no_curve": n_no_curve,
@@ -287,6 +289,24 @@ def dwell_lookup_from_params(params: dict[str, Any]) -> DwellLookup:
     return lookup
 
 
+def movement_dwell_lookup_from_params(params: dict[str, Any]) -> DwellLookup:
+    """(route, state) -> (curve_sec, tail_ll) lookup over the movement-regime
+    dwell block (params['dwell_movement'][route][state], contract C2). Route
+    scope only: the movement clock carries no cause dimension, so `cause` is
+    accepted only for DwellLookup shape compatibility and ignored. Absent
+    block, absent route, absent state, or a too-short curve all read as None —
+    same n_no_curve convention as dwell_lookup_from_params, not a crash."""
+    routes: dict[str, Any] = params.get("dwell_movement") or {}
+
+    def lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
+        route_doc: dict[str, Any] = routes.get(route) or {}
+        return _cell_curve(route_doc.get(state))
+
+    return lookup
+
+
 def cause_dwell_lookup(
     by_cause: Mapping[str, Any],
     by_state: Mapping[str, Any],
@@ -320,6 +340,7 @@ def episode_scorecard(
     *,
     window_start: int,
     window_end: int,
+    movement_dwell_lookup: DwellLookup | None = None,
 ) -> dict[str, Any]:
     """Assemble the event-based scorecard: onset latency, per-episode recovery,
     and false-alarm episodes, each with its event count.
@@ -331,6 +352,16 @@ def episode_scorecard(
     is visible rather than silent. A model episode overlapping only a standing
     advisory is likewise not scored as a false alarm — the alert feed says
     something is wrong there, so it is not evidence of an over-call.
+
+    `movement_dwell_lookup`, when given, grades a second recovery arm under
+    `recovery_movement`: movement itself is re-segmented into its own episodes
+    from `movement_truth` (movement is the truth here, not the cross-check
+    false_alarms uses it for) and scored against movement dwell curves, tagged
+    MOVEMENT_ARM_LABEL. This runs alongside, never instead of, the alert-shadow
+    `recovery` block — each arm keeps its own CRPS baseline (episode_recovery),
+    so a movement episode's minutes are never averaged against the alert
+    shadow's hours. Omitted (the default) reproduces the pre-movement-arm
+    payload shape exactly — no `recovery_movement` key at all.
     """
     model_eps = model_episodes(
         predictions, window_start=window_start, window_end=window_end
@@ -343,14 +374,23 @@ def episode_scorecard(
     gradeable_model_eps = [
         m for m in model_eps if not any(_matches(m, s, lead_sec=0) for s in standing)
     ]
-    return {
+    card: dict[str, Any] = {
         "n_truth_episodes": len(truth_eps),
         "n_model_episodes": len(model_eps),
         "n_standing_excluded": len(standing),
         "n_model_episodes_in_standing": len(model_eps) - len(gradeable_model_eps),
-        "graded_arm": "published_condition (movement-primary)",
+        "graded_arm": MOVEMENT_ARM_LABEL,
         "published_coverage": published_condition_coverage(predictions),
         "onset_latency": onset_latency(graded, model_eps),
-        "recovery": episode_recovery(graded, dwell_lookup),
+        "recovery": episode_recovery(graded, dwell_lookup, graded_arm=SHADOW_ARM_LABEL),
         "false_alarms": false_alarms(gradeable_model_eps, graded, movement_truth),
     }
+    if movement_dwell_lookup is not None:
+        movement_eps = extract_episodes(
+            movement_truth, {}, window_start=window_start, window_end=window_end
+        )
+        movement_graded = [e for e in movement_eps if not e.standing]
+        card["recovery_movement"] = episode_recovery(
+            movement_graded, movement_dwell_lookup, graded_arm=MOVEMENT_ARM_LABEL
+        )
+    return card

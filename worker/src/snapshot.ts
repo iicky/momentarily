@@ -20,10 +20,10 @@ import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward }
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { TrainedParams } from './params';
-import { dwellForRouteState, paramsForRoute } from './params';
+import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
-import type { StationFlowDoc } from './state';
+import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -76,9 +76,12 @@ interface Inference {
   p_normal_in_120min: number;
   model_warming_up: boolean;
   // Where recovery_minutes comes from: "schedule" is a deterministic lookup of
-  // the planned-work resume time (no model uncertainty); "hmm" is the dwell
-  // estimate. The grader excludes "schedule" rows from HMM calibration.
-  recovery_source: 'hmm' | 'schedule';
+  // the planned-work resume time (no model uncertainty); "movement" is the
+  // movement-clock dwell curve (preferred whenever the published condition is
+  // movement-sourced and a curve exists); "hmm" is the alert-regime dwell
+  // estimate, used only as the fallback. The grader excludes "schedule" rows
+  // from HMM calibration.
+  recovery_source: 'hmm' | 'schedule' | 'movement';
   // Announced resume time (epoch s) for schedule recovery; null for hmm.
   resumes_at: number | null;
   // now has passed resumes_at but the planned alert is still active — recovery
@@ -171,6 +174,54 @@ interface Compat {
   subwaynow_routes: Record<string, CompatRoute>;
 }
 
+// Expected recovery off a dwell curve conditioned on a regime clock. Same
+// field names as Inference's recovery block (in minutes, not seconds) so a
+// segment's or station's recovery is directly comparable to a route's.
+interface SegmentRecovery {
+  recovery_minutes: number;
+  recovery_minutes_low: number;
+  recovery_minutes_high: number;
+  recovery_indeterminate: boolean;
+  p_normal_in_30min: number;
+  p_normal_in_60min: number;
+  p_normal_in_120min: number;
+}
+
+// Per-segment published status: the debounced regime + clock, successor
+// stop, and expected recovery for one (route, direction, from_stop) cell.
+interface SegmentStatusOut {
+  route: string;
+  direction: string;
+  from_stop: string;
+  to: string | null;
+  status: 'normal' | 'disrupted';
+  entered_at: number;
+  recovery: SegmentRecovery | null;
+}
+
+// The segment-flow surface: sibling of StationFlow, keyed the same way as
+// segment_flow.json/segment_params.json (`route|direction|from_stop`).
+interface SegmentFlowOut {
+  observed_at: number;
+  segments: Record<string, SegmentStatusOut>;
+}
+
+// StationFlowDoc's per-station entry, additively carrying the expected
+// recovery of its already-selected worst_segment.
+interface StationServiceFlowOut {
+  status: 'flowing' | 'degraded';
+  worst_deficit: number;
+  worst_segment: [string, string] | null;
+  routes: string[];
+  n_segments: number;
+  worst_recovery: SegmentRecovery | null;
+}
+
+interface StationFlowOut {
+  observed_at: number;
+  stations: Record<string, StationServiceFlowOut>;
+}
+
 interface Snapshot {
   schema_version: string;
   generated_at: number;
@@ -190,7 +241,10 @@ interface Snapshot {
   // Per-station service flow ("is my station moving"), rolled up from the segment
   // movement model. Distinct from station_status (accessibility/alerts). Null when
   // absent or stale.
-  station_flow: StationFlowDoc | null;
+  station_flow: StationFlowOut | null;
+  // Per-segment service flow ("is this stretch of track moving"), the same
+  // segment movement model station_flow rolls up. Null when absent or stale.
+  segment_flow: SegmentFlowOut | null;
   system: SystemStatus;
   compat: Compat;
 }
@@ -216,14 +270,28 @@ export function buildSnapshot(args: {
   stations?: Record<string, StationOut>;
   /** Epoch the served station metadata was fetched, or null before first fetch. */
   stationsStaticFreshness?: number | null;
-  /** Last tick's movement-derived per-route condition. Routes present here have
-   * their published `condition` observed from train movement; absent routes fall
-   * back to the alert/HMM condition. Null/undefined before the first vehicle tick
-   * after deploy. Lagged one tick (~5 min) — see state.MOVEMENT_STATE_KEY. */
-  movementStates?: { observed_at: number; states: Record<string, string> } | null;
+  /** Last tick's movement regimes, keyed by route. Routes present here have
+   * their published `condition` observed from train movement; absent routes
+   * publish 'unknown'. Null/undefined before the first vehicle tick after
+   * deploy. Lagged one tick (~5 min) — see state.MOVEMENT_STATE_KEY. */
+  movementStates?: {
+    observed_at: number;
+    regimes: Record<string, { state: string; entered_at: number }>;
+  } | null;
   /** Last tick's per-station service flow, one-tick lagged like movementStates.
    * Null/undefined before the first vehicle tick after deploy. */
   stationFlow?: StationFlowDoc | null;
+  /** Last tick's per-segment regimes (route|direction|from_stop cells), one-
+   * tick lagged like stationFlow — segment_flow.json's regimes, written at
+   * step 8b. Null/undefined before the first vehicle tick after deploy. */
+  segmentFlow?: SegmentFlowDoc | null;
+  /** Segment topology (successor stop + reliability annotation). Trainer-
+   * owned and read fresh, not tick-lagged. Null when absent. */
+  segmentParams?: SegmentParamsDoc | null;
+  /** Per-segment dwell curves the segment recovery is conditioned on. Null
+   * until the trainer publishes segment_dwell.json — segments then publish
+   * status without recovery, never a fabricated number. */
+  segmentDwell?: SegmentDwellDoc | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -236,6 +304,23 @@ export function buildSnapshot(args: {
   const stationFlowFresh =
     args.stationFlow != null &&
     args.generatedAt - args.stationFlow.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+  const segmentFlow = args.segmentFlow ?? null;
+  const segmentFlowFresh =
+    segmentFlow != null &&
+    args.generatedAt - segmentFlow.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+  const segmentFlowOut =
+    segmentFlow != null && segmentFlowFresh
+      ? buildSegmentFlowOut(
+          segmentFlow,
+          args.segmentParams ?? null,
+          args.segmentDwell ?? null,
+          args.generatedAt,
+        )
+      : null;
+  const stationFlowOut =
+    stationFlowFresh && args.stationFlow != null
+      ? buildStationFlowOut(args.stationFlow, segmentFlowOut)
+      : null;
 
   // Publish every route we have alpha for — good-service lines get their
   // inference too. Union with current routeSnapshots in case a route just got
@@ -243,7 +328,7 @@ export function buildSnapshot(args: {
   const allRouteIds = new Set<string>([
     ...Object.keys(args.rolls),
     ...args.routeSnapshots.keys(),
-    ...Object.keys(movementStates?.states ?? {}),
+    ...Object.keys(movementStates?.regimes ?? {}),
   ]);
 
   for (const routeId of allRouteIds) {
@@ -255,6 +340,7 @@ export function buildSnapshot(args: {
       hasRealtimeAlert: snap?.has_realtime_alert ?? false,
       scheduledResumeAt: snap?.scheduled_resume_at ?? null,
     };
+    const movementRegime = movementStates?.regimes[routeId] ?? null;
     const inference: Inference | null = roll
       ? buildInference(
           roll,
@@ -264,6 +350,7 @@ export function buildSnapshot(args: {
           args.trainedParams,
           snap?.observation.alert_count ?? 0,
           schedule,
+          movementRegime,
         )
       : null;
 
@@ -275,7 +362,7 @@ export function buildSnapshot(args: {
     // one exception: a planned non-run wins. When movement can't judge (cold start,
     // feed gap, thin/absent signal) the condition is 'unknown' — an honest coverage
     // gap, never an alert-derived fallback.
-    const movementCondition = movementStates?.states[routeId];
+    const movementCondition = movementRegime?.state;
     let condition: string;
     let condition_source: string;
     if (schedule.isNotScheduled) {
@@ -332,7 +419,8 @@ export function buildSnapshot(args: {
     tunnels: [],
     route_status,
     station_status: args.stationStatuses ?? {},
-    station_flow: stationFlowFresh ? (args.stationFlow ?? null) : null,
+    station_flow: stationFlowOut,
+    segment_flow: segmentFlowOut,
     system,
     compat,
   };
@@ -505,6 +593,15 @@ interface ScheduleFacts {
   scheduledResumeAt: number | null;
 }
 
+// Last known movement-clock reading for a route: the SAME (state, entered_at)
+// buildSnapshot publishes as condition/condition_source === 'movement'. null
+// when movement can't judge (no reading, or the reading fell outside
+// MAX_MOVEMENT_STATE_AGE_SEC upstream).
+interface MovementRegime {
+  state: string;
+  entered_at: number;
+}
+
 function buildInference(
   roll: RouteRoll,
   now: number,
@@ -513,6 +610,7 @@ function buildInference(
   trained: TrainedParams | null,
   disruptiveAlertCount: number,
   schedule: ScheduleFacts,
+  movementRegime: MovementRegime | null,
 ): Inference {
   const probs = roll.filter.probabilities;
   const params = paramsForRoute(trained, routeId);
@@ -534,21 +632,27 @@ function buildInference(
 
   const condition = resolveCondition(roll, disruptiveAlertCount, schedule);
 
-  // Recovery_minutes is "time until back to normal." Two sources, in order
-  // of preference:
-  //   1. Empirical dwell quantiles from the regime_transitions stream — heavy-
-  //      tailed reality, not a geometric approximation. Prefers the cause-
-  //      conditioned (route, condition, alert_type_at_entry) cell, falling back
-  //      to the (route, condition) aggregate. Only used when the trainer
-  //      included the cell (sample size above its floor).
-  //   2. Geometric dwell from the trained transition self-loop — works
+  // Recovery_minutes is "time until back to normal," picked in order of
+  // preference:
+  //   1. Schedule countdown — a planned-work alert announces its own resume
+  //      time; deterministic, no model uncertainty.
+  //   2. Movement curve + movement clock — when the PUBLISHED condition came
+  //      from movement (see buildSnapshot), condition on how long the
+  //      movement regime has run, off the movement dwell curve. This is the
+  //      regime consumers are actually shown; the HMM's own condition can
+  //      silently disagree with it (effectiveCondition's zero-alert guard).
+  //   3. Alert-HMM empirical dwell from the regime_transitions stream —
+  //      heavy-tailed reality, not a geometric approximation. Prefers the
+  //      cause-conditioned (route, condition, alert_type_at_entry) cell,
+  //      falling back to the (route, condition) aggregate.
+  //   4. Geometric dwell from the trained transition self-loop — works
   //      everywhere but saturates at the clamp ceiling for any route with
   //      sustained planned-work alerts.
   let recovery_minutes = 0;
   let recovery_minutes_low = 0;
   let recovery_minutes_high = 0;
   let recovery_indeterminate = false;
-  let recovery_source: 'hmm' | 'schedule' = 'hmm';
+  let recovery_source: 'hmm' | 'schedule' | 'movement' = 'hmm';
   let resumes_at: number | null = null;
   let overdue = false;
 
@@ -560,6 +664,16 @@ function buildInference(
     condition !== 'normal'
     && !schedule.hasRealtimeAlert
     && schedule.scheduledResumeAt !== null;
+
+  // Movement curve, conditioned on the movement clock — only when the
+  // published condition actually came from movement (mirrors buildSnapshot's
+  // own condition_source precedence: schedule.isNotScheduled beats movement).
+  // null whenever there's no movement regime, no clock (entered_at <= 0), or
+  // the trainer hasn't published dwell_movement for this cell yet.
+  const movement =
+    !schedule.isNotScheduled && movementRegime !== null
+      ? movementRecovery(trained, routeId, movementRegime.state, movementRegime.entered_at, now)
+      : null;
 
   if (scheduleRecovery) {
     const resume = schedule.scheduledResumeAt!;
@@ -579,6 +693,15 @@ function buildInference(
     p_normal_in_30 = within(30);
     p_normal_in_60 = within(60);
     p_normal_in_120 = within(120);
+  } else if (movement !== null) {
+    recovery_source = 'movement';
+    recovery_minutes = movement.recovery_minutes;
+    recovery_minutes_low = movement.recovery_minutes_low;
+    recovery_minutes_high = movement.recovery_minutes_high;
+    recovery_indeterminate = movement.recovery_indeterminate;
+    p_normal_in_30 = movement.p_normal_in_30;
+    p_normal_in_60 = movement.p_normal_in_60;
+    p_normal_in_120 = movement.p_normal_in_120;
   } else if (condition !== 'normal') {
     const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
     const empirical = dwellForRouteState(
@@ -703,6 +826,227 @@ function buildInference(
     resumes_at,
     overdue,
   };
+}
+
+interface MovementRecoveryResult {
+  recovery_minutes: number;
+  recovery_minutes_low: number;
+  recovery_minutes_high: number;
+  recovery_indeterminate: boolean;
+  p_normal_in_30: number;
+  p_normal_in_60: number;
+  p_normal_in_120: number;
+}
+
+/**
+ * Recovery + p_normal_in_H off the movement curve, conditioned on the
+ * movement clock (elapsed = now - entered_at) — the SAME regime consumers see
+ * as condition/condition_source==='movement'. Returns null when there's no
+ * usable clock or no trained curve for this (route, state) cell, so the
+ * caller falls back to the alert-HMM path.
+ *
+ * dwell_movement is route-scope, all-cause (C2) — no trained split of "exits
+ * to normal" vs "exits to a worse state" exists for the movement clock the
+ * way the HMM transition matrix supplies one for the alert arm (see toNormal
+ * below), so a disrupted/suspended cell's exit probability is read directly
+ * as p_normal_in_H. A normal cell needs no such split: exits from normal are
+ * never "to normal", so p_normal_in_H is the plain survival function.
+ */
+function movementRecovery(
+  trained: TrainedParams | null,
+  routeId: string,
+  state: string,
+  enteredAt: number,
+  now: number,
+): MovementRecoveryResult | null {
+  if (enteredAt <= 0) return null;
+  const cell = movementDwellFor(trained, routeId, state);
+  if (cell?.curve_sec === undefined) return null;
+  const curve = cell.curve_sec;
+  const tail = cell.tail_ll;
+  const elapsedSec = Math.max(0, now - enteredAt);
+
+  if (state === 'normal') {
+    const staysNormalFor = (horizonSec: number): number =>
+      1 - pLeaveBy(curve, elapsedSec, horizonSec, tail);
+    return {
+      recovery_minutes: 0,
+      recovery_minutes_low: 0,
+      recovery_minutes_high: 0,
+      recovery_indeterminate: false,
+      p_normal_in_30: staysNormalFor(1800),
+      p_normal_in_60: staysNormalFor(3600),
+      p_normal_in_120: staysNormalFor(7200),
+    };
+  }
+
+  const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
+  const secToMin = (s: number): number => Math.round(s / 60);
+  const conditional = conditionalRecovery(curve, elapsedSec);
+  let recovery_minutes: number;
+  let recovery_minutes_low: number;
+  let recovery_minutes_high: number;
+  let recovery_indeterminate: boolean;
+  if (conditional !== null) {
+    recovery_minutes = clamp(secToMin(conditional.median_sec));
+    recovery_minutes_low = clamp(secToMin(conditional.q25_sec));
+    recovery_minutes_high = clamp(secToMin(conditional.q75_sec));
+    recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
+  } else {
+    // Outlived every observed dwell — no trustworthy recovery time.
+    recovery_minutes = MAX_RECOVERY_MINUTES;
+    recovery_minutes_low = MAX_RECOVERY_MINUTES;
+    recovery_minutes_high = MAX_RECOVERY_MINUTES;
+    recovery_indeterminate = true;
+  }
+  return {
+    recovery_minutes,
+    recovery_minutes_low,
+    recovery_minutes_high,
+    recovery_indeterminate,
+    p_normal_in_30: pLeaveBy(curve, elapsedSec, 1800, tail),
+    p_normal_in_60: pLeaveBy(curve, elapsedSec, 3600, tail),
+    p_normal_in_120: pLeaveBy(curve, elapsedSec, 7200, tail),
+  };
+}
+
+/**
+ * Recovery for a segment cell off its own dwell curve, conditioned on the
+ * segment regime clock (elapsed = now - entered_at) — the same math as
+ * movementRecovery, sourced from segment_dwell.json instead of
+ * dwell_movement. Returns null when there's no usable clock (entered_at <= 0)
+ * or no trained curve for this (key, state) cell, so the caller publishes
+ * status without a fabricated recovery.
+ */
+function segmentRecovery(
+  dwell: SegmentDwellDoc | null,
+  key: string,
+  state: string,
+  enteredAt: number,
+  now: number,
+): SegmentRecovery | null {
+  if (enteredAt <= 0) return null;
+  const cell = dwell?.cells[key]?.[state];
+  if (cell === undefined) return null;
+  const curve = cell.curve_sec;
+  const tail = cell.tail_ll;
+  const elapsedSec = Math.max(0, now - enteredAt);
+
+  if (state === 'normal') {
+    const staysNormalFor = (horizonSec: number): number =>
+      1 - pLeaveBy(curve, elapsedSec, horizonSec, tail);
+    return {
+      recovery_minutes: 0,
+      recovery_minutes_low: 0,
+      recovery_minutes_high: 0,
+      recovery_indeterminate: false,
+      p_normal_in_30min: staysNormalFor(1800),
+      p_normal_in_60min: staysNormalFor(3600),
+      p_normal_in_120min: staysNormalFor(7200),
+    };
+  }
+
+  const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
+  const secToMin = (s: number): number => Math.round(s / 60);
+  const conditional = conditionalRecovery(curve, elapsedSec);
+  let recovery_minutes: number;
+  let recovery_minutes_low: number;
+  let recovery_minutes_high: number;
+  let recovery_indeterminate: boolean;
+  if (conditional !== null) {
+    recovery_minutes = clamp(secToMin(conditional.median_sec));
+    recovery_minutes_low = clamp(secToMin(conditional.q25_sec));
+    recovery_minutes_high = clamp(secToMin(conditional.q75_sec));
+    recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
+  } else {
+    // Outlived every observed dwell — no trustworthy recovery time.
+    recovery_minutes = MAX_RECOVERY_MINUTES;
+    recovery_minutes_low = MAX_RECOVERY_MINUTES;
+    recovery_minutes_high = MAX_RECOVERY_MINUTES;
+    recovery_indeterminate = true;
+  }
+  return {
+    recovery_minutes,
+    recovery_minutes_low,
+    recovery_minutes_high,
+    recovery_indeterminate,
+    p_normal_in_30min: pLeaveBy(curve, elapsedSec, 1800, tail),
+    p_normal_in_60min: pLeaveBy(curve, elapsedSec, 3600, tail),
+    p_normal_in_120min: pLeaveBy(curve, elapsedSec, 7200, tail),
+  };
+}
+
+/**
+ * Per-segment published surface: debounced status + clock + successor stop +
+ * expected recovery, keyed the same way as segment_flow.json/
+ * segment_params.json (`route|direction|from_stop`). Sibling of
+ * station_flow; caller gates freshness before calling this.
+ */
+function buildSegmentFlowOut(
+  flow: SegmentFlowDoc,
+  params: SegmentParamsDoc | null,
+  dwell: SegmentDwellDoc | null,
+  now: number,
+): SegmentFlowOut {
+  const segments: Record<string, SegmentStatusOut> = {};
+  for (const [key, regime] of Object.entries(flow.regimes)) {
+    const parts = key.split('|');
+    const route = parts[0] ?? '';
+    const direction = parts[1] ?? '';
+    const from_stop = parts[2] ?? '';
+    segments[key] = {
+      route,
+      direction,
+      from_stop,
+      to: params?.adjacency[key]?.to ?? null,
+      status: regime.state,
+      entered_at: regime.entered_at,
+      recovery: segmentRecovery(dwell, key, regime.state, regime.entered_at, now),
+    };
+  }
+  return { observed_at: flow.observed_at, segments };
+}
+
+/**
+ * Recovery for a station's already-selected worst touching segment (see
+ * deriveStationFlow). worst_segment is only a (from, to) stop pair — when
+ * more than one route shares that physical track (common on shared
+ * trackage) more than one live segment key can match; they describe the
+ * same movement, so picking the lexicographically first key is a stable
+ * tie-break, not a second "worst" determination.
+ */
+function worstSegmentRecovery(
+  worstSegment: readonly [string, string] | null,
+  segments: Record<string, SegmentStatusOut>,
+): SegmentRecovery | null {
+  if (worstSegment === null) return null;
+  const [from, to] = worstSegment;
+  for (const key of Object.keys(segments).sort()) {
+    const s = segments[key]!;
+    if (s.from_stop === from && s.to === to) return s.recovery;
+  }
+  return null;
+}
+
+/**
+ * station_flow, additive: every entry keeps its existing fields and gains
+ * worst_recovery — the expected recovery of the same worst_segment
+ * deriveStationFlow already picked, off the fresh segment surface above.
+ */
+function buildStationFlowOut(
+  stationFlow: StationFlowDoc,
+  segmentFlowOut: SegmentFlowOut | null,
+): StationFlowOut {
+  const stations: Record<string, StationServiceFlowOut> = {};
+  for (const [sid, s] of Object.entries(stationFlow.stations)) {
+    stations[sid] = {
+      ...s,
+      worst_recovery: segmentFlowOut
+        ? worstSegmentRecovery(s.worst_segment, segmentFlowOut.segments)
+        : null,
+    };
+  }
+  return { observed_at: stationFlow.observed_at, stations };
 }
 
 function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {

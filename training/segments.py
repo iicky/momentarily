@@ -14,13 +14,12 @@ Two Phase-3 primitives on top of the hierarchical segment baseline
   segment worker state), not a raw per-tick call. The direction-level classifier
   stays the live per-tick path.
 
-- canonical_adjacency: the "next stop" for each (route, direction, from_stop),
-  taken as the modal to_stop in the observed cross-tick transitions. This gives a
-  segment its human identity ("59 St -> 125 St") for localizing a stall, without
-  static GTFS: the line ordering is already latent in which stop pairs trains
-  actually traverse. `share` (modal count / all advances out of the stop) flags
-  express/reroute ambiguity — a clean through-stop is ~1.0, a branch/express point
-  lower.
+- canonical_adjacency: the modal to_stop for each (route, direction, from_stop)
+  in the observed cross-tick transitions. training.gtfs_static.load_successors
+  (the static timetable) is the primary segment topology source now — this is
+  the fallback for when that fetch fails, and elsewhere the `share` (modal
+  count / all advances out of the stop) rides along as a reliability
+  annotation: a clean through-stop is ~1.0, a branch/express point lower.
 """
 
 from __future__ import annotations

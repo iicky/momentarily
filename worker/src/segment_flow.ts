@@ -17,6 +17,7 @@
  */
 
 import { classifyAdvance } from './movement_state';
+import type { RegimeEntry } from './regime';
 import type { MovementRow } from './vehicles';
 import type { SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
 
@@ -81,12 +82,55 @@ export function updateSegmentFlow(
     if (m < PRUNE_MATCHED) continue;
     cells[key] = { a, m };
   }
-  return { observed_at: observedAt, cells };
+  // Regimes are advanced by the caller (step 8b, alongside advanceRegimes) and
+  // written back onto this doc once computed; carry the previous map through
+  // so the type is whole in between.
+  return { observed_at: observedAt, cells, regimes: prev?.regimes ?? {} };
 }
 
 function deficitOf(p0: number, rate: number): number {
   if (p0 <= 0) return 0;
   return Math.max(0, Math.min(1, (p0 - rate) / p0));
+}
+
+interface SegmentCall {
+  key: string;
+  call: 'normal' | 'disrupted';
+  route: string;
+  seg: [string, string];
+  deficit: number;
+}
+
+/** Beta-Binomial call for every segment cell with enough effective matched
+ * trips this tick, via the one decision rule shared with the direction
+ * classifier (movement_state.classifyAdvance). A cell classifyAdvance
+ * abstains on — too few matches, or a point-estimate drop indistinguishable
+ * from a low-p0 fluctuation — is simply absent: the shared basis for both
+ * deriveStationFlow's incident roll-up and deriveSegmentStates' regime-clock
+ * feed, so the two never disagree about which cells were judged. */
+function classifySegments(state: SegmentFlowDoc, params: SegmentParamsDoc): SegmentCall[] {
+  const out: SegmentCall[] = [];
+  for (const [key, { a, m }] of Object.entries(state.cells)) {
+    const cell = params.cells[key];
+    const adj = params.adjacency[key];
+    if (!cell || !adj) continue;
+    const matched = Math.round(m);
+    if (matched < MIN_EFF_MATCHED) continue;
+    const advanced = Math.min(Math.round(a), matched);
+    const call = classifyAdvance(advanced, matched - advanced, cell.p0);
+    if (call === null) continue;
+    const parts = key.split('|');
+    const route = parts[0] ?? '';
+    const frm = parts[2] ?? '';
+    out.push({
+      key,
+      call,
+      route,
+      seg: [frm, adj.to],
+      deficit: deficitOf(cell.p0, advanced / matched),
+    });
+  }
+  return out;
 }
 
 /** Classify each smoothed segment and roll incident segments up to per-station
@@ -102,26 +146,14 @@ export function deriveStationFlow(
     seg: [string, string];
   }
   const byStation = new Map<string, Incident[]>();
-  for (const [key, { a, m }] of Object.entries(state.cells)) {
-    const cell = params.cells[key];
-    const adj = params.adjacency[key];
-    if (!cell || !adj) continue;
-    const matched = Math.round(m);
-    if (matched < MIN_EFF_MATCHED) continue;
-    const advanced = Math.min(Math.round(a), matched);
-    const call = classifyAdvance(advanced, matched - advanced, cell.p0);
-    if (call === null) continue;
-    const parts = key.split('|');
-    const route = parts[0] ?? '';
-    const frm = parts[2] ?? '';
-    const to = adj.to;
+  for (const c of classifySegments(state, params)) {
     const incident: Incident = {
-      deficit: deficitOf(cell.p0, advanced / matched),
-      disrupted: call === 'disrupted',
-      route,
-      seg: [frm, to],
+      deficit: c.deficit,
+      disrupted: c.call === 'disrupted',
+      route: c.route,
+      seg: c.seg,
     };
-    for (const sid of new Set([stationId(frm), stationId(to)])) {
+    for (const sid of new Set([stationId(c.seg[0]), stationId(c.seg[1])])) {
       const arr = byStation.get(sid) ?? [];
       arr.push(incident);
       byStation.set(sid, arr);
@@ -143,4 +175,38 @@ export function deriveStationFlow(
     };
   }
   return { observed_at: state.observed_at, stations };
+}
+
+/** Per-tick classification call for every judged segment cell, keyed the
+ * same way as SegmentFlowDoc.cells (`route|direction|from_stop`). A cell
+ * classifyAdvance abstains on is absent from the map — same contract as
+ * movement_state.deriveMovementStates — so advanceRegimes treats "can't
+ * judge this tick" as an abstention that holds the open regime, not a
+ * reading of change. */
+export function deriveSegmentStates(
+  state: SegmentFlowDoc,
+  params: SegmentParamsDoc,
+): Record<string, 'normal' | 'disrupted'> {
+  const out: Record<string, 'normal' | 'disrupted'> = {};
+  for (const c of classifySegments(state, params)) out[c.key] = c.call;
+  return out;
+}
+
+/** Keep only regime entries for cells updateSegmentFlow still tracks this
+ * tick. A cell's decayed matched count falling below PRUNE_MATCHED drops it
+ * from `cells` outright (gone quiet); without this, advanceRegimes would
+ * hold its regime open through the idle-abstention grace (up to
+ * MAX_IDLE_SEC) as if it were merely unheard from this tick, when pruning
+ * already means gone. Call against the SAME tick's updated cell set, every
+ * tick. */
+export function pruneSegmentRegimes<C extends string>(
+  entries: Record<string, RegimeEntry<C>>,
+  liveCells: SegmentFlowDoc['cells'],
+): Record<string, RegimeEntry<C>> {
+  const out: Record<string, RegimeEntry<C>> = {};
+  for (const key of Object.keys(liveCells)) {
+    const entry = entries[key];
+    if (entry) out[key] = entry;
+  }
+  return out;
 }

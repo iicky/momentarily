@@ -11,6 +11,7 @@ population centre must not be dragged around by whichever route churns most.
 from __future__ import annotations
 
 from training.dwell import CURVE_POINTS
+from training.eval import MovementTransitionRecord
 from training.pooled_dwell import (
     MIN_VOTER_EVENTS,
     cell_from_fit,
@@ -163,3 +164,67 @@ def test_longer_censoring_pushes_the_scale_up():
     long_ = partially_pooled_dwell({**base, "X": [(40 * DAY, False)]})["X"]
 
     assert long_.scale_sec > short.scale_sec
+
+
+def _movement_tr(
+    route: str, prev: str, dwell_sec: int, ts: int = 0, new_state: str = "normal"
+) -> MovementTransitionRecord:
+    return MovementTransitionRecord(
+        ts=ts,
+        scope="route",
+        key=route,
+        route=route,
+        prev_state=prev,
+        new_state=new_state,
+        regime_entered_at=ts - dwell_sec,
+        exited_at=ts,
+        dwell_sec=dwell_sec,
+    )
+
+
+def test_pooled_dwell_cells_keys_on_movement_state_not_alert_regime():
+    """C2 sources dwell_movement from MovementTransitionRecord, keyed on the
+    movement clock's own prev_state -- pooled_dwell_cells runs directly off it,
+    no TransitionRecord (the alert-regime record) anywhere in the call, and the
+    `state` kwarg must select disjoint movement-regime episodes."""
+    transitions = [
+        _movement_tr("A", "disrupted", 300, ts=1000),
+        _movement_tr("A", "disrupted", 900, ts=2000),
+        _movement_tr("A", "suspended", 5400, ts=3000),
+        _movement_tr("B", "suspended", 2700, ts=3000),
+    ]
+    disrupted = pooled_dwell_cells(transitions, state="disrupted")
+    suspended = pooled_dwell_cells(transitions, state="suspended")
+    assert disrupted["A"]["n"] == 2
+    assert suspended["A"]["n"] == 1
+    assert disrupted["A"]["median_sec"] != suspended["A"]["median_sec"]
+
+
+def test_movement_open_regime_yields_censored_not_dropped_or_completed():
+    """A route still sitting in `disrupted` at window_end must contribute a
+    right-censored observation: present in the output, not silently dropped,
+    and not folded into the completed-event count."""
+    transitions = [_movement_tr("A", "disrupted", 300, ts=1000)]
+    open_regimes = {"A": ("disrupted", 100_000)}
+    cells = pooled_dwell_cells(
+        transitions, state="disrupted", window_end=130_000, open_regimes=open_regimes
+    )
+    assert "A" in cells  # not dropped
+    assert cells["A"]["n"] == 1  # the completed exit, unaffected
+    assert cells["A"]["n_censored"] == 1  # the open regime, not a completed event
+
+
+def test_movement_route_with_zero_episodes_still_gets_a_pooled_cell():
+    """A route that has simply held `normal` for the whole window -- zero
+    completed movement episodes -- must still surface a cell off its open
+    regime alone, mirroring the alert-arm's normal-state estimator."""
+    transitions = [
+        _movement_tr(f"R{i}", "normal", 3600, ts=10_000 * (i + 1)) for i in range(4)
+    ]
+    open_regimes = {"QUIET": ("normal", 0)}
+    cells = pooled_dwell_cells(
+        transitions, state="normal", window_end=1_000_000, open_regimes=open_regimes
+    )
+    assert "QUIET" in cells
+    assert cells["QUIET"]["n"] == 0
+    assert cells["QUIET"]["n_censored"] == 1

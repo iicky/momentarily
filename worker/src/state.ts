@@ -159,14 +159,35 @@ export async function writeVehicleStops(
 // regime tolerates. Its own small object (~28 routes), like vehicle_stops.json.
 export const MOVEMENT_STATE_KEY = 'state/movement_state.json';
 
+const MovementConditionSchema = z.enum([
+  'normal',
+  'disrupted',
+  'suspended',
+  'not_scheduled',
+]);
+
+// The debounced regime and its clock, per route. `state` is what the snapshot
+// publishes; `entered_at` is how long it has held, which is what the movement
+// dwell curves are conditioned on. Shape mirrors RegimeEntry in regime.ts.
+const MovementRegimeSchema = z.object({
+  state: MovementConditionSchema,
+  entered_at: z.number(),
+  last_seen_at: z.number(),
+  pending: MovementConditionSchema.nullable(),
+  pending_since: z.number(),
+  pending_run: z.number().int().nonnegative(),
+});
+
 const MovementStateSchema = z.object({
   observed_at: z.number(),
-  states: z.record(z.string(), z.enum(['normal', 'disrupted', 'suspended', 'not_scheduled'])),
+  regimes: z.record(z.string(), MovementRegimeSchema),
 });
+export type MovementRegime = z.infer<typeof MovementRegimeSchema>;
 export type MovementStateDoc = z.infer<typeof MovementStateSchema>;
 
-/** Read last tick's movement-derived states. Returns null when absent or corrupt
- * — the snapshot then falls back to the alert/HMM condition for every route. */
+/** Read last tick's movement regimes. Returns null when absent or corrupt — the
+ * snapshot then publishes 'unknown' for every route and the regime clocks
+ * restart from the next tick. */
 export async function readMovementState(
   bucket: R2Bucket,
 ): Promise<MovementStateDoc | null> {
@@ -290,16 +311,21 @@ export async function writeServiceMetric(
   });
 }
 
-
-// Segment baseline + canonical adjacency, written by the trainer as its OWN object
-// (not folded into params.json — the Worker parses that on the hot per-tick path).
+// Segment baseline + adjacency, written by the trainer as its OWN object (not
+// folded into params.json — the Worker parses that on the hot per-tick path).
 // Read at step 8b to score per-segment movement for the station-flow surface.
+// Topology (adjacency) comes from the static GTFS timetable when the trainer's
+// feed fetch succeeds, falling back to observed cross-tick adjacency otherwise
+// — see training/gtfs_static.py + training/train_em.py write_segment_params.
 export const SEGMENT_PARAMS_KEY = 'state/segment_params.json';
 
 const SegmentParamsSchema = z.object({
   schema_version: z.literal('1'),
   trained_at: z.number(),
   min_share: z.number().min(0).max(1),
+  // Absent on segment_params.json written before the static-GTFS switchover;
+  // those docs are entirely observed-adjacency, hence that default.
+  topology_source: z.enum(['gtfs_static', 'observed']).default('observed'),
   cells: z.record(
     z.string(),
     z.object({ p0: z.number().min(0).max(1), n: z.number().int().nonnegative() }),
@@ -308,8 +334,19 @@ const SegmentParamsSchema = z.object({
     z.string(),
     z.object({
       to: z.string(),
-      share: z.number().min(0).max(1),
-      n: z.number().int().nonnegative(),
+      // Same default reasoning as topology_source, per entry.
+      source: z.enum(['gtfs_static', 'observed']).default('observed'),
+      // The observed cross-tick reliability ANNOTATION now, not an existence
+      // gate: absent when static topology names a segment the vehicle
+      // archive never (or too rarely) saw advance out of.
+      share: z.number().min(0).max(1).optional(),
+      n: z.number().int().nonnegative().optional(),
+      // Full static successor list (a branch/express from_stop has more than
+      // one), for path queries — `to` is just the highest-n_trips entry.
+      // Absent on observed-sourced (fallback) entries.
+      successors: z
+        .array(z.object({ to: z.string(), n_trips: z.number().int().nonnegative() }))
+        .optional(),
     }),
   ),
 });
@@ -334,9 +371,28 @@ export async function readSegmentParams(
 // ~1-train-per-tick segment accrues enough to judge. Its own object, step 8b.
 export const SEGMENT_FLOW_KEY = 'state/segment_flow.json';
 
+// Segment cell's debounced regime and its clock — same shape as
+// MovementRegimeSchema (mirrors RegimeEntry in regime.ts), scoped to the two
+// calls classifyAdvance can make for a segment cell. No suspended/
+// not_scheduled: those come from the route's own schedule, not a segment.
+const SegmentConditionSchema = z.enum(['normal', 'disrupted']);
+
+const SegmentRegimeSchema = z.object({
+  state: SegmentConditionSchema,
+  entered_at: z.number(),
+  last_seen_at: z.number(),
+  pending: SegmentConditionSchema.nullable(),
+  pending_since: z.number(),
+  pending_run: z.number().int().nonnegative(),
+});
+export type SegmentRegime = z.infer<typeof SegmentRegimeSchema>;
+
 const SegmentFlowSchema = z.object({
   observed_at: z.number(),
   cells: z.record(z.string(), z.object({ a: z.number(), m: z.number() })),
+  // Absent on a live doc written before the regime clock landed; defaults to
+  // {} so it still parses instead of resetting the decayed cell state too.
+  regimes: z.record(z.string(), SegmentRegimeSchema).default({}),
 });
 export type SegmentFlowDoc = z.infer<typeof SegmentFlowSchema>;
 
@@ -360,6 +416,54 @@ export async function writeSegmentFlow(
   await bucket.put(SEGMENT_FLOW_KEY, JSON.stringify(doc), {
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
+}
+
+// Per-segment dwell curves, hierarchically pooled leaf -> route -> system
+// (training/segment_dwell.py) from the segment-scope movement_transitions
+// stream. Its own R2 object, written by the trainer like segment_params.json
+// — segment episodes are short and the ~1.8k-cell curve set never touches the
+// hot per-tick params parse. No writer here: the trainer publishes it
+// directly, same as SEGMENT_PARAMS_KEY.
+export const SEGMENT_DWELL_KEY = 'state/segment_dwell.json';
+
+// Mirrors training.dwell.DwellQuantiles exactly. A fresh object with no
+// params.json back-compat baggage, so unlike params.ts's older DwellQuantiles
+// mirror every field here is required except tail_ll (absent when no
+// log-logistic fit converged — no completed events at all).
+const SegmentDwellQuantilesSchema = z.object({
+  n: z.number().int().nonnegative(),
+  n_censored: z.number().int().nonnegative(),
+  q25_sec: z.number().int().nonnegative(),
+  median_sec: z.number().int().nonnegative(),
+  q75_sec: z.number().int().nonnegative(),
+  recover_by_30: z.number().min(0).max(1),
+  recover_by_60: z.number().min(0).max(1),
+  recover_by_120: z.number().min(0).max(1),
+  curve_sec: z.array(z.number().nonnegative()).min(2),
+  tail_ll: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+});
+export type SegmentDwellQuantiles = z.infer<typeof SegmentDwellQuantilesSchema>;
+
+const SegmentDwellSchema = z.object({
+  schema_version: z.literal('1'),
+  trained_at: z.number(),
+  cells: z.record(z.string(), z.record(z.string(), SegmentDwellQuantilesSchema)),
+});
+export type SegmentDwellDoc = z.infer<typeof SegmentDwellSchema>;
+
+/** Read the per-segment dwell curves. Null when absent or corrupt — callers
+ * fall back to whatever route-level or geometric dwell they already have. */
+export async function readSegmentDwell(
+  bucket: R2Bucket,
+): Promise<SegmentDwellDoc | null> {
+  const obj = await bucket.get(SEGMENT_DWELL_KEY);
+  if (!obj) return null;
+  try {
+    return SegmentDwellSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('segment_dwell.json corrupt; segment dwell curves unavailable:', err);
+    return null;
+  }
 }
 
 // Per-station service-flow, computed at step 8b and read by the next tick's

@@ -36,11 +36,18 @@ import {
   serviceObservationFields,
 } from './movement_state';
 import type { PredictionRecord } from './grading';
-import { detectTransitions, writePredictions, writeTransitions } from './grading';
+import {
+  detectTransitions,
+  movementTransitions,
+  writeMovementTransitions,
+  writePredictions,
+  writeTransitions,
+} from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
 import { loadParams, paramsForRoute } from './params';
-import { deriveStationFlow, updateSegmentFlow } from './segment_flow';
+import { advanceRegimes } from './regime';
+import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
@@ -48,6 +55,7 @@ import {
   readLastSeen,
   readMovementMetric,
   readMovementState,
+  readSegmentDwell,
   readSegmentFlow,
   readSegmentParams,
   readServiceMetric,
@@ -61,7 +69,7 @@ import {
   writeStationFlow,
   writeVehicleStops,
 } from './state';
-import type { StationFlowDoc } from './state';
+import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -331,6 +339,30 @@ export default {
       } catch (err) {
         console.error('station_flow read failed; publishing without it:', err);
       }
+      // Last tick's per-segment regimes + the (mostly static) segment
+      // topology, same one-tick lag as stationFlow — the segment_flow
+      // surface and the recovery attached to station_flow's worst_segment
+      // are both built from these. A read failure degrades to publishing
+      // without segment_flow, never a failed tick.
+      let segmentFlow: SegmentFlowDoc | null = null;
+      let segmentParams: SegmentParamsDoc | null = null;
+      try {
+        [segmentFlow, segmentParams] = await Promise.all([
+          readSegmentFlow(env.MOMENTARILY),
+          readSegmentParams(env.MOMENTARILY),
+        ]);
+      } catch (err) {
+        console.error('segment_flow/segment_params read failed; publishing without them:', err);
+      }
+      // Per-segment dwell curves the segment recovery is conditioned on.
+      // Trainer-published, not tick-lagged; null until it exists in R2 —
+      // segments then publish status without a fabricated recovery.
+      let segmentDwell: SegmentDwellDoc | null = null;
+      try {
+        segmentDwell = await readSegmentDwell(env.MOMENTARILY);
+      } catch (err) {
+        console.error('segment_dwell read failed; publishing without segment recovery:', err);
+      }
       const snapshot = buildSnapshot({
         generatedAt: observedAt,
         alertsFreshness: alertsFeedFresh,
@@ -347,6 +379,9 @@ export default {
         stationsStaticFreshness: stationsCache?.fetched_at ?? null,
         movementStates,
         stationFlow,
+        segmentFlow,
+        segmentParams,
+        segmentDwell,
       });
       step('6a-build-snapshot');
       try {
@@ -385,6 +420,9 @@ export default {
           params_version: paramsVersion,
           published_condition: rs.condition,
           condition_source: rs.condition_source,
+          // From the same one-tick-lagged doc the snapshot published the
+          // condition from, so the row describes the regime consumers saw.
+          movement_regime_entered_at: movementStates?.regimes[routeId]?.entered_at ?? 0,
         });
       }
       try {
@@ -507,29 +545,73 @@ export default {
           // Movement-derived current state, read by next tick's snapshot build as
           // the published movement-primary condition (debiased per-direction
           // classifier; suspended/not_scheduled from the schedule rate).
+          //
+          // The raw per-tick call goes through the regime clock before it is
+          // published: a change commits only after DEBOUNCE_TICKS agreeing ticks
+          // and back-dates to the first of them, so `entered_at` is when the
+          // evidence started rather than when it convinced us. That clock is
+          // what the movement dwell curves are conditioned on, and the committed
+          // changes are the stream those curves are fitted from.
           if (MOVEMENT_STATE_PUBLISH) {
+            const prevMovement = await readMovementState(env.MOMENTARILY);
+            const { entries, changes } = advanceRegimes(
+              prevMovement?.regimes,
+              deriveMovementStates(moveRows, rows, trainedParams, observedAt),
+              observedAt,
+            );
             await writeMovementState(env.MOMENTARILY, {
               observed_at: observedAt,
-              states: deriveMovementStates(moveRows, rows, trainedParams, observedAt),
+              regimes: entries,
             });
+            try {
+              await writeMovementTransitions(
+                env.MOMENTARILY,
+                observedAt,
+                movementTransitions(changes, 'route', observedAt),
+              );
+              if (changes.length > 0) {
+                console.log(`movement: ${changes.length} regime changes this tick`);
+              }
+            } catch (err) {
+              console.error('movement transitions write failed:', err);
+            }
           }
 
           // Segment-level station service flow: decay-smoothed per-segment
-          // advance -> classify -> roll up to stations. Its own R2 objects, read
-          // off the segment baseline (own object too), so the ~1.8k-cell baseline
-          // never touches the hot per-tick params parse. Read next tick by the
-          // snapshot build (one-tick lag, like movement_state). Fail-soft.
+          // advance -> classify -> roll up to stations, PLUS the segment
+          // regime clock (same debounce as the route clock, keyed on the
+          // segment cell) that the per-segment dwell curves condition on.
+          // Its own R2 objects, read off the segment baseline (own object
+          // too), so the ~1.8k-cell baseline never touches the hot per-tick
+          // params parse. Read next tick by the snapshot build (one-tick
+          // lag, like movement_state). Fail-soft.
           try {
             const segParams = await readSegmentParams(env.MOMENTARILY);
             if (segParams) {
-              const flow = updateSegmentFlow(
-                await readSegmentFlow(env.MOMENTARILY),
-                moveRows,
+              const prevFlow = await readSegmentFlow(env.MOMENTARILY);
+              const flow = updateSegmentFlow(prevFlow, moveRows, observedAt, segParams);
+              const { entries, changes } = advanceRegimes(
+                prevFlow?.regimes,
+                deriveSegmentStates(flow, segParams),
                 observedAt,
-                segParams,
               );
+              // A cell updateSegmentFlow just pruned (decayed matched below
+              // PRUNE_MATCHED) must not keep its regime alive through
+              // advanceRegimes' idle-abstention grace (up to MAX_IDLE_SEC)
+              // as if merely unheard from this tick — pruning already means
+              // gone.
+              flow.regimes = pruneSegmentRegimes(entries, flow.cells);
               await writeSegmentFlow(env.MOMENTARILY, flow);
               await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
+              try {
+                await writeMovementTransitions(
+                  env.MOMENTARILY,
+                  observedAt,
+                  movementTransitions(changes, 'segment', observedAt),
+                );
+              } catch (err) {
+                console.error('segment movement transitions write failed:', err);
+              }
             }
           } catch (err) {
             console.error('station flow update failed; skipping:', err);

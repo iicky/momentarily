@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -92,6 +93,11 @@ class PredictionRecord:
     # disrupted where the alert feed read normal — against later alerts.
     published_condition: str | None = None
     condition_source: str | None = None
+    # When the published movement regime was entered. 0 for JSONL written before
+    # the movement regime clock shipped. Elapsed time in the regime is what the
+    # movement dwell curve is conditioned on, so a grader cannot reconstruct the
+    # published forecast without it.
+    movement_regime_entered_at: int = 0
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -115,6 +121,7 @@ class PredictionRecord:
             recovery_source=raw.get("recovery_source"),
             published_condition=raw.get("published_condition"),
             condition_source=raw.get("condition_source"),
+            movement_regime_entered_at=int(raw.get("movement_regime_entered_at") or 0),
         )
 
 
@@ -142,6 +149,40 @@ class TransitionRecord:
             exited_at=int(raw["exited_at"]),
             dwell_sec=int(raw["dwell_sec"]),
             alert_type_at_entry=raw.get("alert_type_at_entry"),
+        )
+
+
+@dataclass(frozen=True)
+class MovementTransitionRecord:
+    """A committed movement-regime change, at route or segment scope.
+
+    Mirrors the Worker's MovementTransitionRecord. The clock fields carry the
+    same names as TransitionRecord so both streams feed one dwell-fitting path;
+    `scope` and `key` say which cell moved.
+    """
+
+    ts: int
+    scope: str
+    key: str
+    route: str
+    prev_state: str
+    new_state: str
+    regime_entered_at: int
+    exited_at: int
+    dwell_sec: int
+
+    @classmethod
+    def from_json(cls, raw: dict[str, Any]) -> MovementTransitionRecord:
+        return cls(
+            ts=int(raw["ts"]),
+            scope=str(raw["scope"]),
+            key=str(raw["key"]),
+            route=str(raw["route"]),
+            prev_state=str(raw["prev_state"]),
+            new_state=str(raw["new_state"]),
+            regime_entered_at=int(raw["regime_entered_at"]),
+            exited_at=int(raw["exited_at"]),
+            dwell_sec=int(raw["dwell_sec"]),
         )
 
 
@@ -230,6 +271,131 @@ def load_transitions(
         ),
     )
     return [TransitionRecord.from_json(r) for r in rows]
+
+
+def load_movement_transitions(
+    client: S3Client,
+    bucket: str,
+    start_date: date,
+    end_date: date,
+    *,
+    scope: str | None = None,
+) -> list[MovementTransitionRecord]:
+    """Committed movement-regime changes over the window. `scope` filters to
+    'route' or 'segment'; None returns both."""
+    rows = _read_listed_jsonl(
+        client,
+        bucket,
+        (
+            f"v1/movement_transitions/{d.isoformat()}/"
+            for d in _date_range(start_date, end_date)
+        ),
+    )
+    out = [MovementTransitionRecord.from_json(r) for r in rows]
+    return [r for r in out if scope is None or r.scope == scope]
+
+
+def open_regimes_from_predictions(
+    predictions: list[PredictionRecord],
+    *,
+    window_end: int | None = None,
+) -> dict[str, tuple[str, int]]:
+    """Each route's regime still open at the end of the window, read off its
+    newest prediction row: {route: (state, regime_entered_at)}.
+
+    Keyed on the filter's own condition and regime clock, because these censored
+    observations feed the dwell curves that same filter projects forward. The
+    prediction stream carries every live route every tick, so unlike the
+    transition stream it also covers routes that never changed state.
+
+    `window_end` is the censoring boundary. Rows after it are ignored, because
+    predictions load by whole-day prefix: a backdated run would otherwise read
+    the regime open *now* rather than the one open at the boundary, and a route
+    that flipped in between would be dropped instead of censored.
+
+    Routes off the timetable are dropped: `not_scheduled` is not a regime the
+    filter dwells in, and banking scheduled downtime as a long healthy run would
+    inflate exactly the curve this is meant to correct. Rows with no regime clock
+    (bootstrap ticks before the filter had state) are dropped for the same
+    reason — a zero would censor from the epoch.
+    """
+    newest: dict[str, PredictionRecord] = {}
+    for p in predictions:
+        if window_end is not None and p.ts > window_end:
+            continue
+        prev = newest.get(p.route)
+        if prev is None or p.ts > prev.ts:
+            newest[p.route] = p
+    return {
+        route: (p.condition, p.regime_entered_at)
+        for route, p in newest.items()
+        if p.condition != "not_scheduled" and p.regime_entered_at > 0
+    }
+
+
+# Conditions that count as a live disruption. Everything else — `normal`,
+# `not_scheduled`, and the movement arm's `unknown` — is not a disruption to
+# grade: `unknown` in particular is an absence of reading, not evidence of calm.
+NOT_NORMAL = ("disrupted", "suspended")
+
+
+def published_arm(p: PredictionRecord) -> str:
+    """The movement-primary condition consumers actually read.
+
+    Falls back to the alert-shadow `condition` for rows archived before the
+    published arm shipped. The two arms disagree materially, so which one a
+    metric grades is a load-bearing choice, not a detail.
+    """
+    return p.published_condition or p.condition
+
+
+# Conditions the movement arm can actually grade. `unknown` is excluded on
+# purpose: movement had no reading, which is an absence of evidence rather than
+# evidence of calm.
+GRADEABLE_ARM = ("normal", "disrupted", "suspended")
+
+
+def movement_truth_by_key(
+    predictions: list[PredictionRecord],
+) -> dict[tuple[str, int], str]:
+    """(route, tick) -> published movement condition, over the ticks movement
+    could actually call.
+
+    Dense over gradeable ticks rather than sparse-over-disruptions, so pair it
+    with `truth_default=None`: an `unknown` tick then drops out of the sample
+    instead of scoring as a recovery the forecast never earned.
+    """
+    out: dict[tuple[str, int], str] = {}
+    for p in predictions:
+        arm = published_arm(p)
+        if arm in GRADEABLE_ARM:
+            out[(p.route, snap_tick(p.ts))] = arm
+    return out
+
+
+def published_condition_coverage(
+    predictions: list[PredictionRecord],
+) -> dict[str, Any]:
+    """How much of the window the published arm could actually call.
+
+    A tick with no movement reading publishes `unknown`; it is neither a
+    detection opportunity nor evidence of calm, so any rate computed over a
+    window that is largely unknown is not what it appears to be.
+
+    `gradeable_share` counts only GRADEABLE_ARM, so an off-timetable route is
+    excluded alongside `unknown`: a line that is not running is not a line the
+    arm judged healthy, and folding it into the denominator's complement would
+    overstate how much of the window was actually under test.
+    """
+    n = len(predictions)
+    counts = Counter(published_arm(p) for p in predictions)
+    gradeable = sum(counts.get(c, 0) for c in GRADEABLE_ARM)
+    return {
+        "n_ticks": n,
+        "by_condition": dict(counts),
+        "unknown_share": counts.get("unknown", 0) / n if n else None,
+        "gradeable_share": gradeable / n if n else None,
+    }
 
 
 # --- Calibration math ---
@@ -378,15 +544,23 @@ def calibrate(
     *,
     truth_by_key: dict[tuple[str, int], str] | None = None,
     coverage_predictions: list[PredictionRecord] | None = None,
+    truth_default: str | None = "normal",
 ) -> CalibrationResult:
     """Pair each prediction at T with the realized state at T + horizon_min.
 
     By default the outcome and persistence come from the model's own published
-    condition — self-consistency. With `truth_by_key` (a sparse (route, tick) ->
-    state map, absent meaning normal) they come from that held-out truth instead,
-    turning this into a temporal forecast-skill test. Coverage is still gated on
-    a prediction existing at T + horizon (the window guard), not on truth
-    presence — a route-tick absent from the sparse truth is normal, not unknown.
+    condition — self-consistency. With `truth_by_key` (a (route, tick) -> state
+    map) they come from that held-out truth instead, turning this into a temporal
+    forecast-skill test.
+
+    `truth_default` decides what a route-tick missing from that map means:
+
+      - `"normal"` — absent is calm. Right for alert-clearance truth, which is
+        sparse by construction: no alert on file *is* the evidence of calm.
+      - `None` — absent is not gradeable, and the sample is dropped. Right for
+        the movement arm, where a missing reading is `unknown`. Scoring those as
+        calm would credit the forecast for every tick movement could not judge
+        and make the arm look far calmer than the evidence supports.
 
     `coverage_predictions` supplies the T+horizon lookup index; it defaults to
     `predictions`. Pass the full stream when segmenting `predictions` (e.g. by
@@ -426,10 +600,12 @@ def calibrate(
             continue
         if use_truth:
             assert truth_by_key is not None
-            outcome = 1.0 if truth_by_key.get(future_key, "normal") == "normal" else 0.0
-            persistence = (
-                1.0 if truth_by_key.get((p.route, cur), "normal") == "normal" else 0.0
-            )
+            truth_future = truth_by_key.get(future_key, truth_default)
+            truth_now = truth_by_key.get((p.route, cur), truth_default)
+            if truth_future is None or truth_now is None:
+                continue
+            outcome = 1.0 if truth_future == "normal" else 0.0
+            persistence = 1.0 if truth_now == "normal" else 0.0
         else:
             outcome = 1.0 if future.condition == "normal" else 0.0
             persistence = 1.0 if p.condition == "normal" else 0.0
@@ -584,15 +760,26 @@ class RecoveryResult:
 # independent trip-updates truth (independent_recovery_metrics).
 ExitResolver = Callable[["PredictionRecord"], tuple[int | None, tuple[str, int]]]
 
+# Which condition stream decides a route is disrupted at a given tick. The arm
+# has to match the truth's frame: HMM-argmax truth is keyed on the filter's own
+# regimes, so it must gate on the filter's condition or the regime key it looks
+# up will describe a different regime than the one being graded. A truth derived
+# outside the model carries no such coupling and gates on the published movement
+# arm, which is what consumers actually read.
+ConditionArm = Callable[["PredictionRecord"], str]
+
 
 def _grade_recovery(
     predictions: list[PredictionRecord],
     exit_for: ExitResolver,
+    *,
+    arm: ConditionArm,
 ) -> RecoveryResult:
     """Shared recovery grading: for every prediction made during a disruption that
     subsequently ended, compare recovery_minutes against actual remaining time and
     check IQR coverage. Each prediction-tick is one grading sample. `exit_for`
-    supplies the actual recovery time and the regime key to group by."""
+    supplies the actual recovery time and the regime key to group by; `arm`
+    supplies the condition stream that decides which ticks are disruptions."""
     abs_errors: list[float] = []
     sq_errors: list[float] = []
     covered = 0
@@ -610,8 +797,10 @@ def _grade_recovery(
         # already normal isn't "recovering" — it predicts recovery_minutes=0, and
         # grading that against time-until-the-next-disruption (the end of the
         # current normal regime) swamps MAE and pins IQR coverage near zero. Skip
-        # them so the metric reflects actual recoveries.
-        if p.condition == "normal":
+        # them so the metric reflects actual recoveries. `unknown` and
+        # `not_scheduled` are skipped for a different reason: they are the absence
+        # of a reading, so there is no disruption to time.
+        if arm(p) not in NOT_NORMAL:
             continue
         # Indeterminate rows are clamped, not predicted — including them would
         # bias MAE toward the clamp ceiling.
@@ -691,7 +880,12 @@ def recovery_metrics(
 ) -> RecoveryResult:
     """Grade recovery_minutes against the HMM's OWN regime transitions (the
     filter's argmax flips). Self-consistent — a sanity check, not an independent
-    validation. See independent_recovery_metrics."""
+    validation. See independent_recovery_metrics.
+
+    Gates on the alert-shadow `condition`, not the published movement arm,
+    because the exit lookup is keyed on the filter's own regime clock: gating on
+    a different arm would select ticks whose regime key describes an unrelated
+    regime. This grades the shadow, and only the shadow."""
     exits: dict[tuple[str, int], int] = {}
     for t in transitions:
         exits[(t.route, t.regime_entered_at)] = t.exited_at
@@ -700,7 +894,7 @@ def recovery_metrics(
         key = (p.route, p.regime_entered_at)
         return exits.get(key), key
 
-    return _grade_recovery(predictions, exit_for)
+    return _grade_recovery(predictions, exit_for, arm=lambda p: p.condition)
 
 
 def independent_recovery_metrics(
@@ -710,9 +904,17 @@ def independent_recovery_metrics(
     """Grade recovery_minutes against trip-updates-derived actual recovery — an
     INDEPENDENT truth (real trains running), unlike recovery_metrics which grades
     against the model's own argmax. A prediction is matched to the disruption
-    interval [start_tick, recovered_tick) covering its tick. Same exclusions
-    (normal / indeterminate / schedule). Truth is service LEVEL, a strong proxy,
-    not service quality."""
+    interval [start_tick, recovered_tick) covering its tick. Truth is service
+    LEVEL, a strong proxy, not service quality.
+
+    Gates on the published movement arm: the truth is derived outside the model,
+    so nothing forces the shadow's frame here, and the movement arm is the one
+    consumers read.
+
+    Note the two sides measure different things. This truth counts trains in
+    service; the movement arm times how fast they advance between stations. A
+    line running a full fleet at crawl speed moves the arm and not the truth, and
+    a thinned but free-flowing line does the reverse."""
     by_route: dict[str, list[Disruption]] = {}
     for d in disruptions:
         by_route.setdefault(d.route, []).append(d)
@@ -725,7 +927,7 @@ def independent_recovery_metrics(
                 return d.recovered_tick, (p.route, d.start_tick)
         return None, ("", 0)
 
-    return _grade_recovery(predictions, exit_for)
+    return _grade_recovery(predictions, exit_for, arm=published_arm)
 
 
 def _stats_from(
@@ -783,8 +985,15 @@ def _calibration_as_dicts(
     ]
 
 
-def recovery_as_dict(recovery: RecoveryResult) -> dict[str, Any]:
+def recovery_as_dict(recovery: RecoveryResult, *, graded_arm: str) -> dict[str, Any]:
+    """Serialize a recovery result, tagged with the condition arm it graded.
+
+    `graded_arm` is required rather than defaulted: the alert-shadow and the
+    movement arm produce materially different numbers, and an untagged block
+    reads as the product grade whichever one it happens to be.
+    """
     return {
+        "graded_arm": graded_arm,
         "overall": _stats_as_dict(recovery.overall),
         "per_regime": _stats_as_dict(recovery.per_regime),
         "by_route": {r: _stats_as_dict(s) for r, s in recovery.by_route.items()},
@@ -795,6 +1004,11 @@ def recovery_as_dict(recovery: RecoveryResult) -> dict[str, Any]:
     }
 
 
+# Arm labels for the published eval doc.
+SHADOW_ARM_LABEL = "condition (alert-shadow)"
+MOVEMENT_ARM_LABEL = "published_condition (movement-primary)"
+
+
 def build_eval(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
@@ -803,6 +1017,15 @@ def build_eval(
     window_end: int,
 ) -> dict[str, Any]:
     calibrations = [calibrate(predictions, h) for h in HORIZONS_MIN]
+    # The same forecast graded against the arm consumers actually read. The
+    # shadow block above answers "does the filter predict its own alert-driven
+    # label"; this one answers "does it predict what movement will say", which is
+    # the question the product surface poses.
+    movement_truth = movement_truth_by_key(predictions)
+    movement_calibrations = [
+        calibrate(predictions, h, truth_by_key=movement_truth, truth_default=None)
+        for h in HORIZONS_MIN
+    ]
     recovery = recovery_metrics(predictions, transitions)
 
     # Per-params-version segment: the full-window metrics mix every params
@@ -822,22 +1045,30 @@ def build_eval(
             "calibration": _calibration_as_dicts(
                 [calibrate(current, h) for h in HORIZONS_MIN]
             ),
-            "recovery": recovery_as_dict(current_recovery),
+            "recovery": recovery_as_dict(current_recovery, graded_arm=SHADOW_ARM_LABEL),
         }
 
     return {
         "generated_at": int(datetime.now(UTC).timestamp()),
         "provenance": code_provenance(),
-        # Truth-definition version in effect. Note the calibration/recovery blocks
-        # below still grade against the published condition stream (self-consistent),
-        # not the severity truth; moving them onto it is the episode-reframe work.
+        # Truth-definition version in effect. `calibration` and `recovery` grade
+        # the alert-shadow `condition` against itself — self-consistency, not the
+        # severity truth. `calibration_movement` and `recovery_independent` grade
+        # the movement arm consumers actually read; every block carries the arm
+        # it graded, because the two disagree materially.
         "truth_version": TRUTH_VERSION,
         "window": {"start": window_start, "end": window_end},
         "predictions_seen": len(predictions),
         "transitions_seen": len(transitions),
         "current_params": current_params,
         "calibration": _calibration_as_dicts(calibrations),
-        "recovery": recovery_as_dict(recovery),
+        "calibration_arm": SHADOW_ARM_LABEL,
+        "calibration_movement": {
+            "graded_arm": MOVEMENT_ARM_LABEL,
+            "coverage": published_condition_coverage(predictions),
+            "horizons": _calibration_as_dicts(movement_calibrations),
+        },
+        "recovery": recovery_as_dict(recovery, graded_arm=SHADOW_ARM_LABEL),
         "drift": {"unmapped_alert_type": unmapped_alert_type_drift(predictions)},
     }
 
@@ -961,10 +1192,14 @@ def build_independent_recovery(
     disruptions = derive_actual_recovery(series, baseline)
     result = independent_recovery_metrics(predictions, disruptions)
     return {
-        **recovery_as_dict(result),
+        **recovery_as_dict(result, graded_arm=MOVEMENT_ARM_LABEL),
         "truth_source": "trip_updates_service_level",
         "n_disruptions": len(disruptions),
         "n_baseline_cells": len(baseline),
+        # A zero graded n against a non-zero n_disruptions is the diagnostic
+        # case: the arm and the truth never overlapped on the same route-tick.
+        # Coverage separates "movement had no reading" from genuine disagreement.
+        "coverage": published_condition_coverage(list(predictions)),
     }
 
 

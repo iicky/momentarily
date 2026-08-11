@@ -12,12 +12,18 @@
  *     write no file. Provides ground-truth dwell times for recovery_minutes
  *     calibration.
  *
- * Both prefixes are listable by date for the Python grader.
+ *   v1/movement_transitions/YYYY-MM-DD/<ts>.jsonl
+ *     The same, for the movement arm's debounced regimes, at both route and
+ *     segment scope. This is the stream the movement dwell curves are fitted
+ *     from — the filter's argmax flips describe a different signal.
+ *
+ * All three prefixes are listable by date for the Python grader.
  */
 
 import type { RouteRoll } from './alpha';
 import { STATES } from './hmm';
 import type { State } from './hmm';
+import type { RegimeChange } from './regime';
 
 export interface PredictionRecord {
   ts: number;
@@ -39,9 +45,10 @@ export interface PredictionRecord {
   // drag MAE around.
   recovery_indeterminate: boolean;
   // "schedule" recoveries are deterministic lookups of the planned resume time,
-  // not dwell estimates — the grader excludes them from HMM calibration and
-  // instead grades them against the announced resumes_at (schedule adherence).
-  recovery_source: 'hmm' | 'schedule';
+  // not dwell estimates; "movement" is the movement-clock dwell curve. The
+  // grader excludes "schedule" rows from HMM calibration and instead grades
+  // them against the announced resumes_at (schedule adherence).
+  recovery_source: 'hmm' | 'schedule' | 'movement';
   resumes_at: number | null;
   // primary_alert_type at this tick (the cause label currently associated with
   // the route). null when no alert is active. Lets the grader segment
@@ -57,6 +64,12 @@ export interface PredictionRecord {
   // normal — against later alerts as delayed truth.
   published_condition: string;
   condition_source: string;
+  // When the published movement regime was entered (the movement arm's own
+  // clock, distinct from regime_entered_at above, which is the filter's). 0
+  // when movement has no regime for the route this tick. Elapsed time in the
+  // regime is what the movement dwell curve is conditioned on, so a grader
+  // cannot reconstruct the forecast without it.
+  movement_regime_entered_at: number;
 }
 
 export interface TransitionRecord {
@@ -71,6 +84,26 @@ export interface TransitionRecord {
   // (route, prev_state) this is the cell the trainer keys empirical dwell
   // quantiles on once enough data accumulates.
   alert_type_at_entry: string | null;
+}
+
+/**
+ * A committed movement-regime change, at route or segment scope. Carries the
+ * same clock fields as TransitionRecord so both streams grade through one code
+ * path; `scope` and `key` say which cell moved.
+ */
+export interface MovementTransitionRecord {
+  ts: number;
+  scope: 'route' | 'segment';
+  // routeId at route scope, `route|direction|from_stop` at segment scope.
+  key: string;
+  // The route either scope belongs to, so segment dwells can pool up to their
+  // route without re-parsing the key.
+  route: string;
+  prev_state: string;
+  new_state: string;
+  regime_entered_at: number;
+  exited_at: number;
+  dwell_sec: number;
 }
 
 function utcDate(epoch: number): string {
@@ -101,6 +134,41 @@ export async function writeTransitions(
   await bucket.put(key, body, {
     httpMetadata: { contentType: 'application/x-ndjson' },
   });
+}
+
+export async function writeMovementTransitions(
+  bucket: R2Bucket,
+  observedAt: number,
+  records: MovementTransitionRecord[],
+): Promise<void> {
+  if (records.length === 0) return;
+  const key = `v1/movement_transitions/${utcDate(observedAt)}/${observedAt}.jsonl`;
+  const body = records.map((r) => JSON.stringify(r)).join('\n');
+  await bucket.put(key, body, {
+    httpMetadata: { contentType: 'application/x-ndjson' },
+  });
+}
+
+/**
+ * Turn this tick's committed regime changes into transition records. Segment
+ * keys are `route|direction|from_stop`, so the route is the first field.
+ */
+export function movementTransitions(
+  changes: RegimeChange[],
+  scope: 'route' | 'segment',
+  observedAt: number,
+): MovementTransitionRecord[] {
+  return changes.map((c) => ({
+    ts: observedAt,
+    scope,
+    key: c.key,
+    route: scope === 'route' ? c.key : c.key.slice(0, c.key.indexOf('|')),
+    prev_state: c.prev_state,
+    new_state: c.new_state,
+    regime_entered_at: c.entered_at,
+    exited_at: c.exited_at,
+    dwell_sec: c.dwell_sec,
+  }));
 }
 
 /**

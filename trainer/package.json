@@ -6,7 +6,8 @@
   "description": "Cloudflare Worker that runs the weekly HMM Baum-Welch EM trainer in a container and republishes params to R2",
   "scripts": {
     "dev": "murk exec -- wrangler dev",
-    "deploy": "git rev-parse HEAD > ../.build-sha && murk exec -- wrangler deploy",
+    "deploy": "murk exec -- bun run deploy:ci",
+    "deploy:ci": "git rev-parse HEAD > ../.build-sha && wrangler deploy",
     "tail": "murk exec -- wrangler tail",
     "types": "murk exec -- wrangler types ./worker-configuration.d.ts",
     "typecheck": "tsc --noEmit"

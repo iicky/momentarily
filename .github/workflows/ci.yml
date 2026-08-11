@@ -77,3 +77,138 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun x wrangler types ./worker-configuration.d.ts
       - run: bun run typecheck
+
+  # --- Deploy -------------------------------------------------------------
+  # Deployment used to be a laptop command, so production drifted behind main
+  # for days at a time and no artifact recorded the gap. These jobs make
+  # "live code == main" the default rather than an errand. Credentials come from
+  # the murk vault via MURK_KEY (same mechanism as eval-daily.yml), so no
+  # Cloudflare token is duplicated into GitHub secrets.
+
+  deploy-publisher:
+    needs: [lint, type-check, test, worker, trainer]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialize deploys against each other. Note the workflow-level
+    # cancel-in-progress still applies: a second push to main cancels this run,
+    # and that run deploys its own (newer) commit instead. If its checks fail
+    # nothing deploys and code-drift-check.yml reports the gap — the intended
+    # outcome when main is broken.
+    concurrency:
+      group: deploy-publisher
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Resolve Cloudflare credentials from the murk vault
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
+        run: |
+          set -euo pipefail
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN; do
+            value=$(uv run python -c 'import murk,sys; print(murk.get(sys.argv[1]))' "$key")
+            if [ -z "$value" ]; then
+              echo "::error::$key missing from the murk vault"
+              exit 1
+            fi
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: worker
+      # No `wrangler types` step: that generates worker-configuration.d.ts for
+      # tsc, and wrangler bundles without typechecking. CI already typechecked.
+      # deploy:ci is the same script `bun run deploy` uses locally, minus the
+      # murk wrapper — the __GIT_SHA__ provenance define lives in one place.
+      # No path filter on purpose: the code-drift check treats
+      # "live code_sha == main HEAD" as the invariant, and a filtered deploy
+      # would break it on any commit outside worker/.
+      - name: Deploy publisher Worker
+        run: bun run deploy:ci
+        working-directory: worker
+      # The snapshot is republished on the next 5-minute tick, so the new sha is
+      # not observable yet; code-drift-check.yml is what verifies it landed.
+
+  # The trainer deploy builds the Python container image (wrangler shells out to
+  # Docker, which ubuntu-latest provides), so it is path-gated rather than
+  # running on every push.
+  deploy-trainer:
+    needs: [lint, type-check, test, worker, trainer]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-trainer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Decide whether the trainer image changed
+        id: scope
+        run: |
+          set -euo pipefail
+          before='${{ github.event.before }}'
+          # A branch's first push, a force-push, or a rewritten history leaves
+          # `before` unusable; fall back to the parent, and rebuild if even that
+          # does not resolve (a root commit) rather than skipping silently.
+          if [ -z "$before" ] \
+            || [ "$before" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            if git rev-parse --verify --quiet '${{ github.sha }}^' >/dev/null; then
+              before='${{ github.sha }}^'
+            else
+              echo "rebuild=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          # Directory prefixes cover everything beneath them, manifests, lockfiles
+          # and wrangler.toml included. .dockerignore is listed because it shapes
+          # the image build context, which is the repo root.
+          if git diff --quiet "$before" '${{ github.sha }}' -- \
+            trainer/ training/ src/ pyproject.toml uv.lock .dockerignore; then
+            echo "rebuild=false" >> "$GITHUB_OUTPUT"
+            echo "trainer image unchanged; skipping deploy"
+          else
+            echo "rebuild=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: astral-sh/setup-uv@v7
+        if: steps.scope.outputs.rebuild == 'true'
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+        if: steps.scope.outputs.rebuild == 'true'
+      - name: Resolve Cloudflare credentials from the murk vault
+        if: steps.scope.outputs.rebuild == 'true'
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
+        run: |
+          set -euo pipefail
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN; do
+            value=$(uv run python -c 'import murk,sys; print(murk.get(sys.argv[1]))' "$key")
+            if [ -z "$value" ]; then
+              echo "::error::$key missing from the murk vault"
+              exit 1
+            fi
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+      - uses: oven-sh/setup-bun@v2
+        if: steps.scope.outputs.rebuild == 'true'
+      - run: bun install --frozen-lockfile
+        if: steps.scope.outputs.rebuild == 'true'
+        working-directory: trainer
+      # deploy:ci writes .build-sha (gitignored) before the image build, which is
+      # how training/provenance.py stamps params.json from inside the container —
+      # .git is excluded from the image, so `git rev-parse` cannot run there.
+      - name: Deploy trainer Worker
+        if: steps.scope.outputs.rebuild == 'true'
+        run: bun run deploy:ci
+        working-directory: trainer

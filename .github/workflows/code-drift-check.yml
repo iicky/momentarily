@@ -1,0 +1,110 @@
+name: Code drift check
+
+# The sibling of staleness-check.yml. That one asks "is the feed still moving?";
+# this one asks "is the code producing it the code we wrote?". The publisher
+# stamps its own git sha into every snapshot (worker/src/buildinfo.ts, via the
+# __GIT_SHA__ define), so the live artifact answers the question directly — no
+# credentials, no R2 access, nothing to keep in sync by hand.
+#
+# It exists because production sat days behind main repeatedly with no signal:
+# every metric in the repo grades the *deployed* model, so an undeployed fix is
+# invisible to all of them. This is the one check that looks at the gap itself.
+#
+# Hourly rather than every 15 minutes: deploys are automatic now, so drift means
+# a deploy failed or was skipped, and that is a same-day concern, not a
+# same-tick one.
+
+on:
+  schedule:
+    - cron: '17 * * * *'  # best-effort; GHA may delay under load
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history: the live sha can be many commits back, and the age of
+          # the oldest undeployed commit is what decides whether this fails.
+          fetch-depth: 0
+
+      - name: Compare live code_sha against main
+        env:
+          # A failed deploy retries on the next push, and a snapshot only
+          # republishes every 5 minutes, so tolerate a few hours before calling
+          # it drift. Long enough to avoid racing a deploy, short enough that a
+          # broken pipeline is caught the same day.
+          GRACE_SECONDS: '21600'  # 6h
+          # Paths whose content actually ships in the publisher bundle. A change
+          # to worker/test/ or docs/ does not need a deploy, so it must not trip
+          # the alarm.
+          DEPLOY_PATHS: 'worker/src worker/wrangler.toml worker/package.json worker/bun.lock'
+        run: |
+          set -euo pipefail
+
+          # Cache-bust past the CDN (s-maxage=300) so we read the origin.
+          url="https://feed.momentarily.nyc/v1/snapshot.json?cb=$(date +%s)"
+          curl -fsS --max-time 30 -o /tmp/snapshot.json "$url"
+
+          live=$(jq -r '.provenance.code_sha // empty' /tmp/snapshot.json)
+          dirty=$(jq -r '.provenance.dirty' /tmp/snapshot.json)
+          head=$(git rev-parse HEAD)
+
+          if [ -z "$live" ]; then
+            echo "::error::snapshot carries no provenance.code_sha"
+            exit 1
+          fi
+
+          echo "live=$live dirty=$dirty main=$head"
+
+          # A dirty deploy is running code that exists in no commit — the sha in
+          # the snapshot is a lie about what is actually live. Always an error,
+          # independent of how far behind main it is.
+          if [ "$dirty" = "true" ]; then
+            echo "::error::live Worker was deployed from a dirty tree ($live) — production code is not in git"
+            exit 1
+          fi
+
+          if [ "$live" = "unknown" ]; then
+            echo "::error::live Worker has no build provenance (deployed without the __GIT_SHA__ define)"
+            exit 1
+          fi
+
+          if [ "$live" = "$head" ]; then
+            echo "live code matches main"
+            exit 0
+          fi
+
+          # Deployed from something this checkout has never seen: an unpushed
+          # commit, a branch, or a rewritten history. Worth flagging loudly —
+          # production is unreproducible from the repo.
+          if ! git cat-file -e "${live}^{commit}" 2>/dev/null; then
+            echo "::error::live code_sha $live is not a commit in this repository — production cannot be reproduced from main"
+            exit 1
+          fi
+
+          # shellcheck disable=SC2086
+          changed=$(git diff --name-only "$live" "$head" -- $DEPLOY_PATHS)
+          if [ -z "$changed" ]; then
+            echo "behind main ($(git rev-list --count "$live..$head") commits) but no publisher-relevant change; nothing to deploy"
+            exit 0
+          fi
+
+          # Age of the OLDEST undeployed commit touching a shipped path — how
+          # long the gap has actually been open, not how long since the last one.
+          # shellcheck disable=SC2086
+          oldest=$(git log --reverse --format=%H "$live..$head" -- $DEPLOY_PATHS | head -1)
+          committed_at=$(git show -s --format=%ct "$oldest")
+          age=$(( $(date +%s) - committed_at ))
+
+          echo "undeployed publisher changes since $live:"
+          echo "$changed" | sed 's/^/  /'
+          echo "oldest undeployed commit $oldest, age ${age}s (grace ${GRACE_SECONDS}s)"
+
+          if [ "$age" -gt "$GRACE_SECONDS" ]; then
+            echo "::error::publisher code has been undeployed for ${age}s (threshold ${GRACE_SECONDS}s); live=$live main=$head"
+            exit 1
+          fi
+          echo "within grace window; a deploy is presumably still in flight"

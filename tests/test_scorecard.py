@@ -8,13 +8,19 @@ no network — everything here is a hand-built fixture.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from training.episodes import Episode, extract_episodes
-from training.eval import TICK_SECONDS, PredictionRecord
+from training.eval import (
+    MOVEMENT_ARM_LABEL,
+    SHADOW_ARM_LABEL,
+    TICK_SECONDS,
+    PredictionRecord,
+)
 from training.scorecard import (
     cause_dwell_lookup,
     dwell_lookup_from_params,
@@ -22,6 +28,7 @@ from training.scorecard import (
     episode_scorecard,
     false_alarms,
     model_episodes,
+    movement_dwell_lookup_from_params,
     onset_latency,
     published_condition_coverage,
 )
@@ -690,3 +697,211 @@ def test_published_coverage_reports_the_unknown_share() -> None:
     assert cov["unknown_share"] == 0.25
     assert cov["gradeable_share"] == 0.75
     assert cov["by_condition"]["disrupted"] == 1
+
+
+# --- movement_dwell_lookup_from_params: C4, the movement-regime dwell block ------
+
+
+def test_movement_dwell_lookup_from_params_reads_curve_and_tail_ignoring_cause() -> (
+    None
+):
+    """(route, state) resolves against params['dwell_movement'] (contract C2);
+    `cause` is accepted only for DwellLookup shape compatibility and has no
+    effect -- the movement clock has no cause dimension. A too-short curve, a
+    missing state, and a missing route all read as None."""
+    params: dict[str, Any] = {
+        "dwell_movement": {
+            "A": {
+                "disrupted": {"curve_sec": [100, 200, 300], "tail_ll": [1.2, 250.0]},
+                "suspended": {"curve_sec": [300]},  # too short: no curve
+            }
+        }
+    }
+    lookup = movement_dwell_lookup_from_params(params)
+
+    assert lookup("A", "disrupted", "signal_failure") == (
+        [100, 200, 300],
+        [1.2, 250.0],
+    )
+    assert lookup("A", "disrupted", "weather") == ([100, 200, 300], [1.2, 250.0])
+    assert lookup("A", "suspended", "weather") is None
+    assert lookup("A", "missing_state", "weather") is None
+    assert lookup("missing_route", "disrupted", "weather") is None
+
+
+def test_movement_dwell_lookup_from_params_absent_block_lands_in_n_no_curve() -> None:
+    """dwell_movement not yet present in params (contract C2 has no producer in
+    live params yet) resolves every lookup to None; episode_recovery counts
+    the episode in n_no_curve rather than crashing."""
+    lookup = movement_dwell_lookup_from_params({})
+    assert lookup("A", "disrupted", "x") is None
+
+    truth = {("A", g(2)): "disrupted", ("A", g(3)): "disrupted"}
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(6))
+    assert len(truth_eps) == 1
+
+    result = episode_recovery(truth_eps, lookup)
+
+    assert result["n_no_curve"] == 1
+    assert result["n_scored"] == 0
+    assert result["report"]["n"] == 0
+
+
+# --- episode_recovery: the graded_arm label -----------------------------------------
+
+
+def test_episode_recovery_defaults_to_the_alert_shadow_label() -> None:
+    """Existing callers (training.backtest.grade_recovery_timing) that don't
+    pass graded_arm still get a correctly labelled payload: SHADOW_ARM_LABEL,
+    the alert-condition dwell population they've always graded against."""
+    truth = {("S", g(5)): "disrupted", ("S", g(6)): "disrupted"}
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(9))
+
+    def lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
+        return (
+            ([300, 600, 900], None) if route == "S" and state == "disrupted" else None
+        )
+
+    result = episode_recovery(truth_eps, lookup)
+
+    assert result["graded_arm"] == SHADOW_ARM_LABEL
+
+
+def test_episode_recovery_grades_a_movement_episode_against_a_movement_curve() -> None:
+    """A short movement episode (minutes, not the alert shadow's hours) scored
+    against a params['dwell_movement'] curve produces a finite CRPS/PIT, tagged
+    MOVEMENT_ARM_LABEL so it can never be misread as an alert-shadow number."""
+    truth = {("M", g(2)): "disrupted", ("M", g(3)): "disrupted"}  # 10-min episode
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(6))
+    assert truth_eps[0].duration_sec == 2 * TICK_SECONDS
+
+    params: dict[str, Any] = {
+        "dwell_movement": {"M": {"disrupted": {"curve_sec": [300, 600, 900]}}}
+    }
+    lookup = movement_dwell_lookup_from_params(params)
+
+    result = episode_recovery(truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL)
+
+    assert result["graded_arm"] == MOVEMENT_ARM_LABEL
+    assert result["n_scored"] == 1
+    assert result["n_no_curve"] == 0
+    assert math.isfinite(result["report"]["mean_crps"])
+    assert math.isfinite(result["report"]["mean_pit"])
+
+
+# --- the CRPS baseline is the population actually graded, never the other arm's -----
+
+
+def test_movement_recovery_baseline_is_drawn_from_movement_durations_only() -> None:
+    """recovery_dist_report's empirical baseline (recovery_dist.py:160, `emp_at`)
+    is built from THIS call's samples alone. Two movement episodes (10 and 20
+    minutes) give an exact, hand-computed empirical CDF at t=10min: 1 of 2
+    durations <= 10 -> 0.5. Had an alert-shadow episode (hours, not minutes)
+    leaked into this baseline the value could not land on this exact fraction."""
+    truth = {
+        ("M1", g(2)): "disrupted",
+        ("M1", g(3)): "disrupted",  # 10-min episode
+        ("M2", g(10)): "disrupted",
+        ("M2", g(11)): "disrupted",
+        ("M2", g(12)): "disrupted",
+        ("M2", g(13)): "disrupted",  # 20-min episode
+    }
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(20))
+    assert sorted(e.duration_sec for e in truth_eps) == [
+        2 * TICK_SECONDS,
+        4 * TICK_SECONDS,
+    ]
+
+    params: dict[str, Any] = {
+        "dwell_movement": {
+            "M1": {"disrupted": {"curve_sec": [300, 600, 900]}},
+            "M2": {"disrupted": {"curve_sec": [300, 600, 900]}},
+        }
+    }
+    lookup = movement_dwell_lookup_from_params(params)
+
+    result = episode_recovery(truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL)
+
+    assert result["n_scored"] == 2
+    grid = result["report"]["grid"]
+    assert grid[2] == 10  # GRID_STEP=5 -> grid[2] is the 10-minute mark
+    assert result["report"]["empirical_curve"][2] == _approx(0.5)
+
+
+# --- episode_scorecard: the movement arm is additive, never replaces the shadow -----
+
+
+def test_episode_scorecard_omits_recovery_movement_without_a_lookup() -> None:
+    """Back-compat: review.py's existing call (no movement_dwell_lookup, since
+    contract C2 has no producer in live params yet) gets exactly the pre-
+    movement-arm payload shape -- no recovery_movement key."""
+    truth = {
+        ("A", g(2)): "disrupted",
+        ("A", g(3)): "disrupted",
+        ("A", g(4)): "disrupted",
+        ("A", g(5)): "disrupted",
+    }
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(11))
+    predictions = [_pred("A", g(3), "disrupted")]
+
+    def lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
+        return (
+            ([300, 600, 900], None) if route == "A" and state == "disrupted" else None
+        )
+
+    card = episode_scorecard(
+        truth_eps, predictions, {}, lookup, window_start=g(0), window_end=g(11)
+    )
+
+    assert "recovery_movement" not in card
+    assert card["recovery"]["graded_arm"] == SHADOW_ARM_LABEL
+
+
+def test_episode_scorecard_grades_both_arms_when_given_a_movement_lookup() -> None:
+    """movement_dwell_lookup, when passed, re-segments movement_truth into its
+    own episodes and grades a second, explicitly-labelled recovery_movement
+    block alongside (not instead of) the alert-shadow recovery block."""
+    truth = {  # alert truth: one episode on A
+        ("A", g(2)): "disrupted",
+        ("A", g(3)): "disrupted",
+        ("A", g(4)): "disrupted",
+        ("A", g(5)): "disrupted",
+    }
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(11))
+    predictions = [_pred("A", g(3), "disrupted")]
+    movement_truth = {  # movement truth: a shorter, distinct episode on Z
+        ("Z", g(6)): "disrupted",
+        ("Z", g(7)): "disrupted",
+    }
+
+    def alert_lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None] | None:
+        return (
+            ([300, 600, 900], None) if route == "A" and state == "disrupted" else None
+        )
+
+    movement_params: dict[str, Any] = {
+        "dwell_movement": {"Z": {"disrupted": {"curve_sec": [300, 600, 900]}}}
+    }
+    movement_lookup = movement_dwell_lookup_from_params(movement_params)
+
+    card = episode_scorecard(
+        truth_eps,
+        predictions,
+        movement_truth,
+        alert_lookup,
+        window_start=g(0),
+        window_end=g(11),
+        movement_dwell_lookup=movement_lookup,
+    )
+
+    assert card["recovery"]["graded_arm"] == SHADOW_ARM_LABEL
+    assert card["recovery"]["n_scored"] == 1
+    assert card["recovery_movement"]["graded_arm"] == MOVEMENT_ARM_LABEL
+    assert card["recovery_movement"]["n_scored"] == 1
+    assert math.isfinite(card["recovery_movement"]["report"]["mean_crps"])

@@ -15,7 +15,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from momentarily.hmm import EmissionParams, HMMParams, Observation, schedule_bin
-from training.eval import TransitionRecord
+from training.dwell import DwellQuantiles
+from training.eval import MovementTransitionRecord, PredictionRecord, TransitionRecord
 from training.load_r2 import (
     MIN_MATCHED_TRIPS,
     MIN_SCHEDULE_TICKS,
@@ -34,6 +35,7 @@ from training.train_em import (
     _apply_advance_prior,  # pyright: ignore[reportPrivateUsage]
     _cap_self_loops,  # pyright: ignore[reportPrivateUsage]
     _movement_baseline,  # pyright: ignore[reportPrivateUsage]
+    _movement_dwell,  # pyright: ignore[reportPrivateUsage]
     _params_to_json,  # pyright: ignore[reportPrivateUsage]
     _service_baseline,  # pyright: ignore[reportPrivateUsage]
     compute_advance_baseline_by_route,
@@ -817,6 +819,11 @@ def test_main_passes_movement_baseline_through_to_write_params(
     ) -> list[TransitionRecord]:
         return []
 
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        return []
+
     def _fake_movement_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
@@ -832,6 +839,7 @@ def test_main_passes_movement_baseline_through_to_write_params(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
     )
     monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
@@ -876,6 +884,11 @@ def test_main_passes_service_baseline_through_to_write_params(
     ) -> list[TransitionRecord]:
         return []
 
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        return []
+
     def _fake_service_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
     ) -> tuple[dict[str, Any], int, dict[str, Any], int]:
@@ -891,6 +904,7 @@ def test_main_passes_service_baseline_through_to_write_params(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
     )
     monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr("training.train_em._service_baseline", _fake_service_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
@@ -935,6 +949,11 @@ def test_main_passes_advance_priors_through_to_train(
     ) -> list[TransitionRecord]:
         return []
 
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        return []
+
     def _fake_movement_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
@@ -962,6 +981,7 @@ def test_main_passes_advance_priors_through_to_train(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
     )
     monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
     monkeypatch.setattr("training.train_em.train", _fake_train)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
@@ -1003,6 +1023,11 @@ def test_main_refuses_empty_movement_baseline(
     ) -> list[TransitionRecord]:
         return []
 
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        return []
+
     def _fake_movement_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
@@ -1018,6 +1043,7 @@ def test_main_refuses_empty_movement_baseline(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
     )
     monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
@@ -1072,6 +1098,11 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     ) -> list[TransitionRecord]:
         return transitions
 
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        return []
+
     def _fake_movement_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
@@ -1087,6 +1118,7 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
     )
     monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
@@ -1099,3 +1131,261 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     causes = by_cause["R1"]["disrupted"]
     assert len(causes) == 1
     assert next(iter(causes.values()))["n"] == 6
+
+
+def _movement_tr(
+    route: str, prev: str, dwell_sec: int, ts: int, new_state: str = "normal"
+) -> MovementTransitionRecord:
+    return MovementTransitionRecord(
+        ts=ts,
+        scope="route",
+        key=route,
+        route=route,
+        prev_state=prev,
+        new_state=new_state,
+        regime_entered_at=ts - dwell_sec,
+        exited_at=ts,
+        dwell_sec=dwell_sec,
+    )
+
+
+def _no_open_regimes(*_: Any, **__: Any) -> dict[str, tuple[str, int]]:
+    return {}
+
+
+def test_movement_dwell_prefers_live_stream_over_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_movement_dwell must use the committed movement_transitions stream when
+    it carries route-scope records for the window, and must not fall back to
+    reconstructing them from ticks in that case."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    live = [
+        _movement_tr("A", "disrupted", 300, ts=1000),
+        _movement_tr("A", "disrupted", 200, ts=2000),
+    ]
+
+    def _fake_load_movement_transitions(
+        client: S3Client,
+        bucket: str,
+        start_date: date,
+        end_date: date,
+        *,
+        scope: str | None = None,
+    ) -> list[MovementTransitionRecord]:
+        assert scope == "route"
+        return live
+
+    def _fail_backfill(**_: Any) -> Any:
+        raise AssertionError("backfill must not run when the live stream has records")
+
+    monkeypatch.setattr(
+        "training.eval.load_movement_transitions", _fake_load_movement_transitions
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.reconstruct_movement_transitions", _fail_backfill
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.movement_open_regimes", _no_open_regimes
+    )
+
+    dwell_movement, stats = _movement_dwell(
+        cfg, fake_client, date(2026, 8, 4), date(2026, 8, 11), window_end=100_000
+    )
+    assert stats["source"] == "live"
+    assert stats["n_transitions"] == 2
+    assert dwell_movement["A"]["disrupted"]["n"] == 2
+
+
+def test_movement_dwell_falls_back_to_backfill_when_live_stream_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty committed stream (nothing published to it yet) must fall back
+    to reconstructing the same commits from published_condition ticks, not
+    silently publish an empty dwell_movement block."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    backfilled = [
+        _movement_tr("B", "suspended", 900, ts=1000),
+        _movement_tr("B", "suspended", 1000, ts=5000),
+    ]
+
+    def _fake_load_movement_transitions(
+        *_: Any, **__: Any
+    ) -> list[MovementTransitionRecord]:
+        return []
+
+    def _fake_reconstruct(
+        *, client: S3Client, bucket: str, start_date: date, end_date: date, scope: str
+    ) -> list[MovementTransitionRecord]:
+        assert scope == "route"
+        return backfilled
+
+    monkeypatch.setattr(
+        "training.eval.load_movement_transitions", _fake_load_movement_transitions
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.reconstruct_movement_transitions", _fake_reconstruct
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.movement_open_regimes", _no_open_regimes
+    )
+
+    dwell_movement, stats = _movement_dwell(
+        cfg, fake_client, date(2026, 8, 4), date(2026, 8, 11), window_end=100_000
+    )
+    assert stats["source"] == "backfill"
+    assert stats["n_transitions"] == 2
+    assert dwell_movement["B"]["suspended"]["n"] == 2
+
+
+def test_movement_dwell_censors_open_regime_and_covers_zero_episode_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route with an open (still-running) regime at window_end must
+    contribute a right-censored observation instead of vanishing -- even with
+    zero completed movement episodes of its own anywhere in the window."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+
+    def _fake_load_movement_transitions(
+        *_: Any, **__: Any
+    ) -> list[MovementTransitionRecord]:
+        return []
+
+    def _fake_reconstruct(**_: Any) -> list[MovementTransitionRecord]:
+        return [_movement_tr("R1", "normal", 400, ts=500)]
+
+    def _fake_open_regimes(**_: Any) -> dict[str, tuple[str, int]]:
+        return {"QUIET": ("normal", 0)}
+
+    monkeypatch.setattr(
+        "training.eval.load_movement_transitions", _fake_load_movement_transitions
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.reconstruct_movement_transitions", _fake_reconstruct
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.movement_open_regimes", _fake_open_regimes
+    )
+
+    dwell_movement, stats = _movement_dwell(
+        cfg, fake_client, date(2026, 8, 4), date(2026, 8, 11), window_end=1_000_000
+    )
+    assert dwell_movement["QUIET"]["normal"]["n"] == 0
+    assert dwell_movement["QUIET"]["normal"]["n_censored"] == 1
+    assert stats["n_own"] == 0
+    assert (
+        stats["n_pooled"] == 2
+    )  # QUIET (pooled) + R1 (1 event, below MIN_VOTER_EVENTS)
+
+
+def test_write_params_dwell_movement_is_top_level_not_per_route() -> None:
+    """C2: dwell_movement is a top-level params.json key, like movement_baseline
+    and service_baseline -- not nested inside routes[route] like
+    dwell_quantiles/_by_alert/_by_cause."""
+    fake = _FakeS3()
+    corpus = CorpusStats(start_tick=100, end_tick=200, n_observations=7)
+    cell = DwellQuantiles(
+        n=5,
+        n_censored=1,
+        q25_sec=300,
+        median_sec=600,
+        q75_sec=900,
+        recover_by_30=0.5,
+        recover_by_60=0.8,
+        recover_by_120=1.0,
+        curve_sec=[0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+    )
+    dwell_movement = {"1": {"disrupted": cell}}
+    write_params(
+        cast("S3Client", fake),
+        "test-bucket",
+        _two_route_params(),
+        corpus=corpus,
+        n_routes_trained=1,
+        dwell_movement=dwell_movement,
+        trained_at=42,
+    )
+    doc = json.loads(fake.objects[PARAMS_KEY])
+    assert doc["dwell_movement"] == dwell_movement
+    assert "dwell_movement" not in doc["routes"]["1"]
+    assert len(doc["dwell_movement"]["1"]["disrupted"]["curve_sec"]) >= 2
+
+
+def test_main_passes_movement_dwell_through_to_write_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main() must thread the C2 dwell_movement block into write_params -- the
+    same compute-but-forget-to-pass regression class as the other dwell arms."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    series = {"R1": _quiet(10)}
+    corpus = CorpusStats(
+        start_tick=0, end_tick=MIN_DATA_DAYS * 86_400 + 1, n_observations=10
+    )
+    movement_transitions = [
+        _movement_tr("R1", "disrupted", 300, ts=1000),
+        _movement_tr("R1", "disrupted", 200, ts=2000),
+    ]
+    captured: dict[str, Any] = {}
+
+    def _fake_load_config() -> R2Config:
+        return cfg
+
+    def _fake_make_client(config: R2Config | None = None) -> S3Client:
+        return fake_client
+
+    def _fake_load_series_by_route(
+        cfg_arg: R2Config, start: date, end: date
+    ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
+        return series, corpus, {}
+
+    def _fake_load_transitions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[TransitionRecord]:
+        return []
+
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        return []
+
+    def _fake_load_movement_transitions(
+        *_: Any, **__: Any
+    ) -> list[MovementTransitionRecord]:
+        return movement_transitions
+
+    def _fake_movement_baseline(
+        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+    ) -> tuple[dict[str, Any], int, dict[str, float]]:
+        return {}, 0, {}
+
+    def _fake_write_params(*args: Any, **kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "state/params/v1.json"
+
+    monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
+    monkeypatch.setattr(
+        "training.train_em.load_series_by_route", _fake_load_series_by_route
+    )
+    monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
+    monkeypatch.setattr(
+        "training.eval.load_movement_transitions", _fake_load_movement_transitions
+    )
+    monkeypatch.setattr(
+        "training.movement_backfill.movement_open_regimes", _no_open_regimes
+    )
+    monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
+    monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
+
+    exit_code = main(
+        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+    )
+    assert exit_code == 0
+    dwell_movement = captured["dwell_movement"]
+    assert dwell_movement["R1"]["disrupted"]["n"] == 2
+    assert len(dwell_movement["R1"]["disrupted"]["curve_sec"]) >= 2

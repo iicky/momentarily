@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Callable
-from typing import NotRequired, TypedDict
+from collections.abc import Callable, Mapping, Sequence
+from typing import NotRequired, Protocol, TypedDict
 
 from momentarily.mapping import category_for_label, coarse_status
 from training.eval import TransitionRecord
@@ -32,6 +32,35 @@ MIN_SAMPLES_FOR_EMPIRICAL = 5
 # 21 points = 5% steps; fine enough for interpolation, small enough that the
 # params.json sidecar stays compact.
 CURVE_POINTS = 21
+
+# Route -> (state, regime_entered_at) for regimes still open at the censoring
+# boundary. The prediction stream carries this for every live route each tick,
+# including routes that never transitioned and so have no transition record.
+OpenRegimes = Mapping[str, tuple[str, int]]
+
+
+class RegimeTransition(Protocol):
+    """Structural shape `dwell_samples_by_cell` needs off a transition record.
+
+    `TransitionRecord` (alert regime) and `MovementTransitionRecord` (movement
+    regime, route or segment scope) both satisfy this without a cast — one
+    grouping function feeds both streams instead of a parallel movement-only
+    copy. Alert-only fields (e.g. `alert_type_at_entry`) stay off this
+    protocol; callers that need them keep the concrete `TransitionRecord` type.
+    """
+
+    @property
+    def route(self) -> str: ...
+    @property
+    def prev_state(self) -> str: ...
+    @property
+    def new_state(self) -> str: ...
+    @property
+    def ts(self) -> int: ...
+    @property
+    def exited_at(self) -> int: ...
+    @property
+    def dwell_sec(self) -> int: ...
 
 
 class DwellQuantiles(TypedDict):
@@ -164,16 +193,24 @@ def _make_cell(
 
 
 def _open_regimes(
-    transitions: list[TransitionRecord], window_end: int
+    transitions: Sequence[RegimeTransition], window_end: int
 ) -> dict[tuple[str, str], int]:
-    """Right-censored observations: each route's final regime (the new_state of
-    its last transition) is still running at window_end — we know its dwell
-    exceeds window_end − exited_at. Returns {(route, state): censored_duration}.
+    """Right-censored observations inferred from transition records: each route's
+    final regime (the new_state of its last transition) is still running at
+    window_end — we know its dwell exceeds window_end − exited_at. Returns
+    {(route, state): censored_duration}.
 
     Only the final regime per route is open; every earlier regime is fully
     described by the next transition's prev_state record.
+
+    Blind to routes that never transitioned inside the window: with no record to
+    read a regime off, they contribute neither an event nor a censored
+    observation. Since a route completes a `normal` regime only by leaving
+    normal, that blind spot covers exactly the steadiest routes. Pass
+    `open_regimes` to dwell_samples_by_cell to source them from the prediction
+    stream instead, which carries every live route every tick.
     """
-    last_by_route: dict[str, TransitionRecord] = {}
+    last_by_route: dict[str, RegimeTransition] = {}
     for t in transitions:
         prev = last_by_route.get(t.route)
         if prev is None or t.ts > prev.ts:
@@ -183,6 +220,20 @@ def _open_regimes(
         duration = window_end - t.exited_at
         if duration > 0:
             out[(route, t.new_state)] = duration
+    return out
+
+
+def _censored_from_open(
+    open_regimes: OpenRegimes, window_end: int
+) -> dict[tuple[str, str], int]:
+    """Right-censored observations from explicit open-regime facts, for callers
+    that can observe a route's current regime directly rather than inferring it
+    from the last transition."""
+    out: dict[tuple[str, str], int] = {}
+    for route, (state, entered_at) in open_regimes.items():
+        duration = window_end - entered_at
+        if duration > 0:
+            out[(route, state)] = duration
     return out
 
 
@@ -299,19 +350,33 @@ def conditional_remaining_quantile(
 
 
 def dwell_samples_by_cell(
-    transitions: list[TransitionRecord], *, window_end: int | None = None
+    transitions: Sequence[RegimeTransition],
+    *,
+    window_end: int | None = None,
+    open_regimes: OpenRegimes | None = None,
 ) -> dict[tuple[str, str], list[DwellSample]]:
     """Group transitions into per-(route, state) dwell samples. Each completed
     transition contributes a (dwell_sec, True) event; with `window_end`, each
-    route's still-open final regime joins its cell as a right-censored
-    (duration, False) observation (Kaplan-Meier). The raw samples backing every
-    cell, so a parametric fit and the empirical curve see identical data.
+    route's still-open regime joins its cell as a right-censored (duration,
+    False) observation (Kaplan-Meier). The raw samples backing every cell, so a
+    parametric fit and the empirical curve see identical data.
+
+    `open_regimes` supersedes the transition-derived guess at what is still
+    running. It is strictly more complete — the prediction stream observes every
+    live route, while a transition record only exists for routes that moved — so
+    routes that held one regime for the whole window contribute a censored
+    observation instead of nothing at all.
     """
     by_cell: dict[tuple[str, str], list[DwellSample]] = defaultdict(list)
     for t in transitions:
         by_cell[(t.route, t.prev_state)].append((int(t.dwell_sec), True))
     if window_end is not None:
-        for (route, state), duration in _open_regimes(transitions, window_end).items():
+        censored = (
+            _censored_from_open(open_regimes, window_end)
+            if open_regimes is not None
+            else _open_regimes(transitions, window_end)
+        )
+        for (route, state), duration in censored.items():
             by_cell[(route, state)].append((duration, False))
     return by_cell
 
@@ -322,18 +387,22 @@ def compute_dwell_quantiles(
     min_samples: int = MIN_SAMPLES_FOR_EMPIRICAL,
     window_end: int | None = None,
     tail_fn: TailFn | None = None,
+    open_regimes: OpenRegimes | None = None,
 ) -> dict[str, dict[str, DwellQuantiles]]:
     """Return {route: {state: DwellQuantiles}} for each (route, prev_state)
     with at least `min_samples` completed transitions. Sparser cells are
     omitted — the consumer should fall back to its analytic estimate.
 
-    With `window_end`, each route's still-open final regime joins its cell as
-    a right-censored observation (Kaplan-Meier), so a marathon regime in
-    progress pushes the tail up instead of being invisible until it ends. With
-    `tail_fn`, each cell carries a log-logistic tail for the Worker's
-    past-the-curve splice.
+    With `window_end`, each route's still-open regime joins its cell as a
+    right-censored observation (Kaplan-Meier), so a marathon regime in progress
+    pushes the tail up instead of being invisible until it ends. `open_regimes`
+    sources those still-open regimes from the prediction stream rather than
+    inferring them from the last transition. With `tail_fn`, each cell carries a
+    log-logistic tail for the Worker's past-the-curve splice.
     """
-    by_cell = dwell_samples_by_cell(transitions, window_end=window_end)
+    by_cell = dwell_samples_by_cell(
+        transitions, window_end=window_end, open_regimes=open_regimes
+    )
     out: dict[str, dict[str, DwellQuantiles]] = defaultdict(dict)
     for (route, state), samples in by_cell.items():
         if sum(1 for _d, completed in samples if completed) < min_samples:

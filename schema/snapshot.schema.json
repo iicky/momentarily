@@ -1042,6 +1042,132 @@
       "title": "RouteStatus",
       "type": "object"
     },
+    "SegmentFlow": {
+      "description": "The segment-flow surface: per-segment verdicts and when they were\ncomputed (one tick / ~5 min lagged, like station_flow). Sibling of\nStationFlow, keyed by the same `route|direction|from_stop` cell id used\nthroughout the segment movement model.",
+      "properties": {
+        "observed_at": {
+          "title": "Observed At",
+          "type": "integer"
+        },
+        "segments": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SegmentStatus"
+          },
+          "title": "Segments",
+          "type": "object"
+        }
+      },
+      "required": [
+        "observed_at"
+      ],
+      "title": "SegmentFlow",
+      "type": "object"
+    },
+    "SegmentRecovery": {
+      "description": "Expected recovery off a dwell curve conditioned on a regime clock \u2014 same\nfield names as Inference's recovery block, so a segment's recovery is\ndirectly comparable to a route's.",
+      "properties": {
+        "p_normal_in_120min": {
+          "title": "P Normal In 120Min",
+          "type": "number"
+        },
+        "p_normal_in_30min": {
+          "title": "P Normal In 30Min",
+          "type": "number"
+        },
+        "p_normal_in_60min": {
+          "title": "P Normal In 60Min",
+          "type": "number"
+        },
+        "recovery_indeterminate": {
+          "default": false,
+          "title": "Recovery Indeterminate",
+          "type": "boolean"
+        },
+        "recovery_minutes": {
+          "title": "Recovery Minutes",
+          "type": "integer"
+        },
+        "recovery_minutes_high": {
+          "title": "Recovery Minutes High",
+          "type": "integer"
+        },
+        "recovery_minutes_low": {
+          "title": "Recovery Minutes Low",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recovery_minutes",
+        "recovery_minutes_low",
+        "recovery_minutes_high",
+        "p_normal_in_30min",
+        "p_normal_in_60min",
+        "p_normal_in_120min"
+      ],
+      "title": "SegmentRecovery",
+      "type": "object"
+    },
+    "SegmentStatus": {
+      "description": "Per-segment movement status: is train service advancing across this\n(route, direction, from_stop) cell, plus its expected recovery. Distinct\nfrom StationServiceFlow, the station-level roll-up.",
+      "properties": {
+        "direction": {
+          "title": "Direction",
+          "type": "string"
+        },
+        "entered_at": {
+          "title": "Entered At",
+          "type": "integer"
+        },
+        "from_stop": {
+          "title": "From Stop",
+          "type": "string"
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SegmentRecovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "normal",
+            "disrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To"
+        }
+      },
+      "required": [
+        "route",
+        "direction",
+        "from_stop",
+        "status",
+        "entered_at"
+      ],
+      "title": "SegmentStatus",
+      "type": "object"
+    },
     "Station": {
       "description": "Static-ish per-station metadata. From GTFS + NYS Open Data 39hk-dx4f.",
       "properties": {
@@ -1159,6 +1285,17 @@
         "worst_deficit": {
           "title": "Worst Deficit",
           "type": "number"
+        },
+        "worst_recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SegmentRecovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "worst_segment": {
           "anyOf": [
@@ -1517,6 +1654,17 @@
       "default": "1",
       "title": "Schema Version",
       "type": "string"
+    },
+    "segment_flow": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SegmentFlow"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "station_flow": {
       "anyOf": [

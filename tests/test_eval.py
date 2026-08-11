@@ -5,6 +5,8 @@ Uses synthetic prediction/transition records — no R2 access.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from training.eval import (
     BIN_COUNT,
     PredictionRecord,
@@ -12,10 +14,14 @@ from training.eval import (
     build_calibration,
     build_eval,
     calibrate,
+    independent_recovery_metrics,
+    movement_truth_by_key,
+    open_regimes_from_predictions,
     prequential_calibration,
     recovery_metrics,
     snap_tick,
 )
+from training.load_r2 import Disruption
 
 
 def _pred(
@@ -842,3 +848,116 @@ def test_auc_reported_per_stratum_and_serialized():
     published = doc["calibration"][0]
     assert "auc" in published
     assert "auc" in published["by_current"]["normal_now"]
+
+
+def test_open_regimes_read_the_newest_row_per_route() -> None:
+    ts0 = 1_700_000_000
+    preds = [
+        _pred(ts=ts0, route="1", regime_entered_at=ts0 - 3600),
+        _pred(ts=ts0 + 300, route="1", regime_entered_at=ts0 - 3600),
+    ]
+
+    assert open_regimes_from_predictions(preds) == {"1": ("normal", ts0 - 3600)}
+
+
+def test_open_regimes_drop_off_timetable_routes() -> None:
+    """`not_scheduled` is not a regime the filter dwells in. Banking scheduled
+    downtime as a long healthy run would inflate the very curve the censored
+    observations exist to correct."""
+    ts0 = 1_700_000_000
+    preds = [
+        _pred(
+            ts=ts0,
+            route="GS",
+            condition="not_scheduled",
+            regime_entered_at=ts0 - 7200,
+        )
+    ]
+
+    assert open_regimes_from_predictions(preds) == {}
+
+
+def test_open_regimes_ignore_rows_past_the_censoring_boundary() -> None:
+    """Predictions load by whole-day prefix, so a backdated run also reads rows
+    after the boundary. Taking the newest of those would report the regime open
+    now rather than the one open at the boundary, and a route that flipped in
+    between would be dropped instead of censored."""
+    ts0 = 1_700_000_000
+    preds = [
+        _pred(ts=ts0, route="1", condition="normal", regime_entered_at=ts0 - 3600),
+        _pred(
+            ts=ts0 + 6000,
+            route="1",
+            condition="disrupted",
+            regime_entered_at=ts0 + 6000,
+        ),
+    ]
+
+    assert open_regimes_from_predictions(preds, window_end=ts0 + 300) == {
+        "1": ("normal", ts0 - 3600)
+    }
+
+
+def test_movement_truth_omits_ticks_movement_could_not_call() -> None:
+    ts0 = 1_700_000_000
+    preds = [
+        replace(_pred(ts=ts0, route="1"), published_condition="unknown"),
+        replace(_pred(ts=ts0 + 300, route="1"), published_condition="disrupted"),
+    ]
+
+    assert movement_truth_by_key(preds) == {("1", snap_tick(ts0 + 300)): "disrupted"}
+
+
+def test_movement_calibration_drops_unreadable_ticks_instead_of_scoring_them_calm() -> (
+    None
+):
+    """`unknown` is an absence of reading, not evidence of calm. Scoring it as
+    normal would credit the forecast for every tick movement never tested."""
+    ts0 = 1_700_000_000
+    preds = [
+        replace(
+            _pred(ts=ts0 + i * 300, route="1"),
+            published_condition="normal" if i % 2 == 0 else "unknown",
+        )
+        for i in range(24)
+    ]
+    truth = movement_truth_by_key(preds)
+
+    graded = calibrate(preds, 30, truth_by_key=truth, truth_default=None)
+    scored_calm = calibrate(preds, 30, truth_by_key=truth)
+
+    assert graded.n > 0
+    assert graded.n < scored_calm.n
+
+
+def test_independent_recovery_grades_the_movement_arm() -> None:
+    """The trip-updates truth is derived outside the model, so nothing couples it
+    to the shadow's frame — and the movement arm is the one consumers read. A
+    tick the shadow calls normal is still graded when movement calls it
+    disrupted."""
+    ts0 = 1_700_000_000
+    disruption = Disruption(route="1", start_tick=ts0, recovered_tick=ts0 + 1800)
+    pred = replace(
+        _pred(ts=ts0, route="1", condition="normal", recovery_minutes=30),
+        published_condition="disrupted",
+    )
+
+    result = independent_recovery_metrics([pred], [disruption])
+
+    assert result.overall.n == 1
+    assert result.overall.mae_min == 0.0
+
+
+def test_independent_recovery_skips_ticks_movement_could_not_call() -> None:
+    """The converse guard: a shadow-disrupted tick with no movement reading is
+    not a disruption this arm can time, so it must not be graded."""
+    ts0 = 1_700_000_000
+    disruption = Disruption(route="1", start_tick=ts0, recovered_tick=ts0 + 1800)
+    pred = replace(
+        _pred(ts=ts0, route="1", condition="disrupted", recovery_minutes=30),
+        published_condition="unknown",
+    )
+
+    result = independent_recovery_metrics([pred], [disruption])
+
+    assert result.overall.n == 0

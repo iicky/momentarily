@@ -12,9 +12,10 @@ from training.dwell import (
     conditional_recover_by,
     conditional_remaining_quantile,
     dwell_cdf,
+    dwell_samples_by_cell,
     p_leave_by,
 )
-from training.eval import TransitionRecord
+from training.eval import MovementTransitionRecord, TransitionRecord
 
 
 def _approx(expected: float) -> object:
@@ -180,6 +181,38 @@ def test_open_regime_censors_only_its_own_state() -> None:
     assert "normal" not in out["A"]
 
 
+def test_dwell_samples_by_cell_accepts_movement_transition_records() -> None:
+    """dwell_samples_by_cell generalizes over TransitionRecord (alert regime)
+    AND MovementTransitionRecord (movement regime) -- the C2 movement dwell
+    block reuses this same grouping function instead of a parallel copy."""
+    transitions = [
+        MovementTransitionRecord(
+            ts=1000,
+            scope="route",
+            key="A",
+            route="A",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=700,
+            exited_at=1000,
+            dwell_sec=300,
+        ),
+        MovementTransitionRecord(
+            ts=2000,
+            scope="route",
+            key="A",
+            route="A",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=1800,
+            exited_at=2000,
+            dwell_sec=200,
+        ),
+    ]
+    by_cell = dwell_samples_by_cell(transitions)
+    assert by_cell[("A", "disrupted")] == [(300, True), (200, True)]
+
+
 # --- curve_sec + conditional survival ---
 
 
@@ -285,3 +318,62 @@ def test_flat_curve_at_value_is_indeterminate() -> None:
     curve = [600] * CURVE_POINTS
     assert conditional_recover_by(curve, 600, 1800) is None
     assert conditional_recover_by(curve, 0, 1800) == 1.0
+
+
+def test_transition_inferred_censoring_misses_a_route_that_never_moved() -> None:
+    """A route with no transition in the window has no record to read a regime
+    off, so it contributes neither an event nor a censored observation. Since a
+    route completes a `normal` regime only by leaving normal, that blind spot
+    covers exactly the steadiest routes.
+    """
+    transitions = [_tr("A", "disrupted", 600, ts=10_000)]
+
+    inferred = dwell_samples_by_cell(transitions, window_end=20_000)
+
+    assert ("B", "normal") not in inferred
+
+
+def test_open_regimes_cover_a_route_that_never_moved() -> None:
+    """Sourced from the prediction stream, the quiet route becomes a
+    right-censored observation: normal since 5_000, still normal at 20_000."""
+    transitions = [_tr("A", "disrupted", 600, ts=10_000)]
+
+    observed = dwell_samples_by_cell(
+        transitions,
+        window_end=20_000,
+        open_regimes={"B": ("normal", 5_000)},
+    )
+
+    assert observed[("B", "normal")] == [(15_000, False)]
+
+
+def test_open_regimes_supersede_the_transition_guess() -> None:
+    """The prediction stream observes every live route every tick, so when it is
+    supplied it is authoritative — the last transition is only a fallback guess
+    at what is still running, and it can be stale."""
+    transitions = [_tr("A", "normal", 600, ts=10_000, new_state="disrupted")]
+
+    inferred = dwell_samples_by_cell(transitions, window_end=20_000)
+    assert inferred[("A", "disrupted")] == [(10_000, False)]
+
+    observed = dwell_samples_by_cell(
+        transitions,
+        window_end=20_000,
+        open_regimes={"A": ("normal", 12_000)},
+    )
+
+    assert ("A", "disrupted") not in observed
+    assert observed[("A", "normal")] == [(600, True), (8_000, False)]
+
+
+def test_open_regime_starting_after_the_boundary_is_not_censored() -> None:
+    """A regime that began after the censoring boundary has no observed duration
+    inside the window, so it must not enter the fit as a zero-or-negative
+    censored sample."""
+    observed = dwell_samples_by_cell(
+        [],
+        window_end=20_000,
+        open_regimes={"A": ("normal", 25_000)},
+    )
+
+    assert ("A", "normal") not in observed

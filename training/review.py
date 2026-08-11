@@ -45,11 +45,11 @@ from training.episodes import (
     extract_episodes,
 )
 from training.escalation import (
-    DEFAULT_HORIZON_TICKS,
-    escalation_events,
-    escalation_summary,
+    confirmation_summary,
+    corroborate_episodes,
 )
 from training.eval import (
+    MOVEMENT_ARM_LABEL,
     PARAMS_KEY,
     TICK_SECONDS,
     PredictionRecord,
@@ -690,24 +690,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         published_map, movement_truth, window_ticks
     )
     alert_disrupted = {k for k, v in truth.items() if v != "normal"}
-    esc_events = escalation_events(
-        esc_state,
-        alert_disrupted,
-        horizon_ticks=DEFAULT_HORIZON_TICKS,
-        tick_seconds=TICK_SECONDS,
+    esc_episodes = extract_episodes(
+        dict(esc_state), {}, window_start=window_start, window_end=window_end
     )
-    escalation = escalation_summary(
-        esc_events,
-        horizon_ticks=DEFAULT_HORIZON_TICKS,
-        tick_seconds=TICK_SECONDS,
-        source=esc_source,
-    )
+    corroborations = corroborate_episodes(esc_episodes, alert_disrupted)
+    confirmation = confirmation_summary(corroborations)
     print(
-        f"  escalation ({esc_source}): {escalation['n_escalations']} onsets, "
-        f"{escalation['n_alert_confirmed']} alert-confirmed "
-        f"(median lead {escalation['lead_minutes_median']} min), "
-        f"{escalation['n_evaporated']} evaporated, "
-        f"{escalation['n_post_alert_tail']} post-alert tails excluded"
+        f"  escalation ({esc_source}): {confirmation['n_episodes']} movement-disrupted "
+        f"episodes, confirmation_rate={confirmation['confirmation_rate']} "
+        f"(median lead {confirmation['lead_time_minutes']['median']} min), "
+        f"n_unconfirmed={confirmation['n_unconfirmed']} (not disconfirmed)"
     )
 
     plot_reliability(eval_doc, out_dir / "reliability.png")
@@ -764,7 +756,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         # argmax-based `recovery`. A feed-clearance proxy, not true service
         # recovery (that's the trip-updates signal).
         "recovery_clearance": {
-            **recovery_as_dict(recovery_clearance),
+            **recovery_as_dict(recovery_clearance, graded_arm=MOVEMENT_ARM_LABEL),
             "truth_source": "alert_feed_clearance",
             "n_disruptions": len(clearance),
         },
@@ -791,10 +783,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             "independence": "self_consistency (movement is an HMM input)",
         },
         # Escalation arm: movement disruptions beyond the alert feed, scored
-        # temporally (no contemporaneous signal can adjudicate the vehicle-derived
-        # disrupted arm). alert_confirmed_rate is a lower bound; source records
-        # whether the cohort came from the published archive or the offline recompute.
-        "escalation": escalation,
+        # against a corroboration window around each episode's onset (no
+        # contemporaneous signal can adjudicate the vehicle-derived disrupted
+        # arm). confirmation_rate is a lower bound; n_unconfirmed is not a
+        # false-alarm count (see training/escalation.py). source records
+        # whether the cohort came from the published archive or the offline
+        # recompute.
+        "escalation": {"source": esc_source, **confirmation},
         "episodes": episodes_summary(episodes),
         "episode_scorecard": scorecard,
         "peer_scorecard": scorecard_peers,

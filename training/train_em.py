@@ -38,6 +38,7 @@ from training.dwell import (
     compute_dwell_quantiles_by_alert,
     compute_dwell_quantiles_by_cause,
 )
+from training.gtfs_static import dominant_successor, load_successors
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     advance_baseline_to_json,
@@ -58,11 +59,12 @@ from training.load_r2 import (
     schedule_rate_to_json,
     service_baseline_to_json,
 )
-from training.pooled_dwell import pooled_dwell_cells
+from training.pooled_dwell import MIN_VOTER_EVENTS, pooled_dwell_cells
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 from training.reliability import MIN_SHARE
 from training.run_filter import BOOTSTRAP_PARAMS
+from training.segment_dwell import SegmentDwellStats, build_segment_dwell
 from training.segments import canonical_adjacency
 from training.survival import loglogistic_tail
 
@@ -317,6 +319,7 @@ def write_params(
     dwell_quantiles_by_cause: (
         dict[str, dict[str, dict[str, DwellQuantiles]]] | None
     ) = None,
+    dwell_movement: dict[str, dict[str, DwellQuantiles]] | None = None,
     hyperparams: dict[str, Any] | None = None,
     input_profile: dict[str, Any] | None = None,
     movement_baseline: dict[str, Any] | None = None,
@@ -383,6 +386,13 @@ def write_params(
     # baselines.
     if schedule_rate:
         doc["schedule_rate"] = schedule_rate
+    # Movement-primary dwell (C2). Route scope only -- segment scope is
+    # training.segment_dwell's own object at state/segment_dwell.json. Top-
+    # level like the baselines above, not nested per-route: the Worker's
+    # movementDwellFor and the scorecard's movement_dwell_lookup_from_params
+    # both read it that way.
+    if dwell_movement:
+        doc["dwell_movement"] = dwell_movement
     body = json.dumps(doc).encode()
     versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
     for key in (PARAMS_KEY, versioned_key):
@@ -408,14 +418,25 @@ def write_segment_params(
     end_date: date,
     trained_at: int,
 ) -> int:
-    """Write the segment baseline + canonical adjacency as their OWN R2 object
-    (not folded into params.json, which the Worker parses on the hot per-tick
+    """Write the segment baseline + adjacency as their OWN R2 object (not
+    folded into params.json, which the Worker parses on the hot per-tick
     path). The Worker reads this at step 8b, off the publish path, to score
     per-segment movement and roll it up to station service flow.
 
-    Only through-segments are shipped: a leaf needs a pooled baseline AND a
-    dominant canonical successor (share >= MIN_SHARE), which drops terminals and
-    branch/express points where advance is ill-defined. Keyed 'route|dir|from'.
+    Topology (adjacency) comes from the static GTFS timetable when the feed
+    fetch succeeds: a segment exists because the schedule says so, keyed
+    'route|dir|from'. A from_stop with more than one static successor
+    (branch/express) keeps its full successor list, not just the modal
+    winner. canonical_adjacency (observed cross-tick transitions) is now only
+    the fallback for when the GTFS fetch itself fails, plus a `share`/`n`
+    reliability annotation riding along on whichever entries the vehicle
+    archive also observed that window — annotation only, it no longer decides
+    whether an entry is published.
+
+    cells (the pooled advance-rate baseline) still needs actual cross-tick
+    vehicle data, so it's scoped to baseline.items() regardless of topology
+    source; the whole object is skipped when that's empty (an archive hiccup
+    leaves nothing to pair the topology with).
     Fail-soft: a vehicle-archive hiccup skips the object, leaving the last good
     one; the station-flow surface just goes stale, never blocks the params run.
     """
@@ -424,23 +445,57 @@ def write_segment_params(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
         baseline = build_segment_baseline(bodies)
-        adjacency = canonical_adjacency(bodies)
-        cells: dict[str, dict[str, Any]] = {}
-        adj_doc: dict[str, dict[str, Any]] = {}
-        for key, cell in baseline.items():
-            adj = adjacency.get(key)
-            if adj is None or adj.share < MIN_SHARE:
-                continue
-            k = "|".join(key)
-            cells[k] = {"p0": round(cell.p0, 6), "n": cell.n}
-            adj_doc[k] = {"to": adj.to_stop, "share": round(adj.share, 4), "n": adj.n}
+        observed_adjacency = canonical_adjacency(bodies)
+
+        try:
+            static_successors = load_successors()
+            topology_source = "gtfs_static"
+        except Exception as exc:
+            print(
+                f"gtfs static topology unavailable, using observed adjacency ({exc})",
+                file=sys.stderr,
+            )
+            static_successors = None
+            topology_source = "observed"
+
+        cells: dict[str, dict[str, Any]] = {
+            "|".join(key): {"p0": round(cell.p0, 6), "n": cell.n}
+            for key, cell in baseline.items()
+        }
         if not cells:
             print("segment params skipped (no through-segments)", file=sys.stderr)
             return 0
+
+        adj_doc: dict[str, dict[str, Any]] = {}
+        if static_successors is not None:
+            for key, succs in static_successors.items():
+                if not succs:
+                    continue
+                to_stop, _n_trips = dominant_successor(succs)
+                entry: dict[str, Any] = {
+                    "to": to_stop,
+                    "source": "gtfs_static",
+                    "successors": [{"to": t, "n_trips": n} for t, n in succs],
+                }
+                obs = observed_adjacency.get(key)
+                if obs is not None:
+                    entry["share"] = round(obs.share, 4)
+                    entry["n"] = obs.n
+                adj_doc["|".join(key)] = entry
+        else:
+            for key, adj in observed_adjacency.items():
+                adj_doc["|".join(key)] = {
+                    "to": adj.to_stop,
+                    "source": "observed",
+                    "share": round(adj.share, 4),
+                    "n": adj.n,
+                }
+
         doc = {
             "schema_version": SCHEMA_VERSION,
             "trained_at": trained_at,
             "min_share": MIN_SHARE,
+            "topology_source": topology_source,
             "cells": cells,
             "adjacency": adj_doc,
         }
@@ -458,6 +513,84 @@ def write_segment_params(
     except Exception as exc:
         print(f"segment params skipped ({exc})", file=sys.stderr)
         return 0
+
+
+SEGMENT_DWELL_KEY = "state/segment_dwell.json"
+VERSIONED_SEGMENT_DWELL_PREFIX = "state/segment_dwell/"
+
+
+def write_segment_dwell(
+    client: S3Client,
+    bucket: str,
+    start_date: date,
+    end_date: date,
+    trained_at: int,
+) -> tuple[int, SegmentDwellStats]:
+    """Write the per-segment dwell curves as their OWN R2 object (not folded
+    into segment_params.json), hierarchically pooled leaf -> route -> system
+    (training.segment_dwell) from the segment-scope movement_transitions
+    stream over this run's training window.
+
+    Prefers the committed v1/movement_transitions stream, falling back to
+    reconstructing the same commits from archive/vehicles through the identical
+    regime clock the Worker runs online — the same resolution _movement_dwell
+    uses at route scope. The committed stream is new and empty for every window
+    tested so far, so the fallback is what actually runs today; segment scope
+    has no other source, since published_condition is route-level only.
+
+    Fail-soft like write_segment_params: an archive hiccup or an empty
+    stream just skips the object, leaving the last good one, and never
+    blocks the params publish. Returns (n_cells, stats) — stats is all-zero
+    on skip.
+    """
+    empty_stats = SegmentDwellStats(
+        n_cells_own=0, n_cells_route=0, n_cells_system=0, n_cells_skipped=0
+    )
+    try:
+        from training.eval import load_movement_transitions
+        from training.movement_backfill import reconstruct_movement_transitions
+
+        transitions = load_movement_transitions(
+            client, bucket, start_date, end_date, scope="segment"
+        )
+        if not transitions:
+            transitions = reconstruct_movement_transitions(
+                client=client,
+                bucket=bucket,
+                start_date=start_date,
+                end_date=end_date,
+                scope="segment",
+            )
+        # Same censoring boundary as the route-level dwell fit: "now", clamped
+        # to the requested window.
+        _, end_epoch = _aligned_window(start_date, end_date)
+        window_end = min(int(datetime.now(UTC).timestamp()), end_epoch)
+        cells, stats = build_segment_dwell(transitions, window_end=window_end)
+        if not cells:
+            print(
+                "segment dwell skipped (no segment-scope transitions)",
+                file=sys.stderr,
+            )
+            return 0, stats
+        doc = {
+            "schema_version": SCHEMA_VERSION,
+            "trained_at": trained_at,
+            "cells": cells,
+        }
+        body = json.dumps(doc).encode()
+        versioned = f"{VERSIONED_SEGMENT_DWELL_PREFIX}v{trained_at}.json"
+        for key in (SEGMENT_DWELL_KEY, versioned):
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+                CacheControl="no-store",
+            )
+        return len(cells), stats
+    except Exception as exc:
+        print(f"segment dwell skipped ({exc})", file=sys.stderr)
+        return 0, empty_stats
 
 
 def _movement_baseline(
@@ -518,6 +651,108 @@ def _service_baseline(
     except Exception as exc:
         print(f"service baseline skipped ({exc})", file=sys.stderr)
         return {}, 0, {}, 0
+
+
+def _movement_dwell(
+    cfg: R2Config,
+    client: S3Client,
+    start_date: date,
+    end_date: date,
+    window_end: int,
+) -> tuple[dict[str, dict[str, DwellQuantiles]], dict[str, Any]]:
+    """Partially-pooled {route: {state: DwellQuantiles}} off the movement
+    regime-transition stream -- the C2 `dwell_movement` params block, route
+    scope only (segment scope is training.segment_dwell's own object).
+
+    Every state runs through pooled_dwell_cells, not compute_dwell_quantiles:
+    the movement classifier is conservative enough (17 route episodes across 6
+    routes over its first usable week) that the MIN_SAMPLES_FOR_EMPIRICAL floor
+    would leave almost every cell empty. Partial pooling gives every route with
+    ANY observation a fitted cell -- including a route that has simply held one
+    state for the whole window and so has zero completed episodes there --
+    shrunk toward the population centre until its own evidence outweighs the
+    prior.
+
+    Prefers the committed v1/movement_transitions stream when it carries
+    route-scope records for the window; falls back to reconstructing the same
+    commits from the published_condition ticks the (already-live) prediction
+    stream carries, through the identical regime clock (training.regime) the
+    Worker runs online -- not an approximation, the same commits the Worker
+    would have written had it been logging them. The committed stream is new
+    and empty for every window tested so far, so the fallback is what actually
+    runs today; once the Worker starts emitting it this flips with no caller
+    change.
+
+    Open regimes always come from the tick replay regardless of which
+    transition source wins -- there is no separate live open-regime snapshot to
+    read instead, and a route sitting in one state for the whole window needs
+    that censored observation whichever source produced its completed
+    episodes.
+
+    Fail-soft like every other optional params sidecar in this file: an
+    archive error yields an empty block rather than blocking the publish.
+    """
+    empty_stats: dict[str, Any] = {
+        "source": "unavailable",
+        "n_transitions": 0,
+        "n_own": 0,
+        "n_pooled": 0,
+    }
+    try:
+        from training.eval import STATES, load_movement_transitions
+        from training.movement_backfill import (
+            movement_open_regimes,
+            reconstruct_movement_transitions,
+        )
+
+        transitions = load_movement_transitions(
+            client, cfg.bucket, start_date, end_date, scope="route"
+        )
+        source = "live"
+        if not transitions:
+            transitions = reconstruct_movement_transitions(
+                client=client,
+                bucket=cfg.bucket,
+                start_date=start_date,
+                end_date=end_date,
+                scope="route",
+            )
+            source = "backfill"
+        open_regimes = (
+            movement_open_regimes(
+                client=client,
+                bucket=cfg.bucket,
+                start_date=start_date,
+                end_date=end_date,
+                scope="route",
+            )
+            or None
+        )
+        out: dict[str, dict[str, DwellQuantiles]] = {}
+        n_own = 0
+        n_pooled = 0
+        for state in STATES:
+            cells = pooled_dwell_cells(
+                transitions,
+                state=state,
+                window_end=window_end,
+                open_regimes=open_regimes,
+            )
+            for route, cell in cells.items():
+                out.setdefault(route, {})[state] = cell
+                if cell["n"] >= MIN_VOTER_EVENTS:
+                    n_own += 1
+                else:
+                    n_pooled += 1
+        return out, {
+            "source": source,
+            "n_transitions": len(transitions),
+            "n_own": n_own,
+            "n_pooled": n_pooled,
+        }
+    except Exception as exc:
+        print(f"movement dwell skipped ({exc})", file=sys.stderr)
+        return {}, empty_stats
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -627,7 +862,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     # only completes a normal regime by leaving normal, so that gate admits the
     # flappiest routes and drops the steadiest ones onto a memoryless geometric
     # projection. See training/pooled_dwell.py.
-    from training.eval import load_transitions
+    from training.eval import (
+        load_predictions,
+        load_transitions,
+        open_regimes_from_predictions,
+    )
 
     transitions = load_transitions(client, cfg.bucket, start_date, end_date)
     # Censoring boundary for still-open regimes: "now", clamped to the
@@ -635,8 +874,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     # durations from regimes that actually ended after the window.
     _, end_epoch = _aligned_window(start_date, end_date)
     window_end = min(int(datetime.now(UTC).timestamp()), end_epoch)
+    # Still-open regimes come from the prediction stream, not from the last
+    # transition record. A route with no transitions in the window has no
+    # transition to read a regime off, so inferring from transitions alone drops
+    # it entirely — and for `normal` those are the steadiest routes, the ones
+    # the pooled estimator below exists to serve.
+    # None when the prediction stream is unavailable, which falls the censoring
+    # back to transition inference: degraded and blind to the quiet routes, but
+    # better than dropping every censored observation on the floor.
+    open_regimes = (
+        open_regimes_from_predictions(
+            load_predictions(client, cfg.bucket, start_date, end_date),
+            window_end=window_end,
+        )
+        or None
+    )
     dwell_q = compute_dwell_quantiles(
-        transitions, window_end=window_end, tail_fn=loglogistic_tail
+        transitions,
+        window_end=window_end,
+        tail_fn=loglogistic_tail,
+        open_regimes=open_regimes,
     )
     dwell_q_by_alert = compute_dwell_quantiles_by_alert(
         transitions, tail_fn=loglogistic_tail
@@ -645,7 +902,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         transitions, tail_fn=loglogistic_tail
     )
     dwell_q_normal = pooled_dwell_cells(
-        transitions, state="normal", window_end=window_end
+        transitions,
+        state="normal",
+        window_end=window_end,
+        open_regimes=open_regimes,
     )
     for route, cell in dwell_q_normal.items():
         dwell_q.setdefault(route, {})["normal"] = cell
@@ -660,6 +920,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         for by_state in dwell_q_by_cause.values()
         for by_cause in by_state.values()
     )
+    dwell_movement, movement_dwell_stats = _movement_dwell(
+        cfg, client, start_date, end_date, window_end
+    )
+    n_movement_dwell_cells = sum(len(by_state) for by_state in dwell_movement.values())
 
     if args.dry_run:
         dry_routes = {r: _params_to_json(p) for r, p in per_route.items()}
@@ -680,6 +944,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "dwell_cells": n_dwell_cells,
                     "dwell_alert_cells": n_dwell_alert_cells,
                     "dwell_cause_cells": n_dwell_cause_cells,
+                    "dwell_movement_cells": n_movement_dwell_cells,
                     "baseline_cells": n_baseline_cells,
                     "service_cells": n_service_cells,
                 },
@@ -718,6 +983,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         dwell_quantiles=dwell_q,
         dwell_quantiles_by_alert=dwell_q_by_alert,
         dwell_quantiles_by_cause=dwell_q_by_cause,
+        dwell_movement=dwell_movement,
         hyperparams=hyperparams,
         input_profile=input_profile,
         movement_baseline=movement_baseline,
@@ -728,14 +994,24 @@ def main(argv: Iterable[str] | None = None) -> int:
     n_segment_cells = write_segment_params(
         cfg, client, cfg.bucket, start_date, end_date, trained_at
     )
+    n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
+        client, cfg.bucket, start_date, end_date, trained_at
+    )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
         f"dwell_alert_cells={n_dwell_alert_cells}, "
-        f"dwell_cause_cells={n_dwell_cause_cells}, baseline_cells={n_baseline_cells}, "
+        f"dwell_cause_cells={n_dwell_cause_cells}, "
+        f"dwell_movement_cells={n_movement_dwell_cells} "
+        f"[own={movement_dwell_stats['n_own']}, pooled={movement_dwell_stats['n_pooled']}, "
+        f"source={movement_dwell_stats['source']}], "
+        f"baseline_cells={n_baseline_cells}, "
         f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells}, "
-        f"segment_cells={n_segment_cells})"
+        f"segment_cells={n_segment_cells}, segment_dwell_cells={n_segment_dwell_cells} "
+        f"[own={segment_dwell_stats.n_cells_own}, "
+        f"route={segment_dwell_stats.n_cells_route}, "
+        f"system={segment_dwell_stats.n_cells_system}])"
     )
     return 0
 

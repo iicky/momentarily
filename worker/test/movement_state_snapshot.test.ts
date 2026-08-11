@@ -42,6 +42,14 @@ function roll(state: 'normal' | 'disrupted' | 'suspended'): RouteRoll {
   };
 }
 
+/** Settled regimes from a plain condition map — these cases exercise the
+ * snapshot's read of the clock, not the debounce that produced it. */
+function settled(states: Record<string, string>): Record<string, { state: string; entered_at: number }> {
+  return Object.fromEntries(
+    Object.entries(states).map(([route, state]) => [route, { state, entered_at: NOW - 3600 }]),
+  );
+}
+
 describe('buildSnapshot: movement-determined condition', () => {
   test('movement overrides the HMM condition and records the source', () => {
     const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Delays', route: 'A' })), NOW);
@@ -52,7 +60,7 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { A: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, states: { A: 'disrupted' } },
+      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'disrupted' }) },
     });
     const a = snap.route_status.A!;
     expect(a.condition).toBe('disrupted');
@@ -70,7 +78,7 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { B: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, states: {} }, // B absent
+      movementStates: { observed_at: NOW - 300, regimes: settled({}) }, // B absent
     });
     const b = snap.route_status.B!;
     expect(b.condition_source).toBe('unknown');
@@ -104,7 +112,7 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { Z: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, states: { Z: 'suspended' } },
+      movementStates: { observed_at: NOW - 300, regimes: settled({ Z: 'suspended' }) },
     });
     const z = snap.route_status.Z!;
     expect(z.condition).toBe('not_scheduled');
@@ -120,7 +128,7 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { A: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 3600, states: { A: 'disrupted' } }, // 1h old
+      movementStates: { observed_at: NOW - 3600, regimes: settled({ A: 'disrupted' }) }, // 1h old
     });
     expect(snap.route_status.A!.condition_source).toBe('unknown');
     expect(snap.route_status.A!.condition).toBe('unknown');
@@ -138,13 +146,13 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { A: roll('normal'), B: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, states: { A: 'suspended', B: 'normal' } },
+      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'suspended', B: 'normal' }) },
     });
     expect(snap.route_status.A!.condition).toBe('suspended');
     expect(snap.system.lines_disrupted_count).toBe(1); // A counted, B normal
   });
 
-  test('a route present only in movementStates.states is published with its movement condition', () => {
+  test('a route present only in movementStates.regimes is published with its movement condition', () => {
     const snap = buildSnapshot({
       generatedAt: NOW,
       alertsFreshness: NOW,
@@ -152,7 +160,7 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, states: { Q: 'disrupted' } },
+      movementStates: { observed_at: NOW - 300, regimes: settled({ Q: 'disrupted' }) },
     });
     const q = snap.route_status.Q!;
     expect(q.condition).toBe('disrupted');
@@ -168,7 +176,7 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, states: { Q: 'disrupted' } },
+      movementStates: { observed_at: NOW - 300, regimes: settled({ Q: 'disrupted' }) },
     });
     const q = snap.route_status.Q!;
     expect(q.inference).toBeNull();

@@ -393,6 +393,22 @@ class Provenance(BaseModel):
     producer: str = "unknown"
 
 
+class SegmentRecovery(BaseModel):
+    """Expected recovery off a dwell curve conditioned on a regime clock — same
+    field names as Inference's recovery block, so a segment's recovery is
+    directly comparable to a route's."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    recovery_minutes: int
+    recovery_minutes_low: int
+    recovery_minutes_high: int
+    recovery_indeterminate: bool = False
+    p_normal_in_30min: float
+    p_normal_in_60min: float
+    p_normal_in_120min: float
+
+
 class StationServiceFlow(BaseModel):
     """Per-station service flow: is train service advancing through this station, rolled
     up from the segment movement model. Distinct from StationStatus
@@ -408,6 +424,30 @@ class StationServiceFlow(BaseModel):
     worst_segment: tuple[str, str] | None = None
     routes: list[str] = Field(default_factory=list)
     n_segments: int
+    # Expected recovery of the worst_segment above, off the segment dwell
+    # curve. Null when no curve is trained for it or its clock hasn't started
+    # — never a fabricated number.
+    worst_recovery: SegmentRecovery | None = None
+
+
+class SegmentStatus(BaseModel):
+    """Per-segment movement status: is train service advancing across this
+    (route, direction, from_stop) cell, plus its expected recovery. Distinct
+    from StationServiceFlow, the station-level roll-up."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    route: str
+    direction: str
+    from_stop: str
+    # Successor stop from segment_params.json's adjacency, or null when the
+    # topology doc is unavailable.
+    to: str | None = None
+    status: Literal["normal", "disrupted"]
+    # When this regime began (the segment clock the recovery is conditioned
+    # on). 0 before the clock has ever started.
+    entered_at: int
+    recovery: SegmentRecovery | None = None
 
 
 class StationFlow(BaseModel):
@@ -418,6 +458,18 @@ class StationFlow(BaseModel):
 
     observed_at: int
     stations: dict[str, StationServiceFlow] = Field(default_factory=dict)
+
+
+class SegmentFlow(BaseModel):
+    """The segment-flow surface: per-segment verdicts and when they were
+    computed (one tick / ~5 min lagged, like station_flow). Sibling of
+    StationFlow, keyed by the same `route|direction|from_stop` cell id used
+    throughout the segment movement model."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    observed_at: int
+    segments: dict[str, SegmentStatus] = Field(default_factory=dict)
 
 
 class Snapshot(BaseModel):
@@ -453,6 +505,9 @@ class Snapshot(BaseModel):
     # Per-station service flow, rolled up from the segment movement model.
     # Null before the first vehicle tick after deploy or when stale.
     station_flow: StationFlow | None = None
+    # Per-segment service flow, the same segment movement model station_flow
+    # rolls up. Null before the first vehicle tick after deploy or when stale.
+    segment_flow: SegmentFlow | None = None
     system: SystemStatus = Field(default_factory=SystemStatus)
 
     # Legacy compat — preserves zero-breakage upgrade for HA 0.x consumers

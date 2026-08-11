@@ -37,16 +37,17 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from training.dwell import (
     CURVE_POINTS,
     DwellQuantiles,
     DwellSample,
+    OpenRegimes,
+    RegimeTransition,
     dwell_samples_by_cell,
 )
-from training.eval import TransitionRecord
 from training.survival import (
     ParametricFit,
     fit_loglogistic,
@@ -274,11 +275,12 @@ def cell_from_fit(pooled: PooledDwellFit) -> DwellQuantiles:
 
 
 def pooled_dwell_cells(
-    transitions: list[TransitionRecord],
+    transitions: Sequence[RegimeTransition],
     *,
     state: str,
     window_end: int | None = None,
     min_voter_events: int = MIN_VOTER_EVENTS,
+    open_regimes: OpenRegimes | None = None,
 ) -> dict[str, DwellQuantiles]:
     """Partially-pooled {route: DwellQuantiles} for one regime state.
 
@@ -287,8 +289,15 @@ def pooled_dwell_cells(
     the bias in the first place. With `window_end`, each route's still-open
     regime joins its cell as a right-censored observation — the load-bearing
     input for a route that has not left normal inside the window.
+
+    Without `open_regimes` that input is inferred from transition records, so a
+    route with no transitions in the window supplies nothing and never reaches
+    the pooling step at all — the steadiest routes, which are the ones this
+    estimator exists to serve. Pass the prediction-derived map to cover them.
     """
-    by_cell = dwell_samples_by_cell(transitions, window_end=window_end)
+    by_cell = dwell_samples_by_cell(
+        transitions, window_end=window_end, open_regimes=open_regimes
+    )
     samples_by_route = {r: s for (r, st), s in by_cell.items() if st == state}
     fits = partially_pooled_dwell(samples_by_route, min_voter_events=min_voter_events)
     return {route: cell_from_fit(f) for route, f in fits.items()}

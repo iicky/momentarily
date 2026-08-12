@@ -698,7 +698,7 @@ rewrote the module docstring with this finding and window so the next
 reader doesn't re-derive it from scratch.
 ## 2026-08-12 — suspended is not covered by the exit-split measurement
 
-origin: self
+origin: agent
 
 Revises the entry above ("movement exit-destination split: 100% to-normal,
 closed by measurement not code"). Its measurement stands and its conclusion

@@ -43,7 +43,7 @@ import json
 import statistics
 import sys
 from collections import Counter, defaultdict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -63,7 +63,9 @@ from training.load_r2 import (
     build_segment_baseline,
     build_segment_series,
     compute_advance_baseline,
+    date_range,
     fetch_objects,
+    list_keys,
 )
 from training.pooled_dwell import MIN_VOTER_EVENTS
 from training.r2_client import load_config, make_client
@@ -262,36 +264,12 @@ def open_regimes_from_ticks(
 # --- R2 fetch --------------------------------------------------------------
 
 
-def _date_range(start: date, end: date) -> Iterator[date]:
-    d = start
-    while d <= end:
-        yield d
-        d += timedelta(days=1)
-
-
-def _list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
-    keys: list[str] = []
-    token: str | None = None
-    while True:
-        kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
-        if token:
-            kwargs["ContinuationToken"] = token
-        resp = client.list_objects_v2(**kwargs)
-        for obj in resp.get("Contents") or []:
-            key = obj.get("Key")
-            if key is not None:
-                keys.append(key)
-        if not resp.get("IsTruncated"):
-            return keys
-        token = resp.get("NextContinuationToken")
-
-
 def _fetch_vehicle_bodies(
     client: S3Client, bucket: str, start_date: date, end_date: date
 ) -> list[dict[str, Any]]:
     keys: list[str] = []
-    for d in _date_range(start_date, end_date):
-        keys.extend(_list_keys(client, bucket, f"archive/vehicles/{d.isoformat()}/"))
+    for d in date_range(start_date, end_date):
+        keys.extend(list_keys(client, bucket, f"archive/vehicles/{d.isoformat()}/"))
     return fetch_objects(client, bucket, keys)
 
 

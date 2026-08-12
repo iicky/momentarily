@@ -56,14 +56,14 @@ def _snap_tick(epoch: int) -> int:
     return (epoch // TICK_SECONDS) * TICK_SECONDS
 
 
-def _date_range(start: date, end: date) -> Iterator[date]:
+def date_range(start: date, end: date) -> Iterator[date]:
     d = start
     while d <= end:
         yield d
         d += timedelta(days=1)
 
 
-def _list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
+def list_keys(client: S3Client, bucket: str, prefix: str) -> list[str]:
     keys: list[str] = []
     token: str | None = None
     while True:
@@ -88,8 +88,8 @@ def _fetch_object(client: S3Client, bucket: str, key: str) -> dict[str, Any]:
 def list_alert_keys(client: S3Client, bucket: str, start: date, end: date) -> list[str]:
     """Every alert-version object key in the [start, end] window, in list order."""
     keys: list[str] = []
-    for d in _date_range(start, end):
-        keys.extend(_list_keys(client, bucket, f"archive/alerts/{d.isoformat()}/"))
+    for d in date_range(start, end):
+        keys.extend(list_keys(client, bucket, f"archive/alerts/{d.isoformat()}/"))
     return keys
 
 
@@ -465,9 +465,9 @@ def fetch_trip_update_metrics(
     end = end_date or today
 
     keys: list[str] = []
-    for d in _date_range(start, end):
+    for d in date_range(start, end):
         keys.extend(
-            _list_keys(client, cfg.bucket, f"archive/trip_updates/{d.isoformat()}/")
+            list_keys(client, cfg.bucket, f"archive/trip_updates/{d.isoformat()}/")
         )
     return fetch_objects(client, cfg.bucket, keys)
 
@@ -686,10 +686,8 @@ def fetch_vehicle_metrics(
     end = end_date or today
 
     keys: list[str] = []
-    for d in _date_range(start, end):
-        keys.extend(
-            _list_keys(client, cfg.bucket, f"archive/vehicles/{d.isoformat()}/")
-        )
+    for d in date_range(start, end):
+        keys.extend(list_keys(client, cfg.bucket, f"archive/vehicles/{d.isoformat()}/"))
     return fetch_objects(client, cfg.bucket, keys)
 
 

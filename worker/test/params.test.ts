@@ -325,6 +325,55 @@ describe('movement_baseline delivery', () => {
   });
 });
 
+describe('movement_through_stops delivery', () => {
+  function withThroughStops(throughStops: unknown): Record<string, unknown> {
+    return {
+      schema_version: '1',
+      trained_at: 1_700_000_000,
+      routes: { '1': wellFormedRoute() },
+      movement_through_stops: throughStops,
+    };
+  }
+
+  test('flattens the nested route -> direction -> stop doc into route|direction|stop keys', () => {
+    const result = parseTrainedParams(
+      withThroughStops({ A: { north: ['A05N', 'A09N'], south: ['A05S'] } }),
+    );
+    expect(result).not.toBeNull();
+    expect(result!.throughStops).toEqual(
+      new Set(['A|north|A05N', 'A|north|A09N', 'A|south|A05S']),
+    );
+  });
+
+  test('absent movement_through_stops yields null, never an empty set', () => {
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute() }));
+    expect(result).not.toBeNull();
+    expect(result!.throughStops).toBeNull();
+  });
+
+  test('malformed movement_through_stops falls back to null (count every stop), keeps the params', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseTrainedParams(withThroughStops({ A: { north: 'not-an-array' } }));
+    warn.mockRestore();
+    expect(result).not.toBeNull();
+    expect(result!.throughStops).toBeNull();
+    // Routes survive the bad through-stop doc, same as the other sidecars.
+    expect(Object.keys(result!.routes)).toEqual(['1']);
+  });
+
+  test('a well-formed but empty doc yields null, not a set that admits nothing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const empty of [{}, { A: {} }, { A: { north: [] } }]) {
+      const result = parseTrainedParams(withThroughStops(empty));
+      expect(result).not.toBeNull();
+      // An empty set would exclude every stop and zero advanced_n/stalled_n
+      // fleet-wide; absent and empty have to mean the same thing.
+      expect(result!.throughStops).toBeNull();
+    }
+    warn.mockRestore();
+  });
+});
+
 describe('service_baseline delivery', () => {
   function withServiceBaseline(baseline: unknown): Record<string, unknown> {
     return {

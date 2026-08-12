@@ -617,7 +617,16 @@ export default {
           // written last tick, then overwrite it. The map is read/written as its
           // own R2 object, kept out of last_seen.json on purpose.
           const prevStops = await readVehicleStops(env.MOMENTARILY);
-          const moveRows = deriveRouteMovementMetric(vehicles, prevStops);
+          // Absent through-stop set (no static topology yet, or a params.json
+          // predating the field) is a real, visible degradation, not a silent
+          // fall-soft — the advance counters keep counting terminal layovers.
+          const throughStops = trainedParams?.throughStops ?? null;
+          if (trainedParams && !throughStops) {
+            console.log(
+              'movement: no through-stop set in params.json; advance counters include terminal layovers',
+            );
+          }
+          const moveRows = deriveRouteMovementMetric(vehicles, prevStops, throughStops);
           await archiveVehicleMetric(
             env.MOMENTARILY,
             moveRows,

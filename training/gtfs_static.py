@@ -263,6 +263,76 @@ class Chain:
     stops: tuple[str, ...]
 
 
+def _dominant_edges(
+    succ: Mapping[SegmentKey, list[tuple[str, int]]],
+) -> dict[tuple[str, str], dict[str, str]]:
+    """(route, direction) -> {from_stop: dominant to_stop}. The single-successor
+    skeleton `chains`, `terminals` and `through_stops` are all read off."""
+    out: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+    for (route, direction, frm), succs in succ.items():
+        if succs:
+            out[(route, direction)][frm] = dominant_successor(succs)[0]
+    return out
+
+
+# (route, direction, stop) — a flat membership set, the shape the movement
+# accounting tests each observed from_stop against.
+TerminalKey = tuple[str, str, str]
+
+
+def terminals(
+    succ: Mapping[SegmentKey, list[tuple[str, int]]],
+) -> frozenset[TerminalKey]:
+    """Every (route, direction, stop) that ends a scheduled run: a source (no
+    incoming dominant edge, i.e. an origin terminal) or a sink (no outgoing one,
+    i.e. a destination terminal).
+
+    Read off the dominant-successor skeleton rather than `chains`, whose `stops`
+    concatenates one walk per entry stop — a component with two entries has two
+    origins, and only the source/sink test names both.
+    """
+    out: set[TerminalKey] = set()
+    for (route, direction), dominant in _dominant_edges(succ).items():
+        incoming = set(dominant.values())
+        for stop in set(dominant) | incoming:
+            if stop not in incoming or stop not in dominant:
+                out.add((route, direction, stop))
+    return frozenset(out)
+
+
+def stops_to_json(
+    stops: frozenset[TerminalKey],
+) -> dict[str, dict[str, list[str]]]:
+    """Serialize a (route, direction, stop) set for params.json delivery to the
+    Worker: route -> direction -> sorted stops, the same nesting as
+    load_r2.advance_baseline_to_json."""
+    out: dict[str, dict[str, list[str]]] = {}
+    for route, direction, stop in sorted(stops):
+        out.setdefault(route, {}).setdefault(direction, []).append(stop)
+    return out
+
+
+def through_stops(
+    succ: Mapping[SegmentKey, list[tuple[str, int]]],
+) -> frozenset[TerminalKey]:
+    """The complement of `terminals` within the skeleton: stops with both a
+    scheduled predecessor and a scheduled successor.
+
+    Stricter than excluding `terminals` from observed data, because a stop the
+    skeleton never names at all — a yard lead, a rare pattern, a stop_id the
+    vehicle feed reports but the timetable doesn't — is absent here too. Those
+    stops have no scheduled successor, so "it should have moved by now" is not
+    defined for a train sitting at one.
+    """
+    out: set[TerminalKey] = set()
+    for (route, direction), dominant in _dominant_edges(succ).items():
+        incoming = set(dominant.values())
+        for stop in dominant:
+            if stop in incoming:
+                out.add((route, direction, stop))
+    return frozenset(out)
+
+
 def chains(
     succ: Mapping[SegmentKey, list[tuple[str, int]]],
 ) -> dict[tuple[str, str], list[Chain]]:
@@ -271,13 +341,8 @@ def chains(
     an unbroken run for that (route, direction); more than one means the
     timetable itself has a gap in this feed cut (e.g. a shuttle/rare pattern
     disjoint from the main line)."""
-    dominant_by_group: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
-    for (route, direction, frm), succs in succ.items():
-        if succs:
-            dominant_by_group[(route, direction)][frm] = dominant_successor(succs)[0]
-
     out: dict[tuple[str, str], list[Chain]] = {}
-    for group, dominant in dominant_by_group.items():
+    for group, dominant in _dominant_edges(succ).items():
         nodes = set(dominant.keys()) | set(dominant.values())
         parent = {n: n for n in nodes}
 

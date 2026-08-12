@@ -8,10 +8,12 @@ import {
   computeAdvanceBaseline,
   deriveMovementState,
   buildMovementTruth,
+  parseThroughStops,
   type MovementState,
   type AdvanceBaseline,
   type AdvanceBaselineCell,
   type VehicleBody,
+  type ThroughStops,
 } from "../lib/movement.ts";
 
 function cell(p0: number): AdvanceBaselineCell {
@@ -318,4 +320,183 @@ test("buildMovementTruth keeps suspended/normal routes and drops unjudgeable one
   assert.equal(truth.has(`D1|${tick}`), false);
   assert.equal(truth.has(`B1|${tick}`), false);
   assert.equal(truth.size, 2);
+});
+
+// --- parseThroughStops: flatten params.json's movement_through_stops into
+// the route|direction|stop key set crossTickCounts filters against ---
+
+test("parseThroughStops: flattens route/direction/stop nesting into route|direction|stop keys", () => {
+  const parsed = parseThroughStops({
+    A: { north: ["101N", "102N"], south: ["201S"] },
+    B: { north: [] },
+  });
+  assert.ok(parsed);
+  assert.equal(parsed!.has("A|north|101N"), true);
+  assert.equal(parsed!.has("A|north|102N"), true);
+  assert.equal(parsed!.has("A|south|201S"), true);
+  assert.equal(parsed!.has("B|north|anything"), false);
+  assert.equal(parsed!.size, 3);
+});
+
+test("parseThroughStops: absent, malformed, or all-empty input returns null, never an empty set", () => {
+  assert.equal(parseThroughStops(undefined), null);
+  assert.equal(parseThroughStops(null), null);
+  assert.equal(parseThroughStops("not an object"), null);
+  assert.equal(parseThroughStops({}), null);
+  assert.equal(parseThroughStops({ A: { north: [] } }), null);
+});
+
+// --- Through-stop filtering: computeAdvanceBaseline/deriveMovementState must
+// recompute advanced_n/stalled_n from `transitions`, restricted to the
+// through-stop set, instead of trusting the archived counters (which change
+// meaning at the next Worker deploy). ---
+
+test("computeAdvanceBaseline: filtered recompute from transitions reproduces the archived fraction when the set admits every from_stop", () => {
+  const route = "Q";
+  const observedAt = 1_700_000_000;
+  const tod = todBin(snapTick(observedAt));
+  const throughStops: ThroughStops = new Set([`${route}|north|A`, `${route}|north|B`]);
+
+  const bodies: VehicleBody[] = [];
+  for (let i = 0; i < 20; i++) {
+    bodies.push({
+      observed_at: observedAt,
+      rows: {
+        [route]: {
+          vehicles_n: 5,
+          // archived counters, pre-summed from the same transitions below:
+          // A>B (5, advance) + B>B (2, stall) + B>C (3, advance) = 8 advanced, 2 stalled.
+          advanced_n: 8,
+          stalled_n: 2,
+          by_direction: {
+            north: {
+              vehicles_n: 5,
+              advanced_n: 8,
+              stalled_n: 2,
+              transitions: { "A>B": 5, "B>B": 2, "B>C": 3 },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  const key = `${route}|north|${tod}`;
+  const unfiltered = computeAdvanceBaseline(bodies).get(key);
+  const filtered = computeAdvanceBaseline(bodies, throughStops).get(key);
+  assert.ok(unfiltered && filtered, "expected a baseline cell both ways");
+  assert.equal(unfiltered!.p0, 0.8); // 8 / 10
+  assert.equal(filtered!.p0, unfiltered!.p0);
+  assert.equal(filtered!.n, unfiltered!.n);
+});
+
+test("computeAdvanceBaseline: a stall at an out-of-set stop drops out of the fitted fraction", () => {
+  const route = "Q";
+  const observedAt = 1_700_000_000;
+  const tod = todBin(snapTick(observedAt));
+  const throughStops: ThroughStops = new Set([`${route}|north|Y`]); // X is excluded
+
+  const bodies: VehicleBody[] = [];
+  for (let i = 0; i < 20; i++) {
+    bodies.push({
+      observed_at: observedAt,
+      rows: {
+        [route]: {
+          vehicles_n: 5,
+          advanced_n: 8,
+          stalled_n: 12,
+          by_direction: {
+            north: {
+              vehicles_n: 5,
+              advanced_n: 8,
+              stalled_n: 12,
+              transitions: { "Y>Z": 8, "X>X": 12 }, // X's stall must not count
+            },
+          },
+        },
+      },
+    });
+  }
+
+  const key = `${route}|north|${tod}`;
+  const unfiltered = computeAdvanceBaseline(bodies).get(key);
+  const filtered = computeAdvanceBaseline(bodies, throughStops).get(key);
+  assert.equal(unfiltered!.p0, 8 / 20); // archived counters: X's stall counted
+  assert.equal(filtered!.p0, 0.999); // X's stall dropped: Y>Z alone is 8/8 = 1.0, clamped to 1 - P0_FLOOR
+});
+
+test("deriveMovementState: a stall at an out-of-set stop drops out of the classification, flipping disrupted to normal", () => {
+  const route = "Q";
+  const tick = 1_700_000_000;
+  const tod = todBin(tick);
+  const throughStops: ThroughStops = new Set([`${route}|north|Y`]); // X is excluded
+  const baseline: AdvanceBaseline = new Map([[`${route}|north|${tod}`, cell(0.9)]]);
+  const row = {
+    vehicles_n: 5,
+    advanced_n: 8,
+    stalled_n: 40,
+    by_direction: {
+      north: {
+        vehicles_n: 5,
+        advanced_n: 8,
+        stalled_n: 40,
+        transitions: { "Y>Z": 8, "X>X": 40 },
+      },
+    },
+  };
+  // Archived counters, unfiltered: X's 40 stalls read as a real freeze.
+  assert.equal(deriveMovementState(route, row, tick, baseline), "disrupted");
+  // Filtered: X isn't a through stop, so its stall never enters the count.
+  assert.equal(deriveMovementState(route, row, tick, baseline, throughStops), "normal");
+});
+
+test("deriveMovementState: an advance out of an out-of-set stop drops out while an advance into one is kept", () => {
+  const route = "Q";
+  const tick = 1_700_000_000;
+  const tod = todBin(tick);
+  // Only A is a through stop -- B (an advance target) and C (an advance
+  // source) are both excluded.
+  const throughStops: ThroughStops = new Set([`${route}|north|A`]);
+  const baseline: AdvanceBaseline = new Map([[`${route}|north|${tod}`, cell(0.9)]]);
+  const row = {
+    vehicles_n: 5,
+    advanced_n: 44,
+    stalled_n: 0,
+    by_direction: {
+      north: {
+        vehicles_n: 5,
+        advanced_n: 44,
+        stalled_n: 0,
+        // A>B: from a through stop into an excluded one -- kept.
+        // C>C: from an excluded stop -- dropped, even though it's a stall
+        // large enough to flip the call if it were wrongly counted.
+        transitions: { "A>B": 4, "C>C": 40 },
+      },
+    },
+  };
+  assert.equal(deriveMovementState(route, row, tick, baseline, throughStops), "normal");
+});
+
+test("deriveMovementState: a row with no transitions map abstains under a through-stop filter instead of fabricating a zero advance rate", () => {
+  const route = "Q";
+  const tick = 1_700_000_000;
+  const tod = todBin(tick);
+  const throughStops: ThroughStops = new Set([`${route}|north|Y`]);
+  const baseline: AdvanceBaseline = new Map([[`${route}|north|${tod}`, cell(0.9)]]);
+  const row = {
+    vehicles_n: 5,
+    advanced_n: 0,
+    stalled_n: 12,
+    by_direction: {
+      // No `transitions` map to recompute from -- an older archive row, or a
+      // feed gap that only wrote the summary counters.
+      north: { vehicles_n: 5, advanced_n: 0, stalled_n: 12 },
+    },
+  };
+  // Unfiltered trusts the archived counters straight off the row -- disrupted.
+  assert.equal(deriveMovementState(route, row, tick, baseline), "disrupted");
+  // Filtered has nothing to recompute from, so it must abstain (matched=0 <
+  // MIN_MATCHED_TRIPS) rather than read the missing map as zero advances,
+  // which would misreport a data gap as a real stall.
+  assert.equal(deriveMovementState(route, row, tick, baseline, throughStops), null);
 });

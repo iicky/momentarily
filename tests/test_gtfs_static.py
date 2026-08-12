@@ -18,7 +18,10 @@ from training.gtfs_static import (
     dominant_successor,
     hop_seconds,
     load_successors,
+    stops_to_json,
     successors,
+    terminals,
+    through_stops,
 )
 
 
@@ -171,6 +174,49 @@ def test_chains_reports_disjoint_pieces_as_separate_components():
     result = chains(successors(zf))[("Q", "south")]
     assert len(result) == 2
     assert {c.stops for c in result} == {("A0S", "B0S"), ("X0S", "Y0S")}
+
+
+def test_terminals_names_both_ends_of_a_linear_route():
+    succ = successors(_zip(["F,t1,Weekday,X,0,s1"], _STOP_TIMES[:3]))
+    assert terminals(succ) == {("F", "south", "A0S"), ("F", "south", "C0S")}
+
+
+def test_through_stops_excludes_both_ends():
+    succ = successors(_zip(["F,t1,Weekday,X,0,s1"], _STOP_TIMES[:3]))
+    assert through_stops(succ) == {("F", "south", "B0S")}
+
+
+def test_terminals_and_through_stops_partition_the_skeleton():
+    succ = successors(_zip(["F,t1,Weekday,X,0,s1"], _STOP_TIMES[:3]))
+    term, through = terminals(succ), through_stops(succ)
+    assert not term & through
+    assert term | through == {("F", "south", stop) for stop in ("A0S", "B0S", "C0S")}
+
+
+def test_terminals_names_every_origin_of_a_two_entry_component():
+    """Two branches merging into one trunk: both branch heads are origins, and
+    only the source/sink test finds both — a Chain's stops concatenates one walk
+    per entry, so its first element names just one of them."""
+    stop_times = [
+        "t1,A0S,00:00:00,00:00:00,1",
+        "t1,C0S,00:01:00,00:01:00,2",
+        "t2,B0S,00:00:00,00:00:00,1",
+        "t2,C0S,00:01:00,00:01:00,2",
+    ]
+    succ = successors(_zip(["Q,t1,Weekday,X,0,s1", "Q,t2,Weekday,X,0,s1"], stop_times))
+    assert terminals(succ) == {
+        ("Q", "south", "A0S"),
+        ("Q", "south", "B0S"),
+        ("Q", "south", "C0S"),
+    }
+    assert through_stops(succ) == set()
+
+
+def test_stops_to_json_nests_route_direction_sorted():
+    stops = frozenset(
+        {("F", "south", "C0S"), ("F", "south", "A0S"), ("F", "north", "A0N")}
+    )
+    assert stops_to_json(stops) == {"F": {"north": ["A0N"], "south": ["A0S", "C0S"]}}
 
 
 def test_load_successors_composes_fetch_and_parse(

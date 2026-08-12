@@ -21,6 +21,7 @@ from training.movement_backfill import (
     movement_open_regimes,
     open_regimes_from_ticks,
     reconstruct_movement_transitions,
+    resolve_stop_filter,
     route_ticks_from_vehicle_bodies,
     segment_ticks_from_vehicle_bodies,
     ticks_from_predictions,
@@ -197,6 +198,44 @@ def test_segment_narrow_window_never_accumulates_enough() -> None:
     assert ticks == []
 
 
+# --- segment_ticks_from_vehicle_bodies: counts_from_stop --------------------
+
+
+def test_segment_ticks_counts_from_stop_drops_a_terminal_stall_that_would_otherwise_read_disrupted() -> (
+    None
+):
+    """4 ticks of {"A>A": 2} is pure stall-in-place -- exactly a terminal
+    layover, not a disruption. Unfiltered it self-trains to 'disrupted' at
+    the last tick (see test_segment_ticks_with_baseline_uses_the_supplied_
+    baseline_not_a_self_trained_one in test_incidents.py for the exact
+    math): a false positive from the pooled system default, not the leaf's
+    own low-N history. counts_from_stop admitting only stops != "A" must
+    drop the leaf from EVERY tick's calls, not just change its verdict --
+    and the unfiltered call proves the fallback path still produces the old
+    (buggy-by-design) numbers unchanged."""
+    bodies = [_segment_body(t(i), {"A>A": 2}) for i in range(4)]
+    unfiltered = dict(segment_ticks_from_vehicle_bodies(bodies, window_ticks=4))
+    last_tick = max(unfiltered)
+    assert unfiltered[last_tick]["F|south|A"] == "disrupted"
+
+    filtered = segment_ticks_from_vehicle_bodies(
+        bodies, window_ticks=4, counts_from_stop=lambda r, d, s: s != "A"
+    )
+    assert all("F|south|A" not in calls for _tick, calls in filtered)
+
+
+def test_segment_ticks_counts_from_stop_leaves_an_admitted_leaf_unchanged() -> None:
+    """A leaf the filter admits must classify identically to the unfiltered
+    run -- the filter narrows which leaves are judged, it doesn't change how
+    an admitted leaf is judged."""
+    bodies = [_segment_body(t(i), {"A>B": 2}) for i in range(2)]
+    unfiltered = segment_ticks_from_vehicle_bodies(bodies, window_ticks=2)
+    filtered = segment_ticks_from_vehicle_bodies(
+        bodies, window_ticks=2, counts_from_stop=lambda r, d, s: True
+    )
+    assert filtered == unfiltered
+
+
 # --- transitions_from_ticks / open_regimes_from_ticks -----------------------
 
 
@@ -340,6 +379,85 @@ def test_auto_source_resolves_route_to_predictions_and_segment_to_vehicles(
         client=_DUMMY_CLIENT, bucket="b", start_date=_D0, end_date=_D0, scope="segment"
     )
     assert calls == ["predictions", "vehicles"]
+
+
+def test_movement_open_regimes_threads_counts_from_stop_to_segment_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same terminal-stall fixture as segment_ticks_from_vehicle_bodies's own
+    test, reconstructed end to end through movement_open_regimes (source=
+    'vehicles', scope='segment') -- proves counts_from_stop actually reaches
+    the C1 contract entrypoints (via _ticks_for), not just the lower-level
+    builder."""
+    bodies = [_segment_body(t(i), {"A>A": 2}) for i in range(4)]
+
+    def _fake_fetch(*_a: object, **_k: object) -> list[dict[str, Any]]:
+        return bodies
+
+    monkeypatch.setattr("training.movement_backfill._fetch_vehicle_bodies", _fake_fetch)
+    unfiltered = movement_open_regimes(
+        client=_DUMMY_CLIENT,
+        bucket="b",
+        start_date=_D0,
+        end_date=_D0,
+        scope="segment",
+        source="vehicles",
+    )
+    assert "F|south|A" in unfiltered
+
+    filtered = movement_open_regimes(
+        client=_DUMMY_CLIENT,
+        bucket="b",
+        start_date=_D0,
+        end_date=_D0,
+        scope="segment",
+        source="vehicles",
+        counts_from_stop=lambda r, d, s: s != "A",
+    )
+    assert "F|south|A" not in filtered
+
+
+# --- resolve_stop_filter -----------------------------------------------------
+
+
+def test_resolve_stop_filter_all_scope_returns_none_without_fetching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom() -> None:
+        raise AssertionError("--stop-scope all must never fetch the static feed")
+
+    monkeypatch.setattr("training.movement_backfill.load_successors", boom)
+    assert resolve_stop_filter("all") is None
+
+
+def test_resolve_stop_filter_through_scope_admits_only_through_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Linear F-south chain A -> B -> C: B has both a predecessor and a
+    # successor (through); A (source) and C (sink, no succ entry at all) are
+    # terminals.
+    succ = {
+        ("F", "south", "A"): [("B", 5)],
+        ("F", "south", "B"): [("C", 5)],
+        ("F", "south", "C"): [],
+    }
+    monkeypatch.setattr("training.movement_backfill.load_successors", lambda: succ)
+    stop_filter = resolve_stop_filter("through")
+    assert stop_filter is not None
+    assert stop_filter("F", "south", "B") is True
+    assert stop_filter("F", "south", "A") is False
+    assert stop_filter("F", "south", "C") is False
+
+
+def test_resolve_stop_filter_fetch_failure_degrades_to_unfiltered(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom() -> None:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("training.movement_backfill.load_successors", boom)
+    assert resolve_stop_filter("through") is None
+    assert "network down" in capsys.readouterr().err
 
 
 # --- episode_census / matched_transition_count ------------------------------

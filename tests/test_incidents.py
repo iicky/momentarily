@@ -461,6 +461,36 @@ def test_segment_ticks_with_baseline_skips_leaves_missing_from_the_baseline():
     assert ticks == []
 
 
+def test_segment_ticks_with_baseline_counts_from_stop_filters_even_though_the_baseline_has_a_cell():
+    """counts_from_stop filters the window accumulation directly rather than
+    relying on the leaf being missing from `baseline` -- a supplied baseline
+    (e.g. a live published one not yet retrained with the through-stop
+    restriction) that still names a terminal leaf must not resurrect it.
+
+    4 ticks of {"A>A": 2} is pure stall-in-place (matched=8, advanced=0) by
+    the last tick. Against a p0=0.9 baseline: post = (8*0.9+0)/(8+8) = 0.45,
+    disrupted_ratio*p0 = 0.45 (not strictly greater -> falls to the
+    significance test), and P(X<=0 | Binomial(8, 0.9)) = 0.1**8, far under
+    alpha=0.05 -> 'disrupted'. Same math as
+    test_segment_ticks_with_baseline_uses_the_supplied_baseline_not_a_self_
+    trained_one, just with a high (not low) supplied p0 so the leaf actually
+    gets called something to filter away."""
+    bodies = [_segment_body(t(i), {"A>A": 2}) for i in range(4)]
+    baseline = {
+        ("F", "south", "A"): PooledCell(
+            p0=0.9, raw=0.9, n=200, alpha=180.0, beta=20.0, source="published"
+        )
+    }
+    unfiltered = dict(segment_ticks_with_baseline(bodies, baseline, window_ticks=4))
+    last_tick = max(unfiltered)
+    assert unfiltered[last_tick]["F|south|A"] == "disrupted"
+
+    filtered = segment_ticks_with_baseline(
+        bodies, baseline, window_ticks=4, counts_from_stop=lambda r, d, s: s != "A"
+    )
+    assert all("F|south|A" not in calls for _tick, calls in filtered)
+
+
 # --- _week_windows / premise_report ---
 
 

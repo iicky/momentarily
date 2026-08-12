@@ -352,3 +352,96 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     ]);
   });
 });
+
+describe('step 8b: movement_through_stops from params.json', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  test('a terminal stall (from_stop outside the trained set) is excluded from advanced_n/stalled_n but still recorded in transitions', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({
+        schema_version: '1',
+        trained_at: 1,
+        routes: {},
+        movement_through_stops: { A: { north: ['A09N'] } }, // A05N is NOT a through stop
+      }),
+    );
+
+    // Tick 1: train sitting at A05N (a terminal, out of the trained set).
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A05N' }),
+    );
+    let nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // Tick 2: still at A05N — a stall, but at an excluded from_stop.
+    nowSpy = vi.spyOn(Date, 'now').mockReturnValue((BOUNDARY_AT + 300) * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT + 300), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const vehicleKeys = keysWithPrefix(store, 'archive/vehicles/').sort();
+    expect(vehicleKeys).toHaveLength(2);
+    const tick2 = jsonAt(store, vehicleKeys[1]!) as {
+      rows: Record<string, { advanced_n: number; stalled_n: number; by_direction: { north: { transitions: Record<string, number> } } }>;
+    };
+    expect(tick2.rows['A']!.advanced_n).toBe(0);
+    expect(tick2.rows['A']!.stalled_n).toBe(0);
+    expect(tick2.rows['A']!.by_direction.north.transitions).toEqual({ 'A05N>A05N': 1 });
+  });
+
+  test('trainedParams present but with no through-stop set counts every stop (the visible-log fallback path)', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({ schema_version: '1', trained_at: 1, routes: {} }), // no movement_through_stops
+    );
+
+    // Same terminal-stall setup as the filtered test above, but with no
+    // through-stop set published: `trainedParams?.throughStops ?? null` must
+    // still fall back to null (count every stop) exactly like a missing
+    // params.json, not an empty/all-excluding set. index.ts logs this case
+    // visibly (see the `!throughStops` branch at step 8b) — not asserted here
+    // since this test env can't intercept the Workers-runtime console, but
+    // the counting behaviour it accompanies is directly observable.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A05N' }),
+    );
+    let nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    nowSpy = vi.spyOn(Date, 'now').mockReturnValue((BOUNDARY_AT + 300) * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT + 300), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const vehicleKeys = keysWithPrefix(store, 'archive/vehicles/').sort();
+    const tick2 = jsonAt(store, vehicleKeys[1]!) as {
+      rows: Record<string, { advanced_n: number; stalled_n: number }>;
+    };
+    // Unfiltered: the terminal stall counts, unlike the filtered test above.
+    expect(tick2.rows['A']!.stalled_n).toBe(1);
+    expect(tick2.rows['A']!.advanced_n).toBe(0);
+  });
+});

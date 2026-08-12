@@ -75,6 +75,7 @@ from training.load_r2 import (
     fetch_vehicle_metrics,
     presence_mask_from_predictions,
 )
+from training.movement_backfill import resolve_stop_filter
 from training.r2_client import load_config, make_client
 from training.reliability import direction_reliability, segment_reliability
 from training.scorecard import dwell_lookup_from_params, episode_scorecard
@@ -495,6 +496,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         default=CANONICAL_SEVERITY_FLOOR,
         help="alert-severity tier for the canonical truth (2=severe-only)",
     )
+    parser.add_argument(
+        "--stop-scope",
+        choices=("through", "all"),
+        default="through",
+        help="through: the peer-comparison scorecard admits only stops with "
+        "a scheduled predecessor AND successor (training.gtfs_static."
+        "through_stops), excluding terminal layovers. all: count every stop "
+        "(pre-filter behavior, for a direct comparison run). movement_truth "
+        "always counts every stop regardless — see build_movement_truth's "
+        "call site below.",
+    )
     args = parser.parse_args(argv)
 
     today = datetime.now(UTC).date()
@@ -504,6 +516,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     cfg = load_config()
     client = make_client(cfg)
+    counts_from_stop = resolve_stop_filter(args.stop_scope)
 
     print(f"loading predictions/transitions {start_date}..{today}")
     preds = load_predictions(client, cfg.bucket, start_date, today)
@@ -541,7 +554,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         cfg, start_date=baseline_start, end_date=baseline_end, client=client
     )
     movement_baseline = compute_advance_baseline(
-        build_movement_series_by_direction(baseline_bodies)
+        build_movement_series_by_direction(
+            baseline_bodies, counts_from_stop=counts_from_stop
+        )
     )
     print(
         f"  advance baseline {baseline_start}..{baseline_end}: "
@@ -556,7 +571,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         cfg, start_date=start_date, end_date=today, client=client
     )
     movement_truth = build_movement_truth(
-        vehicle_bodies, movement_baseline=movement_baseline
+        vehicle_bodies,
+        movement_baseline=movement_baseline,
+        counts_from_stop=counts_from_stop,
     )
     print(f"  {len(movement_truth)} (route, tick) movement-derived states")
 
@@ -565,10 +582,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     # window vs the causal baseline. Baselines are fit on baseline_bodies (the
     # pre-window), the deficit is measured on the review window, so a place is
     # judged against its OWN normal, not the network average.
-    segment_baseline = build_segment_baseline(baseline_bodies)
+    segment_baseline = build_segment_baseline(
+        baseline_bodies, counts_from_stop=counts_from_stop
+    )
     dir_observed: dict[tuple[str, str], list[int]] = {}
     for (route, direction, _tick), drow in build_movement_series_by_direction(
-        vehicle_bodies
+        vehicle_bodies, counts_from_stop=counts_from_stop
     ).items():
         acc = dir_observed.setdefault((route, direction), [0, 0])
         adv, stall = drow.get("advanced_n", 0), drow.get("stalled_n", 0)
@@ -578,6 +597,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     for (route, direction, frm, to, _tick), n in build_segment_series(
         vehicle_bodies
     ).items():
+        if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
+            continue
         acc = seg_observed.setdefault((route, direction, frm), [0, 0])
         if frm != to:
             acc[0] += n

@@ -17,6 +17,7 @@ from training.load_r2 import (
     _binom_lower_tail,  # pyright: ignore[reportPrivateUsage]
     _snap_tick,  # pyright: ignore[reportPrivateUsage]
     advance_baseline_to_json,
+    build_movement_series,
     build_movement_series_by_direction,
     build_segment_series,
     build_tick_observations,
@@ -317,6 +318,88 @@ def test_movement_series_skips_rows_without_by_direction():
     # An older archive row (no by_direction) contributes nothing.
     bodies = [{"observed_at": T0, "rows": {"A": {"advanced_n": 5, "stalled_n": 1}}}]
     assert build_movement_series_by_direction(bodies) == {}
+
+
+def _counted_body(tick: int, route: str, transitions: dict[str, int]) -> dict[str, Any]:
+    """A row whose counters and transitions agree, as the Worker archives them."""
+    advanced = sum(
+        n for p, n in transitions.items() if p.split(">")[0] != p.split(">")[1]
+    )
+    stalled = sum(
+        n for p, n in transitions.items() if p.split(">")[0] == p.split(">")[1]
+    )
+    return {
+        "observed_at": tick,
+        "rows": {
+            route: {
+                "vehicles_n": advanced + stalled,
+                "stopped_n": stalled,
+                "moving_n": advanced,
+                "advanced_n": advanced,
+                "stalled_n": stalled,
+                "by_direction": {
+                    "north": {
+                        "vehicles_n": advanced + stalled,
+                        "advanced_n": advanced,
+                        "stalled_n": stalled,
+                        "transitions": transitions,
+                    }
+                },
+            }
+        },
+    }
+
+
+_TRANSITIONS = {"A01N>A02N": 4, "A02N>A03N": 3, "A01N>A01N": 9, "A02N>A02N": 1}
+
+
+def _through_only(route: str, direction: str, frm: str) -> bool:
+    return (route, direction, frm) == ("A", "north", "A02N")
+
+
+def test_movement_series_by_direction_unfiltered_reads_the_archived_counters():
+    bodies = [_counted_body(T0, "A", _TRANSITIONS)]
+    assert build_movement_series_by_direction(bodies)[("A", "north", T0)] == {
+        "vehicles_n": 17,
+        "advanced_n": 7,
+        "stalled_n": 10,
+    }
+
+
+def test_movement_series_by_direction_counts_only_admitted_from_stops():
+    """A01N's 9 stalls and 4 advances drop out; A02N's own 3 and 1 stay. The
+    terminal layover is what the archived counters blend in."""
+    bodies = [_counted_body(T0, "A", _TRANSITIONS)]
+    series = build_movement_series_by_direction(bodies, counts_from_stop=_through_only)
+    assert series[("A", "north", T0)] == {
+        "vehicles_n": 17,  # presence is unaffected
+        "advanced_n": 3,
+        "stalled_n": 1,
+    }
+
+
+def test_movement_series_route_level_filters_and_keeps_presence():
+    bodies = [_counted_body(T0, "A", _TRANSITIONS)]
+    row = build_movement_series(bodies, counts_from_stop=_through_only)[("A", T0)]
+    assert row == {
+        "vehicles_n": 17,
+        "stopped_n": 10,
+        "moving_n": 7,
+        "advanced_n": 3,
+        "stalled_n": 1,
+    }
+
+
+def test_filtered_movement_series_ignores_a_row_with_no_transitions():
+    """Counters alone can't be narrowed after the fact, so a row that carries no
+    transitions map contributes nothing rather than its unfiltered totals."""
+    bodies = [_movement_body(T0, "A", north=(8, 6, 2))]
+    series = build_movement_series_by_direction(bodies, counts_from_stop=_through_only)
+    assert series[("A", "north", T0)] == {
+        "vehicles_n": 8,
+        "advanced_n": 0,
+        "stalled_n": 0,
+    }
 
 
 # --- Per-(route,direction,from,to,tick) segment leaf ---

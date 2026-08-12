@@ -129,3 +129,27 @@ def test_build_segment_baseline_aggregates_advance_and_stall():
     b = cells[("F", "south", "B")]
     assert b.n == 2  # 2 advanced (B>C), no stall
     assert b.raw == 1.0
+
+
+def test_build_segment_baseline_drops_leaves_the_filter_rejects():
+    """A leaf whose from_stop isn't admitted gets no cell at all, so nothing
+    downstream can classify it — and it stops dragging the parent centre the
+    admitted leaves are shrunk toward."""
+    body = {
+        "observed_at": 1_700_000_100,
+        "rows": {
+            "F": {
+                "by_direction": {
+                    "south": {"transitions": {"A>A": 9, "A>B": 1, "B>C": 4}}
+                }
+            }
+        },
+    }
+    cells = build_segment_baseline(
+        [body], counts_from_stop=lambda _route, _dir, frm: frm != "A"
+    )
+    assert ("F", "south", "A") not in cells
+    assert cells[("F", "south", "B")].raw == 1.0
+    # Unfiltered, the same body does give A a cell — the exclusion is the
+    # filter's doing, not the data's.
+    assert ("F", "south", "A") in build_segment_baseline([body])

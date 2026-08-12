@@ -319,6 +319,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       dwellByAlert: {},
       dwellMovement: {},
       movementBaseline: {},
+      throughStops: null,
       serviceBaseline: {},
       scheduleRate: {},
     };

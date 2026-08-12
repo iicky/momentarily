@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { r2Configured, parseJsonl, utcDateWindow, STREAMS } from "@/lib/r2";
+import { r2Configured, getJson, parseJsonl, utcDateWindow, STREAMS } from "@/lib/r2";
 import { fetchDate } from "@/lib/r2cache";
 import {
   advanceBaselines,
   buildMovementTruth,
   computeAdvanceBaseline,
   movementConfusion,
+  parseThroughStops,
+  type ThroughStops,
   type VehicleBody,
 } from "@/lib/movement";
 import type { PredictionRecord } from "@/lib/types";
@@ -29,6 +31,24 @@ const parseVehicleBody = (t: string): VehicleBody[] => {
   }
 };
 
+// Only the field the movement signal needs from params.json; the grading
+// route has its own richer TrainedParamsDoc for the HMM heatmap/dwell fields.
+interface ParamsDoc {
+  movement_through_stops?: unknown;
+}
+
+// Co-versioned with movement_baseline (see training/gtfs_static.through_stops
+// + training/load_r2.StopFilter): absent/malformed params.json degrades to
+// unfiltered counting, same as any tick before movement_through_stops existed.
+async function fetchThroughStops(): Promise<ThroughStops> {
+  try {
+    const params = await getJson<ParamsDoc>(STREAMS.params);
+    return parseThroughStops(params.movement_through_stops);
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const days = Math.min(MAX_DAYS, Math.max(1, Number(sp.get("days") ?? 3)));
@@ -47,12 +67,14 @@ export async function GET(req: NextRequest) {
   try {
     // Vehicle archive (archive/vehicles/<date>/<ts>.json) + predictions stream,
     // both per-date cached so past partitions aren't refetched on each window
-    // change. Dates run in parallel; today is always live.
-    const [vehicleArrays, predArrays] = await Promise.all([
+    // change. Dates run in parallel; today is always live. Through-stop set
+    // comes from params.json alongside them; fetchThroughStops fails soft.
+    const [vehicleArrays, predArrays, throughStops] = await Promise.all([
       Promise.all(dates.map((d) => fetchDate(VEHICLE_PREFIX, d, parseVehicleBody))),
       Promise.all(
         dates.map((d) => fetchDate(STREAMS.predictions, d, parseJsonl<PredictionRecord>)),
       ),
+      fetchThroughStops(),
     ]);
     const bodies = vehicleArrays.flat();
     let predictions = predArrays.flat();
@@ -78,14 +100,14 @@ export async function GET(req: NextRequest) {
     const baselineArrays = await Promise.all(
       baselineDates.map((d) => fetchDate(VEHICLE_PREFIX, d, parseVehicleBody)),
     );
-    const baseline = computeAdvanceBaseline(filterByRoute(baselineArrays.flat()));
+    const baseline = computeAdvanceBaseline(filterByRoute(baselineArrays.flat()), throughStops);
 
-    const truth = buildMovementTruth(filteredBodies, baseline);
+    const truth = buildMovementTruth(filteredBodies, baseline, throughStops);
     const confusion = movementConfusion(
       predictions.map((p) => ({ route: p.route, ts: p.ts, condition: p.condition })),
       truth,
     );
-    const baselines = advanceBaselines(filteredBodies);
+    const baselines = advanceBaselines(filteredBodies, throughStops);
 
     return NextResponse.json({
       configured: true,

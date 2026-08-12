@@ -38,9 +38,16 @@ from training.dwell import (
     compute_dwell_quantiles_by_alert,
     compute_dwell_quantiles_by_cause,
 )
-from training.gtfs_static import dominant_successor, load_successors
+from training.gtfs_static import (
+    SegmentKey,
+    dominant_successor,
+    load_successors,
+    stops_to_json,
+    through_stops,
+)
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
+    StopFilter,
     advance_baseline_to_json,
     build_movement_series_by_direction,
     build_segment_baseline,
@@ -323,6 +330,7 @@ def write_params(
     hyperparams: dict[str, Any] | None = None,
     input_profile: dict[str, Any] | None = None,
     movement_baseline: dict[str, Any] | None = None,
+    movement_through_stops: dict[str, dict[str, list[str]]] | None = None,
     service_baseline: dict[str, Any] | None = None,
     schedule_rate: dict[str, Any] | None = None,
     trained_at: int | None = None,
@@ -376,6 +384,14 @@ def write_params(
     # service baseline can sit beside it under the same delivery.
     if movement_baseline:
         doc["movement_baseline"] = movement_baseline
+    # The stops that baseline was fitted on: from_stops with a scheduled
+    # predecessor and successor. The Worker counts a cross-tick advance or stall
+    # only at these, so a terminal layover is not evidence of a stall. Travels in
+    # the same object as the baseline deliberately — scoring against a stop set
+    # the baseline was not fitted with judges layovers against a through-stop
+    # normal. Absent means unfiltered on both sides.
+    if movement_through_stops:
+        doc["movement_through_stops"] = movement_through_stops
     # Per-(route, tod_bin) assigned_n baseline the Worker divides live assigned_n
     # by to form the service ratio the emission scores. Top-level beside
     # movement_baseline.
@@ -410,6 +426,25 @@ SEGMENT_PARAMS_KEY = "state/segment_params.json"
 VERSIONED_SEGMENT_PREFIX = "state/segment_params/"
 
 
+def _static_topology() -> tuple[dict[SegmentKey, list[tuple[str, int]]] | None, str]:
+    """The static successor skeleton for this run, or (None, "observed") with the
+    reason printed.
+
+    Fetched once and shared: the advance baseline, the through-stop set it is
+    fitted against and the published segment topology all have to describe the
+    same timetable. A Worker scoring against a stop set the baseline was not
+    fitted with would judge layovers against a through-stop normal.
+    """
+    try:
+        return load_successors(), "gtfs_static"
+    except Exception as exc:
+        print(
+            f"gtfs static topology unavailable, using observed adjacency ({exc})",
+            file=sys.stderr,
+        )
+        return None, "observed"
+
+
 def write_segment_params(
     cfg: R2Config,
     client: S3Client,
@@ -417,14 +452,17 @@ def write_segment_params(
     start_date: date,
     end_date: date,
     trained_at: int,
+    static_successors: dict[SegmentKey, list[tuple[str, int]]] | None,
+    topology_source: str,
 ) -> int:
     """Write the segment baseline + adjacency as their OWN R2 object (not
     folded into params.json, which the Worker parses on the hot per-tick
     path). The Worker reads this at step 8b, off the publish path, to score
     per-segment movement and roll it up to station service flow.
 
-    Topology (adjacency) comes from the static GTFS timetable when the feed
-    fetch succeeds: a segment exists because the schedule says so, keyed
+    Topology (adjacency) comes from the static GTFS timetable the caller fetched
+    for the whole run (`_static_topology`), when that fetch succeeded: a segment
+    exists because the schedule says so, keyed
     'route|dir|from'. A from_stop with more than one static successor
     (branch/express) keeps its full successor list, not just the modal
     winner. canonical_adjacency (observed cross-tick transitions) is now only
@@ -446,17 +484,6 @@ def write_segment_params(
         )
         baseline = build_segment_baseline(bodies)
         observed_adjacency = canonical_adjacency(bodies)
-
-        try:
-            static_successors = load_successors()
-            topology_source = "gtfs_static"
-        except Exception as exc:
-            print(
-                f"gtfs static topology unavailable, using observed adjacency ({exc})",
-                file=sys.stderr,
-            )
-            static_successors = None
-            topology_source = "observed"
 
         cells: dict[str, dict[str, Any]] = {
             "|".join(key): {"p0": round(cell.p0, 6), "n": cell.n}
@@ -598,6 +625,7 @@ def _movement_baseline(
     client: S3Client,
     start_date: date,
     end_date: date,
+    through: frozenset[tuple[str, str, str]] | None,
 ) -> tuple[dict[str, Any], int, dict[str, float]]:
     """Advance-rate baseline over the training window, in the two shapes the
     pipeline needs from one vehicle-archive fetch:
@@ -606,16 +634,31 @@ def _movement_baseline(
       delivery to the Worker's movement posterior;
     - the per-route normal advance rate that seeds each route's EM prior.
 
+    `through` restricts both to trips whose from_stop has a scheduled predecessor
+    and successor. Without it the rate blends two physically different
+    populations: measured over 2026-08-05..08-11, chain endpoints stall 89.0% of
+    the time and stops the timetable never names stall 77.9%, together 83% of all
+    stall mass, against 11.6% mid-line. None means the static feed was
+    unavailable, and then nothing is filtered — the published stop set and this
+    fit have to agree.
+
     Uses the explicit training window — fetch_vehicle_metrics defaults to
     yesterday..today, too narrow for a stable prior. Fail-soft: any
     vehicle-archive error returns empty baselines so a movement hiccup never
     blocks the params publish (the channel is optional and back-compat). Returns
     (serialized, n_cells, route_advance_rates)."""
+    counts_from_stop: StopFilter | None = (
+        None
+        if through is None
+        else lambda route, direction, frm: (route, direction, frm) in through
+    )
     try:
         bodies = fetch_vehicle_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
-        series = build_movement_series_by_direction(bodies)
+        series = build_movement_series_by_direction(
+            bodies, counts_from_stop=counts_from_stop
+        )
         baseline = compute_advance_baseline(series)
         route_rates = compute_advance_baseline_by_route(series)
         return advance_baseline_to_json(baseline), len(baseline), route_rates
@@ -828,11 +871,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 1
 
     client = make_client(cfg)
+    # One static-timetable fetch for the whole run: it decides which stops the
+    # advance baseline is fitted on, which set ships to the Worker, and the
+    # published segment topology.
+    static_successors, topology_source = _static_topology()
+    through = None if static_successors is None else through_stops(static_successors)
     # Movement advance-rate baseline over the training window: the per-cell form
     # ships to the Worker in params.json; the per-route rates seed each route's
     # normal-state advance prior below (fail-soft — see helper).
     movement_baseline, n_baseline_cells, route_advance_rates = _movement_baseline(
-        cfg, client, start_date, end_date
+        cfg, client, start_date, end_date, through
     )
     if n_baseline_cells == 0 and not (args.dry_run or args.allow_empty_baseline):
         print(
@@ -997,12 +1045,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         hyperparams=hyperparams,
         input_profile=input_profile,
         movement_baseline=movement_baseline,
+        movement_through_stops=(None if through is None else stops_to_json(through)),
         service_baseline=service_baseline,
         schedule_rate=schedule_rate,
         trained_at=trained_at,
     )
     n_segment_cells = write_segment_params(
-        cfg, client, cfg.bucket, start_date, end_date, trained_at
+        cfg,
+        client,
+        cfg.bucket,
+        start_date,
+        end_date,
+        trained_at,
+        static_successors,
+        topology_source,
     )
     n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
         client, cfg.bucket, start_date, end_date, trained_at

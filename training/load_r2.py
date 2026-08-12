@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -693,28 +693,90 @@ def fetch_vehicle_metrics(
     return fetch_objects(client, cfg.bucket, keys)
 
 
+# (route, direction, from_stop) -> count this trip's cross-tick outcome? Passed
+# where the caller wants the advance signal restricted to stops it is willing to
+# judge — see training.gtfs_static.terminals / through_stops, and the terminal
+# layover mass they exist to keep out of the advance rate.
+StopFilter = Callable[[str, str, str], bool]
+
+
+def _cross_tick_counts(
+    drow: Mapping[str, Any],
+    route: str,
+    direction: str,
+    counts_from_stop: StopFilter | None,
+) -> tuple[int, int]:
+    """One archived direction row's (advanced_n, stalled_n).
+
+    Unfiltered, straight off the archived counters. Filtered, recomputed from
+    that row's raw `transitions` map — the counters are already summed and can't
+    be narrowed after the fact, while the transitions map still carries each
+    trip's from_stop. Same population either way: measured over 2026-08-11's 288
+    ticks, the route counters, the per-direction counters and the transitions
+    map all give 87,912 advances and 59,657 stalls.
+    """
+    if counts_from_stop is None:
+        return (
+            int(drow.get("advanced_n") or 0),
+            int(drow.get("stalled_n") or 0),
+        )
+    advanced = stalled = 0
+    trans = cast(dict[str, Any], drow.get("transitions") or {})
+    for pair, count in trans.items():
+        frm, sep, to = pair.partition(">")
+        if not sep or not frm or not to:
+            continue
+        n = int(count or 0)
+        if n <= 0 or not counts_from_stop(route, direction, frm):
+            continue
+        if frm == to:
+            stalled += n
+        else:
+            advanced += n
+    return advanced, stalled
+
+
 def build_movement_series(
     bodies: list[dict[str, Any]],
+    *,
+    counts_from_stop: StopFilter | None = None,
 ) -> dict[tuple[str, int], dict[str, int]]:
     """(route, tick) -> the full movement row, from the archived per-tick
     snapshots. Keeps every counter (not just one) because the current-state call
-    needs both presence (vehicles_n) and the cross-tick advance fraction."""
+    needs both presence (vehicles_n) and the cross-tick advance fraction.
+
+    With `counts_from_stop`, advanced_n/stalled_n are summed over the two
+    directions' filtered transitions instead of read off the route counters; the
+    presence counters are unaffected."""
     series: dict[tuple[str, int], dict[str, int]] = {}
     for body in bodies:
         tick = _snap_tick(int(body.get("observed_at") or 0))
         rows = cast(dict[str, Any], body.get("rows") or {})
         for route, row in rows.items():
-            if isinstance(row, dict):
-                series[(route, tick)] = {
-                    k: int(cast(dict[str, Any], row).get(k) or 0)
-                    for k in (
-                        "vehicles_n",
-                        "stopped_n",
-                        "moving_n",
-                        "advanced_n",
-                        "stalled_n",
+            if not isinstance(row, dict):
+                continue
+            row = cast(dict[str, Any], row)
+            out = {
+                k: int(row.get(k) or 0) for k in ("vehicles_n", "stopped_n", "moving_n")
+            }
+            if counts_from_stop is None:
+                out["advanced_n"] = int(row.get("advanced_n") or 0)
+                out["stalled_n"] = int(row.get("stalled_n") or 0)
+            else:
+                by_dir = cast(dict[str, Any], row.get("by_direction") or {})
+                advanced = stalled = 0
+                for direction in _DIRECTIONS:
+                    drow = by_dir.get(direction)
+                    if not isinstance(drow, dict):
+                        continue
+                    a, s = _cross_tick_counts(
+                        cast(dict[str, Any], drow), route, direction, counts_from_stop
                     )
-                }
+                    advanced += a
+                    stalled += s
+                out["advanced_n"] = advanced
+                out["stalled_n"] = stalled
+            series[(route, tick)] = out
     return series
 
 
@@ -723,11 +785,16 @@ _DIRECTIONS: tuple[str, ...] = ("north", "south")
 
 def build_movement_series_by_direction(
     bodies: list[dict[str, Any]],
+    *,
+    counts_from_stop: StopFilter | None = None,
 ) -> dict[tuple[str, str, int], dict[str, int]]:
     """(route, direction, tick) -> the per-direction movement counters, from the
     by_direction split the Worker archives (north/south). The cross-tick advance
     fraction is direction-specific because the two directions fail independently
-    and the Bayesian model scores each line-direction against its own baseline."""
+    and the Bayesian model scores each line-direction against its own baseline.
+
+    `counts_from_stop` restricts advanced_n/stalled_n to trips whose from_stop it
+    admits — see _cross_tick_counts."""
     series: dict[tuple[str, str, int], dict[str, int]] = {}
     for body in bodies:
         tick = _snap_tick(int(body.get("observed_at") or 0))
@@ -742,9 +809,15 @@ def build_movement_series_by_direction(
                 drow = by_dir.get(direction)
                 if not isinstance(drow, dict):
                     continue
+                advanced, stalled = _cross_tick_counts(
+                    cast(dict[str, Any], drow), route, direction, counts_from_stop
+                )
                 series[(route, direction, tick)] = {
-                    k: int(cast(dict[str, Any], drow).get(k) or 0)
-                    for k in ("vehicles_n", "advanced_n", "stalled_n")
+                    "vehicles_n": int(
+                        cast(dict[str, Any], drow).get("vehicles_n") or 0
+                    ),
+                    "advanced_n": advanced,
+                    "stalled_n": stalled,
                 }
     return series
 
@@ -788,6 +861,8 @@ def build_segment_series(
 
 def build_segment_baseline(
     bodies: list[dict[str, Any]],
+    *,
+    counts_from_stop: StopFilter | None = None,
 ) -> dict[tuple[str, str, str], PooledCell]:
     """Hierarchical partial-pooling advance-rate baseline per (route, direction,
     from_stop) segment leaf, from the archived cross-tick transitions.
@@ -796,11 +871,18 @@ def build_segment_baseline(
     counts — a from>to pair with from!=to is an advance out of from_stop, from==to
     is a stall there — then shrinks each leaf toward its line-direction / route /
     system normal via the empirical-Bayes estimator (training.hierarchical). Sparse
-    leaves borrow strength; data-rich leaves (e.g. terminals that dwell) keep their
-    own low rate. The finer leaf for the segment-aware classifier and station
-    roll-ups; canonical from_stop->to_stop labelling layers on top."""
+    leaves borrow strength; data-rich leaves keep their own low rate. The finer
+    leaf for the segment-aware classifier and station roll-ups; canonical
+    from_stop->to_stop labelling layers on top.
+
+    `counts_from_stop` drops leaves the caller won't judge. Restricted to through
+    stops, every held-out leaf has training data (measured 2026-08-12: 177 leaves
+    with none, down to 0) and pooling stops losing to each leaf's own raw rate,
+    because a layover and a mid-line stop are no longer pooled as if exchangeable."""
     leaves: dict[tuple[str, str, str], list[int]] = {}
     for (route, direction, frm, to, _tick), n in build_segment_series(bodies).items():
+        if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
+            continue
         cell = leaves.setdefault((route, direction, frm), [0, 0])
         if frm == to:
             cell[1] += n  # stall in place
@@ -1049,6 +1131,7 @@ def build_movement_truth(
     bodies: list[dict[str, Any]],
     *,
     movement_baseline: Mapping[tuple[str, str, int], AdvanceBaseline],
+    counts_from_stop: StopFilter | None = None,
     prior_strength: float = CLASSIFY_PRIOR_STRENGTH,
     disrupted_ratio: float = DISRUPTED_RATIO,
     min_matched: int = MIN_MATCHED_TRIPS,
@@ -1060,9 +1143,15 @@ def build_movement_truth(
     `movement_baseline` is the per-(route, direction, tod_bin) advance prior
     applied to each tick — supply it explicitly (compute_advance_baseline over a
     clean/earlier window) rather than deriving it from the labeled bodies, so the
-    truth stays causal and a sustained outage can't lower its own baseline."""
-    route_series = build_movement_series(bodies)
-    dir_series = build_movement_series_by_direction(bodies)
+    truth stays causal and a sustained outage can't lower its own baseline.
+
+    `counts_from_stop` MUST match the filter the baseline was fitted with. A
+    through-stop baseline runs higher than an unfiltered one, so scoring
+    unfiltered live counts against it reads spuriously disrupted."""
+    route_series = build_movement_series(bodies, counts_from_stop=counts_from_stop)
+    dir_series = build_movement_series_by_direction(
+        bodies, counts_from_stop=counts_from_stop
+    )
     truth: dict[tuple[str, int], str] = {}
     for (route, tick), route_row in route_series.items():
         tb = tod_bin(tick)

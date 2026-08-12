@@ -49,6 +49,7 @@ function trainedWithBaseline(
     dwellByAlert: {},
     dwellMovement: {},
     movementBaseline,
+    throughStops: null,
     serviceBaseline: {},
     scheduleRate,
   };
@@ -471,6 +472,7 @@ describe('movementObservationFields', () => {
       dwellByAlert: {},
       dwellMovement: {},
       movementBaseline,
+      throughStops: null,
       serviceBaseline: {},
       scheduleRate: {},
     };
@@ -594,6 +596,7 @@ describe('serviceObservationFields', () => {
       dwellByAlert: {},
       dwellMovement: {},
       movementBaseline: {},
+      throughStops: null,
       serviceBaseline,
       scheduleRate: {},
     };

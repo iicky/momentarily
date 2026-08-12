@@ -7,8 +7,10 @@
  *
  * Inputs are the two per-route metrics already derived each tick:
  *   - MovementRow (vehicle positions): the cross-tick advance fraction
- *     advanced_n / (advanced_n + stalled_n) — of trips seen both this tick and
- *     last, the share that moved to a new stop. The disrupted/normal axis.
+ *     advanced_n / (advanced_n + stalled_n) — of matched trips at a scheduled
+ *     THROUGH stop (see vehicles.ts deriveRouteMovementMetric; terminal
+ *     layovers are excluded by design), the share that moved to a new stop.
+ *     The disrupted/normal axis.
  *   - ServiceRow (trip-updates): assigned_n, dispatched trains. assigned_n == 0
  *     with trips still scheduled is the suspension signal — more reliable than
  *     vehicles_n == 0, since the vehicle feed tends to carry a few trains even on

@@ -165,11 +165,15 @@ describe('deriveRouteMovementMetric', () => {
     expect(north.stalled_n).toBe(0);
   });
 
-  test('an unknown-direction vehicle records no transition and no dir-row advance/stall', () => {
+  test('an unknown-direction vehicle records no transition and no advance/stall anywhere (route or dir-row)', () => {
     const prev = stopPositions([veh({ tripId: 'unknown_trip', stopId: 'R05' })]);
     const rows = deriveRouteMovementMetric([veh({ routeId: 'R', tripId: 'unknown_trip', stopId: 'R06' })], prev);
     const r = rows.get('R')!;
-    expect(r.advanced_n).toBe(1); // route-level cross-tick still counts
+    // Route-level now requires a known direction too (same as the transitions
+    // map always has), so route-level stays in lockstep with north+south
+    // instead of counting a trip neither direction saw.
+    expect(r.advanced_n).toBe(0);
+    expect(r.stalled_n).toBe(0);
     expect(r.by_direction.north).toEqual({ vehicles_n: 0, advanced_n: 0, stalled_n: 0, transitions: {} });
     expect(r.by_direction.south).toEqual({ vehicles_n: 0, advanced_n: 0, stalled_n: 0, transitions: {} });
   });
@@ -190,6 +194,110 @@ describe('deriveRouteMovementMetric', () => {
     expect(a.by_direction.north.transitions).toEqual({ 'A09N>A10N': 1 });
     expect(a.by_direction.south.transitions).toEqual({ 'A09S>A10S': 1 });
     expect(a).not.toHaveProperty('transitions');
+  });
+});
+
+describe('deriveRouteMovementMetric: through-stop filter', () => {
+  test('a stall at an out-of-set from-stop counts toward neither counter, but the transition is still recorded', () => {
+    const prev = stopPositions([veh({ tripId: 't1', stopId: 'R05N' })]); // R05N: a terminal, not in the set
+    const throughStops = new Set(['R|north|R09N']);
+    const rows = deriveRouteMovementMetric(
+      [veh({ routeId: 'R', tripId: 't1', stopId: 'R05N' })],
+      prev,
+      throughStops,
+    );
+    const r = rows.get('R')!;
+    expect(r.advanced_n).toBe(0);
+    expect(r.stalled_n).toBe(0);
+    expect(r.by_direction.north.advanced_n).toBe(0);
+    expect(r.by_direction.north.stalled_n).toBe(0);
+    expect(r.by_direction.north.transitions).toEqual({ 'R05N>R05N': 1 });
+  });
+
+  test('a stall at an in-set from-stop still counts', () => {
+    const prev = stopPositions([veh({ tripId: 't1', stopId: 'R09N' })]);
+    const throughStops = new Set(['R|north|R09N']);
+    const rows = deriveRouteMovementMetric(
+      [veh({ routeId: 'R', tripId: 't1', stopId: 'R09N' })],
+      prev,
+      throughStops,
+    );
+    const r = rows.get('R')!;
+    expect(r.stalled_n).toBe(1);
+    expect(r.by_direction.north.stalled_n).toBe(1);
+  });
+
+  test('an advance out of an out-of-set from-stop is not counted; an advance into an out-of-set to-stop is', () => {
+    const throughStops = new Set(['R|north|R09N']); // only R09N is a through stop
+    const prev = stopPositions([
+      veh({ tripId: 'out', stopId: 'R05N' }), // terminal, out of set
+      veh({ tripId: 'in', stopId: 'R09N' }), // through stop, in set
+    ]);
+    const rows = deriveRouteMovementMetric(
+      [
+        veh({ routeId: 'R', tripId: 'out', stopId: 'R06N' }), // advances OUT of R05N — filtered
+        veh({ routeId: 'R', tripId: 'in', stopId: 'R05N' }), // advances INTO R05N — from_stop R09N passes
+      ],
+      prev,
+      throughStops,
+    );
+    const r = rows.get('R')!;
+    expect(r.advanced_n).toBe(1);
+    expect(r.by_direction.north.advanced_n).toBe(1);
+    // Both transitions are still recorded raw, filter or no filter.
+    expect(r.by_direction.north.transitions).toEqual({ 'R05N>R06N': 1, 'R09N>R05N': 1 });
+  });
+
+  test('the transitions map always records the excluded trip, whether it stalled or advanced', () => {
+    const throughStops = new Set(['R|north|R09N']);
+    const prev = stopPositions([veh({ tripId: 'excluded', stopId: 'R05N' })]);
+    const rows = deriveRouteMovementMetric(
+      [veh({ routeId: 'R', tripId: 'excluded', stopId: 'R06N' })],
+      prev,
+      throughStops,
+    );
+    expect(rows.get('R')!.by_direction.north.transitions).toEqual({ 'R05N>R06N': 1 });
+  });
+
+  test('a null set (the default) reproduces the pre-filter counts exactly', () => {
+    const prev = stopPositions([
+      veh({ tripId: 'n1', stopId: 'A05N' }),
+      veh({ tripId: 's1', stopId: 'A05S' }),
+      veh({ tripId: 's2', stopId: 'A07S' }),
+    ]);
+    const vehicles = [
+      veh({ routeId: 'A', tripId: 'n1', stopId: 'A06N' }), // advance
+      veh({ routeId: 'A', tripId: 's1', stopId: 'A05S' }), // stall
+      veh({ routeId: 'A', tripId: 's2', stopId: 'A09S' }), // advance
+    ];
+    const implicit = deriveRouteMovementMetric(vehicles, prev);
+    const explicit = deriveRouteMovementMetric(vehicles, prev, null);
+    expect(explicit).toEqual(implicit);
+    expect(explicit.get('A')).toMatchObject({ vehicles_n: 3, advanced_n: 2, stalled_n: 1 });
+  });
+
+  test('route-level counters equal the sum of the two directions even with an out-of-set stop and an unknown-direction trip mixed in', () => {
+    const throughStops = new Set(['R|north|R09N']);
+    const prev = stopPositions([
+      veh({ tripId: 'in', stopId: 'R09N' }), // in-set, north
+      veh({ tripId: 'out', stopId: 'R05N' }), // out-of-set, north
+      veh({ tripId: 'unk', stopId: 'R12' }), // no N/S suffix, no ..N/..S trip_id -> unknown direction
+    ]);
+    const rows = deriveRouteMovementMetric(
+      [
+        veh({ routeId: 'R', tripId: 'in', stopId: 'R10N' }),
+        veh({ routeId: 'R', tripId: 'out', stopId: 'R06N' }),
+        veh({ routeId: 'R', tripId: 'unk', stopId: 'R13' }),
+      ],
+      prev,
+      throughStops,
+    );
+    const r = rows.get('R')!;
+    const sumAdvanced = r.by_direction.north.advanced_n + r.by_direction.south.advanced_n;
+    const sumStalled = r.by_direction.north.stalled_n + r.by_direction.south.stalled_n;
+    expect(r.advanced_n).toBe(sumAdvanced);
+    expect(r.stalled_n).toBe(sumStalled);
+    expect(r.advanced_n).toBe(1); // only 'in' (known direction, in-set from_stop) counts
   });
 });
 

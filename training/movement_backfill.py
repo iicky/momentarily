@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass
@@ -54,7 +55,9 @@ from training.eval import (
     PredictionRecord,
     load_predictions,
 )
+from training.gtfs_static import load_successors, through_stops
 from training.load_r2 import (
+    StopFilter,
     build_movement_series_by_direction,
     build_movement_truth,
     build_segment_baseline,
@@ -114,6 +117,8 @@ def ticks_from_predictions(
 
 def route_ticks_from_vehicle_bodies(
     bodies: list[dict[str, Any]],
+    *,
+    counts_from_stop: StopFilter | None = None,
 ) -> list[tuple[int, Mapping[str, str]]]:
     """Per-tick {route: state} calls from the vehicle archive, route scope.
 
@@ -124,10 +129,18 @@ def route_ticks_from_vehicle_bodies(
     separate baseline period in the contracted signature). compute_advance_baseline's
     per-cell MEDIAN already resists a disrupted minority, so a typical outage
     (the minority case) doesn't drag down its own baseline.
+
+    `counts_from_stop` goes to the baseline and the scored counts together — a
+    through-stop baseline runs higher, so scoring unfiltered counts against it
+    reads spuriously disrupted.
     """
-    dir_series = build_movement_series_by_direction(bodies)
+    dir_series = build_movement_series_by_direction(
+        bodies, counts_from_stop=counts_from_stop
+    )
     baseline = compute_advance_baseline(dir_series)
-    truth = build_movement_truth(bodies, movement_baseline=baseline)
+    truth = build_movement_truth(
+        bodies, movement_baseline=baseline, counts_from_stop=counts_from_stop
+    )
     by_tick: dict[int, dict[str, str]] = {}
     for (route, tick), state in truth.items():
         by_tick.setdefault(tick, {})[route] = state
@@ -138,22 +151,30 @@ def segment_ticks_from_vehicle_bodies(
     bodies: list[dict[str, Any]],
     *,
     window_ticks: int = SEGMENT_WINDOW_TICKS,
+    counts_from_stop: StopFilter | None = None,
 ) -> list[tuple[int, Mapping[str, str]]]:
     """Per-tick {`route|direction|from_stop`: state} calls from the vehicle
     archive, segment scope — the only source that reaches this granularity.
 
     classify_segment needs ACCUMULATED counts (segments.py docstring); each
     tick's call sums advanced/stalled over the trailing `window_ticks` ticks
-    for that leaf, then classifies. Baseline (build_segment_baseline) is
-    computed over the same window's bodies — same self-window rationale as
+    for that leaf, then classifies. The baseline is computed over the same
+    window's bodies — same self-window rationale as
     route_ticks_from_vehicle_bodies, and its partial pooling already shrinks
     thin leaves toward their line/route/system normal.
+
+    `counts_from_stop` restricts both the window accumulation and the
+    baseline to leaves whose from_stop it admits — see training.load_r2.
+    StopFilter / training.gtfs_static.through_stops. A terminal leaf gets
+    neither accumulated counts nor a baseline cell, so it's never classified.
     """
     series = build_segment_series(bodies)
-    baseline = build_segment_baseline(bodies)
+    baseline = build_segment_baseline(bodies, counts_from_stop=counts_from_stop)
 
     per_leaf: dict[tuple[str, str, str], dict[int, tuple[int, int]]] = defaultdict(dict)
     for (route, direction, frm, to, tick), n in series.items():
+        if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
+            continue
         leaf = (route, direction, frm)
         adv, stall = per_leaf[leaf].get(tick, (0, 0))
         if frm == to:
@@ -274,6 +295,31 @@ def _fetch_vehicle_bodies(
     return fetch_objects(client, bucket, keys)
 
 
+def resolve_stop_filter(scope: str) -> StopFilter | None:
+    """`--stop-scope` CLI value -> a counts_from_stop callable, fail-soft.
+
+    "all" returns None (count every stop — the pre-filter numbers) without a
+    fetch. "through" fetches the static GTFS topology and restricts counting
+    to (route, direction, stop) triples with both a scheduled predecessor and
+    successor (training.gtfs_static.through_stops) — a chain endpoint or a
+    stop the timetable never names stalls by schedule, not disruption, and
+    would otherwise pollute the advance signal. Mirrors train_em.py's
+    _static_topology: a fetch failure degrades to None with the reason
+    printed, never raises.
+    """
+    if scope != "through":
+        return None
+    try:
+        through = through_stops(load_successors())
+    except Exception as exc:
+        print(
+            f"gtfs static topology unavailable, counting every stop ({exc})",
+            file=sys.stderr,
+        )
+        return None
+    return lambda route, direction, stop: (route, direction, stop) in through
+
+
 def _ticks_for(
     client: S3Client,
     bucket: str,
@@ -282,6 +328,7 @@ def _ticks_for(
     *,
     scope: str,
     source: str,
+    counts_from_stop: StopFilter | None = None,
 ) -> list[tuple[int, Mapping[str, str]]]:
     if scope not in _VALID_SCOPES:
         raise ValueError(f"scope must be one of {_VALID_SCOPES}, got {scope!r}")
@@ -299,9 +346,11 @@ def _ticks_for(
     if resolved == "vehicles":
         bodies = _fetch_vehicle_bodies(client, bucket, start_date, end_date)
         return (
-            route_ticks_from_vehicle_bodies(bodies)
+            route_ticks_from_vehicle_bodies(bodies, counts_from_stop=counts_from_stop)
             if scope == "route"
-            else segment_ticks_from_vehicle_bodies(bodies)
+            else segment_ticks_from_vehicle_bodies(
+                bodies, counts_from_stop=counts_from_stop
+            )
         )
     raise ValueError(f"source must be one of auto/predictions/vehicles, got {source!r}")
 
@@ -318,6 +367,7 @@ def reconstruct_movement_transitions(
     scope: str = "route",
     debounce_ticks: int = DEBOUNCE_TICKS,
     source: str = "auto",
+    counts_from_stop: StopFilter | None = None,
 ) -> list[MovementTransitionRecord]:
     """Reconstruct the movement-regime transition stream the Worker would have
     emitted over [start_date, end_date], at route or segment scope.
@@ -326,8 +376,20 @@ def reconstruct_movement_transitions(
     "auto" (default) resolves to published_condition for route scope (the
     higher-fidelity source where it exists) and archive/vehicles for segment
     scope (the only source that reaches it).
+
+    `counts_from_stop` restricts vehicle-derived counting, at both scopes, to
+    admitted from_stops (see segment_ticks_from_vehicle_bodies). The
+    published-condition source has no per-stop counts and is unaffected.
     """
-    ticks = _ticks_for(client, bucket, start_date, end_date, scope=scope, source=source)
+    ticks = _ticks_for(
+        client,
+        bucket,
+        start_date,
+        end_date,
+        scope=scope,
+        source=source,
+        counts_from_stop=counts_from_stop,
+    )
     return transitions_from_ticks(ticks, scope, debounce_ticks=debounce_ticks)
 
 
@@ -340,10 +402,19 @@ def movement_open_regimes(
     scope: str = "route",
     debounce_ticks: int = DEBOUNCE_TICKS,
     source: str = "auto",
+    counts_from_stop: StopFilter | None = None,
 ) -> dict[str, tuple[str, int]]:
     """Each key's regime still open at end_date — see reconstruct_movement_transitions
-    for the `source` resolution rule."""
-    ticks = _ticks_for(client, bucket, start_date, end_date, scope=scope, source=source)
+    for the `source` and `counts_from_stop` resolution rules."""
+    ticks = _ticks_for(
+        client,
+        bucket,
+        start_date,
+        end_date,
+        scope=scope,
+        source=source,
+        counts_from_stop=counts_from_stop,
+    )
     return open_regimes_from_ticks(ticks, debounce_ticks=debounce_ticks)
 
 
@@ -420,17 +491,25 @@ def debounce_sensitivity_report(
     *,
     debounce_values: tuple[int, ...] = (1, 2, 3),
     recommended_debounce_ticks: int = DEBOUNCE_TICKS,
+    counts_from_stop: StopFilter | None = None,
 ) -> dict[str, Any]:
     """The debounce sensitivity table (route + segment scope) and the
     cross-source agreement check, computed once over [start_date, end_date].
     Fetches predictions and vehicle bodies exactly once and reuses them
-    across every debounce_ticks value."""
+    across every debounce_ticks value.
+
+    `counts_from_stop` restricts both vehicle-derived reconstructions to
+    admitted from_stops. The published-condition side has no per-stop counts."""
     predictions = load_predictions(client, bucket, start_date, end_date)
     bodies = _fetch_vehicle_bodies(client, bucket, start_date, end_date)
 
     route_ticks_pub = ticks_from_predictions(predictions)
-    route_ticks_veh = route_ticks_from_vehicle_bodies(bodies)
-    segment_ticks_veh = segment_ticks_from_vehicle_bodies(bodies)
+    route_ticks_veh = route_ticks_from_vehicle_bodies(
+        bodies, counts_from_stop=counts_from_stop
+    )
+    segment_ticks_veh = segment_ticks_from_vehicle_bodies(
+        bodies, counts_from_stop=counts_from_stop
+    )
 
     def sweep(
         ticks: list[tuple[int, Mapping[str, str]]], scope: str
@@ -493,6 +572,16 @@ def main(argv: list[str] | None = None) -> int:
         default=DEBOUNCE_TICKS,
         help="debounce_ticks the source_agreement check reconstructs both sides at",
     )
+    parser.add_argument(
+        "--stop-scope",
+        choices=("through", "all"),
+        default="through",
+        help="through: vehicle-derived counting admits only stops with a "
+        "scheduled predecessor AND successor (training.gtfs_static."
+        "through_stops), excluding terminal layovers. all: count every stop "
+        "(pre-filter behavior, for a direct comparison run). The "
+        "published-condition source has no per-stop counts and is unaffected.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -500,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
     today = datetime.now(UTC).date()
     end_date = args.end_date or today
     start_date = args.start_date or (end_date - timedelta(days=args.days - 1))
+    counts_from_stop = resolve_stop_filter(args.stop_scope)
 
     report = debounce_sensitivity_report(
         client,
@@ -507,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
         start_date,
         end_date,
         recommended_debounce_ticks=args.debounce_ticks,
+        counts_from_stop=counts_from_stop,
     )
     print(json.dumps(report, indent=2))
     return 0

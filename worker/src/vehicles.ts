@@ -8,10 +8,17 @@
  *   - moving_n / vehicles_n: an INSTANTANEOUS movement fraction. Cheap but
  *     noisy on its own — a train is STOPPED_AT every station dwell, so a single
  *     tick can't tell a normal dwell from a stall.
- *   - advanced_n / stalled_n: the CROSS-TICK signal. Given the previous tick's
- *     stop_id per trip, a trip whose stop_id is unchanged ~5 min later is
- *     stalled; one that moved on has advanced. A route where assigned trains are
- *     dispatched (assigned_n high) but none advance is physically frozen — the
+ *   - advanced_n / stalled_n: the CROSS-TICK signal, restricted to trips whose
+ *     FROM stop is a scheduled THROUGH stop (has both a scheduled predecessor
+ *     and successor) when the trainer publishes that set (params.ts
+ *     `throughStops`); every stop counts when it hasn't. A terminal/
+ *     chain-endpoint stop stalls ~89% of the time by design — a scheduled
+ *     layover, not a disruption — and carries 83% of all stall mass measured
+ *     on the archive, so counting it blends two physically different
+ *     populations into one advance rate. Given the previous tick's stop_id per
+ *     trip, a trip whose stop_id is unchanged ~5 min later is stalled; one
+ *     that moved on has advanced. A route where assigned trains are dispatched
+ *     (assigned_n high) but none advance is physically frozen — the
  *     disruption mode assigned_n structurally cannot see.
  *
  * Advance/stall are also split by direction (north/south), because the two
@@ -24,8 +31,8 @@ import type { VehicleLite } from './gtfsrt';
 
 export interface DirMovementRow {
   vehicles_n: number;
-  advanced_n: number; // present last tick AND stop_id changed
-  stalled_n: number; // present last tick AND stop_id identical
+  advanced_n: number; // present last tick, stop_id changed, from_stop through-stop-admitted
+  stalled_n: number; // present last tick, stop_id identical, from_stop through-stop-admitted
   // Raw cross-tick from_stop_id>to_stop_id counts (from==to = a stall in place).
   // The segment-level leaf, archived for later hierarchical baselines; canonical
   // segment mapping is deferred (GTFS-RT stop_ids can skip/express/reverse).
@@ -37,8 +44,8 @@ export interface MovementRow {
   stopped_n: number; // current_status STOPPED_AT
   moving_n: number; // everything else (NYCT omits the field for in-transit)
   // Cross-tick (0 when no previous stop is known for the trip):
-  advanced_n: number; // present last tick AND stop_id changed
-  stalled_n: number; // present last tick AND stop_id identical
+  advanced_n: number; // present last tick, stop_id changed, from_stop through-stop-admitted
+  stalled_n: number; // present last tick, stop_id identical, from_stop through-stop-admitted
   by_direction: { north: DirMovementRow; south: DirMovementRow };
 }
 
@@ -97,10 +104,19 @@ export function stopPositions(vehicles: VehicleLite[]): Record<string, string> {
  * rows. `prevStops` is the previous tick's stopPositions(); pass an empty map on
  * the first tick (or when no prior state exists) and the cross-tick counters
  * stay 0 — the instantaneous counters are always populated.
+ *
+ * `throughStops` is the trainer-published route|direction|stop admission set
+ * (params.ts `TrainedParams.throughStops`); null (the default) counts every
+ * stop, matching behaviour before the filter existed. When set, a matched
+ * trip's advance/stall counts (route-level AND by_direction) require its FROM
+ * stop to be in the set. The `transitions` map is never filtered — it stays
+ * the raw observation stream so offline recomputation (training/load_r2.py
+ * StopFilter) can apply any filter after the fact.
  */
 export function deriveRouteMovementMetric(
   vehicles: VehicleLite[],
   prevStops: Record<string, string> = {},
+  throughStops: ReadonlySet<string> | null = null,
 ): Map<string, MovementRow> {
   const out = new Map<string, MovementRow>();
   for (const v of vehicles) {
@@ -119,20 +135,33 @@ export function deriveRouteMovementMetric(
     else row.moving_n += 1;
 
     const prev = v.tripId ? prevStops[v.tripId] : undefined;
-    if (prev !== undefined) {
-      if (prev === v.stopId) {
-        row.stalled_n += 1;
-        if (dirRow) dirRow.stalled_n += 1;
-      } else {
-        row.advanced_n += 1;
-        if (dirRow) dirRow.advanced_n += 1;
-      }
-      // Raw per-direction transition for the segment leaf. Skip empty stop_ids
-      // so a blank endpoint can't poison a segment cell downstream.
-      if (dirRow && prev && v.stopId) {
-        const key = `${prev}>${v.stopId}`;
-        dirRow.transitions[key] = (dirRow.transitions[key] ?? 0) + 1;
-      }
+    if (prev === undefined) continue;
+
+    // Raw per-direction transition for the segment leaf, unfiltered — the
+    // segment_flow classifier and offline recomputation both need every
+    // trip's from_stop, not just the ones the through-stop filter admits.
+    // Skip empty stop_ids so a blank endpoint can't poison a segment cell
+    // downstream.
+    if (dirRow && prev && v.stopId) {
+      const key = `${prev}>${v.stopId}`;
+      dirRow.transitions[key] = (dirRow.transitions[key] ?? 0) + 1;
+    }
+
+    // advanced_n/stalled_n require a known direction and non-empty from/to
+    // stop ids, so route-level == north+south == the transitions sum by
+    // construction — mirrors training/load_r2.py _cross_tick_counts, which
+    // sums an archived row the same three ways. On top of that, when
+    // throughStops is given a trip counts only if its FROM stop is in it: a
+    // terminal/chain-endpoint stall is a scheduled layover, not signal.
+    if (!dir || !dirRow || !prev || !v.stopId) continue;
+    if (throughStops && !throughStops.has(`${route}|${dir}|${prev}`)) continue;
+
+    if (prev === v.stopId) {
+      row.stalled_n += 1;
+      dirRow.stalled_n += 1;
+    } else {
+      row.advanced_n += 1;
+      dirRow.advanced_n += 1;
     }
   }
   return out;

@@ -157,6 +157,17 @@ const MovementBaselineSchema = z.record(
 export type AdvanceBaselineCell = z.infer<typeof AdvanceBaselineCellSchema>;
 export type MovementBaseline = z.infer<typeof MovementBaselineSchema>;
 
+// route -> direction -> stop ids with both a scheduled predecessor and a
+// scheduled successor (training.gtfs_static.through_stops). Co-versioned
+// with movement_baseline — same trainer run, same fit — so the two update
+// or fall back together. Flattened to `${route}|${direction}|${stop}` keys
+// below, the shape deriveRouteMovementMetric (vehicles.ts) tests per trip.
+const MovementThroughStopsSchema = z.record(
+  z.string(),
+  z.record(z.string(), z.array(z.string())),
+);
+export type MovementThroughStops = z.infer<typeof MovementThroughStopsSchema>;
+
 // route -> tod_bin (stringified int) -> median assigned_n. The Worker divides
 // live assigned_n by this to form the service ratio the emission scores.
 const ServiceBaselineSchema = z.record(z.string(), z.record(z.string(), nonNeg));
@@ -185,6 +196,12 @@ const TrainedParamsWrapperSchema = z.object({
   // Validated separately too, so a malformed baseline degrades the movement
   // channel only, not the whole params upload.
   movement_baseline: z.unknown().optional(),
+  // Validated separately too; malformed or absent falls back to null (count
+  // every stop) rather than dropping the whole params upload. Co-versioned
+  // with movement_baseline — see gtfs_static.through_stops in
+  // training/gtfs_static.py and the StopFilter training/load_r2.py builds
+  // from it.
+  movement_through_stops: z.unknown().optional(),
   // Validated separately too, so a malformed service baseline degrades the
   // service channel only, not the whole params upload.
   service_baseline: z.unknown().optional(),
@@ -242,6 +259,14 @@ export interface TrainedParams {
   // Per-(route, direction, tod_bin) advance-rate baseline for the movement
   // channel. Empty until the trainer has ~2wk of by_direction archive.
   movementBaseline: MovementBaseline;
+  // Route|direction|stop keys admitted by the movement advance filter (see
+  // vehicles.ts deriveRouteMovementMetric). Null means "no filter": absent or
+  // malformed movement_through_stops, or a params.json written before the
+  // field existed. NEVER an empty set — that would silently zero every
+  // route's advance/stall count instead of leaving the filter off.
+  // Co-versioned with movementBaseline: the trainer fits the baseline
+  // against exactly this stop set.
+  throughStops: ReadonlySet<string> | null;
   // Per-(route, tod_bin) assigned_n baseline for the service emission channel.
   serviceBaseline: ServiceBaseline;
   // Per-(route, schedule_bin) in-service rate; the Worker splits a no-service
@@ -324,6 +349,38 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     }
   }
 
+  // Through-stop set for the movement channel, co-versioned with
+  // movement_baseline. Absent or malformed => null, never an empty set — see
+  // TrainedParams.throughStops above. Mirrors training/gtfs_static.through_stops
+  // and the StopFilter training/load_r2.py builds from it;
+  // deriveRouteMovementMetric (vehicles.ts) applies the same filter live.
+  let throughStops: ReadonlySet<string> | null = null;
+  if (wrapper.data.movement_through_stops !== undefined) {
+    const parsed = MovementThroughStopsSchema.safeParse(wrapper.data.movement_through_stops);
+    if (parsed.success) {
+      const keys = new Set<string>();
+      for (const [routeId, byDirection] of Object.entries(parsed.data)) {
+        for (const [direction, stops] of Object.entries(byDirection)) {
+          for (const stopId of stops) keys.add(`${routeId}|${direction}|${stopId}`);
+        }
+      }
+      // A well-formed but empty doc ({}, or every route empty) means the same
+      // as absent: count every stop. Keeping the empty Set would admit no stop
+      // at all and zero every route's advance/stall counters.
+      if (keys.size > 0) throughStops = keys;
+      else {
+        console.warn(
+          'params.json movement_through_stops is empty; advance counters include every stop',
+        );
+      }
+    } else {
+      console.warn(
+        'params.json movement_through_stops invalid; advance counters include every stop:',
+        parsed.error.issues,
+      );
+    }
+  }
+
   // Service baseline, validated on its own like the movement baseline.
   let serviceBaseline: ServiceBaseline = {};
   if (wrapper.data.service_baseline !== undefined) {
@@ -364,6 +421,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     dwell,
     dwellByAlert,
     movementBaseline,
+    throughStops,
     serviceBaseline,
     scheduleRate,
     dwellMovement,

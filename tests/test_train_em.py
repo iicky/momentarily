@@ -48,6 +48,16 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
 
+# A two-hop skeleton: A01N is a source, A03N a sink, so through_stops names only
+# A02N. Stubbed in for main's one static-timetable fetch — the unit tests must
+# not reach the network, and the through set has to be a real one so the
+# published stop set is exercised rather than defaulted away.
+_STATIC_SUCCESSORS: dict[tuple[str, str, str], list[tuple[str, int]]] = {
+    ("A", "north", "A01N"): [("A02N", 5)],
+    ("A", "north", "A02N"): [("A03N", 5)],
+}
+
+
 def _approx(expected: float) -> object:
     """Typed wrapper around ``pytest.approx``.
 
@@ -426,6 +436,7 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
     series_seen: list[dict[tuple[str, str, int], dict[str, int]]] = []
     baseline_seen: list[dict[tuple[str, str, int], object]] = []
     route_series_seen: list[dict[tuple[str, str, int], dict[str, int]]] = []
+    filters_seen: list[object] = []
 
     sentinel_bodies: list[dict[str, Any]] = [{"marker": "body"}]
     sentinel_series: dict[tuple[str, str, int], dict[str, int]] = {
@@ -452,8 +463,11 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
 
     def _fake_build_series(
         bodies: list[dict[str, Any]],
+        *,
+        counts_from_stop: object = None,
     ) -> dict[tuple[str, str, int], dict[str, int]]:
         bodies_seen.append(bodies)
+        filters_seen.append(counts_from_stop)
         return sentinel_series
 
     def _fake_compute_baseline(
@@ -492,7 +506,7 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
     start = date(2026, 6, 1)
     end = date(2026, 6, 14)
 
-    result, n_cells, route_rates = _movement_baseline(cfg, client, start, end)
+    result, n_cells, route_rates = _movement_baseline(cfg, client, start, end, None)
 
     assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
     assert bodies_seen == [sentinel_bodies]
@@ -502,6 +516,52 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
     assert result == sentinel_json
     assert n_cells == 2
     assert route_rates == sentinel_route_rates
+    assert filters_seen == [None]  # no through set -> every stop counted
+
+
+def test_movement_baseline_counts_only_through_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A through-stop set becomes the from_stop filter the series builder counts
+    with, so the fitted baseline and the set published beside it agree."""
+    filters_seen: list[Any] = []
+
+    def _fake_fetch(
+        cfg: R2Config,
+        *,
+        start_date: date,
+        end_date: date,
+        client: object,
+    ) -> list[dict[str, Any]]:
+        return []
+
+    def _fake_build_series(
+        bodies: list[dict[str, Any]],
+        *,
+        counts_from_stop: Any = None,
+    ) -> dict[tuple[str, str, int], dict[str, int]]:
+        filters_seen.append(counts_from_stop)
+        return {}
+
+    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _fake_fetch)
+    monkeypatch.setattr(
+        "training.train_em.build_movement_series_by_direction", _fake_build_series
+    )
+
+    through = frozenset({("A", "north", "A02N")})
+    _movement_baseline(
+        _r2_config(),
+        cast("S3Client", _FakeS3()),
+        date(2026, 6, 1),
+        date(2026, 6, 14),
+        through,
+    )
+
+    (filt,) = filters_seen
+    assert filt is not None
+    assert filt("A", "north", "A02N")
+    assert not filt("A", "north", "A01N")  # terminal, absent from the set
+    assert not filt("A", "south", "A02N")  # same stop, other direction
 
 
 def test_movement_baseline_fails_soft_on_archive_error(
@@ -522,7 +582,11 @@ def test_movement_baseline_fails_soft_on_archive_error(
     monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _raise_fetch)
 
     result, n_cells, route_rates = _movement_baseline(
-        _r2_config(), cast("S3Client", _FakeS3()), date(2026, 6, 1), date(2026, 6, 14)
+        _r2_config(),
+        cast("S3Client", _FakeS3()),
+        date(2026, 6, 1),
+        date(2026, 6, 14),
+        None,
     )
 
     assert result == {}
@@ -825,7 +889,11 @@ def test_main_passes_movement_baseline_through_to_write_params(
         return []
 
     def _fake_movement_baseline(
-        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+        cfg_arg: R2Config,
+        client: S3Client,
+        start_date: date,
+        end_date: date,
+        through: frozenset[tuple[str, str, str]] | None,
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
         return sentinel_baseline, 3, {}
 
@@ -834,6 +902,10 @@ def test_main_passes_movement_baseline_through_to_write_params(
         return "state/params/v1.json"
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+    )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
@@ -847,6 +919,9 @@ def test_main_passes_movement_baseline_through_to_write_params(
 
     assert exit_code == 0
     assert captured_kwargs["movement_baseline"] == sentinel_baseline
+    # The stop set the baseline was fitted against ships in the same object:
+    # only A02N has both a scheduled predecessor and successor in the skeleton.
+    assert captured_kwargs["movement_through_stops"] == {"A": {"north": ["A02N"]}}
 
 
 def test_main_passes_service_baseline_through_to_write_params(
@@ -899,6 +974,10 @@ def test_main_passes_service_baseline_through_to_write_params(
         return "state/params/v1.json"
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+    )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
@@ -955,7 +1034,11 @@ def test_main_passes_advance_priors_through_to_train(
         return []
 
     def _fake_movement_baseline(
-        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+        cfg_arg: R2Config,
+        client: S3Client,
+        start_date: date,
+        end_date: date,
+        through: frozenset[tuple[str, str, str]] | None,
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
         return {}, 0, sentinel_route_rates
 
@@ -976,6 +1059,10 @@ def test_main_passes_advance_priors_through_to_train(
         return "state/params/v1.json"
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+    )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
@@ -1029,7 +1116,11 @@ def test_main_refuses_empty_movement_baseline(
         return []
 
     def _fake_movement_baseline(
-        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+        cfg_arg: R2Config,
+        client: S3Client,
+        start_date: date,
+        end_date: date,
+        through: frozenset[tuple[str, str, str]] | None,
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
         return {}, 0, {}
 
@@ -1038,6 +1129,10 @@ def test_main_refuses_empty_movement_baseline(
         return "state/params/v1.json"
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+    )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
@@ -1104,7 +1199,11 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
         return []
 
     def _fake_movement_baseline(
-        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+        cfg_arg: R2Config,
+        client: S3Client,
+        start_date: date,
+        end_date: date,
+        through: frozenset[tuple[str, str, str]] | None,
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
         return {}, 0, {}
 
@@ -1113,6 +1212,10 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
         return "state/params/v1.json"
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+    )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
         "training.train_em.load_series_by_route", _fake_load_series_by_route
@@ -1358,7 +1461,11 @@ def test_main_passes_movement_dwell_through_to_write_params(
         return movement_transitions
 
     def _fake_movement_baseline(
-        cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
+        cfg_arg: R2Config,
+        client: S3Client,
+        start_date: date,
+        end_date: date,
+        through: frozenset[tuple[str, str, str]] | None,
     ) -> tuple[dict[str, Any], int, dict[str, float]]:
         return {}, 0, {}
 
@@ -1367,6 +1474,10 @@ def test_main_passes_movement_dwell_through_to_write_params(
         return "state/params/v1.json"
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+    )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
         "training.train_em.load_series_by_route", _fake_load_series_by_route

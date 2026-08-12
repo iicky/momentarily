@@ -79,11 +79,12 @@ from training.dwell import (
     compute_dwell_quantiles,
 )
 from training.eval import TransitionRecord
-from training.gtfs_static import load_successors
+from training.gtfs_static import load_successors, through_stops
 from training.hierarchical import PooledCell
 from training.load import TICK_SECONDS
 from training.load_r2 import (
     ADVANCE_PRIOR_STRENGTH,
+    StopFilter,
     build_segment_series,
     fetch_vehicle_metrics,
 )
@@ -617,6 +618,7 @@ def segment_ticks_with_baseline(
     baseline: Mapping[tuple[str, str, str], PooledCell],
     *,
     window_ticks: int = SEGMENT_WINDOW_TICKS,
+    counts_from_stop: StopFilter | None = None,
 ) -> list[tuple[int, Mapping[str, str]]]:
     """The same per-tick segment classification `movement_backfill.
     segment_ticks_from_vehicle_bodies` does, scored against a `baseline`
@@ -631,11 +633,20 @@ def segment_ticks_with_baseline(
     parameterizing it — movement_backfill.py is a sibling module this task
     doesn't touch, and its self-trained default is still the right choice
     for its own callers.
+
+    `counts_from_stop` restricts the window accumulation to admitted
+    from_stops, same as movement_backfill's own copy — see
+    training.load_r2.StopFilter / training.gtfs_static.through_stops.
+    Applied here directly rather than left to a leaf missing from
+    `baseline`, so the restriction holds regardless of whether the supplied
+    baseline (self- or published-trained) has already been filtered.
     """
     series = build_segment_series(bodies)
 
     per_leaf: dict[tuple[str, str, str], dict[int, tuple[int, int]]] = defaultdict(dict)
     for (route, direction, frm, to, tick), n in series.items():
+        if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
+            continue
         leaf = (route, direction, frm)
         adv, stall = per_leaf[leaf].get(tick, (0, 0))
         if frm == to:
@@ -792,6 +803,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "state/segment_params.json baseline instead. both: run and print "
         "each, so the two can be compared directly.",
     )
+    parser.add_argument(
+        "--stop-scope",
+        choices=("through", "all"),
+        default="through",
+        help="through: segment-window counting admits only stops with a "
+        "scheduled predecessor AND successor (training.gtfs_static."
+        "through_stops), excluding terminal layovers. all: count every stop "
+        "(pre-filter behavior, for a direct comparison run).",
+    )
     args = parser.parse_args(argv)
 
     today = datetime.now(UTC).date()
@@ -805,12 +825,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"{len(bodies)} archived vehicle-metric ticks", file=sys.stderr)
 
     print("fetching static GTFS topology", file=sys.stderr)
-    topology = topology_from_successors(load_successors())
+    succ = load_successors()
+    topology = topology_from_successors(succ)
     print(f"{len(topology)} segments in topology", file=sys.stderr)
+    # The topology fetch above is unconditional -- main() needs it for
+    # clustering regardless of --stop-scope -- so through_stops rides along
+    # on the same fetch rather than a second one. No separate fail-soft
+    # wrapper needed: a topology fetch failure already aborts main() before
+    # this point either way.
+    through = through_stops(succ) if args.stop_scope == "through" else None
+    counts_from_stop: StopFilter | None = (
+        None
+        if through is None
+        else lambda route, direction, frm: (route, direction, frm) in through
+    )
 
     variants: dict[str, list[tuple[int, Mapping[str, str]]]] = {}
     if args.baseline in ("self", "both"):
-        variants["self"] = segment_ticks_from_vehicle_bodies(bodies)
+        variants["self"] = segment_ticks_from_vehicle_bodies(
+            bodies, counts_from_stop=counts_from_stop
+        )
     if args.baseline in ("published", "both"):
         published_doc = json.loads(
             get_object_bytes(client, cfg.bucket, SEGMENT_PARAMS_KEY)
@@ -821,7 +855,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"(trained_at={published_doc.get('trained_at')})",
             file=sys.stderr,
         )
-        variants["published"] = segment_ticks_with_baseline(bodies, published)
+        variants["published"] = segment_ticks_with_baseline(
+            bodies, published, counts_from_stop=counts_from_stop
+        )
 
     for name, raw_calls in variants.items():
         ticks = _disrupted_ticks_from_calls(raw_calls)

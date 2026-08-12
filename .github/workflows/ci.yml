@@ -61,7 +61,10 @@ jobs:
       # is offline codegen and needs no credentials.
       - run: bun x wrangler types ./worker-configuration.d.ts
       - run: bun run typecheck
-      - run: bun test
+      # `bun run test`, not `bun test`: the suite is vitest (package.json), and
+      # bun's own runner silently skips over vi.mock/vi.hoisted rather than
+      # honouring them.
+      - run: bun run test
 
   # The trainer Worker (container launcher) is a separate package; typecheck it
   # so a break there doesn't reach the Sunday cron unnoticed. No bun test — it

@@ -1,14 +1,41 @@
 """Incident-level duration for clustered contiguous disrupted segments.
 
-Path status composes as OR over segments: a journey is disrupted the moment
-ANY segment on it is. Duration does not compose the same way. Two adjacent
-disrupted segments overwhelmingly share ONE cause — a stuck train, a sick
-passenger at the shared station, a signal fault — not two independent draws
-from each segment's own dwell distribution. Summing or maxing per-segment
-dwells over a path therefore double-counts one delay as if it were several,
-exactly where segments touch and the independence assumption is weakest.
+NOT wired into anything published. The premise this module was built on —
+that adjacent disrupted segments overwhelmingly share ONE cause, so a
+path's duration should compose per INCIDENT rather than per segment — did
+not survive measurement. Two runs against the real archive, at increasing
+statistical power, agree on the verdict:
 
-Three pieces, in the order a caller uses them:
+  - 8 days (2026-08-04..08-11, journal.md 2026-08-11 "clustered incidents"
+    and its "revises the entry above" follow-up): 0/1260 candidate ticks
+    produced a multi-segment cluster, on a baseline self-trained on that
+    same 8-day window. A per-day robustness check found the "zero" was
+    sensitive to how little data trained each day's baseline (4/8 days
+    reproduced it, 4/8 didn't, 3.8-14.7% adjacent share) — inconclusive by
+    itself.
+  - 53 days (2026-06-21..08-12, journal.md 2026-08-12), scored against
+    BOTH a baseline self-trained on the full 53 days AND the live
+    published `state/segment_params.json` baseline: the two agree almost
+    exactly. 5257-5489 candidate ticks (>=2 disrupted segments somewhere
+    on the network) produced only 21 multi-segment-cluster ticks each —
+    max_gap=0 and max_gap=1 give the IDENTICAL 21, so loosening the gap
+    adds nothing — and only 0.27-0.29% of disrupted-segment observations
+    belong to a multi-segment incident. Tracing identity through the whole
+    window (`advance_incidents`) resolves that into exactly 3 DISTINCT
+    real multi-segment incidents network-wide in 53 days, agreed on by
+    both baselines down to the segment keys and timestamps: two
+    occurrences of the same 7|south 701S/702S pair (2026-07-16,
+    2026-07-27) and one 3-segment A|north cluster (2026-07-24). Real, but
+    rare — nowhere close to "overwhelming."
+
+The longer window resolved the earlier ambiguity — self-trained and
+published baselines converge, so the answer isn't a baseline-choice
+artifact — but it didn't reverse the direction: adjacent disrupted
+segments are the exception, not the rule. `path_incident_durations`
+remains unwired for that reason; per-segment duration composition is the
+right default until the data looks different.
+
+Three pieces, in the order a caller would use them if that changed:
 
 1. `cluster_disrupted` — pure, one tick: group this tick's disrupted segments
    into incidents via the static successor graph, scoped within one
@@ -20,9 +47,10 @@ Three pieces, in the order a caller uses them:
    and `training.pooled_dwell` (partially-pooled AFT fallback) to fit
    duration at the incident level, not new survival math.
 
-`path_incident_durations` is the composition function a path query needs:
-one duration distribution per DISTINCT incident touching the path, never one
-per disrupted segment.
+`path_incident_durations` is the composition function a path query would
+need: one duration distribution per DISTINCT incident touching the path,
+never one per disrupted segment. It is exercised by the test suite and
+correct — nothing calls it, per the measurement above.
 
 Everything above is pure and hermetically testable. The R2-touching pieces —
 fetching archives, reconstructing a real disrupted-segment tick history via
@@ -42,7 +70,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from training.dwell import (
     MIN_SAMPLES_FOR_EMPIRICAL,
@@ -52,10 +80,19 @@ from training.dwell import (
 )
 from training.eval import TransitionRecord
 from training.gtfs_static import load_successors
-from training.load_r2 import fetch_vehicle_metrics
-from training.movement_backfill import segment_ticks_from_vehicle_bodies
+from training.hierarchical import PooledCell
+from training.load import TICK_SECONDS
+from training.load_r2 import (
+    ADVANCE_PRIOR_STRENGTH,
+    build_segment_series,
+    fetch_vehicle_metrics,
+)
+from training.movement_backfill import (
+    SEGMENT_WINDOW_TICKS,
+    segment_ticks_from_vehicle_bodies,
+)
 from training.pooled_dwell import pooled_dwell_cells
-from training.r2_client import load_config, make_client
+from training.r2_client import get_object_bytes, load_config, make_client
 from training.regime import (
     DEBOUNCE_TICKS,
     MAX_IDLE_SEC,
@@ -63,6 +100,7 @@ from training.regime import (
     RegimeEntry,
     advance_regimes,
 )
+from training.segments import classify_segment
 
 # route|direction|from_stop — the same segment cell key regime.py and
 # segment_flow.ts already use; a segment's key IS a node in the topology
@@ -83,11 +121,11 @@ Topology = Mapping[SegmentKey, list[SegmentKey]]
 # definition, let a train through it — that is evidence AGAINST a blockage
 # there, not silence, so bridging across it risks lumping two genuinely
 # separate incidents (one at each end of an unaffected stretch) into one.
-# `measure_premise`'s gap-1 sensitivity check, run against the real 8-day
-# archive (see journal.md 2026-08-11 "clustered incidents"), found gap=1
-# widens NOTHING over this default: both produced zero multi-segment
-# clusters across 1260 candidate ticks. Loosening the default has no support
-# in the data measured so far.
+# `measure_premise`'s gap-1 sensitivity check, run against the real 53-day
+# archive (journal.md 2026-08-12), found gap=1 widens NOTHING over this
+# default: self-trained and published baselines both produced the IDENTICAL
+# 21 multi-segment-cluster ticks at gap=0 and gap=1. Loosening the default
+# has no support in the data measured so far.
 DEFAULT_MAX_GAP = 0
 
 _ACTIVE = "active"
@@ -510,10 +548,11 @@ def path_incident_durations(
 
 # --- Measuring the premise against real archived data ---------------------
 #
-# Everything below touches R2 or the static GTFS feed. None of it is called
-# by the test suite; `main` (and the helpers it calls) is exercised by running
-# this module directly (`murk exec -- uv run python -m training.incidents`),
-# not by pytest.
+# `main` fetches from R2 and the static GTFS feed and is never exercised by
+# the test suite. The pure helpers around it — `_disrupted_ticks_from_calls`,
+# `published_baseline_cells`, `segment_ticks_with_baseline`, `measure_premise`,
+# `_week_windows`, and `premise_report` — take/return plain data and ARE unit
+# tested; only the fetch itself needs a live R2 credential.
 
 
 def _disrupted_ticks_from_calls(
@@ -533,6 +572,103 @@ def _disrupted_ticks_from_calls(
     ]
 
 
+# state/segment_params.json's own key, so `main` can fetch the published
+# baseline the Worker classifies against, not just the self-trained one
+# `segment_ticks_from_vehicle_bodies` builds from the measured window itself.
+SEGMENT_PARAMS_KEY = "state/segment_params.json"
+
+
+def published_baseline_cells(
+    doc: Mapping[str, Any],
+) -> dict[tuple[str, str, str], PooledCell]:
+    """`state/segment_params.json`'s `cells` dict -> the same
+    `{(route, direction, from_stop): PooledCell}` shape `load_r2.
+    build_segment_baseline` returns, so `segment_ticks_with_baseline` can
+    score against either interchangeably.
+
+    `write_segment_params` (train_em.py) only publishes `p0`/`n` per cell —
+    the trainer keeps the leaf's raw rate, pooling `source`, and fitted
+    alpha/beta to itself. `classify_segment` (via `classify_direction`)
+    reads only `.p0` off the cell it's given, so reconstructing the rest as
+    a p0-anchored Beta prior at `ADVANCE_PRIOR_STRENGTH` pseudo-trials — the
+    same convention `compute_advance_baseline` anchors its own prior with —
+    is exact for classification, even though it can't recover the leaf's
+    actual fitted concentration.
+    """
+    out: dict[tuple[str, str, str], PooledCell] = {}
+    for raw_key, cell in doc.get("cells", {}).items():
+        parts = raw_key.split("|")
+        if len(parts) != 3:
+            continue
+        p0 = float(cell["p0"])
+        out[(parts[0], parts[1], parts[2])] = PooledCell(
+            p0=p0,
+            raw=p0,
+            n=int(cell.get("n", 0)),
+            alpha=p0 * ADVANCE_PRIOR_STRENGTH,
+            beta=(1.0 - p0) * ADVANCE_PRIOR_STRENGTH,
+            source="published",
+        )
+    return out
+
+
+def segment_ticks_with_baseline(
+    bodies: list[dict[str, Any]],
+    baseline: Mapping[tuple[str, str, str], PooledCell],
+    *,
+    window_ticks: int = SEGMENT_WINDOW_TICKS,
+) -> list[tuple[int, Mapping[str, str]]]:
+    """The same per-tick segment classification `movement_backfill.
+    segment_ticks_from_vehicle_bodies` does, scored against a `baseline`
+    the caller supplies instead of one self-trained on `bodies` — lets
+    `main` classify the vehicle archive against the published
+    `state/segment_params.json` baseline (`published_baseline_cells`)
+    instead of the window it's measuring, which is exactly the
+    self-training confound that left the first 8-day run inconclusive
+    (journal.md 2026-08-11, "revises the entry above").
+
+    Duplicates that function's trailing-window accumulation rather than
+    parameterizing it — movement_backfill.py is a sibling module this task
+    doesn't touch, and its self-trained default is still the right choice
+    for its own callers.
+    """
+    series = build_segment_series(bodies)
+
+    per_leaf: dict[tuple[str, str, str], dict[int, tuple[int, int]]] = defaultdict(dict)
+    for (route, direction, frm, to, tick), n in series.items():
+        leaf = (route, direction, frm)
+        adv, stall = per_leaf[leaf].get(tick, (0, 0))
+        if frm == to:
+            stall += n
+        else:
+            adv += n
+        per_leaf[leaf][tick] = (adv, stall)
+
+    window_sec = window_ticks * TICK_SECONDS
+    by_tick: dict[int, dict[str, str]] = {}
+    for leaf, tick_counts in per_leaf.items():
+        cell = baseline.get(leaf)
+        if cell is None:
+            continue
+        route, direction, frm = leaf
+        key = f"{route}|{direction}|{frm}"
+        window: deque[tuple[int, int, int]] = deque()
+        adv_sum = stall_sum = 0
+        for tick in sorted(tick_counts):
+            a, s = tick_counts[tick]
+            window.append((tick, a, s))
+            adv_sum += a
+            stall_sum += s
+            while window and tick - window[0][0] >= window_sec:
+                _, old_adv, old_stall = window.popleft()
+                adv_sum -= old_adv
+                stall_sum -= old_stall
+            call = classify_segment(adv_sum, stall_sum, cell)
+            if call is not None:
+                by_tick.setdefault(tick, {})[key] = call
+    return cast("list[tuple[int, Mapping[str, str]]]", sorted(by_tick.items()))
+
+
 def measure_premise(
     ticks: list[tuple[int, list[SegmentKey]]],
     topology: Topology,
@@ -540,13 +676,17 @@ def measure_premise(
     """Pure: the adjacency-vs-scattered stats the clustering premise needs, from
     an already-reconstructed tick history. Hermetic — no R2 involved, safe to
     unit test, kept separate from the R2/archive-fetching code in `main` for
-    exactly that reason."""
+    exactly that reason. Reports max_gap=0 (the shipped default) and
+    max_gap=1 (the sensitivity check DEFAULT_MAX_GAP's docstring cites) side
+    by side, so a caller never has to rerun this to check the other gap."""
     considered_ticks = 0
     ticks_with_adjacent_gap0 = 0
+    ticks_with_adjacent_gap1 = 0
     sizes_gap0: list[int] = []
     sizes_gap1: list[int] = []
     disrupted_total = 0
     disrupted_in_multi_gap0 = 0
+    disrupted_in_multi_gap1 = 0
 
     for _observed_at, disrupted in ticks:
         if len(disrupted) < 2:
@@ -558,27 +698,80 @@ def measure_premise(
         sizes_gap1.extend(len(c) for c in clusters1)
         if any(len(c) > 1 for c in clusters0):
             ticks_with_adjacent_gap0 += 1
+        if any(len(c) > 1 for c in clusters1):
+            ticks_with_adjacent_gap1 += 1
         disrupted_total += len(disrupted)
         disrupted_in_multi_gap0 += sum(len(c) for c in clusters0 if len(c) > 1)
+        disrupted_in_multi_gap1 += sum(len(c) for c in clusters1 if len(c) > 1)
 
     return {
         "ticks_with_2plus_disrupted": considered_ticks,
         "ticks_with_adjacent_cluster_gap0": ticks_with_adjacent_gap0,
+        "ticks_with_adjacent_cluster_gap1": ticks_with_adjacent_gap1,
         "share_ticks_adjacent_gap0": (
             ticks_with_adjacent_gap0 / considered_ticks if considered_ticks else None
         ),
+        "share_ticks_adjacent_gap1": (
+            ticks_with_adjacent_gap1 / considered_ticks if considered_ticks else None
+        ),
         "mean_cluster_size_gap0": (statistics.mean(sizes_gap0) if sizes_gap0 else None),
         "mean_cluster_size_gap1": (statistics.mean(sizes_gap1) if sizes_gap1 else None),
+        "median_cluster_size_gap0": (
+            statistics.median(sizes_gap0) if sizes_gap0 else None
+        ),
+        "median_cluster_size_gap1": (
+            statistics.median(sizes_gap1) if sizes_gap1 else None
+        ),
         "share_disrupted_segments_in_multi_segment_incident_gap0": (
             disrupted_in_multi_gap0 / disrupted_total if disrupted_total else None
+        ),
+        "share_disrupted_segments_in_multi_segment_incident_gap1": (
+            disrupted_in_multi_gap1 / disrupted_total if disrupted_total else None
         ),
     }
 
 
-def _date_window(days: int) -> tuple[date, date]:
-    end = datetime.now(UTC).date()
-    start = end - timedelta(days=days - 1)
-    return start, end
+def _week_windows(start: date, end: date, *, days: int = 7) -> list[tuple[date, date]]:
+    """[start, end] split into `days`-day bins for a stability check — the
+    last bin is whatever's left over, never padded to a full window."""
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        bin_end = min(cursor + timedelta(days=days - 1), end)
+        windows.append((cursor, bin_end))
+        cursor = bin_end + timedelta(days=1)
+    return windows
+
+
+def premise_report(
+    ticks: list[tuple[int, list[SegmentKey]]],
+    topology: Topology,
+    start: date,
+    end: date,
+) -> dict[str, Any]:
+    """`measure_premise` pooled over [start, end] plus a per-week breakdown,
+    so a multi-week pooled number can be checked against week-to-week
+    stability instead of trusted on its own — the same worry that left the
+    first 8-day run (journal.md 2026-08-11) inconclusive."""
+    weekly: list[dict[str, Any]] = []
+    for week_start, week_end in _week_windows(start, end):
+        lo = int(
+            datetime.combine(week_start, datetime.min.time(), tzinfo=UTC).timestamp()
+        )
+        hi = int(
+            datetime.combine(
+                week_end + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+            ).timestamp()
+        )
+        week_ticks = [(ts, d) for ts, d in ticks if lo <= ts < hi]
+        weekly.append(
+            {
+                "start": week_start.isoformat(),
+                "end": week_end.isoformat(),
+                **measure_premise(week_ticks, topology),
+            }
+        )
+    return {"overall": measure_premise(ticks, topology), "weekly": weekly}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -586,11 +779,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Cluster disrupted segments into incidents against real "
         "archived movement data and report the measured clustering."
     )
+    parser.add_argument("--start-date", type=date.fromisoformat, default=None)
+    parser.add_argument("--end-date", type=date.fromisoformat, default=None)
     parser.add_argument("--days", type=int, default=8, help="trailing window")
     parser.add_argument("--max-gap", type=int, default=DEFAULT_MAX_GAP)
+    parser.add_argument(
+        "--baseline",
+        choices=("self", "published", "both"),
+        default="self",
+        help="self: build_segment_baseline over the fetched window (this "
+        "module's original behavior). published: score against the live "
+        "state/segment_params.json baseline instead. both: run and print "
+        "each, so the two can be compared directly.",
+    )
     args = parser.parse_args(argv)
 
-    start, end = _date_window(args.days)
+    today = datetime.now(UTC).date()
+    end = args.end_date or today
+    start = args.start_date or (end - timedelta(days=args.days - 1))
+
     cfg = load_config()
     client = make_client(cfg)
     print(f"fetching archived vehicle metrics {start}..{end}", file=sys.stderr)
@@ -601,45 +808,62 @@ def main(argv: Sequence[str] | None = None) -> int:
     topology = topology_from_successors(load_successors())
     print(f"{len(topology)} segments in topology", file=sys.stderr)
 
-    raw_calls = segment_ticks_from_vehicle_bodies(bodies)
-    ticks = _disrupted_ticks_from_calls(raw_calls)
-    print(f"{len(ticks)} reconstructed ticks", file=sys.stderr)
-
-    premise = measure_premise(ticks, topology)
-    print(json.dumps(premise, indent=2))
-
-    state: IncidentState | None = None
-    changes: list[RegimeChange] = []
-    max_size: dict[str, int] = defaultdict(int)
-    for observed_at, disrupted in ticks:
-        state, tick_changes = advance_incidents(
-            state, disrupted, topology, observed_at, max_gap=args.max_gap
+    variants: dict[str, list[tuple[int, Mapping[str, str]]]] = {}
+    if args.baseline in ("self", "both"):
+        variants["self"] = segment_ticks_from_vehicle_bodies(bodies)
+    if args.baseline in ("published", "both"):
+        published_doc = json.loads(
+            get_object_bytes(client, cfg.bucket, SEGMENT_PARAMS_KEY)
         )
-        changes.extend(tick_changes)
-        for iid, fp in state.footprints.items():
-            entry = state.regimes.get(iid)
-            if entry is not None and entry.state == _ACTIVE:
-                max_size[iid] = max(max_size[iid], len(fp))
-    final_state = state or IncidentState()
+        published = published_baseline_cells(published_doc)
+        print(
+            f"{len(published)} published baseline cells "
+            f"(trained_at={published_doc.get('trained_at')})",
+            file=sys.stderr,
+        )
+        variants["published"] = segment_ticks_with_baseline(bodies, published)
 
-    completed = [c for c in changes if c.new_state == _ENDED]
-    durations = [c.dwell_sec for c in completed]
-    still_open = open_incident_regimes(final_state)
-    incident_ids = {c.key for c in changes if c.new_state == _ENDED}
-    incident_ids |= {
-        iid for iid, entry in final_state.regimes.items() if entry.state == _ACTIVE
-    }
+    for name, raw_calls in variants.items():
+        ticks = _disrupted_ticks_from_calls(raw_calls)
+        print(f"baseline={name}: {len(ticks)} reconstructed ticks", file=sys.stderr)
+        report = premise_report(ticks, topology, start, end)
+        print(json.dumps({"baseline": name, **report}, indent=2))
 
-    report = {
-        "incident_count": len(incident_ids),
-        "completed_incidents": len(completed),
-        "still_open_incidents": len(still_open),
-        "median_duration_sec": statistics.median(durations) if durations else None,
-        "median_incident_size_segments": (
-            statistics.median(max_size.values()) if max_size else None
-        ),
-    }
-    print(json.dumps(report, indent=2))
+        state: IncidentState | None = None
+        changes: list[RegimeChange] = []
+        max_size: dict[str, int] = defaultdict(int)
+        for observed_at, disrupted in ticks:
+            state, tick_changes = advance_incidents(
+                state, disrupted, topology, observed_at, max_gap=args.max_gap
+            )
+            changes.extend(tick_changes)
+            for iid, fp in state.footprints.items():
+                entry = state.regimes.get(iid)
+                if entry is not None and entry.state == _ACTIVE:
+                    max_size[iid] = max(max_size[iid], len(fp))
+        final_state = state or IncidentState()
+
+        completed = [c for c in changes if c.new_state == _ENDED]
+        durations = [c.dwell_sec for c in completed]
+        still_open = open_incident_regimes(final_state)
+        incident_ids = {c.key for c in changes if c.new_state == _ENDED}
+        incident_ids |= {
+            iid for iid, entry in final_state.regimes.items() if entry.state == _ACTIVE
+        }
+
+        incident_report = {
+            "baseline": name,
+            "incident_count": len(incident_ids),
+            "completed_incidents": len(completed),
+            "still_open_incidents": len(still_open),
+            "median_duration_sec": (
+                statistics.median(durations) if durations else None
+            ),
+            "median_incident_size_segments": (
+                statistics.median(max_size.values()) if max_size else None
+            ),
+        }
+        print(json.dumps(incident_report, indent=2))
     return 0
 
 

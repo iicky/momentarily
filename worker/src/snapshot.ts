@@ -838,6 +838,11 @@ interface MovementRecoveryResult {
   p_normal_in_120: number;
 }
 
+// Movement states whose exit destination has actually been measured, so an
+// exit probability can honestly be read as P(normal). Anything outside this
+// table falls back to the alert arm rather than assuming an unobserved split.
+const MOVEMENT_SPLIT_MEASURED: Record<string, true> = { normal: true, disrupted: true };
+
 /**
  * Recovery + p_normal_in_H off the movement curve, conditioned on the
  * movement clock (elapsed = now - entered_at) — the SAME regime consumers see
@@ -848,9 +853,21 @@ interface MovementRecoveryResult {
  * dwell_movement is route-scope, all-cause (C2) — no trained split of "exits
  * to normal" vs "exits to a worse state" exists for the movement clock the
  * way the HMM transition matrix supplies one for the alert arm (see toNormal
- * below), so a disrupted/suspended cell's exit probability is read directly
- * as p_normal_in_H. A normal cell needs no such split: exits from normal are
- * never "to normal", so p_normal_in_H is the plain survival function.
+ * below). Measured instead of assumed (2026-08-11, murk exec +
+ * training.movement_backfill route-scope reconstruction): every completed
+ * disrupted-regime exit went to normal — 17/17 on the faithful
+ * published_condition source (2026-08-04..2026-08-12, 6 routes, no route
+ * below 100%) and 213/213 on the higher-volume vehicle-archive source
+ * (2026-06-21..2026-08-12, 19 routes). A disrupted cell's exit probability is
+ * therefore read directly as p_normal_in_H, and a normal cell needs no split
+ * at all: exits from normal are never "to normal", so p_normal_in_H is the
+ * plain survival function.
+ *
+ * suspended is deliberately NOT served here. It completed no route-scope
+ * episode in either window (n=0), and no observations is not evidence of a
+ * 100% return to normal — a route resuming from having no trains at all can
+ * plausibly come back degraded before it comes back normal. Those fall through
+ * to the alert arm, which has a trained transition matrix to split on.
  */
 function movementRecovery(
   trained: TrainedParams | null,
@@ -860,6 +877,7 @@ function movementRecovery(
   now: number,
 ): MovementRecoveryResult | null {
   if (enteredAt <= 0) return null;
+  if (MOVEMENT_SPLIT_MEASURED[state] !== true) return null;
   const cell = movementDwellFor(trained, routeId, state);
   if (cell?.curve_sec === undefined) return null;
   const curve = cell.curve_sec;

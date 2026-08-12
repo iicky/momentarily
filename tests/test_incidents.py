@@ -4,22 +4,31 @@ pieces live behind incidents.main() and are never exercised here."""
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterable
+from datetime import UTC, date, datetime, timedelta
 
+from training.hierarchical import PooledCell
 from training.incidents import (
     DEFAULT_MAX_GAP,
     IncidentState,
     SegmentKey,
+    _week_windows,  # pyright: ignore[reportPrivateUsage]
     advance_incidents,
     cluster_disrupted,
     fit_incident_duration,
+    measure_premise,
     open_incident_regimes,
     parse_topology,
     path_incident_durations,
+    premise_report,
+    published_baseline_cells,
     replay_incidents,
     route_of,
+    segment_ticks_with_baseline,
     topology_from_successors,
 )
+from training.movement_backfill import segment_ticks_from_vehicle_bodies
 from training.regime import RegimeChange
 
 TICK = 300
@@ -341,3 +350,159 @@ def test_path_incident_durations_ignores_incidents_off_the_path():
     result just because SOME segment somewhere is disrupted."""
     result = path_incident_durations([A, B], {X}, TOPOLOGY, {"F": _quantiles()})
     assert result == []
+
+
+# --- measure_premise ---
+
+
+def test_measure_premise_reports_gap0_and_gap1_side_by_side():
+    """A and C are one hop apart through B, which isn't disrupted: they
+    cluster at gap1 but not gap0 — same boundary as
+    test_gap_boundary_one_bridges_a_single_healthy_segment, checked through
+    the aggregate stats instead of cluster_disrupted directly."""
+    result = measure_premise([(t(0), [A, C])], TOPOLOGY)
+    assert result["ticks_with_2plus_disrupted"] == 1
+    assert result["ticks_with_adjacent_cluster_gap0"] == 0
+    assert result["ticks_with_adjacent_cluster_gap1"] == 1
+    assert result["share_ticks_adjacent_gap0"] == 0.0
+    assert result["share_ticks_adjacent_gap1"] == 1.0
+    assert result["mean_cluster_size_gap0"] == 1.0
+    assert result["mean_cluster_size_gap1"] == 2.0
+    assert result["median_cluster_size_gap0"] == 1
+    assert result["median_cluster_size_gap1"] == 2
+    assert result["share_disrupted_segments_in_multi_segment_incident_gap0"] == 0.0
+    assert result["share_disrupted_segments_in_multi_segment_incident_gap1"] == 1.0
+
+
+def test_measure_premise_ignores_ticks_with_fewer_than_two_disrupted():
+    result = measure_premise([(t(0), [A]), (t(1), [])], TOPOLOGY)
+    assert result["ticks_with_2plus_disrupted"] == 0
+
+
+def test_measure_premise_empty_ticks_returns_none_for_every_share():
+    result = measure_premise([], TOPOLOGY)
+    assert result["ticks_with_2plus_disrupted"] == 0
+    assert result["share_ticks_adjacent_gap0"] is None
+    assert result["share_ticks_adjacent_gap1"] is None
+    assert result["mean_cluster_size_gap0"] is None
+    assert result["median_cluster_size_gap1"] is None
+    assert result["share_disrupted_segments_in_multi_segment_incident_gap0"] is None
+
+
+# --- published_baseline_cells ---
+
+
+def test_published_baseline_cells_parses_the_state_segment_params_shape():
+    doc = {"cells": {"F|south|A0S": {"p0": 0.85, "n": 120}}}
+    cells = published_baseline_cells(doc)
+    cell = cells[("F", "south", "A0S")]
+    assert cell.p0 == 0.85
+    assert cell.n == 120
+    assert cell.source == "published"
+
+
+def test_published_baseline_cells_skips_keys_without_three_parts():
+    doc = {"cells": {"not-a-segment-key": {"p0": 0.5, "n": 1}}}
+    assert published_baseline_cells(doc) == {}
+
+
+def test_published_baseline_cells_empty_doc_is_empty():
+    assert published_baseline_cells({}) == {}
+
+
+# --- segment_ticks_with_baseline ---
+
+
+def _segment_body(
+    tick: int, transitions: dict[str, int], route: str = "F", direction: str = "south"
+) -> dict[str, object]:
+    return {
+        "observed_at": tick,
+        "rows": {route: {"by_direction": {direction: {"transitions": transitions}}}},
+    }
+
+
+def test_segment_ticks_with_baseline_uses_the_supplied_baseline_not_a_self_trained_one():
+    """4 ticks of {"A>A": 2} accumulate to 8 matched trips, 0 advanced, by the
+    window's last tick. At matched=8 the DISRUPTED_RATIO=0.5 posterior gate
+    trips for ANY p0 (post = 8*p0/(8+8) = 0.5*p0 exactly), so the call comes
+    down entirely to the significance test: (1-p0)**8 <= 0.05 needs
+    p0 >= ~0.259.
+
+    Self-training this single leaf on its own 8-count sample has no siblings
+    to pool against, so partially_pool (hierarchical.py) falls back to its
+    system default (mu=0.5, kappa=50): p0 = (50*0.5 + 0) / (50 + 8) = 25/58
+    ~= 0.431, which clears 0.259 => 'disrupted'. A published baseline with a
+    genuinely low p0=0.1 (a shuttle that's slow even when healthy) does NOT
+    clear 0.259 => abstains (None, dropped from the tick entirely). Same
+    bodies, same tick, opposite calls depending on which baseline is
+    supplied — proving segment_ticks_with_baseline actually scores against
+    the injected baseline, not one it quietly recomputes from `bodies`."""
+    bodies = [_segment_body(t(i), {"A>A": 2}) for i in range(4)]
+
+    self_ticks = segment_ticks_from_vehicle_bodies(bodies, window_ticks=4)
+    last_tick = self_ticks[-1][0]
+    assert dict(self_ticks)[last_tick]["F|south|A"] == "disrupted"
+
+    published_low = {
+        ("F", "south", "A"): PooledCell(
+            p0=0.1, raw=0.1, n=100, alpha=5.0, beta=45.0, source="published"
+        )
+    }
+    published_ticks = dict(
+        segment_ticks_with_baseline(bodies, published_low, window_ticks=4)
+    )
+    assert "F|south|A" not in published_ticks.get(last_tick, {})
+
+
+def test_segment_ticks_with_baseline_skips_leaves_missing_from_the_baseline():
+    bodies = [_segment_body(t(i), {"A>B": 2}) for i in range(2)]
+    ticks = segment_ticks_with_baseline(bodies, {}, window_ticks=2)
+    assert ticks == []
+
+
+# --- _week_windows / premise_report ---
+
+
+def test_week_windows_bins_by_seven_days_with_a_short_final_bin():
+    windows = _week_windows(date(2026, 1, 1), date(2026, 1, 10))
+    assert windows == [
+        (date(2026, 1, 1), date(2026, 1, 7)),
+        (date(2026, 1, 8), date(2026, 1, 10)),
+    ]
+
+
+def test_week_windows_covers_the_53_day_archive_range_contiguously():
+    start, end = date(2026, 6, 21), date(2026, 8, 12)
+    windows = _week_windows(start, end)
+    assert windows[0][0] == start
+    assert windows[-1][1] == end
+    for prev, cur in itertools.pairwise(windows):
+        assert cur[0] == prev[1] + timedelta(days=1)
+    assert all((b - a).days <= 6 for a, b in windows)
+    assert sum((b - a).days + 1 for a, b in windows) == (end - start).days + 1
+
+
+def _epoch(d: date, hour: int = 12) -> int:
+    return int(datetime(d.year, d.month, d.day, hour, tzinfo=UTC).timestamp())
+
+
+def test_premise_report_splits_ticks_into_weekly_bins_and_pools_overall():
+    start, end = date(2026, 1, 1), date(2026, 1, 10)
+    week1_tick = (_epoch(date(2026, 1, 2)), [A, B])  # adjacent at gap0
+    week2_tick = (_epoch(date(2026, 1, 9)), [A, C])  # not adjacent at gap0
+    report = premise_report([week1_tick, week2_tick], TOPOLOGY, start, end)
+
+    assert report["overall"]["ticks_with_2plus_disrupted"] == 2
+    assert report["overall"]["ticks_with_adjacent_cluster_gap0"] == 1
+
+    assert len(report["weekly"]) == 2
+    week1, week2 = report["weekly"]
+    assert week1["start"] == "2026-01-01"
+    assert week1["end"] == "2026-01-07"
+    assert week1["ticks_with_2plus_disrupted"] == 1
+    assert week1["ticks_with_adjacent_cluster_gap0"] == 1
+    assert week2["start"] == "2026-01-08"
+    assert week2["end"] == "2026-01-10"
+    assert week2["ticks_with_2plus_disrupted"] == 1
+    assert week2["ticks_with_adjacent_cluster_gap0"] == 0

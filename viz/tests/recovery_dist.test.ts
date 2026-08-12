@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  jumpFraction,
   recoveryDistReport,
   recoveryVerdict,
   type RecoveryDistReport,
@@ -108,4 +109,49 @@ test("recoveryVerdict: U-shaped PIT reads overconfident", () => {
   const v = recoveryVerdict(report([40, 5, 3, 2, 1, 1, 2, 3, 5, 38], 0.5, 20, -0.2));
   assert.equal(v.verdict, "Overconfident");
   assert.equal(v.tone, "warn");
+});
+
+test("recoveryDistReport: absent predLeft leaves the PIT unrandomized (pins the pre-correction numbers)", () => {
+  // Three continuous cells, no predLeft on any sample — this must reproduce
+  // exactly the histogram/meanPit the un-corrected code computed, byte for byte.
+  const samples: RecoveryDistSample[] = [
+    sample("r1:0", 1, 1), // idx 1, u = f[1] = 1
+    sample("r2:0", 2, 3), // idx 2, u = f[2] = 0
+    sample("r3:0", 4, 0), // idx 4, u = f[4] = 1
+  ];
+  const r = recoveryDistReport(samples);
+  assert.equal(r.meanPit, 2 / 3);
+  assert.deepEqual(r.pit, [1, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+});
+
+test("recoveryDistReport: predLeft < u lands strictly inside [predLeft, u)", () => {
+  const s: RecoveryDistSample = {
+    regimeKey: "atomic:7",
+    actualMin: 2,
+    predCurve: stepCurve(2), // f = [0, 0, 1, 1, 1], u = f[2] = 1
+    predLeft: 0,
+  };
+  const r = recoveryDistReport([s]);
+  const frac = jumpFraction("atomic:7");
+  // n === 1, so the mean is exactly the one randomized PIT value.
+  assert.equal(r.meanPit, frac);
+  assert.ok(r.meanPit >= 0 && r.meanPit < 1, `expected pit in [0, 1), got ${r.meanPit}`);
+});
+
+test("jumpFraction: deterministic across repeated calls for the same regime key", () => {
+  const key = "route-9:1700000000";
+  const a = jumpFraction(key);
+  const b = jumpFraction(key);
+  assert.equal(a, b);
+  assert.ok(a >= 0 && a < 1);
+});
+
+// Hand-derived from the FNV-1a 32-bit algorithm mirrored from
+// training/recovery_dist.py's _jump_fraction (h0 = 0x811c9dc5, prime =
+// 0x01000193, folded over the UTF-8 bytes of "route-42:12345") — the loop
+// ends at h = 3326733886 (0xc649ee3e), so h / 2**32 = 0.774565591942519.
+// If this ever drifts, the JS and Python randomized-PIT placements have
+// silently diverged.
+test("jumpFraction: pins the FNV-1a value for a known key (Python parity)", () => {
+  assert.equal(jumpFraction("route-42:12345"), 0.774565591942519);
 });

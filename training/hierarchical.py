@@ -77,6 +77,13 @@ def robust_concentration(rates: list[float]) -> float | None:
     terminals that dwell, transfer points — inflates neither, leaving a
     concentration that reflects how tightly the ordinary children cluster. Returns
     None when there are too few children to estimate a spread.
+
+    Sound here because a leaf clears MIN_LEAF_N=20 matched trials before it votes,
+    so binomial sampling noise is small next to the real between-leaf spread. Do
+    not reuse this at single-digit sample sizes: there the observed spread is
+    mostly sampling noise, the inversion reads it as genuine dispersion, and the
+    estimator returns the weakest possible prior exactly when pooling is needed
+    most. pooled_dwell._atom_concentration is the noise-corrected variant.
     """
     if len(rates) < MIN_PARENT_LEAVES:
         return None

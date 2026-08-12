@@ -47,6 +47,8 @@ from training.dwell import (
     OpenRegimes,
     RegimeTransition,
     dwell_samples_by_cell,
+    mixture_quantile,
+    mixture_survival,
 )
 from training.survival import (
     ParametricFit,
@@ -93,6 +95,46 @@ _INV_PHI = (math.sqrt(5.0) - 1.0) / 2.0
 
 # MAD -> standard-deviation scale factor for a normal distribution.
 _MAD_TO_STD = 1.4826
+
+# --- Point-mass ("atom") component -------------------------------------------
+#
+# Disrupted movement regimes overwhelmingly last exactly one publisher tick:
+# measured over the archive, 70.4% of completed disrupted episodes are one tick
+# and only 14 distinct durations occur at all. A single continuous log-logistic
+# cannot serve that. Front-loading enough mass for the one-tick majority leaves
+# too little for the multi-tick minority, and the PIT histogram splits into the
+# two lobes that behaviour predicts — every one-tick episode reading "too
+# pessimistic", every longer one reading "too optimistic". More training days do
+# not help (a causal 7/14/21/28/35-day sweep is flat) because the defect is the
+# model's shape, not its sample size.
+#
+# So the cell publishes a point mass at one tick alongside a log-logistic fitted
+# on the T > one-tick subpopulation alone.
+
+# A cell needs this many informative observations before its own atom rate votes
+# on the population centre. Mirrors MIN_VOTER_EVENTS above: being pooled and
+# voting are separate.
+ATOM_MIN_VOTER_OBS = 3
+
+# Beta concentration clamps for the atom rate, in pseudo-observations. The
+# ceiling is high on purpose: when the routes are statistically indistinguishable
+# it should collapse to the population rate, and at n_r of 5-30 episodes that
+# takes a concentration of order 100, not 20. The floor is the weakest
+# non-degenerate prior, reached only when the routes genuinely differ by more
+# than sampling noise can explain.
+ATOM_KAPPA_FLOOR = 1.0
+ATOM_KAPPA_CEIL = 200.0
+
+# Below this the point mass is not worth a discontinuity: the continuous body
+# already represents a handful of short episodes perfectly well, and publishing
+# a tiny atom would spend a jump discontinuity on noise. A bright line, not a
+# quantile of what was observed.
+ATOM_MIN_P = 0.05
+
+# Keep the published rate strictly inside (0, 1) — consumers treat a boundary
+# value as "no usable mixture", and a degenerate atom would leave the tail with
+# no mass to normalise against.
+ATOM_P_FLOOR = 1e-3
 
 
 @dataclass(frozen=True)
@@ -144,25 +186,31 @@ def _golden_section_max(
     return (a + b) / 2.0
 
 
-def _mle_log_scale(samples: list[DwellSample], shape: float) -> float:
+def _mle_log_scale(
+    samples: list[DwellSample], shape: float, truncate_at: float = 0.0
+) -> float:
     """Unpenalised MLE of log(scale) at fixed shape. Runs to the upper bound for
     a route with no completed exits — which is precisely why the MAP variant
     below is what we publish."""
     return _golden_section_max(
-        lambda ls: loglogistic_loglik(samples, shape, math.exp(ls)),
+        lambda ls: loglogistic_loglik(samples, shape, math.exp(ls), truncate_at),
         _LOG_SCALE_LO,
         _LOG_SCALE_HI,
     )
 
 
 def _map_log_scale(
-    samples: list[DwellSample], shape: float, parent_ls: float, tau: float
+    samples: list[DwellSample],
+    shape: float,
+    parent_ls: float,
+    tau: float,
+    truncate_at: float = 0.0,
 ) -> float:
     """MAP log(scale): the route's right-censored log-likelihood plus a Normal
     log-prior centred on the population log-scale."""
     return _golden_section_max(
         lambda ls: (
-            loglogistic_loglik(samples, shape, math.exp(ls))
+            loglogistic_loglik(samples, shape, math.exp(ls), truncate_at)
             - 0.5 * ((ls - parent_ls) / tau) ** 2
         ),
         _LOG_SCALE_LO,
@@ -174,11 +222,16 @@ def partially_pooled_dwell(
     samples_by_route: dict[str, list[DwellSample]],
     *,
     min_voter_events: int = MIN_VOTER_EVENTS,
+    truncate_at: float = 0.0,
 ) -> dict[str, PooledDwellFit]:
     """Fit a shared-shape log-logistic with a per-route partially-pooled scale.
 
     Returns one fit per route that has any observation at all, censored ones
     included. Empty when the input carries no samples.
+
+    `truncate_at` fits the left-truncated likelihood throughout — the shared
+    shape, every leaf MLE and every MAP scale — which is what makes this the
+    tail component of an atom mixture rather than a fit to the whole population.
     """
     pooled = [s for samples in samples_by_route.values() for s in samples]
     if not pooled:
@@ -187,12 +240,14 @@ def partially_pooled_dwell(
     # Shape is estimated once on everything. A per-route shape is unidentifiable
     # at one or two observations, and the log-rank test located the between-route
     # difference in level, not curvature.
-    shared = fit_loglogistic(pooled)
+    shared = fit_loglogistic(pooled, truncate_at)
     if shared is None:
         return {}
     shape = shared.shape
 
-    leaf_ls = {r: _mle_log_scale(s, shape) for r, s in samples_by_route.items()}
+    leaf_ls = {
+        r: _mle_log_scale(s, shape, truncate_at) for r, s in samples_by_route.items()
+    }
     n_events = {
         r: sum(1 for _d, completed in s if completed)
         for r, s in samples_by_route.items()
@@ -214,9 +269,9 @@ def partially_pooled_dwell(
 
     out: dict[str, PooledDwellFit] = {}
     for route, samples in samples_by_route.items():
-        ls = _map_log_scale(samples, shape, parent_ls, tau)
+        ls = _map_log_scale(samples, shape, parent_ls, tau, truncate_at)
         scale = math.exp(ls)
-        loglik = loglogistic_loglik(samples, shape, scale)
+        loglik = loglogistic_loglik(samples, shape, scale, truncate_at)
         n_ev = n_events[route]
         n_cens = len(samples) - n_ev
         out[route] = PooledDwellFit(
@@ -274,6 +329,156 @@ def cell_from_fit(pooled: PooledDwellFit) -> DwellQuantiles:
     )
 
 
+@dataclass(frozen=True)
+class AtomFit:
+    """One cell's point-mass estimate, with the counts that produced it."""
+
+    route: str
+    p: float  # shrunk, published
+    raw: float  # this cell's own rate, before shrinkage
+    n_atom: int  # completed exits at exactly the atom
+    n_informative: int  # observations that can distinguish atom from not
+    parent_p: float
+    source: str  # "own" when the cell cleared the voter gate, else "pooled"
+
+
+def _atom_counts(samples: list[DwellSample], atom_sec: float) -> tuple[int, int]:
+    """(atoms, informative) for one cell.
+
+    An observation is informative about the point mass only if it can tell atom
+    from not-atom. A completed exit does that either way. A right-censored
+    observation does it only once it has already outlived the atom: a regime
+    censored at or below one tick could still turn out to be a one-tick episode,
+    so counting it as a non-atom would bias the rate down by exactly the regimes
+    that were open at the window boundary.
+    """
+    n_atom = 0
+    n_informative = 0
+    for raw_d, completed in samples:
+        d = float(raw_d)
+        if completed and d <= atom_sec:
+            n_atom += 1
+            n_informative += 1
+        elif d > atom_sec:
+            n_informative += 1
+    return n_atom, n_informative
+
+
+def _atom_concentration(rates_and_n: list[tuple[float, int]], parent_p: float) -> float:
+    """Beta-Binomial concentration, corrected for binomial sampling noise.
+
+    The naive moment inversion (hierarchical.robust_concentration) reads the
+    observed spread of per-cell rates as if it were all real between-cell
+    variation. At twenty-plus trials per cell that is close enough. At the five
+    episodes a dwell cell carries it is badly wrong: a route that saw 1 of 1 and
+    a route that saw 3 of 5 look wildly dispersed while being perfectly
+    consistent with one shared rate, so the estimator concludes "these routes
+    differ" and refuses to pool exactly where pooling matters most. Measured, it
+    returned the kappa floor and let per-route rates run to 0.96, scoring worse
+    than using one global rate for everything.
+
+    Var(observed) = Var(between) + E[p(1-p)/n], so subtract the sampling term
+    before inverting. When nothing survives the subtraction the routes are
+    statistically indistinguishable and the answer is to pool hard.
+    """
+    if len(rates_and_n) < 2:
+        return ATOM_KAPPA_CEIL
+    rates = [r for r, _n in rates_and_n]
+    spread = parent_p * (1.0 - parent_p)
+    if spread <= 0.0:
+        return ATOM_KAPPA_CEIL
+    observed_var = statistics.variance(rates)
+    sampling_var = statistics.fmean([spread / n for _r, n in rates_and_n])
+    between = observed_var - sampling_var
+    if between <= 0.0:
+        return ATOM_KAPPA_CEIL
+    return min(max(spread / between - 1.0, ATOM_KAPPA_FLOOR), ATOM_KAPPA_CEIL)
+
+
+def atom_fits(
+    samples_by_route: dict[str, list[DwellSample]],
+    atom_sec: float,
+    *,
+    min_voter_obs: int = ATOM_MIN_VOTER_OBS,
+) -> dict[str, AtomFit]:
+    """Per-route point-mass rate, partially pooled toward the population rate.
+
+    The binary analogue of the scale estimator above, but it departs from that
+    function's conventions in one place on purpose. The scale takes one vote per
+    route so that flappy routes cannot drag the population centre; the atom
+    centre is the ratio of totals instead. A median of per-route RATIOS is
+    biased upward here because the denominators are tiny — a route that saw one
+    episode and it was one tick votes 1.0 with the same weight as a route that
+    saw thirty. Measured on the same window, the median of ratios read 0.789
+    against a true pooled rate of 0.733, and shrinking every cell toward that
+    inflated centre made the published forecast optimistic.
+    """
+    counts = {r: _atom_counts(s, atom_sec) for r, s in samples_by_route.items()}
+    total_atom = sum(k for k, _n in counts.values())
+    total_informative = sum(n for _k, n in counts.values())
+    if total_informative == 0:
+        return {}
+    parent_p = total_atom / total_informative
+
+    voters = [(k / n, n) for k, n in counts.values() if n >= min_voter_obs and n > 0]
+    kappa = _atom_concentration(voters, parent_p)
+
+    out: dict[str, AtomFit] = {}
+    for route, (k, n) in counts.items():
+        p = (kappa * parent_p + k) / (kappa + n) if n > 0 else parent_p
+        out[route] = AtomFit(
+            route=route,
+            p=min(max(p, ATOM_P_FLOOR), 1.0 - ATOM_P_FLOOR),
+            raw=k / n if n > 0 else parent_p,
+            n_atom=k,
+            n_informative=n,
+            parent_p=parent_p,
+            source="own" if n >= min_voter_obs else "pooled",
+        )
+    return out
+
+
+def mixture_cell(
+    pooled: PooledDwellFit, atom: AtomFit, atom_sec: int
+) -> DwellQuantiles:
+    """Render an atom + truncated-log-logistic fit into a DwellQuantiles cell.
+
+    Every summary field describes the MIXTURE, not the tail component alone —
+    the tail is conditional on T > atom_sec and would badly overstate the
+    quantiles on its own. `curve_sec` becomes a run of equal knots across the
+    atom, which is simply what the quantile function of a distribution with a
+    point mass looks like, and keeps the inverse path (remaining-time quantiles)
+    correct for a reader that has the curve but not the mixture.
+    """
+    fit = pooled.fit
+    shape, scale, p = fit.shape, fit.scale, atom.p
+
+    def cdf_at(t: float) -> float:
+        return 1.0 - mixture_survival(t, shape, scale, p, atom_sec)
+
+    def q_at(u: float) -> int:
+        return round(mixture_quantile(u, shape, scale, p, atom_sec))
+
+    curve = [q_at(min(i / (CURVE_POINTS - 1), 0.999)) for i in range(CURVE_POINTS)]
+    for i in range(1, len(curve)):
+        curve[i] = max(curve[i], curve[i - 1])
+
+    return DwellQuantiles(
+        n=pooled.n_events + atom.n_atom,
+        n_censored=pooled.n_censored,
+        q25_sec=q_at(0.25),
+        median_sec=q_at(0.50),
+        q75_sec=q_at(0.75),
+        recover_by_30=cdf_at(1800),
+        recover_by_60=cdf_at(3600),
+        recover_by_120=cdf_at(7200),
+        curve_sec=curve,
+        tail_ll=[shape, scale],
+        atom_p=p,
+        atom_sec=atom_sec,
+    )
+
+
 def pooled_dwell_cells(
     transitions: Sequence[RegimeTransition],
     *,
@@ -281,6 +486,7 @@ def pooled_dwell_cells(
     window_end: int | None = None,
     min_voter_events: int = MIN_VOTER_EVENTS,
     open_regimes: OpenRegimes | None = None,
+    atom_sec: int | None = None,
 ) -> dict[str, DwellQuantiles]:
     """Partially-pooled {route: DwellQuantiles} for one regime state.
 
@@ -294,10 +500,40 @@ def pooled_dwell_cells(
     route with no transitions in the window supplies nothing and never reaches
     the pooling step at all — the steadiest routes, which are the ones this
     estimator exists to serve. Pass the prediction-derived map to cover them.
+
+    With `atom_sec`, the state is a CANDIDATE for the point-mass mixture — the
+    data still decides. The population's own one-tick rate has to clear
+    ATOM_MIN_P before any cell publishes an atom, and the choice is made once
+    for the whole state rather than per route: a state either has a spike in it
+    or it does not, and mixing two model forms inside one state would make the
+    published cells incomparable. `normal` dwells are hours long, so it falls
+    through to the continuous path untouched.
     """
     by_cell = dwell_samples_by_cell(
         transitions, window_end=window_end, open_regimes=open_regimes
     )
     samples_by_route = {r: s for (r, st), s in by_cell.items() if st == state}
+
+    if atom_sec is not None:
+        atoms = atom_fits(samples_by_route, atom_sec)
+        tail_by_route = {
+            r: [(d, c) for d, c in s if float(d) > atom_sec]
+            for r, s in samples_by_route.items()
+        }
+        n_tail = sum(len(s) for s in tail_by_route.values())
+        population_p = next(iter(atoms.values())).parent_p if atoms else 0.0
+        if population_p >= ATOM_MIN_P and n_tail >= 2:
+            tail_fits = partially_pooled_dwell(
+                tail_by_route,
+                min_voter_events=min_voter_events,
+                truncate_at=float(atom_sec),
+            )
+            if tail_fits:
+                return {
+                    route: mixture_cell(fit, atoms[route], atom_sec)
+                    for route, fit in tail_fits.items()
+                    if route in atoms
+                }
+
     fits = partially_pooled_dwell(samples_by_route, min_voter_events=min_voter_events)
     return {route: cell_from_fit(f) for route, f in fits.items()}

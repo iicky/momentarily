@@ -192,6 +192,43 @@ describe('parseTrainedParams', () => {
     expect(dwellForRouteState(result, 'A', 'disrupted')!.curve_sec).toEqual(curve);
   });
 
+  test('round-trips atom_p, atom_sec, and n_censored instead of stripping them', () => {
+    const route = wellFormedRoute();
+    const curve = Array.from({ length: 21 }, (_, i) => (i < 14 ? 300 : 300 * (i - 12)));
+    route.dwell_quantiles = {
+      disrupted: {
+        n: 40,
+        n_censored: 5,
+        q25_sec: 300,
+        median_sec: 300,
+        q75_sec: 1800,
+        curve_sec: curve,
+        tail_ll: [1.8, 900],
+        atom_p: 0.704,
+        atom_sec: 300,
+      },
+    };
+    const result = parseTrainedParams(wrapper({ A: route }));
+    const cell = dwellForRouteState(result, 'A', 'disrupted');
+    expect(cell).not.toBeNull();
+    expect(cell!.n_censored).toBe(5);
+    expect(cell!.atom_p).toBe(0.704);
+    expect(cell!.atom_sec).toBe(300);
+  });
+
+  test('cells without atom_p/atom_sec/n_censored parse with those fields undefined (back-compat)', () => {
+    const route = wellFormedRoute();
+    route.dwell_quantiles = {
+      disrupted: { n: 12, q25_sec: 1200, median_sec: 2400, q75_sec: 4800 },
+    };
+    const result = parseTrainedParams(wrapper({ A: route }));
+    const cell = dwellForRouteState(result, 'A', 'disrupted');
+    expect(cell).not.toBeNull();
+    expect(cell!.n_censored).toBeUndefined();
+    expect(cell!.atom_p).toBeUndefined();
+    expect(cell!.atom_sec).toBeUndefined();
+  });
+
   test('drops dwell entry with malformed quantile shape but keeps the route', () => {
     const route = wellFormedRoute();
     route.dwell_quantiles = {

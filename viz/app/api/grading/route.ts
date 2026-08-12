@@ -47,7 +47,12 @@ interface TrainedParamsDoc {
       transition?: number[][];
       dwell_quantiles?: Record<
         string,
-        { curve_sec?: number[]; tail_ll?: [number, number] }
+        {
+          curve_sec?: number[];
+          tail_ll?: [number, number];
+          atom_p?: number;
+          atom_sec?: number;
+        }
       >;
     }
   >;
@@ -231,10 +236,39 @@ export async function GET(req: NextRequest) {
       const cell = params?.routes?.[o.route]?.dwell_quantiles?.[o.condition];
       if (!cell?.curve_sec || cell.curve_sec.length < 2) continue;
       const elapsedSec = Math.max(0, o.ts - o.regimeEnteredAt);
+      // Mixture cells still publish curve_sec (see viz/lib/dwell.ts), but the
+      // closed-form atom path supersedes it — only fall back to the curve
+      // when the atom fields are missing or malformed.
+      const atom =
+        cell.atom_p !== undefined &&
+        cell.atom_sec !== undefined &&
+        cell.atom_p > 0 &&
+        cell.atom_p < 1
+          ? { p: cell.atom_p, sec: cell.atom_sec }
+          : undefined;
+      // Where the jump sits differs from training/scorecard.py's producer, and
+      // the difference is easy to get wrong. That grader scores each episode
+      // once from onset, so the atom lands at the realized duration itself.
+      // Here every forecast tick is graded, `actualMin` is the time REMAINING
+      // from that tick (recoveryOutcomes: (nn - pr.ts) / 60), and the predicted
+      // curve is conditioned on having already survived elapsedSec. So the jump
+      // is at atom.sec - elapsedSec in remaining-time terms, i.e. it is the
+      // TOTAL dwell that has to land on the atom.
+      const totalSec = elapsedSec + o.actualMin * 60;
+      // Once the regime has outlived the atom there is no jump left to spread
+      // across: the atom cancels out of the conditional and the curve is
+      // continuous from here on, so these outcomes must be left alone.
+      const predLeft =
+        atom !== undefined &&
+        elapsedSec < atom.sec &&
+        Math.abs(totalSec - atom.sec) < 1.0
+          ? 0.0
+          : undefined;
       recoverySamples.push({
-        predCurve: predictedRecoveryCurve(elapsedSec, cell.curve_sec, cell.tail_ll),
+        predCurve: predictedRecoveryCurve(elapsedSec, cell.curve_sec, cell.tail_ll, atom),
         actualMin: o.actualMin,
         regimeKey: `${o.route}:${o.regimeEnteredAt}`,
+        predLeft,
       });
     }
     const recoveryDist = recoveryDistReport(recoverySamples);

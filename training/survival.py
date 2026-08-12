@@ -106,8 +106,21 @@ def weibull_loglik(samples: list[DwellSample], shape: float, scale: float) -> fl
     return ll
 
 
-def loglogistic_loglik(samples: list[DwellSample], shape: float, scale: float) -> float:
-    """Right-censored log-logistic log-likelihood."""
+def loglogistic_loglik(
+    samples: list[DwellSample],
+    shape: float,
+    scale: float,
+    truncate_at: float = 0.0,
+) -> float:
+    """Right-censored log-logistic log-likelihood.
+
+    `truncate_at` fits the distribution LEFT-TRUNCATED at that duration: every
+    observation is conditioned on having exceeded it, which divides each
+    likelihood term by S(truncate_at). Used to fit the tail of an atom mixture
+    on the T > atom_sec subpopulation alone, so the point mass and the tail do
+    not both try to explain the same episodes. The caller is responsible for
+    passing only samples that actually exceed the truncation point.
+    """
     if shape <= 0 or scale <= 0:
         return -math.inf
     ll = 0.0
@@ -119,6 +132,10 @@ def loglogistic_loglik(samples: list[DwellSample], shape: float, scale: float) -
             ll += math.log(shape) + math.log(z) - math.log(t) - 2.0 * math.log1p(z)
         else:
             ll -= math.log1p(z)
+    if truncate_at > 0.0 and samples:
+        # -n log S(tau); S = 1/(1+z_tau) so -log S = log1p(z_tau).
+        z_tau = (truncate_at / scale) ** shape
+        ll += len(samples) * math.log1p(z_tau)
     return ll
 
 
@@ -237,9 +254,14 @@ def _nelder_mead(
     return simplex[best_idx]
 
 
-def fit_loglogistic(samples: list[DwellSample]) -> ParametricFit | None:
+def fit_loglogistic(
+    samples: list[DwellSample], truncate_at: float = 0.0
+) -> ParametricFit | None:
     """MLE log-logistic fit via Nelder-Mead on (log scale, log shape). None if
-    there are no events to anchor the fit."""
+    there are no events to anchor the fit.
+
+    `truncate_at` fits the left-truncated likelihood (see loglogistic_loglik) —
+    the tail component of an atom mixture, conditioned on T > truncate_at."""
     events = [max(float(t), _MIN_DURATION) for t, c in samples if c]
     d = len(events)
     if d == 0 or len(samples) < 2:
@@ -251,12 +273,12 @@ def fit_loglogistic(samples: list[DwellSample]) -> ParametricFit | None:
 
     def neg_ll(theta: list[float]) -> float:
         scale, shape = math.exp(theta[0]), math.exp(theta[1])
-        return -loglogistic_loglik(samples, shape, scale)
+        return -loglogistic_loglik(samples, shape, scale, truncate_at)
 
     theta = _nelder_mead(neg_ll, [math.log(scale0), 0.0])
     scale, shape = math.exp(theta[0]), math.exp(theta[1])
 
-    loglik = loglogistic_loglik(samples, shape, scale)
+    loglik = loglogistic_loglik(samples, shape, scale, truncate_at)
     return ParametricFit(
         family="loglogistic",
         shape=shape,

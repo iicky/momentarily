@@ -1,0 +1,2172 @@
+{
+  "cases": [
+    {
+      "label": "dwell_cdf_below_first_knot",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "x": 250.0
+      },
+      "expected": 0.0
+    },
+    {
+      "label": "dwell_cdf_at_first_knot",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "x": 300.0
+      },
+      "expected": 0.0
+    },
+    {
+      "label": "dwell_cdf_at_interior_knot",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "x": 1500.0
+      },
+      "expected": 0.5
+    },
+    {
+      "label": "dwell_cdf_between_knots",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "x": 1600.0
+      },
+      "expected": 0.525
+    },
+    {
+      "label": "dwell_cdf_above_last_knot",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "x": 5100.0
+      },
+      "expected": 1.0
+    },
+    {
+      "label": "dwell_cdf_repeated_knot_at_flat_run",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "x": 300.0
+      },
+      "expected": 0.65
+    },
+    {
+      "label": "dwell_cdf_repeated_knot_just_above_flat_run",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "x": 350.0
+      },
+      "expected": 0.675
+    },
+    {
+      "label": "dwell_cdf_repeated_knot_between_post_flat_knots",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "x": 475.0
+      },
+      "expected": 0.725
+    },
+    {
+      "label": "dwell_cdf_repeated_knot_at_last_knot",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "x": 2100.0
+      },
+      "expected": 1.0
+    },
+    {
+      "label": "dwell_cdf_repeated_knot_above_last_knot",
+      "fn": "dwell_cdf",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "x": 2200.0
+      },
+      "expected": 1.0
+    },
+    {
+      "label": "atom_boundary_survival_at_atom_sec",
+      "fn": "mixture_survival",
+      "inputs": {
+        "t": 300.0,
+        "shape": 1.4,
+        "scale": 1500.0,
+        "atom_p": 0.688,
+        "atom_sec": 300.0
+      },
+      "expected": 0.31200000000000006
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_0_horizon_1800",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.849493016149324
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_0_horizon_3600",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.9217549452786399
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_0_horizon_7200",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 7200.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.965486010465056
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_150_horizon_1800",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 150.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.8589194442674984
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_150_horizon_3600",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 150.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.9251578478093612
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_150_horizon_7200",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 150.0,
+        "horizon_sec": 7200.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.9663722974167206
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_300_horizon_1800",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 300.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.5752530542940885
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_300_horizon_3600",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 300.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.7702733665759458
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_300_horizon_7200",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 300.0,
+        "horizon_sec": 7200.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.8949388878238493
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_301_horizon_1800",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 301.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.5752388286836062
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_301_horizon_3600",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 301.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.7702367115207194
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_301_horizon_7200",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 301.0,
+        "horizon_sec": 7200.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.8949099962989433
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_900_horizon_1800",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 900.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.5455990704870546
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_900_horizon_3600",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 900.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.7366976930699148
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_900_horizon_7200",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 900.0,
+        "horizon_sec": 7200.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.8716402044753578
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_7200_horizon_1800",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 7200.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.24811688389297137
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_7200_horizon_3600",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 7200.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.40745190087801375
+    },
+    {
+      "label": "atom_p_leave_by_elapsed_7200_horizon_7200",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 7200.0,
+        "horizon_sec": 7200.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.5959502429467585
+    },
+    {
+      "label": "no_atom_p_leave_by_inside_curve",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.7,
+          900.0
+        ],
+        "atom": null
+      },
+      "expected": 0.575
+    },
+    {
+      "label": "no_atom_p_leave_by_near_curve_end",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 4950.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.7,
+          900.0
+        ],
+        "atom": null
+      },
+      "expected": 1.0
+    },
+    {
+      "label": "no_atom_p_leave_by_past_curve_with_tail",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 5500.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": [
+          1.7,
+          900.0
+        ],
+        "atom": null
+      },
+      "expected": 0.5640939450278795
+    },
+    {
+      "label": "no_atom_p_leave_by_past_curve_without_tail",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 5500.0,
+        "horizon_sec": 3600.0,
+        "tail_ll": null,
+        "atom": null
+      },
+      "expected": 0.22674225951680937
+    },
+    {
+      "label": "invalid_atom_p_zero",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.0,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_p_zero_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.0,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_p_one",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 1.0,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_p_one_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 1.0,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_p_negative",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": -0.2,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_p_negative_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": -0.2,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_p_above_one",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 1.4,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_p_above_one_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 1.4,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_sec_zero",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 0.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_sec_zero_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 0.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_sec_negative",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": -300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_sec_negative_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": -300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_tail_shape_zero",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          0.0,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_tail_shape_zero_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          0.0,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_tail_scale_zero",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": [
+          1.4,
+          0.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_tail_scale_zero_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          0.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "invalid_atom_without_tail",
+      "fn": "p_leave_by",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "horizon_sec": 1800.0,
+        "tail_ll": null,
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 0.97
+    },
+    {
+      "label": "invalid_atom_without_tail_remaining_quantile",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": null,
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "mixture_quantile_u_below_atom_p",
+      "fn": "mixture_quantile",
+      "inputs": {
+        "u": 0.588,
+        "shape": 1.4,
+        "scale": 1500.0,
+        "atom_p": 0.688,
+        "atom_sec": 300.0
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "mixture_quantile_u_at_atom_p",
+      "fn": "mixture_quantile",
+      "inputs": {
+        "u": 0.688,
+        "shape": 1.4,
+        "scale": 1500.0,
+        "atom_p": 0.688,
+        "atom_sec": 300.0
+      },
+      "expected": 300.0
+    },
+    {
+      "label": "mixture_quantile_u_above_atom_p",
+      "fn": "mixture_quantile",
+      "inputs": {
+        "u": 0.7879999999999999,
+        "shape": 1.4,
+        "scale": 1500.0,
+        "atom_p": 0.688,
+        "atom_sec": 300.0
+      },
+      "expected": 1073.8507847835417
+    },
+    {
+      "label": "atom_conditional_remaining_quantile_q_0.25",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 900.0,
+        "q": 0.25,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 584.4187994345368
+    },
+    {
+      "label": "atom_conditional_remaining_quantile_q_0.5",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 900.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 1541.84337896036
+    },
+    {
+      "label": "atom_conditional_remaining_quantile_q_0.75",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          300,
+          400,
+          550,
+          700,
+          900,
+          1200,
+          1600,
+          2100
+        ],
+        "elapsed_sec": 900.0,
+        "q": 0.75,
+        "tail_ll": [
+          1.4,
+          1500.0
+        ],
+        "atom": {
+          "p": 0.688,
+          "sec": 300.0
+        }
+      },
+      "expected": 3805.89922500151
+    },
+    {
+      "label": "no_atom_conditional_remaining_quantile_q_0.25",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.25,
+        "tail_ll": [
+          1.7,
+          900.0
+        ],
+        "atom": null
+      },
+      "expected": 720.0
+    },
+    {
+      "label": "no_atom_conditional_remaining_quantile_q_0.5",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.5,
+        "tail_ll": [
+          1.7,
+          900.0
+        ],
+        "atom": null
+      },
+      "expected": 1500.0
+    },
+    {
+      "label": "no_atom_conditional_remaining_quantile_q_0.75",
+      "fn": "conditional_remaining_quantile",
+      "inputs": {
+        "curve_sec": [
+          300,
+          350,
+          420,
+          500,
+          600,
+          720,
+          850,
+          1000,
+          1150,
+          1300,
+          1500,
+          1700,
+          1900,
+          2100,
+          2400,
+          2700,
+          3000,
+          3400,
+          3800,
+          4300,
+          5000
+        ],
+        "elapsed_sec": 0.0,
+        "q": 0.75,
+        "tail_ll": [
+          1.7,
+          900.0
+        ],
+        "atom": null
+      },
+      "expected": 2700.0
+    }
+  ]
+}

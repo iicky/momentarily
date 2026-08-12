@@ -94,6 +94,24 @@ class DwellQuantiles(TypedDict):
     # of the coarse constant-hazard exponential patch. Absent when no fit
     # converged (no completed events).
     tail_ll: NotRequired[list[float]]
+    # Point mass ("atom") at exactly one tick, mixed with the tail_ll body. Both
+    # fields are present together or not at all: a cell either carries the whole
+    # mixture or none of it, so no half-configured state is representable.
+    #
+    # 70.4% of disrupted movement episodes last exactly one publisher tick. A
+    # single continuous curve cannot front-load that much mass and still reserve
+    # a tail for the multi-tick minority — it ends up too pessimistic on the
+    # one-tick majority and too optimistic on everything else, which is what the
+    # bimodal PIT histogram was reporting. Splitting the two populations apart
+    # costs one parameter and fixes both lobes.
+    #
+    # When these are present, tail_ll is the log-logistic LEFT-TRUNCATED at
+    # atom_sec (fitted on T > atom_sec alone, so the spike and the tail do not
+    # double-count the same episodes) and the closed form in mixture_survival
+    # fully replaces curve_sec. A reader that honours tail_ll while ignoring
+    # atom_p computes the wrong distribution, so every consumer moves together.
+    atom_p: NotRequired[float]  # P(dwell == atom_sec), strictly in (0, 1)
+    atom_sec: NotRequired[int]  # location of the point mass, seconds
 
 
 # One observation for the estimator: (duration_sec, completed). completed=False
@@ -245,20 +263,41 @@ def _censored_from_open(
 
 
 def dwell_cdf(curve_sec: list[int], x: float) -> float:
-    """Empirical P(dwell <= x) from the quantile curve, interpolated."""
+    """Empirical P(dwell <= x) from the quantile curve, interpolated.
+
+    At a repeated knot the answer is the TOP of the flat run, not the bottom.
+    `curve_sec` is a quantile function, so a run of equal knots is a point mass,
+    and P(dwell <= x) at that value has to include the whole mass. Taking the
+    bottom instead is how a one-tick episode used to read P=0: the lower guard
+    was inclusive and curve_sec[0] is exactly one tick for any cell whose
+    shortest dwell is one tick, so the CDF returned 0 evaluated at its own grid
+    point and every one-tick episode graded with PIT=0.
+
+    For a strictly increasing curve this is identical to plain interpolation —
+    the flat-run case is the only behaviour that changes.
+    """
     k = len(curve_sec)
     # Upper bound first so a degenerate flat curve (all samples equal) reads
     # as "outlived" at x == that value, not as P=0.
     if x >= curve_sec[-1]:
         return 1.0
-    if x <= curve_sec[0]:
+    if x < curve_sec[0]:
         return 0.0
-    for i in range(k - 1):
-        lo, hi = curve_sec[i], curve_sec[i + 1]
-        if lo <= x <= hi:
-            frac = 0.0 if hi == lo else (x - lo) / (hi - lo)
-            return (i + frac) / (k - 1)
-    return 1.0  # unreachable for a monotone curve
+    # Largest index at or below x. Scanning forward past equal knots is what
+    # lands on the top of a flat run.
+    j = 0
+    for i in range(k):
+        if curve_sec[i] <= x:
+            j = i
+        else:
+            break
+    if j >= k - 1:
+        return 1.0
+    if curve_sec[j] == x:
+        return j / (k - 1)
+    span = curve_sec[j + 1] - curve_sec[j]
+    frac = 0.0 if span == 0 else (x - curve_sec[j]) / span
+    return (j + frac) / (k - 1)
 
 
 def _dwell_quantile(curve_sec: list[int], p: float) -> float:
@@ -291,6 +330,7 @@ def p_leave_by(
     elapsed_sec: float,
     horizon_sec: float,
     tail_ll: list[float] | None = None,
+    atom: tuple[float, float] | None = None,
 ) -> float:
     """P(dwell <= elapsed + horizon | dwell > elapsed), extrapolating a tail once
     the regime has outlived every observed dwell instead of saturating at the
@@ -298,12 +338,27 @@ def p_leave_by(
     for a recovery *time* we won't fabricate), this keeps the conditional exit
     *probability* meaningful in the long-lived tail.
 
+    With `atom` ((atom_p, atom_sec)) the cell publishes a mixture and the whole
+    answer is closed-form: curve_sec is not consulted at all, and neither is the
+    past-the-curve splice below, because a parametric mixture has no "past the
+    curve". The curve path is what runs for every cell without an atom.
+
     Past the curve the tail is the fitted log-logistic conditional survival when
     `tail_ll` ([shape, scale]) is supplied, else a constant-hazard exponential
     patch read off the top segment. The log-logistic's decreasing hazard models
     the heavy dwell tail better — a long-calm regime stays confident rather than
     being told it's about to leave (per the Brier backtest). The body stays
     empirical either way. Mirrored in worker/src/dwell.ts; keep in sync."""
+    mix = _atom_params(tail_ll, atom)
+    if mix is not None:
+        shape, scale, atom_p, atom_sec = mix
+        s_now = mixture_survival(elapsed_sec, shape, scale, atom_p, atom_sec)
+        if s_now <= 0.0:
+            return 1.0
+        s_fut = mixture_survival(
+            elapsed_sec + horizon_sec, shape, scale, atom_p, atom_sec
+        )
+        return max(0.0, min(1.0, 1.0 - s_fut / s_now))
     k = len(curve_sec)
     if k < 2:
         return 0.0
@@ -334,14 +389,113 @@ def _loglogistic_survival(t: float, shape: float, scale: float) -> float:
     return 1.0 / (1.0 + (t / scale) ** shape)
 
 
+# --- Atom + truncated log-logistic mixture ---
+#
+# A dwell cell carrying (atom_p, atom_sec) publishes a point mass at atom_sec
+# mixed with a log-logistic left-truncated there:
+#
+#   S(t) = 1                                       t <  atom_sec
+#   S(t) = (1 - atom_p) * S_ll(t) / S_ll(atom_sec) t >= atom_sec
+#
+# so F(atom_sec) == atom_p exactly. That exactness is the whole fix: the
+# quantile-curve representation can only reach the mass as F(atom_sec + eps),
+# never at the grid point itself, which is what graded the one-tick majority at
+# PIT=0. The closed form has no such boundary.
+#
+# One useful property, worth keeping in mind when reading the call sites: for
+# elapsed >= atom_sec the atom cancels out of the conditional and the answer
+# reduces to the plain log-logistic 1 - S_ll(e+h)/S_ll(e). The mixture only
+# moves anything inside the first tick — which is exactly where a forecast made
+# at regime onset lives, and where the old fit was worst.
+
+
+def mixture_survival(
+    t: float, shape: float, scale: float, atom_p: float, atom_sec: float
+) -> float:
+    """S(t) for the atom + left-truncated log-logistic mixture."""
+    if t < atom_sec:
+        return 1.0
+    s_tau = _loglogistic_survival(atom_sec, shape, scale)
+    if s_tau <= 0.0:
+        return 0.0
+    return max(
+        0.0, min(1.0, (1.0 - atom_p) * _loglogistic_survival(t, shape, scale) / s_tau)
+    )
+
+
+def mixture_quantile(
+    u: float, shape: float, scale: float, atom_p: float, atom_sec: float
+) -> float:
+    """Inverse CDF of the mixture: smallest t with F(t) >= u.
+
+    Flat at atom_sec for every u up to atom_p — the atom is an interval of the
+    quantile function, not a point, which is why curve_sec renders it as a run
+    of equal knots.
+    """
+    u = min(max(u, 0.0), 1.0 - 1e-12)
+    if u <= atom_p:
+        return atom_sec
+    if shape <= 0.0 or scale <= 0.0:
+        return atom_sec
+    s_tau = _loglogistic_survival(atom_sec, shape, scale)
+    s_target = (1.0 - u) * s_tau / (1.0 - atom_p)
+    if s_target <= 0.0:
+        return math.inf
+    if s_target >= 1.0:
+        return atom_sec
+    return scale * ((1.0 - s_target) / s_target) ** (1.0 / shape)
+
+
+def _atom_params(
+    tail_ll: list[float] | None, atom: tuple[float, float] | None
+) -> tuple[float, float, float, float] | None:
+    """(shape, scale, atom_p, atom_sec) when a cell carries a usable mixture.
+
+    The mixture needs BOTH a tail and an atom: tail_ll alone is the legacy
+    unconditional fit, and an atom without a tail has nothing to spend its
+    remaining mass on. Anything partial falls back to the curve path rather than
+    inventing a component.
+    """
+    if atom is None or tail_ll is None or len(tail_ll) < 2:
+        return None
+    atom_p, atom_sec = atom
+    if not (0.0 < atom_p < 1.0) or atom_sec <= 0.0:
+        return None
+    shape, scale = tail_ll[0], tail_ll[1]
+    if shape <= 0.0 or scale <= 0.0:
+        return None
+    return shape, scale, atom_p, atom_sec
+
+
 def conditional_remaining_quantile(
-    curve_sec: list[int], elapsed_sec: float, q: float
+    curve_sec: list[int],
+    elapsed_sec: float,
+    q: float,
+    tail_ll: list[float] | None = None,
+    atom: tuple[float, float] | None = None,
 ) -> float | None:
     """q-th quantile of remaining dwell given the regime survived elapsed_sec.
 
     Solves P(dwell <= t | dwell > elapsed) = q for t, returns t − elapsed.
     None when elapsed exceeds every observed dwell (see conditional_recover_by).
+
+    With an atom the median remaining time at onset collapses to a single tick
+    whenever atom_p > 0.5 — which is the honest answer for a population where
+    most disruptions clear on the next poll, and one a continuous fit can only
+    approximate by pulling its whole body down.
     """
+    mix = _atom_params(tail_ll, atom)
+    if mix is not None:
+        shape, scale, atom_p, atom_sec = mix
+        f_elapsed = 1.0 - mixture_survival(elapsed_sec, shape, scale, atom_p, atom_sec)
+        if f_elapsed >= 1.0:
+            return None
+        total = mixture_quantile(
+            f_elapsed + q * (1.0 - f_elapsed), shape, scale, atom_p, atom_sec
+        )
+        if not math.isfinite(total):
+            return None
+        return max(0.0, total - elapsed_sec)
     p_elapsed = dwell_cdf(curve_sec, elapsed_sec)
     if p_elapsed >= 1.0:
         return None

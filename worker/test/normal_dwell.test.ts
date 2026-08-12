@@ -11,6 +11,7 @@ import { describe, expect, test } from 'vitest';
 
 import type { RouteRoll } from '../src/alpha';
 import { deriveRouteSnapshots } from '../src/derive';
+import { pLeaveBy } from '../src/dwell';
 import { parseTrainedParams } from '../src/params';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
 
@@ -56,6 +57,32 @@ function normalDwell(): Record<string, unknown> {
       median_sec: 191_978,
       q75_sec: 298_540,
       curve_sec: NORMAL_CURVE,
+    },
+  };
+}
+
+// Atom mixture fixture: most normal-regime episodes end on the very first
+// tick, with the log-logistic tail refit conditional on T > atom_sec.
+// curve_sec is deliberately kept as the STALE plain NORMAL_CURVE (not
+// recomputed for the mixture) to prove the atom path reads
+// tail_ll/atom_p/atom_sec and never falls back to it.
+const ATOM_SHAPE = 1.8;
+const ATOM_SCALE = 250_000;
+const ATOM_P = 0.55;
+const ATOM_SEC = TICK_SECONDS;
+
+function normalDwellAtom(): Record<string, unknown> {
+  return {
+    normal: {
+      n: 50,
+      n_censored: 4,
+      q25_sec: ATOM_SEC,
+      median_sec: ATOM_SEC,
+      q75_sec: 200_000,
+      curve_sec: NORMAL_CURVE,
+      tail_ll: [ATOM_SHAPE, ATOM_SCALE],
+      atom_p: ATOM_P,
+      atom_sec: ATOM_SEC,
     },
   };
 }
@@ -152,5 +179,61 @@ describe('p_normal_in_H for a route that is normal now', () => {
     const p = pNormal(withCurve, 6 * HOUR);
     expect(p.p30).toBeGreaterThanOrEqual(p.p60);
     expect(p.p60).toBeGreaterThanOrEqual(p.p120);
+  });
+});
+
+describe('p_normal_in_H with the atom mixture active on the normal cell', () => {
+  const withAtom = parseTrainedParams({
+    schema_version: '1',
+    trained_at: NOW,
+    routes: { A: route(normalDwellAtom()) },
+  });
+
+  test("matches pLeaveBy's closed-form mixture output directly, not the stale curve_sec", () => {
+    const elapsed = 20 * HOUR;
+    const p = pNormal(withAtom, elapsed);
+    const tail: [number, number] = [ATOM_SHAPE, ATOM_SCALE];
+    const atom = { p: ATOM_P, sec: ATOM_SEC };
+    // curveSec passed as [] on purpose: the atom closed form must not read it
+    // at all, so an empty (unusable) curve still reproduces what buildSnapshot
+    // published from the real (stale) NORMAL_CURVE.
+    expect(p.p30).toBeCloseTo(1 - pLeaveBy([], elapsed, 1800, tail, atom), 9);
+    expect(p.p60).toBeCloseTo(1 - pLeaveBy([], elapsed, 3600, tail, atom), 9);
+    expect(p.p120).toBeCloseTo(1 - pLeaveBy([], elapsed, 7200, tail, atom), 9);
+  });
+
+  test('genuinely differs from the legacy curve_sec/tail_ll splice for the same cell', () => {
+    // Proof curve_sec was bypassed, not coincidentally reproduced.
+    const elapsed = 20 * HOUR;
+    const p = pNormal(withAtom, elapsed);
+    const tail: [number, number] = [ATOM_SHAPE, ATOM_SCALE];
+    const legacyP30 = 1 - pLeaveBy(NORMAL_CURVE, elapsed, 1800, tail);
+    expect(p.p30).not.toBeCloseTo(legacyP30, 6);
+  });
+});
+
+describe('p_normal_in_H legacy curve_sec/tail_ll path is unaffected by the atom fields being absent', () => {
+  test('matches pLeaveBy(curve, elapsed, horizon, tail) called directly, with no atom', () => {
+    const tail: [number, number] = [1.8, 5400];
+    const withTail = parseTrainedParams({
+      schema_version: '1',
+      trained_at: NOW,
+      routes: {
+        A: route({
+          normal: {
+            n: 50,
+            q25_sec: 30_000,
+            median_sec: 190_000,
+            q75_sec: 300_000,
+            curve_sec: NORMAL_CURVE,
+            tail_ll: tail,
+          },
+        }),
+      },
+    });
+    const elapsed = 1200 * HOUR; // past the curve, exercises the tail branch
+    const p = pNormal(withTail, elapsed);
+    expect(p.p30).toBeCloseTo(1 - pLeaveBy(NORMAL_CURVE, elapsed, 1800, tail), 9);
+    expect(p.p60).toBeCloseTo(1 - pLeaveBy(NORMAL_CURVE, elapsed, 3600, tail), 9);
   });
 });

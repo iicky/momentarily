@@ -347,9 +347,9 @@ def test_episode_recovery_excludes_censored_and_curve_less_episodes() -> None:
 
     def lookup(
         route: str, state: str, _cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         if route == "S" and state == "disrupted":
-            return [300, 600, 900], None
+            return [300, 600, 900], None, None
         return None
 
     result = episode_recovery(truth_eps, lookup)
@@ -391,12 +391,13 @@ def test_episode_recovery_uses_cause_curve_then_falls_back_to_state_curve() -> N
 
     def lookup(
         route: str, state: str, cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         if route != "R" or state != "disrupted":
             return None
         if cause == "signal_failure":
-            return [0, 1200], None  # half-life at 600s -> PIT 0.5
-        return [0, 100], None  # state-level fallback: outlived by 600s -> PIT 1.0
+            return [0, 1200], None, None  # half-life at 600s -> PIT 0.5
+        # state-level fallback: outlived by 600s -> PIT 1.0
+        return [0, 100], None, None
 
     result = episode_recovery([cause_ep, fallback_ep], lookup)
 
@@ -442,8 +443,9 @@ def test_dwell_lookup_from_params_reads_curve_and_tail_or_none() -> None:
     assert lookup("A", "disrupted", "signal_failure") == (
         [100, 200, 300],
         [1.2, 250.0],
+        None,
     )
-    assert lookup("A", "disrupted", "weather") == ([300, 600, 900], [1.5, 400.0])
+    assert lookup("A", "disrupted", "weather") == ([300, 600, 900], [1.5, 400.0], None)
     assert lookup("A", "suspended", "weather") is None
     assert lookup("A", "unknown", "weather") is None
     assert lookup("A", "missing_state", "weather") is None
@@ -471,9 +473,9 @@ def test_cause_dwell_lookup_fallback_chain_cause_then_state_then_pooled() -> Non
     }
     lookup = cause_dwell_lookup(by_cause, by_state, pooled)
 
-    assert lookup("R", "disrupted", "signal_failure") == ([1, 2], None)
-    assert lookup("R", "disrupted", "weather") == ([3, 4], None)
-    assert lookup("R", "suspended", "signal_failure") == ([7, 8], None)
+    assert lookup("R", "disrupted", "signal_failure") == ([1, 2], None, None)
+    assert lookup("R", "disrupted", "weather") == ([3, 4], None, None)
+    assert lookup("R", "suspended", "signal_failure") == ([7, 8], None, None)
     assert lookup("Q", "totally_missing", "signal_failure") is None
 
 
@@ -508,9 +510,9 @@ def test_episode_scorecard_matches_the_verified_oracle() -> None:
 
     def lookup(
         route: str, state: str, _cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         if route == "A" and state == "disrupted":
-            return [300, 600, 900], None
+            return [300, 600, 900], None, None
         return None
 
     card = episode_scorecard(
@@ -722,8 +724,9 @@ def test_movement_dwell_lookup_from_params_reads_curve_and_tail_ignoring_cause()
     assert lookup("A", "disrupted", "signal_failure") == (
         [100, 200, 300],
         [1.2, 250.0],
+        None,
     )
-    assert lookup("A", "disrupted", "weather") == ([100, 200, 300], [1.2, 250.0])
+    assert lookup("A", "disrupted", "weather") == ([100, 200, 300], [1.2, 250.0], None)
     assert lookup("A", "suspended", "weather") is None
     assert lookup("A", "missing_state", "weather") is None
     assert lookup("missing_route", "disrupted", "weather") is None
@@ -759,9 +762,11 @@ def test_episode_recovery_defaults_to_the_alert_shadow_label() -> None:
 
     def lookup(
         route: str, state: str, _cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         return (
-            ([300, 600, 900], None) if route == "S" and state == "disrupted" else None
+            ([300, 600, 900], None, None)
+            if route == "S" and state == "disrupted"
+            else None
         )
 
     result = episode_recovery(truth_eps, lookup)
@@ -848,9 +853,11 @@ def test_episode_scorecard_omits_recovery_movement_without_a_lookup() -> None:
 
     def lookup(
         route: str, state: str, _cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         return (
-            ([300, 600, 900], None) if route == "A" and state == "disrupted" else None
+            ([300, 600, 900], None, None)
+            if route == "A" and state == "disrupted"
+            else None
         )
 
     card = episode_scorecard(
@@ -880,9 +887,11 @@ def test_episode_scorecard_grades_both_arms_when_given_a_movement_lookup() -> No
 
     def alert_lookup(
         route: str, state: str, _cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         return (
-            ([300, 600, 900], None) if route == "A" and state == "disrupted" else None
+            ([300, 600, 900], None, None)
+            if route == "A" and state == "disrupted"
+            else None
         )
 
     movement_params: dict[str, Any] = {

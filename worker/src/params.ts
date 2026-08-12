@@ -58,6 +58,11 @@ const EmissionParamsSchema = z.object({
 
 const DwellQuantilesSchema = z.object({
   n: z.number().int().nonnegative(),
+  // Right-censored episode count (still open when the trainer fit this cell).
+  // Was already on the wire and silently stripped by this schema's default
+  // STRIP semantics — add it so the parsed shape stops disagreeing with what
+  // the trainer actually sends.
+  n_censored: z.number().optional(),
   q25_sec: z.number().int().nonnegative(),
   median_sec: z.number().int().nonnegative(),
   q75_sec: z.number().int().nonnegative(),
@@ -73,8 +78,21 @@ const DwellQuantilesSchema = z.object({
   // [shape, scale] of a log-logistic fit to this cell's dwells. pLeaveBy uses it
   // to extrapolate the tail past the last observed quantile instead of the
   // constant-hazard exponential patch. Optional for back-compat with older
-  // params.json.
+  // params.json. When atom_p/atom_sec are both present, this is instead the
+  // SAME log-logistic LEFT-TRUNCATED at atom_sec (see worker/src/dwell.ts
+  // mixtureSurvival/mixtureQuantile) — the two atom fields change what this
+  // one means, they don't add an independent third mode.
   tail_ll: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+  // P(dwell == atom_sec) and the tick it sits at (300s = one publisher tick).
+  // Both optional, and only meaningful together: a cell where most episodes
+  // end on the very first tick can't be fit by a single continuous curve
+  // without either flattening the tail or missing the spike, so the trainer
+  // instead mixes a point mass here with tail_ll refit conditional on
+  // T > atom_sec. Either field missing — older params.json, or a cell the
+  // mixture fit skipped — means the pure curve_sec/tail_ll path applies
+  // unchanged.
+  atom_p: z.number().optional(),
+  atom_sec: z.number().int().optional(),
 });
 
 // Per-route, per-prev-state empirical dwell quantiles from the trainer.
@@ -102,6 +120,7 @@ const HMMParamsSchema = z.object({
 
 export interface DwellQuantiles {
   n: number;
+  n_censored?: number | undefined;
   q25_sec: number;
   median_sec: number;
   q75_sec: number;
@@ -110,6 +129,8 @@ export interface DwellQuantiles {
   recover_by_120?: number | undefined;
   curve_sec?: number[] | undefined;
   tail_ll?: [number, number] | undefined;
+  atom_p?: number | undefined;
+  atom_sec?: number | undefined;
 }
 
 export type DwellByState = Record<string, DwellQuantiles>;

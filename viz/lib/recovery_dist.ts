@@ -20,6 +20,15 @@ export interface RecoveryDistSample {
   // Ties every tick from one disruption episode together (route + regime onset)
   // so scoring can weight per incident, not per forecast tick.
   regimeKey: string;
+  // F_pred immediately below the realized duration, present only when the
+  // predictive distribution jumps there. PIT is only uniform against a
+  // continuous predictive CDF; against a point mass every episode landing on
+  // the atom returns the identical F value and the histogram collapses into
+  // one bin, which reads as gross miscalibration even though the forecast may
+  // be fine. The fix (see jumpFraction below) spreads each observation across
+  // its own jump. Leave unset for a continuous cell, where the left limit
+  // equals F and the correction is a no-op.
+  predLeft?: number;
 }
 
 // CRPS/PIT under one weighting. Per-tick weights every prediction tick equally
@@ -61,6 +70,33 @@ function ecdf(sortedAsc: number[], t: number): number {
     else hi = mid;
   }
   return sortedAsc.length ? lo / sortedAsc.length : 0;
+}
+
+/**
+ * A stable uniform in [0, 1) keyed on the regime, for placing an observation
+ * inside its own probability jump.
+ *
+ * Deterministic by construction: the same episode must land in the same PIT
+ * bin on every run, or the grade stops being reproducible and the dashboard
+ * drifts for no reason. Keyed off a digest of the regime rather than an RNG
+ * so it doesn't depend on iteration order either.
+ *
+ * FNV-1a 32-bit specifically, because this has to be reproduced exactly in
+ * training/recovery_dist.py's _jump_fraction — it's a few lines of integer
+ * arithmetic in either language, where a real digest would drag a crypto
+ * dependency into the browser bundle for no benefit. Measured indistinguishable
+ * from uniform at these sample sizes. Mirrored from there; keep in sync.
+ */
+export function jumpFraction(key: string): number {
+  let h = 0x811c9dc5;
+  // UTF-8 bytes, not UTF-16 code units — matches Python's key.encode().
+  for (const byte of new TextEncoder().encode(key)) {
+    // Plain `*` promotes through float64 and silently loses bits above 2**53;
+    // Math.imul forces the exact 32-bit wraparound Python gets for free from
+    // `& 0xFFFFFFFF`.
+    h = Math.imul(h ^ byte, 0x01000193) >>> 0;
+  }
+  return h / 2 ** 32;
 }
 
 const EMPTY_WEIGHTING: RecoveryWeighting = {
@@ -129,7 +165,14 @@ export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistR
     }
     crpsSum += crps;
     baseSum += base;
-    const u = f[Math.min(tMax, Math.max(0, Math.round(y)))];
+    const idx = Math.min(tMax, Math.max(0, Math.round(y)));
+    let u = f[idx];
+    // Spread the observation across the predictive jump it landed on, if any.
+    // left === u for a continuous curve, which leaves this exactly as it was.
+    const left = s.predLeft;
+    if (left !== undefined && left < u) {
+      u = left + jumpFraction(s.regimeKey) * (u - left);
+    }
     pitSum += u;
     pit[Math.min(9, Math.max(0, Math.floor(u * 10)))] += 1;
     grid.forEach((t, i) => (predAccum[i] += f[t]));

@@ -47,14 +47,20 @@ def predicted_recovery_curve(
     elapsed_sec: float,
     curve_sec: list[int],
     tail_ll: list[float] | None = None,
+    atom: tuple[float, float] | None = None,
 ) -> list[float]:
     """The model's recovery-time CDF for one prediction, sampled at every
     integer minute 0..RECOVERY_TMAX_MIN. This is P(resolved within t | already
     survived elapsed) — the timing of recovery *given the regime resolves*,
     NOT multiplied by the to-normal share. Mirrors viz/lib/dwell.ts's
-    predictedRecoveryCurve."""
+    predictedRecoveryCurve.
+
+    `atom` ((atom_p, atom_sec)) selects the point-mass mixture. It matters most
+    here of anywhere: this samples from elapsed=0, inside the first tick, which
+    is the only region where the atom changes the answer — and where a one-tick
+    episode used to be graded against a curve that put no mass on one tick."""
     return [
-        p_leave_by(curve_sec, elapsed_sec, t * 60, tail_ll)
+        p_leave_by(curve_sec, elapsed_sec, t * 60, tail_ll, atom)
         for t in range(RECOVERY_TMAX_MIN + 1)
     ]
 
@@ -68,6 +74,15 @@ class RecoveryDistSample:
     # Ties every tick from one disruption episode together (route + regime
     # onset) so scoring can weight per incident, not per forecast tick.
     regime_key: str
+    # F_pred immediately BELOW the realized duration, when the predictive
+    # distribution jumps there. PIT is only uniform for a continuous predictive
+    # CDF; against a point mass every episode landing on the atom returns the
+    # identical F value and the histogram collapses into one bin, which reads as
+    # gross miscalibration when the forecast may be perfectly calibrated. The
+    # standard repair is to spread each observation across its own jump. Left
+    # None for a continuous cell, where the left limit equals F and the whole
+    # correction is a no-op.
+    pred_left: float | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +125,26 @@ def _ecdf(sorted_asc: list[float], t: float) -> float:
     if not sorted_asc:
         return 0.0
     return bisect_right(sorted_asc, t) / len(sorted_asc)
+
+
+def _jump_fraction(key: str) -> float:
+    """A stable uniform in [0, 1) keyed on the regime, for placing an
+    observation inside its own probability jump.
+
+    Deterministic by construction: the same episode must land in the same PIT
+    bin on every run, or the grade stops being reproducible and the committed
+    scorecards drift for no reason. Keyed off a digest of the regime rather than
+    an RNG so it does not depend on iteration order either.
+
+    FNV-1a 32-bit specifically, because this has to be reproduced exactly in
+    viz/lib/recovery_dist.ts — it is a few lines of integer arithmetic in any
+    language, where a real digest would drag a crypto dependency into the
+    browser bundle for no benefit. Mirrored there; keep in sync.
+    """
+    h = 0x811C9DC5
+    for byte in key.encode():
+        h = ((h ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return h / 2.0**32
 
 
 def _js_round(x: float) -> int:
@@ -191,6 +226,11 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
         base_sum += base
         idx = min(t_max, max(0, _js_round(y)))
         u = f[idx]
+        # Spread the observation across the predictive jump it landed on, if any.
+        # left == u for a continuous curve, which leaves this exactly as it was.
+        left = s.pred_left
+        if left is not None and left < u:
+            u = left + _jump_fraction(s.regime_key) * (u - left)
         pit_sum += u
         pit[min(9, max(0, math.floor(u * 10)))] += 1
         for i, t in enumerate(grid):

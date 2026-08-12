@@ -57,7 +57,14 @@ ONSET_LEAD_TOLERANCE_SEC = 30 * 60
 # Curve + optional log-logistic tail for a (route, state, cause) dwell cell. A
 # cause-aware lookup falls back cause -> state -> pooled, so an unknown cause
 # degrades to the state-level curve rather than missing.
-DwellLookup = Callable[[str, str, str], "tuple[list[int], list[float] | None] | None"]
+# A lookup yields (curve_sec, tail_ll, atom) where atom is (atom_p, atom_sec) for
+# a cell published as a point-mass mixture and None for a plain continuous cell.
+# The atom rides along with the curve rather than being fetched separately so a
+# cell can never be graded with half its distribution.
+DwellLookup = Callable[
+    [str, str, str],
+    "tuple[list[int], list[float] | None, tuple[float, float] | None] | None",
+]
 
 
 def model_episodes(
@@ -235,12 +242,20 @@ def episode_recovery(
         if cell is None or len(cell[0]) < 2:
             n_no_curve += 1
             continue
-        curve_sec, tail_ll = cell
+        curve_sec, tail_ll, atom = cell
+        # A mixture puts no mass strictly below its atom, so an episode that
+        # lands exactly on the atom sits on a jump from 0 up to atom_p. Handing
+        # the grader that lower edge is what lets it spread these episodes across
+        # the jump instead of stacking every one of them in a single PIT bin.
+        pred_left = (
+            0.0 if atom is not None and abs(e.duration_sec - atom[1]) < 1.0 else None
+        )
         samples.append(
             RecoveryDistSample(
-                pred_curve=predicted_recovery_curve(0.0, curve_sec, tail_ll),
+                pred_curve=predicted_recovery_curve(0.0, curve_sec, tail_ll, atom),
                 actual_min=e.duration_sec / 60.0,
                 regime_key=f"{e.route}:{e.onset}",
+                pred_left=pred_left,
             )
         )
     report = recovery_dist_report(samples)
@@ -254,15 +269,26 @@ def episode_recovery(
     }
 
 
-def _cell_curve(cell: Any) -> tuple[list[int], list[float] | None] | None:
-    """Extract (curve_sec, tail_ll) from a dwell-cell dict, or None if unusable."""
+def _cell_curve(
+    cell: Any,
+) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
+    """Extract (curve_sec, tail_ll, atom) from a dwell-cell dict, or None if
+    unusable. `atom` is (atom_p, atom_sec) only when the cell carries both, so a
+    params doc written before the mixture existed reads exactly as it did."""
     if not cell:
         return None
     curve: list[int] = cell.get("curve_sec") or []
     if len(curve) < 2:
         return None
     tail: list[float] | None = cell.get("tail_ll")
-    return curve, tail
+    atom_p = cell.get("atom_p")
+    atom_sec = cell.get("atom_sec")
+    atom = (
+        (float(atom_p), float(atom_sec))
+        if atom_p is not None and atom_sec is not None
+        else None
+    )
+    return curve, tail, atom
 
 
 def dwell_lookup_from_params(params: dict[str, Any]) -> DwellLookup:
@@ -276,7 +302,7 @@ def dwell_lookup_from_params(params: dict[str, Any]) -> DwellLookup:
 
     def lookup(
         route: str, state: str, cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         route_doc: dict[str, Any] = routes.get(route) or {}
         by_cause: dict[str, Any] = route_doc.get("dwell_quantiles_by_cause") or {}
         state_causes: dict[str, Any] = by_cause.get(state) or {}
@@ -300,7 +326,7 @@ def movement_dwell_lookup_from_params(params: dict[str, Any]) -> DwellLookup:
 
     def lookup(
         route: str, state: str, _cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         route_doc: dict[str, Any] = routes.get(route) or {}
         return _cell_curve(route_doc.get(state))
 
@@ -318,7 +344,7 @@ def cause_dwell_lookup(
 
     def lookup(
         route: str, state: str, cause: str
-    ) -> tuple[list[int], list[float] | None] | None:
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
         route_causes: dict[str, Any] = by_cause.get(route) or {}
         state_causes: dict[str, Any] = route_causes.get(state) or {}
         cell = state_causes.get(cause)

@@ -19,7 +19,7 @@ import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
-import type { TrainedParams } from './params';
+import type { DwellQuantiles, TrainedParams } from './params';
 import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
@@ -602,6 +602,22 @@ interface MovementRegime {
   entered_at: number;
 }
 
+// atom_p/atom_sec activate the mixture closed form in pLeaveBy/conditionalRecovery
+// only together, and only when atom_p is a genuine probability — exactly 0 or 1
+// would either no-op or swallow the whole tail, not the intended point mass. Any
+// other combination (fields absent, older params.json, an out-of-range value)
+// returns undefined and callers fall back to the pure curve_sec/tail_ll path,
+// byte-for-byte what it was before this mixture was added.
+function atomFor(cell: DwellQuantiles): { p: number; sec: number } | undefined {
+  if (cell.atom_p === undefined || cell.atom_sec === undefined) return undefined;
+  if (!(cell.atom_p > 0 && cell.atom_p < 1)) return undefined;
+  // A non-positive atom location would place the point mass at or before t=0 and
+  // apply it to every elapsed value. dwell.ts rejects it too; this keeps the
+  // rejection visible at the boundary where params first become a forecast.
+  if (!(cell.atom_sec > 0)) return undefined;
+  return { p: cell.atom_p, sec: cell.atom_sec };
+}
+
 function buildInference(
   roll: RouteRoll,
   now: number,
@@ -732,10 +748,11 @@ function buildInference(
         // observed dwell, where recovery_minutes below goes indeterminate.
         const curve = empirical.curve_sec;
         const tail = empirical.tail_ll;
-        p_normal_in_30 = pLeaveBy(curve, elapsedSec, 1800, tail) * toNormal;
-        p_normal_in_60 = pLeaveBy(curve, elapsedSec, 3600, tail) * toNormal;
-        p_normal_in_120 = pLeaveBy(curve, elapsedSec, 7200, tail) * toNormal;
-        const conditional = conditionalRecovery(curve, elapsedSec);
+        const atom = atomFor(empirical);
+        p_normal_in_30 = pLeaveBy(curve, elapsedSec, 1800, tail, atom) * toNormal;
+        p_normal_in_60 = pLeaveBy(curve, elapsedSec, 3600, tail, atom) * toNormal;
+        p_normal_in_120 = pLeaveBy(curve, elapsedSec, 7200, tail, atom) * toNormal;
+        const conditional = conditionalRecovery(curve, elapsedSec, tail, atom);
         if (conditional !== null) {
           recovery_minutes = clamp(secToMin(conditional.median_sec));
           recovery_minutes_low = clamp(secToMin(conditional.q25_sec));
@@ -786,8 +803,9 @@ function buildInference(
     const curve = empirical?.curve_sec;
     if (empirical !== null && curve !== undefined) {
       const elapsedSec = Math.max(0, now - roll.filter.regime_entered_at);
+      const atom = atomFor(empirical);
       const staysNormalFor = (horizonSec: number): number =>
-        1 - pLeaveBy(curve, elapsedSec, horizonSec, empirical.tail_ll);
+        1 - pLeaveBy(curve, elapsedSec, horizonSec, empirical.tail_ll, atom);
       p_normal_in_30 = staysNormalFor(1800);
       p_normal_in_60 = staysNormalFor(3600);
       p_normal_in_120 = staysNormalFor(7200);
@@ -882,11 +900,12 @@ function movementRecovery(
   if (cell?.curve_sec === undefined) return null;
   const curve = cell.curve_sec;
   const tail = cell.tail_ll;
+  const atom = atomFor(cell);
   const elapsedSec = Math.max(0, now - enteredAt);
 
   if (state === 'normal') {
     const staysNormalFor = (horizonSec: number): number =>
-      1 - pLeaveBy(curve, elapsedSec, horizonSec, tail);
+      1 - pLeaveBy(curve, elapsedSec, horizonSec, tail, atom);
     return {
       recovery_minutes: 0,
       recovery_minutes_low: 0,
@@ -900,7 +919,7 @@ function movementRecovery(
 
   const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
   const secToMin = (s: number): number => Math.round(s / 60);
-  const conditional = conditionalRecovery(curve, elapsedSec);
+  const conditional = conditionalRecovery(curve, elapsedSec, tail, atom);
   let recovery_minutes: number;
   let recovery_minutes_low: number;
   let recovery_minutes_high: number;
@@ -922,9 +941,9 @@ function movementRecovery(
     recovery_minutes_low,
     recovery_minutes_high,
     recovery_indeterminate,
-    p_normal_in_30: pLeaveBy(curve, elapsedSec, 1800, tail),
-    p_normal_in_60: pLeaveBy(curve, elapsedSec, 3600, tail),
-    p_normal_in_120: pLeaveBy(curve, elapsedSec, 7200, tail),
+    p_normal_in_30: pLeaveBy(curve, elapsedSec, 1800, tail, atom),
+    p_normal_in_60: pLeaveBy(curve, elapsedSec, 3600, tail, atom),
+    p_normal_in_120: pLeaveBy(curve, elapsedSec, 7200, tail, atom),
   };
 }
 

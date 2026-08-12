@@ -14,6 +14,7 @@ import { describe, expect, test } from 'vitest';
 import type { RouteRoll } from '../src/alpha';
 import type { RouteSnapshot } from '../src/derive';
 import { deriveRouteSnapshots } from '../src/derive';
+import { conditionalRecovery, pLeaveBy } from '../src/dwell';
 import type { TrainedParams } from '../src/params';
 import { movementDwellFor, parseTrainedParams } from '../src/params';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
@@ -56,6 +57,32 @@ function movementDwellCell(): Record<string, unknown> {
   return {
     normal: { n: 40, q25_sec: 5368, median_sec: 48025, q75_sec: 429662, curve_sec: NORMAL_CURVE },
     disrupted: { n: 30, q25_sec: 538, median_sec: 2413, q75_sec: 10819, curve_sec: DISRUPTED_CURVE },
+  };
+}
+
+// Atom mixture fixture for the disrupted movement cell: most episodes end on
+// the very first movement tick, with the log-logistic tail refit conditional
+// on T > atom_sec. curve_sec is deliberately kept as the STALE plain
+// DISRUPTED_CURVE (not recomputed for the mixture) to prove the atom path
+// reads tail_ll/atom_p/atom_sec and never falls back to it.
+const ATOM_SHAPE = 1.6;
+const ATOM_SCALE = 4200;
+const ATOM_P = 0.72;
+const ATOM_SEC = TICK_SECONDS;
+
+function movementDwellCellAtom(): Record<string, unknown> {
+  return {
+    normal: { n: 40, q25_sec: 5368, median_sec: 48025, q75_sec: 429662, curve_sec: NORMAL_CURVE },
+    disrupted: {
+      n: 30,
+      q25_sec: ATOM_SEC,
+      median_sec: ATOM_SEC,
+      q75_sec: 10819,
+      curve_sec: DISRUPTED_CURVE,
+      tail_ll: [ATOM_SHAPE, ATOM_SCALE],
+      atom_p: ATOM_P,
+      atom_sec: ATOM_SEC,
+    },
   };
 }
 
@@ -353,5 +380,70 @@ describe('movementDwellFor (C3)', () => {
     expect(params).not.toBeNull();
     expect(params!.dwellMovement).toEqual({});
     expect(movementDwellFor(params, 'A', 'disrupted')).toBeNull();
+  });
+});
+
+describe('movement recovery: atom mixture on the disrupted cell (the site this fix targets)', () => {
+  test('recovery_minutes and p_normal_in_H match the closed-form dwell.ts computation, not the stale curve_sec', () => {
+    const params = parseTrainedParams({
+      schema_version: '1',
+      trained_at: NOW,
+      routes: { A: routeParams() },
+      dwell_movement: { A: movementDwellCellAtom() },
+    });
+    const elapsed = 20 * MIN;
+    const snap = build({
+      routeId: 'A',
+      movement: movementRegime('disrupted', elapsed),
+      trainedParams: params,
+    });
+    const inf = snap.route_status.A!.inference!;
+    expect(inf.recovery_source).toBe('movement');
+
+    const tail: [number, number] = [ATOM_SHAPE, ATOM_SCALE];
+    const atom = { p: ATOM_P, sec: ATOM_SEC };
+    // curveSec passed as [] here on purpose: the atom closed form must not
+    // read it at all, so an empty (unusable) curve still reproduces exactly
+    // what buildSnapshot published from the real (stale) DISRUPTED_CURVE.
+    const expectedCond = conditionalRecovery([], elapsed, tail, atom)!;
+    expect(expectedCond).not.toBeNull();
+    expect(inf.recovery_minutes).toBe(Math.round(expectedCond.median_sec / 60));
+    expect(inf.p_normal_in_30min).toBeCloseTo(pLeaveBy([], elapsed, 1800, tail, atom), 9);
+    expect(inf.p_normal_in_60min).toBeCloseTo(pLeaveBy([], elapsed, 3600, tail, atom), 9);
+    expect(inf.p_normal_in_120min).toBeCloseTo(pLeaveBy([], elapsed, 7200, tail, atom), 9);
+
+    // And it genuinely differs from what the legacy curve_sec/tail_ll splice
+    // would have published for the same cell — proof curve_sec was bypassed,
+    // not coincidentally reproduced.
+    const legacyP30 = pLeaveBy(DISRUPTED_CURVE, elapsed, 1800, tail);
+    expect(inf.p_normal_in_30min).not.toBeCloseTo(legacyP30, 6);
+  });
+
+  test('a route missing atom_p/atom_sec on the same cell shape falls back to the legacy curve_sec/tail_ll path unchanged', () => {
+    const tail: [number, number] = [ATOM_SHAPE, ATOM_SCALE];
+    const params = parseTrainedParams({
+      schema_version: '1',
+      trained_at: NOW,
+      routes: { A: routeParams() },
+      dwell_movement: {
+        A: {
+          normal: { n: 40, q25_sec: 5368, median_sec: 48025, q75_sec: 429662, curve_sec: NORMAL_CURVE },
+          disrupted: {
+            n: 30, q25_sec: 538, median_sec: 2413, q75_sec: 10819, curve_sec: DISRUPTED_CURVE, tail_ll: tail,
+          },
+        },
+      },
+    });
+    const elapsed = 20 * MIN;
+    const snap = build({
+      routeId: 'A',
+      movement: movementRegime('disrupted', elapsed),
+      trainedParams: params,
+    });
+    const inf = snap.route_status.A!.inference!;
+    const expectedCond = conditionalRecovery(DISRUPTED_CURVE, elapsed, tail)!;
+    expect(inf.recovery_minutes).toBe(Math.round(expectedCond.median_sec / 60));
+    expect(inf.p_normal_in_30min).toBeCloseTo(pLeaveBy(DISRUPTED_CURVE, elapsed, 1800, tail), 9);
+    expect(inf.p_normal_in_60min).toBeCloseTo(pLeaveBy(DISRUPTED_CURVE, elapsed, 3600, tail), 9);
   });
 });

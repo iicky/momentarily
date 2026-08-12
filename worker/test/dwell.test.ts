@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { conditionalRecovery, dwellCdf, pLeaveBy } from '../src/dwell';
+import { conditionalRecovery, dwellCdf, mixtureQuantile, mixtureSurvival, pLeaveBy } from '../src/dwell';
 
 describe('dwellCdf', () => {
   test('uniform two-point curve', () => {
@@ -125,5 +125,97 @@ describe('pLeaveBy', () => {
     const sNow = 1 / (1 + (100 / scale) ** shape);
     const sFut = 1 / (1 + (700 / scale) ** shape);
     expect(pLeaveBy(curve, 100, 600, [shape, scale])).toBeCloseTo(1 - sFut / sNow, 12);
+  });
+});
+
+describe('dwellCdf lower-boundary fix', () => {
+  test('strictly increasing curve matches the pre-fix formula exactly', () => {
+    // Oracle: the OLD dwellCdf formula (`x <= curve[0] -> 0`, first-interval
+    // match) written inline so this regresses if the fix ever drifts off a
+    // strictly increasing curve — the fix must be a no-op there.
+    const oldDwellCdf = (curveSec: number[], x: number): number => {
+      const k = curveSec.length;
+      if (x >= curveSec[k - 1]!) return 1.0;
+      if (x <= curveSec[0]!) return 0.0;
+      for (let i = 0; i < k - 1; i++) {
+        const lo = curveSec[i]!;
+        const hi = curveSec[i + 1]!;
+        if (lo <= x && x <= hi) {
+          const frac = hi === lo ? 0.0 : (x - lo) / (hi - lo);
+          return (i + frac) / (k - 1);
+        }
+      }
+      return 1.0;
+    };
+    const curve = Array.from({ length: 21 }, (_, i) => Math.round(120 * 1.35 ** i));
+    const xs = [-10, curve[0]!, curve[0]! + 1, 5000, curve[10]!, curve[10]! + 50, curve[20]!, curve[20]! + 100];
+    for (const x of xs) {
+      expect(dwellCdf(curve, x)).toBeCloseTo(oldDwellCdf(curve, x), 12);
+    }
+  });
+
+  test('repeated left knot returns the top of the flat run, not 0', () => {
+    // A mixture cell's curve repeats atom_sec across every knot below its
+    // cumulative share — e.g. most episodes at one tick means the first knots
+    // are all 300. The old `x <= curve[0] -> 0` guard zeroed the CDF at
+    // exactly that tick (the PIT=0 defect); the fix returns the CDF at the
+    // TOP of the flat run instead.
+    const curve = [300, 300, 300, 300, 300, 600, 900, 1200];
+    expect(dwellCdf(curve, 300)).toBeCloseTo(4 / 7, 12);
+    // Strictly below the flat run is still 0.
+    expect(dwellCdf(curve, 299)).toBe(0.0);
+  });
+});
+
+describe('mixtureSurvival / mixtureQuantile', () => {
+  const shape = 1.8;
+  const scale = 900;
+  const atomP = 0.704;
+  const atomSec = 300;
+
+  test('F(atomSec) equals atomP — the atom is inclusive at its own location', () => {
+    const s = mixtureSurvival(atomSec, shape, scale, atomP, atomSec);
+    expect(1 - s).toBeCloseTo(atomP, 9);
+    // Below the atom, survival is still 1 (F = 0): the mixture hasn't started.
+    expect(mixtureSurvival(atomSec - 1, shape, scale, atomP, atomSec)).toBe(1.0);
+  });
+
+  test('mixtureQuantile inverts the atom boundary at u === atomP', () => {
+    expect(mixtureQuantile(atomP, shape, scale, atomP, atomSec)).toBe(atomSec);
+    expect(mixtureQuantile(atomP + 1e-6, shape, scale, atomP, atomSec)).toBeGreaterThan(atomSec);
+  });
+
+  test('pLeaveBy with atom reduces to the plain log-logistic conditional once elapsed >= atomSec', () => {
+    // Sanity property from the contract: past the atom, atomP cancels out of
+    // the ratio and the mixture is indistinguishable from the unconditional
+    // log-logistic tail. curveSec is passed empty to also prove it is never
+    // read on the atom path.
+    const elapsed = 600;
+    const horizon = 1800;
+    const sLL = (t: number): number => 1 / (1 + (t / scale) ** shape);
+    const expected = 1 - sLL(elapsed + horizon) / sLL(elapsed);
+    const actual = pLeaveBy([], elapsed, horizon, [shape, scale], { p: atomP, sec: atomSec });
+    expect(actual).toBeCloseTo(expected, 9);
+  });
+
+  test('conditionalRecovery median lands exactly on the atom when atom_p is the majority', () => {
+    const cond = conditionalRecovery([], 0, [shape, scale], { p: atomP, sec: atomSec });
+    expect(cond).not.toBeNull();
+    expect(cond!.median_sec).toBe(atomSec);
+  });
+});
+
+describe('legacy path is unaffected when atom is absent', () => {
+  test('pLeaveBy: an explicit atom=undefined matches the pre-mixture call exactly', () => {
+    const curve = [0, 100];
+    const tail: [number, number] = [1.5, 200];
+    expect(pLeaveBy(curve, 100, 600, tail, undefined)).toBe(pLeaveBy(curve, 100, 600, tail));
+  });
+
+  test('conditionalRecovery: explicit tailLl/atom=undefined matches the pre-mixture 2-arg call exactly', () => {
+    const curve = [0, 100];
+    const withExtraArgs = conditionalRecovery(curve, 50, undefined, undefined);
+    const legacy = conditionalRecovery(curve, 50);
+    expect(withExtraArgs).toEqual(legacy);
   });
 });

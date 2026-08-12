@@ -697,6 +697,7 @@ def _movement_dwell(
         "n_transitions": 0,
         "n_own": 0,
         "n_pooled": 0,
+        "n_atom": 0,
     }
     try:
         from training.eval import STATES, load_movement_transitions
@@ -731,12 +732,18 @@ def _movement_dwell(
         out: dict[str, dict[str, DwellQuantiles]] = {}
         n_own = 0
         n_pooled = 0
+        n_atom = 0
         for state in STATES:
+            # Every movement state is a mixture candidate; pooled_dwell_cells
+            # only publishes an atom where the population actually has one, so
+            # `normal` (hours-long dwells) falls through to the continuous fit
+            # untouched while the disrupted states pick up their one-tick spike.
             cells = pooled_dwell_cells(
                 transitions,
                 state=state,
                 window_end=window_end,
                 open_regimes=open_regimes,
+                atom_sec=TICK_SECONDS,
             )
             for route, cell in cells.items():
                 out.setdefault(route, {})[state] = cell
@@ -744,11 +751,14 @@ def _movement_dwell(
                     n_own += 1
                 else:
                     n_pooled += 1
+                if "atom_p" in cell:
+                    n_atom += 1
         return out, {
             "source": source,
             "n_transitions": len(transitions),
             "n_own": n_own,
             "n_pooled": n_pooled,
+            "n_atom": n_atom,
         }
     except Exception as exc:
         print(f"movement dwell skipped ({exc})", file=sys.stderr)
@@ -1005,6 +1015,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"dwell_cause_cells={n_dwell_cause_cells}, "
         f"dwell_movement_cells={n_movement_dwell_cells} "
         f"[own={movement_dwell_stats['n_own']}, pooled={movement_dwell_stats['n_pooled']}, "
+        f"atom={movement_dwell_stats['n_atom']}, "
         f"source={movement_dwell_stats['source']}], "
         f"baseline_cells={n_baseline_cells}, "
         f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells}, "

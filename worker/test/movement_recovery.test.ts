@@ -186,6 +186,43 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     expect(a.recovery_minutes).toBe(b.recovery_minutes);
   });
 
+  test('a suspended movement regime defers to the alert arm rather than assuming its exit split', () => {
+    // Exits from `disrupted` were measured at 100% to normal, so reading the
+    // exit probability as p_normal is justified there. `suspended` completed
+    // no episode in either archive window, so its split is unmeasured — a
+    // route resuming from no trains at all can come back degraded. Serving
+    // the raw exit probability would publish a P(normal) nothing supports.
+    //
+    // The params below DO carry a suspended curve, so the only thing declining
+    // to use it is the measured-split guard.
+    const params = parseTrainedParams({
+      schema_version: '1',
+      trained_at: NOW,
+      routes: { A: routeParams() },
+      dwell_movement: {
+        A: { ...movementDwellCell(), suspended: { n: 12, q25_sec: 538, median_sec: 2413, q75_sec: 10819, curve_sec: DISRUPTED_CURVE } },
+      },
+    });
+    expect(params!.dwellMovement.A!.suspended).toBeDefined();
+
+    const suspendedCurve = build({
+      routeId: 'A',
+      movement: movementRegime('suspended', 30 * MIN),
+      trainedParams: params,
+    });
+    const inf = suspendedCurve.route_status.A!.inference!;
+    expect(suspendedCurve.route_status.A!.condition).toBe('suspended');
+    expect(suspendedCurve.route_status.A!.condition_source).toBe('movement');
+    expect(inf.recovery_source).not.toBe('movement');
+
+    // And it matches the no-movement-reading fallback exactly, so deferring is
+    // a real handoff to the alert arm, not a separate half-path.
+    const fallback = build({ routeId: 'A', movement: null, trainedParams: params });
+    const fb = fallback.route_status.A!.inference!;
+    expect(inf.p_normal_in_30min).toBe(fb.p_normal_in_30min);
+    expect(inf.recovery_minutes).toBe(fb.recovery_minutes);
+  });
+
   test('recovery_source is "movement" only when the movement curve was actually used', () => {
     const params = trained(['A']);
 

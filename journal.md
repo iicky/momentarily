@@ -557,3 +557,178 @@ cells here gives 5+3+5+1+2+1 = **17**, and the 3 that clear
 `MIN_VOTER_EVENTS` (R=5, G=3, 6=5) are exactly the "3 of 6 routes with >=3
 episodes" cited there. Same source data, two independent code paths
 (census vs. dwell fit), same numbers.
+
+
+## 2026-08-11 — movement exit-destination split: 100% to-normal, closed by measurement not code
+
+origin: agent
+
+`movementRecovery` (worker/src/snapshot.ts) reads a disrupted/suspended
+regime's exit probability straight as `p_normal_in_H`, unlike the alert-HMM
+branch in the same file which multiplies by a trained `toNormal` share. That
+was flagged as a simplification, not proven immaterial. Measured it via
+`murk exec` + `training.movement_backfill.reconstruct_movement_transitions`,
+route scope, `debounce_ticks=1`, per `from_state`, both independent sources.
+
+`source=vehicles` (2026-06-21..2026-08-12, 53 days, VEHICLE-ONLY —
+`load_r2.derive_movement_state` can never return `not_scheduled`, so this
+source is structurally biased against non-normal exits; trusted only as a
+high-volume cross-check, not the vocabulary answer):
+
+| from_state | n exits | to_normal | dest breakdown |
+| --- | --- | --- | --- |
+| disrupted | 213 | 1.000 | normal=213 |
+| suspended | 0 | n/a | (no completed episode in window) |
+
+19 routes contribute to the 213, every one individually 100% to normal (7:45,
+G:29, M:23, R:16, W:14, 6:14, E:11, J:10, D:10, N:9, A:8, C:5, 4:5, F:3, Q:3,
+B:3, H:2, 1:1, 2:1, 5:1).
+
+`source=predictions` (2026-08-04..2026-08-12, 8 days, the faithful published
+vocabulary — trusted for the `not_scheduled` question the vehicle source
+structurally cannot answer):
+
+| from_state | n exits | to_normal | dest breakdown |
+| --- | --- | --- | --- |
+| disrupted | 17 | 1.000 | normal=17 |
+| suspended | 0 | n/a | (no completed episode in window) |
+
+Per-route on the faithful source: R:5, 6:5, G:3, J:2, M:1, W:1 — every route
+100% to normal, none below the pooled figure. (This 17 is the same population
+the 2026-08-11 dwell-fit entry above counted by a different code path — same
+numbers, second confirmation.)
+
+`suspended` completed zero route-scope episodes in either window — not "rare
+and mostly normal", genuinely absent from both the 53-day high-volume archive
+and the 8-day faithful stream. `disrupted` never exited to `suspended` or
+`not_scheduled` either, on the source that can express `not_scheduled`.
+
+Decision rule from the assignment: >=0.98 pooled to-normal on the faithful
+source, no route materially below it. Measured 1.000 (17/17) with zero
+exceptions across 6 routes, corroborated by 1.000 (213/213) across 19 routes
+on the larger source. Verdict: **immaterial today, no code change.** Did not
+build `movement_exit_split` — a trained-share params block, a worker
+accessor, and a multiply in `movementRecovery` would all be exercising a
+split that has not once fired in 61 days of combined archive. Replaced the
+"no trained split exists" comment in `movementRecovery` with these numbers
+and this date so the claim is checked, not assumed. Number to chase if this
+ever needs revisiting: the first observed `suspended`-from or
+disrupted-to-`not_scheduled` route-scope transition, whenever it happens.
+
+
+## 2026-08-12 — 53-day incident clustering settles it: still doesn't hold, but not literally zero (3 real incidents)
+
+origin: agent
+
+Follow-up on "clustered incidents: 0/1260 ticks show two disrupted segments
+adjacent" and its baseline-window-sensitivity revision (both 2026-08-11
+above). Both were underpowered: 8 days, one baseline. Re-ran
+`training.incidents.measure_premise` over the full vehicle archive
+(2026-06-21..2026-08-12, 53 days, `murk exec`), scored against TWO
+baselines built from the same 53-day vehicle archive: `self` (`load_r2.
+build_segment_baseline`, self-trained on the measured window — the prior
+run's weakness, still run here so the two can be compared directly) and
+`published` (the live `state/segment_params.json`, `trained_at=1786492506`,
+2532 cells — what the Worker actually classifies against, via the new
+`published_baseline_cells` + `segment_ticks_with_baseline`).
+
+Pooled 53-day result, both baselines:
+
+| baseline | candidate ticks (>=2 disrupted) | adjacent ticks gap0 | adjacent ticks gap1 | share ticks gap0 | mean cluster size gap0 | share disrupted-segments-in-multi gap0 | gap1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| self (53-day self-trained) | 5257 | 21 | 21 | 0.40% | 1.0016 | 0.274% | 0.285% |
+| published (live segment_params.json) | 5489 | 21 | 21 | 0.38% | 1.0016 | 0.271% | 0.283% |
+
+gap=0 and gap=1 give the IDENTICAL 21 adjacent ticks on both baselines —
+loosening `DEFAULT_MAX_GAP` still has no support. The two baselines land
+within ~4% of each other on the denominator (5257 vs 5489 candidate ticks —
+the published baseline calls slightly more ticks judgeable) and produce the
+exact same 21 numerator. (8963 total reconstructed ticks either way; 5257
+of them, 58.7%, have >=2 disrupted segments somewhere on the network — same
+order of magnitude as the 8-day run's 55.6%, not a new finding on its own.)
+
+Per-week breakdown (self-trained baseline; published tracks it within 1-2
+ticks/week everywhere it differs):
+
+| week | candidate ticks | adjacent ticks gap0 | share |
+| --- | --- | --- | --- |
+| 06-21..06-27 | 0 | 0 | n/a (no disruption observed yet) |
+| 06-28..07-04 | 0 | 0 | n/a |
+| 07-05..07-11 | 20 | 0 | 0.0% |
+| 07-12..07-18 | 948 | 11 | 1.16% |
+| 07-19..07-25 | 1185 | 9 | 0.76% |
+| 07-26..08-01 | 1304 | 1 | 0.08% |
+| 08-02..08-08 | 1255 | 0 | 0.0% |
+| 08-09..08-12 | 545 | 0 | 0.0% |
+
+5 of 8 weeks are exactly zero; all 21 adjacent ticks fall in a 3-week span
+(07-12..08-01). Traced identity through the whole window with
+`advance_incidents` (not just counting candidate ticks) to see how many
+DISTINCT real incidents that span represents: exactly **3**, agreed on by
+both baselines down to the segment keys and timestamps —
+
+| incident | segments | first seen (UTC) | last seen (UTC) | span |
+| --- | --- | --- | --- | --- |
+| 1 | 7\|south\|701S, 7\|south\|702S | 2026-07-16 04:20 | 2026-07-16 07:55 | 215 min |
+| 2 | A\|north\|A48N, A51N, A55N | 2026-07-24 18:15 | 2026-07-24 19:45 | 90 min |
+| 3 | 7\|south\|701S, 7\|south\|702S | 2026-07-27 12:30 | 2026-07-27 12:45 | 15 min |
+
+Two of the three are the SAME 7|south segment pair recurring (a specific
+chronically slow spot, not a generic clustering tendency); the third is the
+one 3-segment footprint in the whole 53 days, on the A up in the 140s-170s.
+Zero incidents anywhere else on the network, on either baseline, in 53
+days.
+
+**Verdict: does not hold — confirmed, not overturned, but the literal
+"zero" from the 8-day run is overturned.** 53 days surfaced 3 real
+multi-segment incidents an 8-day window was simply too short to ever see;
+they're genuine, not noise (both a self-trained-on-53-days baseline and the
+independently-trained published baseline agree on the same 3, to the
+minute). But 3 incidents against 2532 segment cells over 53 days, and
+0.27-0.29% of disrupted-segment observations, is not "overwhelming" by any
+reading — the premise's core claim (that adjacent clustering is the
+dominant case, not the exception) still fails. **What changed the number:
+the longer window, not the baseline.** Self-trained-on-53-days and
+published converge almost exactly (same 21 ticks, same 3 incidents,
+matching timestamps); baseline choice moved only the candidate-tick
+denominator by ~4% and never flipped a single classification that mattered
+to the verdict. Left `training.incidents.path_incident_durations` unwired
+(non-goal: `train_em.py`/`snapshot.ts` publish nothing new here) and
+rewrote the module docstring with this finding and window so the next
+reader doesn't re-derive it from scratch.
+## 2026-08-12 — suspended is not covered by the exit-split measurement
+
+origin: self
+
+Revises the entry above ("movement exit-destination split: 100% to-normal,
+closed by measurement not code"). Its measurement stands and its conclusion
+for `disrupted` stands; its title is wrong on two counts, and the second one
+was a live unsoundness.
+
+The measurement covered `disrupted` at n=213 and n=17, both 100% to normal.
+It covered `suspended` at **n=0**. Zero observations is not a measurement of
+1.0 — it is the absence of one, and the entry then let a suspended cell's exit
+probability be read directly as `p_normal_in_H` on that basis. The two states
+are not interchangeable here: `disrupted` means trains are moving slowly and
+recovering means they speed up, whereas `suspended` means there are no trains
+on the route at all, and a route resuming service can plausibly come back
+degraded before it comes back normal. Nothing in the archive says otherwise
+because nothing in the archive says anything.
+
+Fixed in code, so it was not closed by measurement alone: `movementRecovery`
+now serves only the states whose exit destination has actually been observed
+(`normal`, which needs no split at all since an exit from normal is never to
+normal, and `disrupted`). Anything else returns null and falls through to the
+alert arm, which has a trained transition matrix and a real `toNormal` share.
+Pinned by a test that fails when the guard is removed (verified by deleting
+the line: 8 pass / 1 fail, restored: 9 pass).
+
+Live blast radius today is zero — the published fit carries 25 `normal` and 6
+`disrupted` cells and **no `suspended` cell**, so the guarded path was
+unreachable in production. It would have become reachable the first time a
+suspended movement episode completed and pooling produced a cell for it, which
+is exactly when a silently-wrong `p_normal_in_H` would have started shipping.
+
+The number to chase if this is revisited: the to-normal share for exits from
+`suspended`, which needs at least one completed suspended route-scope episode
+to exist before it can be estimated at all.

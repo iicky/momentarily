@@ -17,6 +17,16 @@
  *   VehiclePosition.current_stop_sequence = 3  (uint32)
  *   VehiclePosition.current_status        = 4  (enum: 0=INCOMING_AT,
  *                                              1=STOPPED_AT, 2=IN_TRANSIT_TO)
+ *   VehiclePosition.timestamp     = 5  (uint64, varint wire — POSIX seconds of
+ *                                        the vehicle's own report time, per the
+ *                                        canonical gtfs-realtime.proto; not
+ *                                        independently captured from a live
+ *                                        NYCT feed like the fields above, but
+ *                                        the surrounding numbers NYCT DOES omit
+ *                                        (2 position, 6 congestion_level, 8
+ *                                        vehicle descriptor, 9 occupancy_status)
+ *                                        already match the spec's layout
+ *                                        exactly, so 5 = timestamp is solid.
  *   VehiclePosition.stop_id       = 7  (string)
  *   TripDescriptor.trip_id        = 1  (string)
  *   TripDescriptor.route_id       = 5  (string)
@@ -49,6 +59,11 @@ export interface VehicleLite {
   // IN_TRANSIT_TO (2), so null is treated as "moving" downstream.
   status: number | null;
   stopSeq: number | null; // current_stop_sequence; present only when STOPPED_AT
+  // The feed's own per-vehicle report clock (POSIX seconds), finer-grained
+  // than our poll interval — this is what lets the minute trace timestamp an
+  // arrival more precisely than "some time in this polling window". null when
+  // the field is absent (observed on some in-transit reports).
+  timestamp: number | null;
 }
 
 /** Cursor over a byte view; reads protobuf wire primitives, skips the rest. */
@@ -184,6 +199,7 @@ function parseVehiclePosition(view: Uint8Array): VehicleLite | null {
   let stopId = '';
   let status: number | null = null;
   let stopSeq: number | null = null;
+  let timestamp: number | null = null;
   while (!r.done) {
     const { field, wire } = r.tag();
     if (field === 1 && wire === WIRE_LEN) {
@@ -192,6 +208,8 @@ function parseVehiclePosition(view: Uint8Array): VehicleLite | null {
       stopSeq = r.varint();
     } else if (field === 4 && wire === WIRE_VARINT) {
       status = r.varint();
+    } else if (field === 5 && wire === WIRE_VARINT) {
+      timestamp = r.varint();
     } else if (field === 7 && wire === WIRE_LEN) {
       stopId = r.string();
     } else {
@@ -199,7 +217,14 @@ function parseVehiclePosition(view: Uint8Array): VehicleLite | null {
     }
   }
   if (!descriptor || !descriptor.routeId) return null;
-  return { routeId: descriptor.routeId, tripId: descriptor.tripId, stopId, status, stopSeq };
+  return {
+    routeId: descriptor.routeId,
+    tripId: descriptor.tripId,
+    stopId,
+    status,
+    stopSeq,
+    timestamp,
+  };
 }
 
 function parseTripUpdate(view: Uint8Array): TripLite | null {

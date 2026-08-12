@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import type { VehicleLite } from '../src/gtfsrt';
-import { deriveRouteMovementMetric, stopPositions } from '../src/vehicles';
+import { deriveRouteMovementMetric, deriveTrace, stopPositions } from '../src/vehicles';
 
 function veh(over: Partial<VehicleLite>): VehicleLite {
   return {
@@ -10,6 +10,7 @@ function veh(over: Partial<VehicleLite>): VehicleLite {
     stopId: 'A01N',
     status: null,
     stopSeq: null,
+    timestamp: null,
     ...over,
   };
 }
@@ -199,5 +200,87 @@ describe('stopPositions', () => {
       veh({ tripId: '', stopId: 'A02N' }),
     ]);
     expect(map).toEqual({ a: 'A01N' });
+  });
+});
+
+describe('deriveTrace', () => {
+  test('a trip whose position is unchanged from the previous call still emits a row — the old delta would have emitted nothing here', () => {
+    const vehicles = [veh({ tripId: 'a', stopId: 'A01N', status: null })];
+    deriveTrace(vehicles); // simulate a prior poll that already observed this exact position
+    const rows = deriveTrace(vehicles);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ trip_id: 'a', stop_id: 'A01N', stopped: false });
+  });
+
+  test('every in-service trip yields exactly one row per call', () => {
+    const rows = deriveTrace([
+      veh({ tripId: 'a', stopId: 'A01N' }),
+      veh({ tripId: 'b', stopId: 'B02S' }),
+      veh({ tripId: 'c', stopId: 'C03N' }),
+    ]);
+    expect(rows.map((r) => r.trip_id)).toEqual(['a', 'b', 'c']);
+  });
+
+  test('calling it twice with the same input returns identical output — pure function of the feed, which is what fixes the retry bug', () => {
+    const vehicles = [
+      veh({
+        tripId: 'a', routeId: '6X', stopId: 'A09N', status: 1, stopSeq: 9, timestamp: 1_750_000_000,
+      }),
+      veh({ tripId: 'b', stopId: 'B02S', status: null }),
+    ];
+    expect(deriveTrace(vehicles)).toEqual(deriveTrace(vehicles));
+  });
+
+  test('a trip absent from this call\'s input simply produces no row — how a disappearance (censored traversal) is represented', () => {
+    const atT = deriveTrace([
+      veh({ tripId: 'a', stopId: 'A01N' }),
+      veh({ tripId: 'b', stopId: 'B01N' }),
+    ]);
+    expect(atT.map((r) => r.trip_id)).toEqual(['a', 'b']);
+
+    const atT1 = deriveTrace([veh({ tripId: 'a', stopId: 'A02N' })]); // b has vanished from the feed
+    expect(atT1.map((r) => r.trip_id)).toEqual(['a']);
+  });
+
+  test('stop_seq is populated only when stopped, null while in transit', () => {
+    const rows = deriveTrace([
+      veh({ tripId: 'a', stopId: 'A09N', status: 1, stopSeq: 9 }),
+      veh({ tripId: 'b', stopId: 'B09N', status: null, stopSeq: 9 }), // feed carried one anyway
+    ]);
+    expect(rows.find((r) => r.trip_id === 'a')!.stop_seq).toBe(9);
+    expect(rows.find((r) => r.trip_id === 'b')!.stop_seq).toBeNull();
+  });
+
+  test('empty trip_id is skipped (cannot be matched across polls)', () => {
+    expect(deriveTrace([veh({ tripId: '', stopId: 'A01N' })])).toEqual([]);
+  });
+
+  test('empty stop_id is skipped', () => {
+    expect(deriveTrace([veh({ tripId: 'a', stopId: '' })])).toEqual([]);
+  });
+
+  test('row shape: route folded, direction derived, vehicle_ts passed through', () => {
+    const rows = deriveTrace([veh({
+      tripId: 'a', routeId: '6X', stopId: 'A09N', status: 1, stopSeq: 9, timestamp: 1_750_000_000,
+    })]);
+    expect(rows[0]).toEqual({
+      trip_id: 'a',
+      route_id: '6',
+      direction: 'north',
+      stop_id: 'A09N',
+      stop_seq: 9,
+      stopped: true,
+      vehicle_ts: 1_750_000_000,
+    });
+  });
+
+  test('direction falls back to the trip_id direction char when stop_id has no N/S suffix', () => {
+    const rows = deriveTrace([veh({ tripId: '012345_L..S01R', routeId: 'L', stopId: 'L06' })]);
+    expect(rows[0]!.direction).toBe('south');
+  });
+
+  test('vehicle_ts is null when the feed omits the per-vehicle timestamp', () => {
+    const rows = deriveTrace([veh({ tripId: 'a', stopId: 'A01N', timestamp: null })]);
+    expect(rows[0]!.vehicle_ts).toBeNull();
   });
 });

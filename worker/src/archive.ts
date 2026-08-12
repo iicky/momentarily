@@ -22,7 +22,7 @@
 
 import type { LastSeen } from './state';
 import type { ServiceRow } from './trip_updates';
-import type { MovementRow } from './vehicles';
+import type { MovementRow, TraceRow } from './vehicles';
 
 function utcDate(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
@@ -146,6 +146,49 @@ export async function archiveVehicleMetric(
       observed_at: observedAt,
       fresh_feeds: freshFeeds,
       rows: Object.fromEntries(rows),
+    }),
+    { httpMetadata: { contentType: 'application/json' } },
+  );
+}
+
+/**
+ * Archive the per-minute vehicle trace rows — the fine-grained sibling of
+ * archiveVehicleMetric above, and deliberately kept apart from it: this feeds
+ * the per-minute movement trace (vehicles.ts deriveTrace), never the
+ * 5-minute advanced_n/stalled_n signal archiveVehicleMetric feeds. Same key/
+ * body-shape convention — one object per poll, keyed on the tick wall-clock
+ * so an overlapping/retried run overwrites rather than duplicates — but its
+ * own archive/trace/ prefix so this additive stream can never collide with,
+ * or be mistaken for, archive/vehicles/. `rows` is a full snapshot from
+ * deriveTrace (one row per in-service trip, every poll, not a delta), so
+ * most minutes write ~700 rows, not a small or empty array.
+ * `freshFeeds` mirrors archiveVehicleMetric's: which line-group feeds decoded
+ * this poll, so the offline loader can tell a real empty poll from a gap.
+ */
+export async function archiveTraceRows(
+  bucket: R2Bucket,
+  rows: TraceRow[],
+  freshFeeds: string[],
+  observedAt: number,
+  scheduledAt: number,
+): Promise<void> {
+  // Keyed on the SCHEDULED second, not observedAt. The trace step runs before
+  // any compare-and-swap winner check, so a retried or overlapping invocation
+  // for the same cron minute would otherwise land on a different observedAt
+  // second and write a SECOND object rather than overwriting the first —
+  // duplicating every row in it. Downstream that is double-counted arrivals and
+  // silently wrong traversal times, in a brand-new archive with no history to
+  // cross-check against. The scheduled second is stable across retries, so a
+  // rerun overwrites. observed_at stays in the body: it is the real execution
+  // time, and the per-vehicle feed timestamps on each row are finer still.
+  const key = `archive/trace/${utcDate(scheduledAt)}/${scheduledAt}.json`;
+  await bucket.put(
+    key,
+    JSON.stringify({
+      observed_at: observedAt,
+      scheduled_at: scheduledAt,
+      fresh_feeds: freshFeeds,
+      rows,
     }),
     { httpMetadata: { contentType: 'application/json' } },
   );

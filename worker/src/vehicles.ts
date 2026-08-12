@@ -137,3 +137,87 @@ export function deriveRouteMovementMetric(
   }
   return out;
 }
+
+/**
+ * Per-trip, per-minute movement trace — the fine-grained sibling of
+ * deriveRouteMovementMetric above. That function's advanced_n/stalled_n are a
+ * 5-minute cross-tick signal: at 5-minute polling most observed "moves" span
+ * 2+ stations (mean ~2.7 on the existing archive), so the intermediate
+ * stations are never actually observed and (from_stop, to_stop) segments are
+ * really multi-station jumps. Polling every minute instead — and archiving
+ * every (stop_id, stopped) change as its own row — gets close enough to
+ * per-station observations to measure real station-to-station traversal
+ * time, which the 5-minute signal structurally cannot.
+ *
+ * This is intentionally a PARALLEL, INDEPENDENT pipeline from
+ * deriveRouteMovementMetric/stopPositions above: it never reads or writes
+ * state/vehicle_stops.json, and it archives under its own archive/trace/
+ * prefix, never archive/vehicles/, at its own cadence (every minute, not
+ * gated to the 5-minute boundary). See the scheduled handler in index.ts for
+ * how the two are kept apart — because this trace never touches
+ * vehicle_stops.json or archive/vehicles/, it cannot perturb
+ * deriveRouteMovementMetric's advanced_n/stalled_n, and every dwell/
+ * advance-rate param trained on them, which assume a fixed 5-minute tick.
+ */
+export interface TraceRow {
+  trip_id: string;
+  route_id: string; // baseRoute()-folded, like MovementRow's keys
+  direction: 'north' | 'south' | null; // directionOf(), same as above
+  stop_id: string; // the stop this vehicle is at (STOPPED_AT) or heading to
+  stop_seq: number | null; // current_stop_sequence; present only when STOPPED_AT
+  stopped: boolean; // status === STOPPED_AT
+  vehicle_ts: number | null; // the feed's own per-vehicle report timestamp
+}
+
+/**
+ * One row per in-service trip, as observed this poll. The raw stream the
+ * traversal-time model is built from.
+ *
+ * This is a FULL snapshot, not a delta against the previous poll, and that is a
+ * deliberate reversal. Delta-encoding looks like free compression but buys
+ * nothing here: a train changes (stop_id, status) roughly once a minute anyway,
+ * so at ~700 concurrent trips a delta emits ~760 rows/min against ~700 for the
+ * full snapshot. It is not smaller, and it costs three real things:
+ *
+ *   1. A carry object, which is state, which is another thing to corrupt.
+ *   2. Idempotency. The delta is a function of (feed, carry), and the carry is
+ *      written by the same step — so a retried invocation for one cron minute
+ *      sees its own earlier write, computes zero changed rows, and overwrites a
+ *      good archive object with an empty one. That silently DESTROYS the arrival
+ *      it just recorded. A full snapshot is a pure function of the feed, so a
+ *      retry rewrites byte-identical content and cannot lose anything.
+ *   3. Disappearances. A train present at minute t and absent at t+1 is a
+ *      censored traversal, and we want it. A delta cannot express absence; a
+ *      snapshot gives it for free as a trip that stops appearing.
+ *
+ * Reconstructing arrivals is then a diff of consecutive snapshots, done offline
+ * where it is cheap, inspectable and re-runnable against corrected logic —
+ * rather than baked irreversibly into collection.
+ *
+ * On the two meanings of stop_id, which the offline diff has to honour: NYCT's
+ * stop_id is the stop a train is *heading to* while in transit, and the stop it
+ * is *at* once STOPPED_AT. So one hop into station N shows up as "stop_id=N,
+ * stopped=false" and then "stop_id=N, stopped=true" — same stop, different
+ * status. The second is the arrival; stop_seq is populated only then.
+ *
+ * Skips vehicles with an empty tripId (can't be matched across polls, same
+ * caution as stopPositions) or an empty stopId (same caution as the transitions
+ * map in deriveRouteMovementMetric above).
+ */
+export function deriveTrace(vehicles: VehicleLite[]): TraceRow[] {
+  const rows: TraceRow[] = [];
+  for (const v of vehicles) {
+    if (!v.tripId || !v.stopId) continue;
+    const stopped = v.status === STOPPED_AT;
+    rows.push({
+      trip_id: v.tripId,
+      route_id: baseRoute(v.routeId),
+      direction: directionOf(v),
+      stop_id: v.stopId,
+      stop_seq: stopped ? v.stopSeq : null,
+      stopped,
+      vehicle_ts: v.timestamp,
+    });
+  }
+  return rows;
+}

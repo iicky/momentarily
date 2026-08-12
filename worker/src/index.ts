@@ -2,6 +2,10 @@
  * Momentarily publisher — Cloudflare Worker entry point.
  *
  * Each cron tick:
+ *   0. Fetch + decode the vehicle-position feeds and run the per-minute
+ *      movement trace (every tick — see the hazard note at the top of
+ *      `scheduled` for why this is the ONLY thing that runs off the
+ *      5-minute boundary)
  *   1. Read rolling state (last_seen, alpha) + trained params from R2
  *   2. Fetch the MTA alerts feed
  *   3. Archive new (alert_id, updated_at) versions
@@ -11,6 +15,10 @@
  *   7. (Only if alpha persisted) Write predictions + transitions grading streams
  *   8. Hourly: fetch the 3 E&E feeds and archive snapshots
  *   9. Persist last_seen.json via etag CAS
+ *
+ * Steps 1-9 are the 5-minute pipeline and only run on a 5-minute boundary
+ * (minute % 5 === 0) even though the cron itself now fires every minute — see
+ * wrangler.toml and the gate at the top of `scheduled`.
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
@@ -18,6 +26,7 @@ import { readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
 import {
   archiveEneSnapshot,
   archiveNewAlerts,
+  archiveTraceRows,
   archiveTripUpdateMetric,
   archiveVehicleMetric,
 } from './archive';
@@ -28,7 +37,7 @@ import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } fro
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
-import { deriveRouteMovementMetric, stopPositions } from './vehicles';
+import { deriveRouteMovementMetric, deriveTrace, stopPositions } from './vehicles';
 import {
   MOVEMENT_STATE_PUBLISH,
   deriveMovementStates,
@@ -116,6 +125,23 @@ const ENE_SOURCES = [
   ['ene_equipments', FEEDS.ene_equipments],
 ] as const;
 
+/** UTC minute-of-hour for a tick's observedAt (POSIX seconds). Broken out as
+ * a pure function — rather than reading Date.now() again inside `scheduled`
+ * — so the 5-minute boundary gate is unit-testable against an arbitrary
+ * timestamp.
+ *
+ * The gate MUST read the cron's SCHEDULED minute, never the wall clock at
+ * execution. Cloudflare does not promise punctuality, and a boundary invocation
+ * that starts a few seconds late — enough to tip Date.now() into the next minute
+ * — would fail the `% 5` test and silently skip the ENTIRE 5-minute pipeline for
+ * that cycle: no snapshot, no state advance, nothing published, for five
+ * minutes, with only a log line to show for it. `scheduledTime` is the minute
+ * the trigger was meant to fire, so a late start still does its work.
+ */
+export function tickMinute(observedAt: number): number {
+  return new Date(observedAt * 1000).getUTCMinutes();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handlePublicRead(request, env);
@@ -132,6 +158,79 @@ export default {
       console.log(`step ${label} t+${Date.now() - t0}ms`);
     };
     console.log(`tick cron=${event.cron} t=${observedAt}`);
+
+    // --- Step 0: per-minute vehicle trace, and the 5-minute pipeline gate ---
+    //
+    // THE HAZARD THIS GUARDS AGAINST: every step from here through step 9 is
+    // defined per 5-MINUTE TICK. advanced_n/stalled_n (vehicles.ts) mean "did
+    // this trip's stop_id change in 5 minutes"; the trained advance-rate
+    // baseline (params.ts) is fitted on that cadence; the dwell model's
+    // one-tick point mass IS 5 minutes; state/vehicle_stops.json is the
+    // 5-minute carry map. The cron now fires every minute (wrangler.toml) so
+    // that the trace below can poll at 1-minute resolution — but if steps 1-9
+    // ran on every one of those fires, advanced_n/stalled_n etc. would
+    // silently become 1-MINUTE quantities while every trained param still
+    // assumed 5 minutes. Same code, same shape, quietly wrong numbers. So
+    // steps 1-9 are gated to run ONLY on a 5-minute boundary (minute % 5 ===
+    // 0), reading/writing vehicle_stops.json exactly as often as before this
+    // change and seeing exactly the same inputs.
+    //
+    // The trace is the one thing allowed to run every minute. It never reads
+    // or writes vehicle_stops.json, and it archives under its OWN prefix
+    // (archive/trace/, see archive.ts) — never archive/vehicles/ — so it can
+    // add finer-grained observations without ever touching the 5-minute
+    // signal above. See vehicles.ts's deriveTrace for why it writes a full
+    // snapshot every poll rather than a delta.
+    // Gate off the cron's SCHEDULED minute, not observedAt. observedAt is the
+    // wall clock at execution and is right for stamping data, but wrong for the
+    // gate: a boundary run that starts a few seconds late would read as minute 6
+    // and skip the whole 5-minute pipeline. See tickMinute.
+    const scheduledAt = Math.floor(event.scheduledTime / 1000);
+    const minute = tickMinute(scheduledAt);
+    const isFiveMinuteBoundary = minute % 5 === 0;
+
+    // Fetch + decode the vehicle-position side of the protobuf feeds
+    // unconditionally, every tick — the trace needs it every minute, and step
+    // 8b below needs the identical fetch on a boundary tick. Fetching here
+    // once and threading `feedResults`/`vehicles`/`vehicleFreshFeeds` through
+    // means a boundary tick never fetches the feed twice.
+    const feedResults = await Promise.allSettled(
+      TRIP_UPDATE_FEEDS.map(([, url]) => fetchProtobuf(url)),
+    );
+    const vehicles: VehicleLite[] = [];
+    const vehicleFreshFeeds: string[] = [];
+    for (let i = 0; i < feedResults.length; i++) {
+      const r = feedResults[i]!;
+      const name = TRIP_UPDATE_FEEDS[i]![0];
+      if (r.status === 'fulfilled') {
+        vehicleFreshFeeds.push(name);
+        vehicles.push(...decodeVehicles(r.value));
+      } else {
+        console.error(`trip-updates ${name} failed:`, r.reason);
+      }
+    }
+    try {
+      const rows = deriveTrace(vehicles);
+      await archiveTraceRows(
+        env.MOMENTARILY,
+        rows,
+        vehicleFreshFeeds,
+        observedAt,
+        scheduledAt,
+      );
+      console.log(`trace: ${rows.length} rows from ${vehicles.length} vehicles`);
+    } catch (err) {
+      console.error('trace step failed:', err);
+    }
+    step('0-trace');
+
+    if (!isFiveMinuteBoundary) {
+      console.log(
+        `tick ${observedAt}: minute=${minute}, off the 5-minute boundary — `
+        + '5-minute pipeline skipped, trace only',
+      );
+      return;
+    }
 
     // --- Step 1: read state ---
     // Capture etags so the write-back is a compare-and-swap — overlapping or
@@ -487,32 +586,23 @@ export default {
       }
     }
 
-    // --- Step 8b: trip-updates + vehicle metrics (every tick) ---
-    // Fetch all line-group protobuf feeds concurrently and decode both the
-    // TripUpdate and VehiclePosition entities — same bytes carry both, so the
-    // vehicle decode is nearly free. Derive each compact per-route metric and
+    // --- Step 8b: trip-updates + vehicle metrics (every 5-minute tick) ---
+    // The protobuf feeds were already fetched and their VehiclePosition side
+    // already decoded at step 0 above (shared with the per-minute trace, so a
+    // boundary tick never fetches twice) — decode the TripUpdate side from
+    // those same buffers (`feedResults`) and reuse `vehicles`/
+    // `vehicleFreshFeeds` as-is. Derive each compact per-route metric and
     // archive both for offline validation. Gated on the alpha CAS winner like
     // E&E so losing runs don't double-write. A failed/slow feed is non-fatal —
     // its routes are simply absent this tick, recorded via fresh_feeds.
     if (alphaWritten) {
       try {
-        const results = await Promise.allSettled(
-          TRIP_UPDATE_FEEDS.map(([, url]) => fetchProtobuf(url)),
-        );
         const trips: TripLite[] = [];
-        const vehicles: VehicleLite[] = [];
-        const freshFeeds: string[] = [];
-        for (let i = 0; i < results.length; i++) {
-          const r = results[i]!;
-          const name = TRIP_UPDATE_FEEDS[i]![0];
-          if (r.status === 'fulfilled') {
-            freshFeeds.push(name);
-            trips.push(...decodeTripUpdates(r.value));
-            vehicles.push(...decodeVehicles(r.value));
-          } else {
-            console.error(`trip-updates ${name} failed:`, r.reason);
-          }
+        for (const r of feedResults) {
+          if (r.status === 'fulfilled') trips.push(...decodeTripUpdates(r.value));
+          // Fetch failures for this tick were already logged at step 0.
         }
+        const freshFeeds = vehicleFreshFeeds;
         if (freshFeeds.length > 0) {
           const rows = deriveRouteServiceMetric(trips);
           await archiveTripUpdateMetric(

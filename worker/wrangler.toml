@@ -5,9 +5,13 @@ compatibility_date = "2026-05-13"
 # vault) rather than committed here. The bun scripts wrap wrangler in
 # `murk exec`, so `bun run deploy` injects it automatically.
 
-# Cron trigger — fires every 5 min, matching the MTA alerts feed cadence.
+# Cron trigger — fires every minute. The 5-minute alerts/HMM/snapshot pipeline
+# (matching the MTA alerts feed cadence) is gated INSIDE the scheduled handler
+# (index.ts: tickMinute(observedAt) % 5 === 0) to run only on 5-minute
+# boundaries — this every-minute cadence exists solely to drive the
+# per-minute vehicle movement trace (see vehicles.ts deriveTrace).
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["* * * * *"]
 
 # feed.momentarily.nyc is served BY the Worker, not bound directly to R2.
 # The Worker's fetch handler gates reads to the v1/ prefix; state/ and archive/

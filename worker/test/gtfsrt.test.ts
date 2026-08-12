@@ -138,6 +138,7 @@ function vehiclePosition(opts: {
   stopId?: string;
   status?: number;
   stopSeq?: number;
+  timestamp?: number;
 }): number[] {
   return [
     ...lenField(1, tripDescriptor({
@@ -147,6 +148,7 @@ function vehiclePosition(opts: {
     })),
     ...(opts.stopSeq !== undefined ? varField(3, opts.stopSeq) : []),
     ...(opts.status !== undefined ? varField(4, opts.status) : []),
+    ...(opts.timestamp !== undefined ? varField(5, opts.timestamp) : []),
     ...(opts.stopId !== undefined ? strField(7, opts.stopId) : []),
   ];
 }
@@ -167,13 +169,14 @@ describe('decodeVehicles', () => {
       stopId: 'A09N',
       status: 1,
       stopSeq: 31,
+      timestamp: null,
     });
   });
 
   test('in-transit vehicle (no status/seq field) decodes status and seq null', () => {
     const buf = feed(entity(vehiclePosition({ routeId: 'C', tripId: 'Y..S', stopId: 'A15S' }), 4));
     const v = decodeVehicles(buf);
-    expect(v[0]).toMatchObject({ status: null, stopSeq: null, stopId: 'A15S' });
+    expect(v[0]).toMatchObject({ status: null, stopSeq: null, stopId: 'A15S', timestamp: null });
   });
 
   test('trip_update entities (field 3) are skipped by the vehicle decoder', () => {
@@ -198,5 +201,24 @@ describe('decodeVehicles', () => {
     const v = decodeVehicles(buf);
     expect(v.map((x) => x.routeId)).toEqual(['A', 'A', 'C']);
     expect(v.map((x) => x.status)).toEqual([1, null, 1]);
+  });
+
+  test('decodes the per-vehicle timestamp (field 5) when present', () => {
+    const buf = feed(
+      entity(
+        vehiclePosition({
+          routeId: 'A', tripId: 'X..N', stopId: 'A09N', status: 1, stopSeq: 31, timestamp: 1_750_000_000,
+        }),
+        4,
+      ),
+    );
+    const v = decodeVehicles(buf);
+    expect(v[0]).toMatchObject({ timestamp: 1_750_000_000 });
+  });
+
+  test('timestamp is null when the field is absent', () => {
+    const buf = feed(entity(vehiclePosition({ routeId: 'A', tripId: 'X..N', stopId: 'A09N' }), 4));
+    const v = decodeVehicles(buf);
+    expect(v[0]!.timestamp).toBeNull();
   });
 });

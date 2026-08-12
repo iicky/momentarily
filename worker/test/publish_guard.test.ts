@@ -3,7 +3,9 @@
  *  - document-level corruption (no timestamp, no version) BLOCKS the publish;
  *  - a single route's corrupt (non-finite) inference is SCRUBBED to null and
  *    the rest of the feed still publishes — one bad route must never black out
- *    the whole feed (regression: a range check on a 1.0000001 float once did).
+ *    the whole feed (regression: a range check on a 1.0000001 float once did,
+ *    and separately, treating a deliberately-withheld null horizon as
+ *    corruption once would have too — see the regression tests below).
  */
 
 import { describe, expect, test } from 'vitest';
@@ -68,6 +70,11 @@ describe('scrubCorruptInferences', () => {
     const s = buildInferred();
     expect(scrubCorruptInferences(s)).toEqual([]);
     expect(s.route_status['1']!.inference).not.toBeNull();
+    // 60/120min are withheld by design on this fitted-curve (recovery_source
+    // 'hmm') row — null is their valid published value, not something the
+    // guard should treat as missing/corrupt.
+    expect(s.route_status['1']!.inference!.p_normal_in_60min).toBeNull();
+    expect(s.route_status['1']!.inference!.p_normal_in_120min).toBeNull();
   });
 
   test('nulls a route whose inference has a NaN, keeps the field for others', () => {
@@ -89,6 +96,23 @@ describe('scrubCorruptInferences', () => {
     // 1.0000001 rounding artifact. Finite values must ship as-is.
     const s = buildInferred();
     s.route_status['1']!.inference!.p_normal = 1.0000001;
+    expect(scrubCorruptInferences(s)).toEqual([]);
+    expect(s.route_status['1']!.inference).not.toBeNull();
+    // The withheld (null) 60/120min horizons on this row are untouched by
+    // the marginal-float fix — finite-OR-withheld, not "finite only".
+    expect(s.route_status['1']!.inference!.p_normal_in_60min).toBeNull();
+    expect(s.route_status['1']!.inference!.p_normal_in_120min).toBeNull();
+  });
+
+  test('REGRESSION: a withheld (null) horizon is not treated as corrupt', () => {
+    // The outage this guards against: every fitted-curve row nulls
+    // p_normal_in_60min/120min by design (see the Inference interface in
+    // snapshot.ts) — reading that deliberate withholding as "missing/corrupt
+    // data" would scrub the inference block off every route on every tick,
+    // silently emptying the feed of exactly the data it exists to carry.
+    const s = buildInferred();
+    expect(s.route_status['1']!.inference!.p_normal_in_60min).toBeNull();
+    expect(s.route_status['1']!.inference!.p_normal_in_120min).toBeNull();
     expect(scrubCorruptInferences(s)).toEqual([]);
     expect(s.route_status['1']!.inference).not.toBeNull();
   });

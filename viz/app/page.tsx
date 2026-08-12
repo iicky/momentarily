@@ -318,11 +318,29 @@ function RouteDrawer({
               <span className="k">P(normal in 30m)</span>
               <span className="v">{(inf.p_normal_in_30min * 100).toFixed(0)}%</span>
               <span className="k">P(normal in 60m)</span>
-              <span className="v">{(inf.p_normal_in_60min * 100).toFixed(0)}%</span>
+              {inf.p_normal_in_60min == null ? (
+                <span
+                  className="v muted"
+                  title="Withheld — this horizon measured worse than naive persistence, so it's deliberately not forecast rather than shown as a number we know is wrong."
+                >
+                  not forecast
+                </span>
+              ) : (
+                <span className="v">{(inf.p_normal_in_60min * 100).toFixed(0)}%</span>
+              )}
               <span className="k">P(normal in 120m)</span>
-              <span className="v">
-                {(inf.p_normal_in_120min * 100).toFixed(0)}%
-              </span>
+              {inf.p_normal_in_120min == null ? (
+                <span
+                  className="v muted"
+                  title="Withheld — this horizon measured worse than naive persistence, so it's deliberately not forecast rather than shown as a number we know is wrong."
+                >
+                  not forecast
+                </span>
+              ) : (
+                <span className="v">
+                  {(inf.p_normal_in_120min * 100).toFixed(0)}%
+                </span>
+              )}
             </div>
           )}
         </>

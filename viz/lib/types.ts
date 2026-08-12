@@ -19,8 +19,15 @@ export interface Inference {
   // Dwell estimate saturated the ceiling — recovery bounds are clamped/meaningless.
   recovery_indeterminate: boolean;
   p_normal_in_30min: number;
-  p_normal_in_60min: number;
-  p_normal_in_120min: number;
+  // 60/120min horizons are withheld (null) whenever this inference is
+  // model-derived: measured against naive persistence they scored worse
+  // than a coin flip (AUC 0.395 / 0.352, BSS as low as -1.30 — see
+  // journal.md:1040-1051), so we stop publishing a number we know is
+  // inverted rather than ship a fabricated forecast. p_normal_in_30min is
+  // unaffected — it repeatedly beats persistence (BSS +0.29 to +0.40) and
+  // stays a required number.
+  p_normal_in_60min: number | null;
+  p_normal_in_120min: number | null;
   model_warming_up: boolean;
 }
 
@@ -103,8 +110,12 @@ export interface PredictionRecord {
   recovery_minutes_high: number;
   recovery_indeterminate: boolean;
   p_normal_in_30min: number;
-  p_normal_in_60min: number;
-  p_normal_in_120min: number;
+  // 60/120min are withheld (null) on records where the forecast came from a
+  // fitted model — they measured worse than naive persistence (see
+  // journal.md:1040-1051) and we no longer publish them as numbers.
+  // Schedule-sourced rows and p_normal_in_30min are unaffected.
+  p_normal_in_60min: number | null;
+  p_normal_in_120min: number | null;
   primary_alert_type: string | null;
   params_version: number;
   // Optional: present only on records written after schedule-based recovery

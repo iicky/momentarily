@@ -95,6 +95,27 @@ test("reliability scores forecasts against real recovery; censors the unobservab
   assert.equal(r60.bins.find((b) => b.n > 0)!.observedFreq, 1);
 });
 
+test("reliability skips a withheld (null) horizon without throwing or miscounting it", () => {
+  const tls = buildTimelines(transitions, NOW);
+  const predictions = [
+    // p_normal_in_60min withheld: measured worse than naive persistence
+    // (journal.md:1040-1051), so this horizon is published as null rather
+    // than a number we know is inverted. reliability() must skip it, not
+    // coerce null -> 0 and silently score a confident-looking miss.
+    pred({ ts: 100, p_normal_in_60min: null, p_normal_in_120min: 0.6 }),
+  ];
+
+  const r60 = reliability(predictions, tls, 60);
+  assert.equal(r60.n, 0);
+  assert.ok(r60.bins.every((b) => b.n === 0));
+  assert.ok(Number.isNaN(r60.brier));
+
+  // A null neighbor on one horizon field doesn't leak into another horizon's
+  // scoring on the same record.
+  const r120 = reliability(predictions, tls, 120);
+  assert.equal(r120.n, 1);
+});
+
 test("recoveryError compares predicted band to actual time-to-normal", () => {
   const tls = buildTimelines(transitions, NOW);
   const predictions = [

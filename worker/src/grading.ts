@@ -34,8 +34,12 @@ export interface PredictionRecord {
   p_disrupted: number;
   p_suspended: number;
   p_normal_in_30min: number;
-  p_normal_in_60min: number;
-  p_normal_in_120min: number;
+  // Null once withheld: the 60/120-minute forecasts measured worse than naive
+  // persistence, so they are only populated for deterministic schedule rows.
+  // The grader must skip nulls rather than coerce them (a null read as 0 would
+  // score as a confident "will not recover", which is not what was published).
+  p_normal_in_60min: number | null;
+  p_normal_in_120min: number | null;
   recovery_minutes: number;
   recovery_minutes_low: number;
   recovery_minutes_high: number;

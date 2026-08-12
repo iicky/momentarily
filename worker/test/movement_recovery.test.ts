@@ -357,6 +357,65 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.recovery_minutes).toBe(30);
     expect(inf.resumes_at).toBe(NOW + 30 * MIN);
+    // The 60/120-minute horizons are withheld on every FITTED-CURVE arm, but
+    // this arm is not a forecast: it is a comparison against an announced
+    // resume time. A resume 30min out is inside all three windows.
+    expect(inf.p_normal_in_30min).toBe(1);
+    expect(inf.p_normal_in_60min).toBe(1);
+    expect(inf.p_normal_in_120min).toBe(1);
+  });
+
+  test('the schedule arm keeps 60/120min, and they discriminate rather than reading 1', () => {
+    // A resume 90min out: outside the 30 and 60 minute windows, inside 120.
+    // If the gate were a blanket suppression these would be null; if the
+    // exemption were degenerate they would all be 1. Neither.
+    const params = trained(['S']);
+    const roll: RouteRoll = {
+      filter: { probabilities: [0.02, 0.95, 0.03], regime_entered_at: NOW - 2 * HOUR, last_updated_at: NOW },
+      published: { label: 'disrupted', pending_state: 'disrupted', pending_streak: 5, last_updated_at: NOW },
+      alert_type_at_entry: 'Delays',
+    };
+    const snaps = new Map<string, RouteSnapshot>([
+      [
+        'S',
+        {
+          route_id: 'S',
+          observation: {
+            alert_count: 1,
+            severity_sum: 30,
+            has_suspended_alert: false,
+            has_delays: true,
+            has_service_change: false,
+            has_planned: false,
+            tod_bin: 0,
+          },
+          active_alert_ids: ['lmm:alert:1'],
+          alerts: [],
+          severity_max: 30,
+          primary_alert_type: 'Delays',
+          coarse_label: 'Delays',
+          by_direction: {
+            northbound: { alerts: [], primary_alert_type: null },
+            southbound: { alerts: [], primary_alert_type: null },
+          },
+          has_realtime_alert: false,
+          is_not_scheduled: false,
+          scheduled_resume_at: NOW + 90 * MIN,
+        },
+      ],
+    ]);
+    const snap = build({
+      routeId: 'S',
+      roll,
+      routeSnapshots: snaps,
+      movement: movementRegime('disrupted', 45 * MIN),
+      trainedParams: params,
+    });
+    const inf = snap.route_status.S!.inference!;
+    expect(inf.recovery_source).toBe('schedule');
+    expect(inf.p_normal_in_30min).toBe(0);
+    expect(inf.p_normal_in_60min).toBe(0);
+    expect(inf.p_normal_in_120min).toBe(1);
   });
 });
 
@@ -408,15 +467,27 @@ describe('movement recovery: atom mixture on the disrupted cell (the site this f
     const expectedCond = conditionalRecovery([], elapsed, tail, atom)!;
     expect(expectedCond).not.toBeNull();
     expect(inf.recovery_minutes).toBe(Math.round(expectedCond.median_sec / 60));
-    expect(inf.p_normal_in_30min).toBeCloseTo(pLeaveBy([], elapsed, 1800, tail, atom), 9);
-    expect(inf.p_normal_in_60min).toBeCloseTo(pLeaveBy([], elapsed, 3600, tail, atom), 9);
-    expect(inf.p_normal_in_120min).toBeCloseTo(pLeaveBy([], elapsed, 7200, tail, atom), 9);
+    const closed30 = pLeaveBy([], elapsed, 1800, tail, atom);
+    const closed60 = pLeaveBy([], elapsed, 3600, tail, atom);
+    const closed120 = pLeaveBy([], elapsed, 7200, tail, atom);
+    expect(inf.p_normal_in_30min).toBeCloseTo(closed30, 9);
+    // 60/120min are withheld on this arm (recovery_source 'movement', not
+    // 'schedule') — see the Inference interface in snapshot.ts. The mixture
+    // math computing them is still worth pinning, so compare the closed
+    // forms directly instead of reading them off the (now-null) published
+    // field.
+    expect(inf.p_normal_in_60min).toBeNull();
+    expect(inf.p_normal_in_120min).toBeNull();
 
     // And it genuinely differs from what the legacy curve_sec/tail_ll splice
-    // would have published for the same cell — proof curve_sec was bypassed,
-    // not coincidentally reproduced.
+    // would have published for the same cell at every horizon — proof
+    // curve_sec was bypassed, not coincidentally reproduced.
     const legacyP30 = pLeaveBy(DISRUPTED_CURVE, elapsed, 1800, tail);
+    const legacyP60 = pLeaveBy(DISRUPTED_CURVE, elapsed, 3600, tail);
+    const legacyP120 = pLeaveBy(DISRUPTED_CURVE, elapsed, 7200, tail);
     expect(inf.p_normal_in_30min).not.toBeCloseTo(legacyP30, 6);
+    expect(closed60).not.toBeCloseTo(legacyP60, 6);
+    expect(closed120).not.toBeCloseTo(legacyP120, 6);
   });
 
   test('a route missing atom_p/atom_sec on the same cell shape falls back to the legacy curve_sec/tail_ll path unchanged', () => {
@@ -443,7 +514,14 @@ describe('movement recovery: atom mixture on the disrupted cell (the site this f
     const inf = snap.route_status.A!.inference!;
     const expectedCond = conditionalRecovery(DISRUPTED_CURVE, elapsed, tail)!;
     expect(inf.recovery_minutes).toBe(Math.round(expectedCond.median_sec / 60));
-    expect(inf.p_normal_in_30min).toBeCloseTo(pLeaveBy(DISRUPTED_CURVE, elapsed, 1800, tail), 9);
-    expect(inf.p_normal_in_60min).toBeCloseTo(pLeaveBy(DISRUPTED_CURVE, elapsed, 3600, tail), 9);
+    const closed30 = pLeaveBy(DISRUPTED_CURVE, elapsed, 1800, tail);
+    const closed60 = pLeaveBy(DISRUPTED_CURVE, elapsed, 3600, tail);
+    expect(inf.p_normal_in_30min).toBeCloseTo(closed30, 9);
+    // 60min is withheld on this arm (recovery_source 'movement', not
+    // 'schedule'); pin the legacy closed form directly instead — it's the
+    // same call snapshot.ts's movementRecovery makes internally, just no
+    // longer surfaced on the published field.
+    expect(inf.p_normal_in_60min).toBeNull();
+    expect(closed60).toBeGreaterThanOrEqual(closed30);
   });
 });

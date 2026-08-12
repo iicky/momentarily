@@ -55,6 +55,16 @@ PARAMS_KEY = "state/params.json"
 # --- Records mirror the JSONL written by worker/src/grading.ts ---
 
 
+def _opt_float(value: Any) -> float | None:
+    """float(value), or None for a withheld/absent field.
+
+    Deliberately not `float(value or 0.0)`: a withheld forecast is not a
+    prediction of zero. Coercing it would score as a confident "will not
+    recover" and quietly drag every calibration bin it lands in.
+    """
+    return None if value is None else float(value)
+
+
 @dataclass(frozen=True)
 class PredictionRecord:
     ts: int
@@ -65,8 +75,13 @@ class PredictionRecord:
     p_disrupted: float
     p_suspended: float
     p_normal_in_30min: float
-    p_normal_in_60min: float
-    p_normal_in_120min: float
+    # None when withheld. The 60/120-minute forecasts measured worse than naive
+    # persistence (BSS -0.00 to -1.30) so the publisher stopped emitting them
+    # for fitted-curve rows; only deterministic schedule rows carry a value.
+    # Older JSONL, written before the gate, carries real numbers here and still
+    # grades — which is the point of keeping the field rather than deleting it.
+    p_normal_in_60min: float | None
+    p_normal_in_120min: float | None
     recovery_minutes: int
     recovery_minutes_low: int
     recovery_minutes_high: int
@@ -110,8 +125,8 @@ class PredictionRecord:
             p_disrupted=float(raw["p_disrupted"]),
             p_suspended=float(raw["p_suspended"]),
             p_normal_in_30min=float(raw["p_normal_in_30min"]),
-            p_normal_in_60min=float(raw["p_normal_in_60min"]),
-            p_normal_in_120min=float(raw["p_normal_in_120min"]),
+            p_normal_in_60min=_opt_float(raw.get("p_normal_in_60min")),
+            p_normal_in_120min=_opt_float(raw.get("p_normal_in_120min")),
             recovery_minutes=int(raw["recovery_minutes"]),
             recovery_minutes_low=int(raw["recovery_minutes_low"]),
             recovery_minutes_high=int(raw["recovery_minutes_high"]),
@@ -609,7 +624,12 @@ def calibrate(
         else:
             outcome = 1.0 if future.condition == "normal" else 0.0
             persistence = 1.0 if p.condition == "normal" else 0.0
-        pred: float = getattr(p, pred_field)
+        pred: float | None = getattr(p, pred_field)
+        # A withheld horizon is not a prediction, so it cannot be scored. Skip it
+        # the same way a "schedule" row is skipped above, rather than treating the
+        # absence as a forecast of zero.
+        if pred is None:
+            continue
         matched.append((pred, persistence, outcome, p.route))
         route_outcome_sum[p.route] = route_outcome_sum.get(p.route, 0.0) + outcome
         route_outcome_n[p.route] = route_outcome_n.get(p.route, 0) + 1

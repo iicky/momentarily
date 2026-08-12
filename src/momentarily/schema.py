@@ -147,10 +147,26 @@ class Inference(BaseModel):
     # model can't bound when it ends. recovery_minutes is clamped in that case.
     recovery_indeterminate: bool = False
 
-    # Forward predictions
+    # Forward predictions.
+    #
+    # Only the 30-minute horizon is published as a forecast. It has real,
+    # repeatedly measured skill (BSS +0.29 to +0.40 across every population cut
+    # tested). The 60- and 120-minute horizons lose to naive persistence in
+    # every cut (BSS -0.00 to -1.30, AUC 0.395 and 0.352 — i.e. inverted, worse
+    # than a coin flip), the loss is not a left-censoring artifact, and the
+    # horizon projection itself was verified monotone, so the defect is the
+    # shape of the fitted elapsed-conditional dwell curve. That needs a
+    # model-form change and will not improve with more runtime, so rather than
+    # publish a number we have measured to be anti-informative, the two longer
+    # horizons are withheld: null whenever the value would come from a fitted
+    # curve.
+    #
+    # They stay populated when recovery_source == "schedule", where the answer
+    # is a deterministic comparison against an announced resume time rather than
+    # a forecast, and so carries none of the above defect.
     p_normal_in_30min: float
-    p_normal_in_60min: float
-    p_normal_in_120min: float
+    p_normal_in_60min: float | None = None
+    p_normal_in_120min: float | None = None
 
     # Cold-start flag — true when the model is still warming up for this entity
     model_warming_up: bool = False

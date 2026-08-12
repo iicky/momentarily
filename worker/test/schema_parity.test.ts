@@ -351,7 +351,12 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     // transition give toNormal = 0.8): the all-cause recover_by fraction is
     // P(exited), not P(normal).
     expect(inf.p_normal_in_30min).toBeCloseTo(0.4 * 0.8, 10);
-    expect(inf.p_normal_in_60min).toBeCloseTo(0.7 * 0.8, 10);
-    expect(inf.p_normal_in_120min).toBeCloseTo(0.95 * 0.8, 10);
+    // 60/120min are withheld on every fitted-curve arm (this cell has no
+    // curve_sec, so it's the "pre-curve params.json" branch — still
+    // recovery_source 'hmm', not 'schedule') — see the Inference interface
+    // in snapshot.ts.
+    expect(inf.recovery_source).toBe('hmm');
+    expect(inf.p_normal_in_60min).toBeNull();
+    expect(inf.p_normal_in_120min).toBeNull();
   });
 });

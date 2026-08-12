@@ -72,8 +72,18 @@ interface Inference {
   // its bounds are clamped to the ceiling in that case.
   recovery_indeterminate: boolean;
   p_normal_in_30min: number;
-  p_normal_in_60min: number;
-  p_normal_in_120min: number;
+  // Only the 30-minute horizon is published as a forecast. The 60- and
+  // 120-minute horizons measured worse than naive persistence in every
+  // population cut (BSS -0.00 to -1.30, AUC 0.395 and 0.352 — inverted), and
+  // the cause is the shape of the fitted elapsed-conditional dwell curve, not
+  // censoring and not the horizon projection, so more runtime will not fix it.
+  // They are therefore null whenever the value would come from a fitted curve.
+  //
+  // They survive when recovery_source === 'schedule', where the answer is a
+  // deterministic comparison against an announced resume time and carries none
+  // of that defect. Mirrors src/momentarily/schema.py Inference.
+  p_normal_in_60min: number | null;
+  p_normal_in_120min: number | null;
   model_warming_up: boolean;
   // Where recovery_minutes comes from: "schedule" is a deterministic lookup of
   // the planned-work resume time (no model uncertainty); "movement" is the
@@ -837,8 +847,12 @@ function buildInference(
     recovery_minutes_high,
     recovery_indeterminate,
     p_normal_in_30min: p_normal_in_30,
-    p_normal_in_60min: p_normal_in_60,
-    p_normal_in_120min: p_normal_in_120,
+    // Withheld for every fitted-curve forecast — see the Inference interface
+    // above. Gated here, at the single point where the inference is assembled,
+    // rather than in each arm: there are five ways these values get set and a
+    // per-arm gate would silently miss the next one added.
+    p_normal_in_60min: recovery_source === 'schedule' ? p_normal_in_60 : null,
+    p_normal_in_120min: recovery_source === 'schedule' ? p_normal_in_120 : null,
     model_warming_up,
     recovery_source,
     resumes_at,
@@ -1200,10 +1214,19 @@ export function snapshotConsistencyWarnings(s: Snapshot): string[] {
  * so a scrubbed route ships in a valid degraded state and the rest of the feed
  * publishes normally. Marginal floats (e.g. 1.0000001) are finite and ship
  * as-is — we do NOT range-check, because that once stalled the whole feed.
+ *
+ * A DELIBERATELY WITHHELD horizon is a different thing entirely: the 60- and
+ * 120-minute forecasts are null by design on every fitted-curve row (see the
+ * Inference interface), and null is their valid published value. Treating that
+ * as corruption would scrub every inference on every tick and empty the feed of
+ * exactly the data it exists to carry — which is what the regression test below
+ * this function is guarding. Absent is fine; not-a-number is not.
  * Mutates `s` in place; returns the route ids scrubbed (for logging).
  */
 export function scrubCorruptInferences(s: Snapshot): string[] {
   const scrubbed: string[] = [];
+  const finiteOrWithheld = (v: number | null): boolean =>
+    v === null || Number.isFinite(v);
   for (const [routeId, rs] of Object.entries(s.route_status)) {
     const inf = rs.inference;
     if (!inf) continue;
@@ -1212,8 +1235,8 @@ export function scrubCorruptInferences(s: Snapshot): string[] {
       Number.isFinite(inf.p_disrupted) &&
       Number.isFinite(inf.p_suspended) &&
       Number.isFinite(inf.p_normal_in_30min) &&
-      Number.isFinite(inf.p_normal_in_60min) &&
-      Number.isFinite(inf.p_normal_in_120min) &&
+      finiteOrWithheld(inf.p_normal_in_60min) &&
+      finiteOrWithheld(inf.p_normal_in_120min) &&
       Number.isFinite(inf.recovery_minutes) &&
       Number.isFinite(inf.recovery_minutes_low) &&
       Number.isFinite(inf.recovery_minutes_high);

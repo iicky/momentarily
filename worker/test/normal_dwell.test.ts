@@ -12,7 +12,8 @@ import { describe, expect, test } from 'vitest';
 import type { RouteRoll } from '../src/alpha';
 import { deriveRouteSnapshots } from '../src/derive';
 import { pLeaveBy } from '../src/dwell';
-import { parseTrainedParams } from '../src/params';
+import { projectForward } from '../src/hmm';
+import { parseTrainedParams, paramsForRoute } from '../src/params';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
 
 const NOW = 1_700_000_000;
@@ -102,7 +103,7 @@ function normalRoll(regimeEnteredAt: number): RouteRoll {
 function pNormal(
   trainedParams: ReturnType<typeof parseTrainedParams>,
   elapsedSec: number,
-): { p30: number; p60: number; p120: number } {
+): { p30: number; p60: number | null; p120: number | null } {
   const snap = buildSnapshot({
     generatedAt: NOW,
     alertsFreshness: NOW,
@@ -132,42 +133,95 @@ describe('p_normal_in_H for a route that is normal now', () => {
     routes: { A: route() },
   });
 
-  test('a long-running normal regime stays near-certain across every horizon', () => {
+  test('a long-running normal regime stays near-certain at the published (30min) horizon; 60/120min are withheld', () => {
     const p = pNormal(withCurve, 20 * HOUR);
     expect(p.p30).toBeGreaterThan(0.97);
-    expect(p.p60).toBeGreaterThan(0.95);
-    expect(p.p120).toBeGreaterThan(0.9);
+    expect(p.p60).toBeNull();
+    expect(p.p120).toBeNull();
   });
 
   test('beats the geometric projection it replaces, most at the long horizon', () => {
     const elapsed = 20 * HOUR;
     const empirical = pNormal(withCurve, elapsed);
     const geometric = pNormal(withoutCurve, elapsed);
+    // p_normal_in_30min is still published: the win is directly observable there.
     expect(empirical.p30).toBeGreaterThan(geometric.p30);
-    expect(empirical.p120).toBeGreaterThan(geometric.p120);
+    expect(empirical.p60).toBeNull();
+    expect(empirical.p120).toBeNull();
+
+    // p_normal_in_60min/120min are withheld on this arm (recovery_source
+    // 'hmm' — every normal-regime forecast is), so "most at the long
+    // horizon" can no longer be read off the published fields. It's still a
+    // real property of the math buildInference computes internally —
+    // pLeaveBy (dwell.ts) for the empirical curve vs. hmm.ts's
+    // projectForward for the geometric fallback — so pin it there directly
+    // instead of via the snapshot.
+    const geometricParams = paramsForRoute(withoutCurve, 'A');
+    const ticksFor = (horizonSec: number): number =>
+      Math.max(1, Math.round(horizonSec / TICK_SECONDS));
+    const geometric120 = projectForward(
+      normalRoll(NOW - elapsed).filter,
+      geometricParams,
+      ticksFor(7200),
+    )[0];
+    const empirical120 = 1 - pLeaveBy(NORMAL_CURVE, elapsed, 7200);
+
+    expect(empirical120).toBeGreaterThan(geometric120);
     // The geometric decay is the bug: it falls away with the horizon.
-    expect(geometric.p120).toBeLessThan(geometric.p30);
-    expect(empirical.p120 - geometric.p120).toBeGreaterThan(empirical.p30 - geometric.p30);
+    expect(geometric120).toBeLessThan(geometric.p30);
+    expect(empirical120 - geometric120).toBeGreaterThan(empirical.p30 - geometric.p30);
   });
 
   test('a regime that has already lasted longer is likelier to persist', () => {
-    // Heavy-tailed dwell: survival so far is evidence of more survival.
+    // p_normal_in_120min is withheld on this arm (recovery_source 'hmm'), so
+    // pin the "survival so far is evidence of more survival" property
+    // directly on pLeaveBy — the closed form buildInference's normal-regime
+    // arm calls for this exact computation.
+    const staysNormalFor120 = (elapsedSec: number): number =>
+      1 - pLeaveBy(NORMAL_CURVE, elapsedSec, 7200);
+    expect(staysNormalFor120(40 * HOUR)).toBeGreaterThan(staysNormalFor120(30 * 60));
+
     const young = pNormal(withCurve, 30 * 60);
     const old = pNormal(withCurve, 40 * HOUR);
-    expect(old.p120).toBeGreaterThan(young.p120);
+    expect(young.p120).toBeNull();
+    expect(old.p120).toBeNull();
   });
 
   test('falls back to the geometric projection when the route has no curve', () => {
-    const p = pNormal(withoutCurve, 20 * HOUR);
-    // Unchanged legacy behavior: decays with the horizon.
-    expect(p.p30).toBeGreaterThan(p.p60);
-    expect(p.p60).toBeGreaterThan(p.p120);
+    const elapsed = 20 * HOUR;
+    const p = pNormal(withoutCurve, elapsed);
+    expect(p.p60).toBeNull();
+    expect(p.p120).toBeNull();
+
+    // Unchanged legacy behavior: decays with the horizon. p_normal_in_60min/
+    // 120min are withheld even on this no-curve arm (still recovery_source
+    // 'hmm'), so read the geometric decay off projectForward directly — the
+    // same call buildInference makes when there's no dwell curve to
+    // override it.
+    const params = paramsForRoute(withoutCurve, 'A');
+    const filter = normalRoll(NOW - elapsed).filter;
+    const ticksFor = (horizonSec: number): number =>
+      Math.max(1, Math.round(horizonSec / TICK_SECONDS));
+    const p60 = projectForward(filter, params, ticksFor(3600))[0];
+    const p120 = projectForward(filter, params, ticksFor(7200))[0];
+    expect(p.p30).toBeGreaterThan(p60);
+    expect(p60).toBeGreaterThan(p120);
   });
 
   test('every horizon stays a probability', () => {
     for (const elapsed of [0, 60, 5 * HOUR, 500 * HOUR]) {
       const p = pNormal(withCurve, elapsed);
-      for (const v of [p.p30, p.p60, p.p120]) {
+      expect(p.p30).toBeGreaterThanOrEqual(0);
+      expect(p.p30).toBeLessThanOrEqual(1);
+      expect(Number.isFinite(p.p30)).toBe(true);
+      // 60/120min are withheld on this arm (recovery_source 'hmm'); the
+      // underlying computation still runs every tick, so check its output is
+      // a valid probability directly off pLeaveBy instead of via the
+      // (now-null) published fields.
+      expect(p.p60).toBeNull();
+      expect(p.p120).toBeNull();
+      for (const horizonSec of [3600, 7200]) {
+        const v = 1 - pLeaveBy(NORMAL_CURVE, elapsed, horizonSec);
         expect(v).toBeGreaterThanOrEqual(0);
         expect(v).toBeLessThanOrEqual(1);
         expect(Number.isFinite(v)).toBe(true);
@@ -176,9 +230,23 @@ describe('p_normal_in_H for a route that is normal now', () => {
   });
 
   test('P(normal) is non-increasing in the horizon', () => {
-    const p = pNormal(withCurve, 6 * HOUR);
-    expect(p.p30).toBeGreaterThanOrEqual(p.p60);
-    expect(p.p60).toBeGreaterThanOrEqual(p.p120);
+    // p_normal_in_60min/120min are withheld on this arm (recovery_source
+    // 'hmm'), so this invariant is no longer observable on the published
+    // fields — pin it on pLeaveBy directly, the closed form buildInference's
+    // normal-regime arm (staysNormalFor) calls for every horizon.
+    const elapsed = 6 * HOUR;
+    const staysNormalFor = (horizonSec: number): number =>
+      1 - pLeaveBy(NORMAL_CURVE, elapsed, horizonSec);
+    const p30 = staysNormalFor(1800);
+    const p60 = staysNormalFor(3600);
+    const p120 = staysNormalFor(7200);
+    expect(p30).toBeGreaterThanOrEqual(p60);
+    expect(p60).toBeGreaterThanOrEqual(p120);
+
+    const p = pNormal(withCurve, elapsed);
+    expect(p.p30).toBeCloseTo(p30, 9);
+    expect(p.p60).toBeNull();
+    expect(p.p120).toBeNull();
   });
 });
 
@@ -198,8 +266,11 @@ describe('p_normal_in_H with the atom mixture active on the normal cell', () => 
     // at all, so an empty (unusable) curve still reproduces what buildSnapshot
     // published from the real (stale) NORMAL_CURVE.
     expect(p.p30).toBeCloseTo(1 - pLeaveBy([], elapsed, 1800, tail, atom), 9);
-    expect(p.p60).toBeCloseTo(1 - pLeaveBy([], elapsed, 3600, tail, atom), 9);
-    expect(p.p120).toBeCloseTo(1 - pLeaveBy([], elapsed, 7200, tail, atom), 9);
+    // 60/120min are withheld on this arm (recovery_source 'hmm') — see the
+    // "genuinely differs" test below, which pins the same closed form
+    // directly at those horizons instead of via the published field.
+    expect(p.p60).toBeNull();
+    expect(p.p120).toBeNull();
   });
 
   test('genuinely differs from the legacy curve_sec/tail_ll splice for the same cell', () => {
@@ -207,8 +278,21 @@ describe('p_normal_in_H with the atom mixture active on the normal cell', () => 
     const elapsed = 20 * HOUR;
     const p = pNormal(withAtom, elapsed);
     const tail: [number, number] = [ATOM_SHAPE, ATOM_SCALE];
+    const atom = { p: ATOM_P, sec: ATOM_SEC };
     const legacyP30 = 1 - pLeaveBy(NORMAL_CURVE, elapsed, 1800, tail);
     expect(p.p30).not.toBeCloseTo(legacyP30, 6);
+
+    // p_normal_in_60min/120min are withheld on this arm (recovery_source
+    // 'hmm'), so the same divergence can no longer be read off the
+    // published fields — pin it directly on the pLeaveBy closed form the
+    // field would have been assembled from.
+    const atomP60 = 1 - pLeaveBy([], elapsed, 3600, tail, atom);
+    const legacyP60 = 1 - pLeaveBy(NORMAL_CURVE, elapsed, 3600, tail);
+    expect(atomP60).not.toBeCloseTo(legacyP60, 6);
+
+    const atomP120 = 1 - pLeaveBy([], elapsed, 7200, tail, atom);
+    const legacyP120 = 1 - pLeaveBy(NORMAL_CURVE, elapsed, 7200, tail);
+    expect(atomP120).not.toBeCloseTo(legacyP120, 6);
   });
 });
 
@@ -234,6 +318,8 @@ describe('p_normal_in_H legacy curve_sec/tail_ll path is unaffected by the atom 
     const elapsed = 1200 * HOUR; // past the curve, exercises the tail branch
     const p = pNormal(withTail, elapsed);
     expect(p.p30).toBeCloseTo(1 - pLeaveBy(NORMAL_CURVE, elapsed, 1800, tail), 9);
-    expect(p.p60).toBeCloseTo(1 - pLeaveBy(NORMAL_CURVE, elapsed, 3600, tail), 9);
+    // 60min is withheld on this arm (recovery_source 'hmm'), same as every
+    // other fitted-curve path.
+    expect(p.p60).toBeNull();
   });
 });

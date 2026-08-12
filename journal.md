@@ -732,3 +732,1272 @@ is exactly when a silently-wrong `p_normal_in_H` would have started shipping.
 The number to chase if this is revisited: the to-normal share for exits from
 `suspended`, which needs at least one completed suspended route-scope episode
 to exist before it can be estimated at all.
+
+## 2026-08-11 — movement-curve forecast counterfactual: AUC 0.150→0.762 at 30min, still inverted at 120min
+
+origin: agent
+
+Counterfactual over the archived window where the movement arm is usable
+(2026-08-04..2026-08-12, 67,309 rows; 456 excluded because they already carry
+`recovery_source=='movement'` — produced by today's deployed code, not the old
+alert-driven path, so they aren't a fair "old" sample — leaving 66,853 graded
+rows). For each row, reconstructed the movement regime `(state, entered_at)`
+per (route, tick) by replaying `published_condition` through
+`training.regime.advance_regimes` (debounce=1, the same primitive
+`training.regime.replay_regimes`/`movement_backfill` use, just keeping every
+intermediate tick instead of only the final one), then recomputed
+`p_normal_in_H` with the LIVE `dwell_movement` curve via
+`training.dwell.p_leave_by`, mirroring `movementRecovery`'s exact guards:
+normal → `1 - p_leave_by` (survival), disrupted → `p_leave_by` directly, any
+other state/no curve/no clock/schedule-precedence → fall back to the archived
+(old) value. Graded against `published_condition` at t+H via
+`training.eval.calibrate(..., truth_default=None)` — unknown/not_scheduled
+ticks drop out rather than scoring as calm.
+
+Movement path served 50,722/66,853 rows (75.9%; 50,696 normal + 26
+disrupted); 11,131 (16.7%) fell back for no `published_condition` reading that
+tick, 5,000 (7.5%) for a state the movement path doesn't serve
+(not_scheduled/suspended); zero rows fell back for a missing curve, a
+non-positive clock, or schedule precedence.
+
+| horizon | n | AUC old→new | Brier old→new | BSS vs persistence old→new |
+| --- | --- | --- | --- | --- |
+| 30min | 50,061 | 0.150→0.762 | 0.01587→0.00066 | -16.27→+0.29 |
+| 60min | 49,831 | 0.150→0.493 | 0.03609→0.00102 | -39.87→-0.16 |
+| 120min | 49,201 | 0.150→0.397 | 0.06004→0.00178 | -58.08→-0.75 |
+
+Positive-class (published-normal at t+H) base rate is ~99.95% at every
+horizon. The mean-split that named the bug, `p_normal_in_30min`: old 0.9209
+disrupted vs 0.8788 normal — backwards, same sign as the originally-reported
+0.9166/0.8780 — vs new 0.9856 disrupted vs 0.9932 normal, sign flipped:
+correctly less confident where the line is stalled. The disrupted-current-tick
+sample is thin (n=26, entirely on the 6 routes with a fitted disrupted curve —
+0 fell back to no-curve), so treat the AUC magnitude as provisional.
+
+**The inversion is gone at 30min (0.150→0.762) and no longer inverted at
+60min (0.493, essentially chance) but is STILL INVERTED at 120min (0.397 <
+0.5)** — independently re-derived by hand (matched-sample rebuild + a
+from-scratch Mann-Whitney) to rule out a scoring bug. New beats a naive
+persistence baseline only at 30min; at 60 and 120min it loses to persistence,
+far less catastrophically than old (BSS -0.16/-0.75 vs old's -39.87/-58.08)
+but it still loses. Likely driver: of the movement-path "normal" rows, 71.4%
+carry `entered_at` pinned to that route's very first in-window reading — the
+regime almost certainly predates the 8-day archive window (pre-window data is
+92.8% `unknown` and any real signal is evicted by the 1-hour idle rule before
+it could bridge to the window anyway), so true elapsed time is understated
+throughout the window and the understatement compounds as the horizon grows.
+
+Self-consistency caveat: both the truth (`published_condition` replayed
+through the regime clock) and the new forecast (the movement dwell curve
+trained on `published_condition` transitions) derive from the movement arm.
+This is the correct apples-to-apples comparison — the 0.142-0.145 figure that
+named the bug was computed the same way, against the same arm — but it is not
+evidence of independent skill, and does not validate the movement classifier
+itself.
+
+
+## 2026-08-11 — independent-truth grade of the movement forecast: trip-updates MAE 251.8min, movement CRPS underwater (skill -0.10, -0.36 held out)
+
+origin: agent
+
+Grades the movement arm against truth it did NOT come from — the counterfactual
+entry above grades it against `published_condition` (the arm's own truth, same
+source problem the eval-honesty doc warns about). Two independent checks, plus
+a live coverage/adoption/corroboration refresh.
+
+**Archive coverage, verified (not assumed identical):** `archive/trip_updates/`
+is 59 days, 2026-06-15..2026-08-12 — starts 6 days EARLIER than
+`archive/vehicles/` (53 days, 2026-06-21..2026-08-12). `v1/predictions/` is 91
+days, 2026-05-14..2026-08-12. Largest common window for Part 1 is therefore
+2026-06-15..2026-08-12, gated by trip_updates.
+
+**Part 1 — trip-updates `assigned_n` truth (`training.load_r2.derive_actual_recovery`,
+`training.eval.independent_recovery_metrics`, defaults).** 16,674 trip-updates
+ticks → 132 (route, tod_bin) baseline cells (>=20 samples) → 1,054 independent
+disruption intervals (median 70min, min 10min, max 4,880min/81.3h — this truth
+is dominated by long service reductions, not movement-scale minutes). Graded
+`recovery_minutes` against them: **n=362 graded ticks (49 regimes), MAE=251.8min,
+RMSE=490.6min, IQR coverage=21.0%**; per-regime macro-average MAE=178.2min,
+coverage=17.2%; 19,798 schedule-sourced rows excluded per the existing arm
+contract. Window coverage: 39.1% unknown, 56.4% gradeable (this window still
+contains the 22-day unknown gap below).
+
+Signed bias (predicted − actual_remaining, same matching as
+`independent_recovery_metrics`, sign kept): mean **-140.8min**, median
+**-29.7min** — `recovery_minutes` under-predicts the trip-updates truth's
+remaining time on average. Direction, stated plainly per the semantic gap: the
+two signals measure different things (trip-updates counts dispatched trains,
+movement times station-to-station advance), so this is not automatically an
+arm error — but the sign says the movement arm calls "recovered" *before* the
+fleet count does, the "thinned but flowing" case, not the "full fleet crawling"
+case. MAE at 251.8min is large in absolute terms, but a truth series whose
+median disruption alone is 70min (and tail runs to 81h of planned-work-scale
+reductions) is a different population than the movement arm's own minutes-long
+episodes (see Part 2) — the two truths are not commensurate, which is itself
+part of the honest answer here, not an excuse for the number.
+
+**Part 2 — episode-level CRPS/PIT, `training.scorecard.episode_recovery` +
+`movement_dwell_lookup_from_params`, movement episodes from
+`training.episodes.extract_episodes` over `training.load_r2.build_movement_truth`
+(causal baseline: 2026-06-21..07-04, 3,826 bodies -> 241 cells; graded window
+2026-07-05..08-12, 10,936 bodies -> 242,252 truth cells, mirroring
+`training.review`'s own causal-baseline convention).** 130 movement episodes
+extracted (0 standing, all peak_state=disrupted — no suspended movement
+episode exists to grade, confirming the earlier 0-suspended finding again),
+median duration 5.0min, min 4.95-5.0min\*, max 585min, 20 routes. Live
+`dwell_movement` (trained_at=2026-08-11 23:55 UTC, window 2026-07-29..08-11)
+covers disrupted curves for only 6 of those routes (6, G, J, M, R, W —
+matching the live-params fact); the other 14 routes' episodes have no curve:
+**n_scored=76, n_no_curve=54, n_censored=0**.
+
+CRPS **mean=5.17min vs baseline(climatology)=4.69min → skill=-0.103**: the
+movement dwell curve scores 10.3% WORSE than just predicting each episode's
+own empirical duration distribution. Baseline confirmed built over the graded
+movement-episode population itself (`episode_recovery`'s own contract,
+`recovery_dist.py:160`) — never the alert-shadow's hundreds-of-hours
+population; the 76 scored durations here are minutes, not hours, so no
+cross-population dilution occurred. `mean_pit=0.494` (0.006 below 0.5,
+negligibly pessimistic) — but the 10-bin histogram is bimodal, not uniform:
+`[0,0,38,0,14,0,0,2,8,14]` — 50% of mass sits at PIT∈[0.2,0.3) and 29% at
+PIT>=0.8, canceling to a near-0.5 mean while masking two real failure modes
+(recovers much faster than predicted, and recovers much slower than
+predicted) in roughly equal measure. The module's own verdict text calls this
+"Well calibrated" on the mean but flags it directly: "scores 10% worse than
+the dead-simple baseline — calibrated, yet no sharper than guessing the
+average. Calibration isn't skill."
+
+Checked whether this is a training-window leakage artifact (the live params'
+14-day training window, 2026-07-29..08-11, overlaps 14 of our 39 graded
+days): split by episode onset against that boundary. Held-out (onset before
+2026-07-29, predates the params entirely): **n=26, skill=-0.361** — WORSE, not
+better. In-sample-or-later (onset >= 2026-07-29): n=50, skill=-0.117. The
+negative skill is not explained by grading the model against its own training
+data — it holds, and deepens, out of sample.
+
+**Part 3 — deployed system health, live R2 (all times UTC; UTC date rolls at
+the point the codebase's deploy commits land in NY time, so "today"=08-12,
+"before deploy"=08-11).**
+
+Coverage, last 14 days + today:
+
+| date | unknown share | gradeable share |
+| --- | --- | --- |
+| 07-30 | 100.0% | 0.02% |
+| 07-31 | 99.9% | 0.08% |
+| 08-01 | 100.0% | 0% |
+| 08-02 | 100.0% | 0% |
+| 08-03 | 64.1% | 34.9% |
+| 08-04 | 16.9% | 78.4% |
+| 08-05 | 17.3% | 77.8% |
+| 08-06 | 17.1% | 78.2% |
+| 08-07 | 16.8% | 78.3% |
+| 08-08 | 16.3% | 70.8% |
+| 08-09 | 16.5% | 68.9% |
+| 08-10 | 15.3% | 77.6% |
+| 08-11 | 16.3% | 78.1% |
+| 08-12 (today, n=522, partial day) | 13.8% | 82.8% |
+
+Coverage is healthy now: today's 13.8% unknown / 82.8% gradeable sits inside
+(slightly better than) the stable ~15-17%/~78% band every day has held since
+the 07-12..08-02 empty-baseline gap closed on 08-03. Nothing resembling the
+22-day 100%-unknown blackout has recurred.
+
+Adoption, today (n=522, post-deploy) vs before deploy (n=8,352, 08-11, almost
+entirely pre-deploy — the deploy landed ~23:48 UTC 08-11):
+
+| field | value | before deploy | today |
+| --- | --- | --- | --- |
+| recovery_source | movement | 0.29% (24) | **82.76% (432)** |
+| recovery_source | hmm | 99.71% (8,328) | 17.24% (90) |
+| condition_source | movement | 83.66% (6,987) | 86.21% (450) |
+| condition_source | unknown | 16.34% (1,365) | 13.79% (72) |
+| published_condition | disrupted | 0.14% (12) | 0% (0) |
+
+`condition_source` was already movement-majority BEFORE today's deploy — this
+matches the bug's own framing exactly: published status was already
+movement-derived, only recovery/forecast were gated behind the alert-HMM.
+`recovery_source` is the field that moved, 0.29% -> 82.8%. This is adoption,
+not performance: zero disrupted rows exist today (0/522) to grade the new
+forecast's live skill against, so nothing above is a skill claim.
+
+Alert corroboration, refreshed (`training.escalation.corroborate_episodes` +
+`confirmation_summary`, 2026-08-04..08-12, 9 days vs the prior 5-day
+08-07..08-11 window; `esc_source=published_archive`, coverage/usable gates
+both passed so no offline-recompute fallback needed): **361 movement-disrupted
+episodes (up from 259), confirmation_rate=41/361=11.4% (down from 15.4%/259),
+n_unconfirmed=320**, median lead time among the 41 confirmed = 0.0min (IQR
+[0.0, 0.0]) — same shape as before, confirmation is almost entirely a
+same-tick alert already posted, not a movement call leading a later alert.
+Per `training/escalation.py`'s own contract, `n_unconfirmed` is not divided
+into a rate and alert absence is not computed as a false-positive/precision/
+specificity number against movement — that would resurrect the asymmetry the
+module exists to avoid.
+
+**Bottom line:** post-deploy live data cannot grade the new code yet (435-522
+rows so far today, zero disrupted). Both counterfactual checks that CAN run —
+this entry's independent-truth ones and the AUC counterfactual above — agree
+the fix is real but incomplete: `p_normal_in_H` uninverted at 30min in the
+sibling's counterfactual, but the movement dwell curve's own recovery-time
+distribution scores below climatology here (CRPS skill -0.10, -0.36 held
+out), and the trip-updates truth disagrees with `recovery_minutes` by a
+251.8min MAE that this window's differing truth-population scale only
+partially explains. Deployed and directionally correct is not the same claim
+as calibrated or skillful; this entry's numbers are the ones to revisit once
+live disrupted data exists to grade directly.
+
+\*The 4.95min figure is from the constraints' prior 8-day/predictions-sourced
+measurement, not this run (whose vehicle-sourced episodes bottom out at one
+tick, 5.0min, by construction — `TICK_SECONDS=300`).
+
+
+## 2026-08-11 — forecast horizon inversion: projection defect, not left-censoring (trustworthy-clock subset still inverted, AUC 0.352 at 120min)
+
+origin: agent
+
+Splits the counterfactual two entries above ("movement-curve forecast
+counterfactual: AUC 0.150→0.762 at 30min, still inverted at 120min") by
+clock trustworthiness, to answer whether the 60/120min inversion is
+left-censoring (fixes itself with runtime) or a genuine horizon-projection
+defect (needs a code/model fix). Same method, same window
+(2026-08-04..08-12, 66,888 graded rows today — the archive grew a few rows
+since that entry's 66,853), same live params (`trained_at`
+2026-08-11T23:55:06Z) — but every row is additionally tagged by replaying
+`published_condition` through `training.regime.advance_regimes` (debounce=1)
+and comparing its regime's `entered_at` to that route's own first in-window
+reading: `trustworthy` if the regime demonstrably started inside the window,
+`censored` if the regime was already open at window start (true start
+unknown, elapsed understated). Of the 50,722 movement-path rows, 36,184
+(71.4% — matches the diagnosed figure exactly) are censored, 14,538 (28.6%)
+are trustworthy.
+
+| subset | 30min AUC / BSS (n) | 60min AUC / BSS (n) | 120min AUC / BSS (n) |
+| --- | --- | --- | --- |
+| all (sanity) | 0.762 / +0.29 (50,061) | 0.493 / -0.16 (49,831) | 0.398 / -0.75 (49,297) |
+| trustworthy | 0.728 / **+0.40** (14,278) | 0.395 / **-0.00** (14,053) | 0.352 / **-0.53** (13,606) |
+| censored | 0.624 / -0.32 (35,783) | 0.449 / -0.63 (35,778) | 0.317 / -1.30 (35,690) |
+
+**Interpretation rule applied as specified: the trustworthy subset does NOT
+recover AUC above 0.5 at 60 or 120min (0.395, 0.352) — it is still inverted
+with a demonstrably real, in-window, uncensored clock. Verdict: PROJECTION
+DEFECT, not left-censoring** — the 60/120min inversion will not fix itself
+as the deployed system accumulates runtime. Left-censoring is real and does
+matter, but only at 30min: trustworthy beats persistence there (BSS +0.40)
+while censored loses (BSS -0.32), a clean split. By 60min censoring stops
+predicting forecast quality at all (BSS -0.00 vs -0.63) and by 120min
+trustworthy is still decisively negative (-0.53) — waiting for more routes'
+clocks to "age in" will not turn that positive.
+
+Honesty check on the deciding number: AUC is a discordant-pair statistic and
+the positive-class base rate is ~99.95%, so it lives on the thin negative
+(not-normal-at-t+H) tail. Counted directly: all/trustworthy/censored carry
+26/19/7 negative rows at 30min, 26/15/11 at 60min, 25/9/16 at 120min — the
+trustworthy subset's 120min AUC=0.352 rests on just **9** discordant rows,
+thinner than the 25 behind the original headline number. Treat that single
+AUC value as directionally right, not statistically final. The BSS columns
+are a sturdier witness for the same verdict: Brier is a proper score over
+the full n (13,606-35,783 per cut, not just the discordant tail), and it is
+decisively negative in every 60/120min cut regardless of censoring status —
+three independently-thinned populations agreeing that the forecast loses to
+naive persistence is not the kind of thing 9 rows can flip.
+
+A non-monotonic-in-elapsed diagnostic sharpens the "not censoring" case
+further: bucketing the trustworthy-normal rows by elapsed time at 120min,
+AUC is 0.290 for 6-24h elapsed (n=5,406, the worst band), 0.829 for 24-48h
+(n=1,778, the best), and 0.472 for 48h+ (n=3,361, chance). A pure
+understated-elapsed story predicts smooth degradation with elapsed; this is
+a trough at 6-24h next to a strong band at 24-48h, more consistent with the
+fitted normal-dwell curve's shape being wrong in specific places (plausibly
+a missing time-of-day/periodicity covariate) than with a uniform clock-age
+effect.
+
+**Experiment 3 (sanity: is the horizon math itself buggy?):** checked
+`p_normal_in_H` is non-increasing in H, for every one of the 25 live
+`dwell_movement` normal cells, across 950 elapsed values per cell (0 up to
+10x each cell's own max curve value, into the tail-extrapolation regime) and
+48 horizons (5-240min, 5min steps) — 45,600 total comparisons, **0
+violations**. The horizon-projection code is not buggy in the trivial
+monotonicity sense; the defect is in what the curve says P(stay normal) is
+conditional on elapsed, not in the H-step math.
+
+**Experiment 2 (how long is "patience", if it mattered):** 25 routes carry a
+live `dwell_movement` normal cell (matches the known count). 14 of 25 (56%)
+share one identical pooled-parent curve — median 85,057s (23.6h), q75
+592,496s (164.6h) — so most routes' "typical normal regime" figure is a
+shared cross-route average, not their own history; own-fit routes range from
+Z at 16,006s (4.45h) to M at 77,495s (21.5h). The distribution of per-route
+median normal dwell across all 25 routes has p50 = p75 = 85,057s (23.6h),
+both landing on the pooled plateau since it covers >50% of routes. Verified
+the deploy boundary directly from `recovery_source` adoption, hour-binned:
+0% at every hour through 2026-08-11T22:00 UTC, 6.9% at 23:00, 82.8% by
+2026-08-12T00:00 — confirms the ~23:48 UTC 08-11 deploy time cited two
+entries above. Deploy + 85,057s = **2026-08-12T23:25:37Z** for both the
+50%-of-routes and the 75%-of-routes milestone — about one day, not the
+~75h a prior fit (cited in this investigation's brief) had suggested. That
+optimism is moot given the verdict above: reaching "trustworthy" in a day
+does not fix an AUC that is already inverted for the trustworthy subset
+today.
+
+**Recommendation:** keep publishing `p_normal_in_30min` — real, repeatedly
+measured skill (BSS +0.29 to +0.40 across every cut run today and in the
+entry above). Stop publishing `p_normal_in_60min` and `p_normal_in_120min`
+as skillful forecasts: both lose to naive persistence in every population
+cut tested (BSS -0.00 to -1.30), the loss is not a censoring artifact (the
+uncensored subset loses too), and Experiment 3 rules out a fixable
+monotonicity bug — this needs a model-form change (the elapsed-conditional
+normal-dwell curve itself), not more runtime.
+
+Commands run (`murk exec -- uv run python <scratch script>`, PYTHONPATH set
+to the repo root; script lived only in /tmp, deleted after the run, nothing
+left in the repo): loaded `v1/predictions/` for every date 2026-08-04
+through 2026-08-12 inclusive (`training.eval.load_predictions`),
+`state/params.json`
+(`training.r2_client.get_object_bytes`), replayed
+`training.regime.advance_regimes` tick-by-tick over `published_condition`,
+recomputed `p_normal_in_H` via `training.dwell.p_leave_by` against
+`training.scorecard.movement_dwell_lookup_from_params`, graded via
+`training.eval.calibrate(..., truth_default=None)`.
+
+
+## 2026-08-12 — movement recovery distribution: model form, not data volume (mixture fix cuts the CRPS deficit from -0.088 to -0.023 using the same data)
+
+origin: agent
+
+**Verdict: MODEL FORM.** The decisive number: refitting the shipped
+continuous log-logistic dwell curve as a one-tick point-mass mixed with a
+conditional continuous tail — same 06-21..07-04 training data, same
+held-out 97-episode population, zero additional days — cuts the CRPS-skill
+deficit from **-0.088 to -0.023** (a 74% reduction). Meanwhile the causal
+training-window sweep below shows no monotonic gain from more data at all
+(skill oscillates -0.14 to -0.24 from 7 to 35 days of training, and gets
+*worse* from day 21 to day 28). Four experiments, detailed below, all point
+the same way: not data volume, not pooling shrinkage, but a single
+continuous distribution being structurally unable to front-load enough mass
+at the exact one-tick floor (70.4% of outcomes) while keeping enough tail
+mass for the ~30% that run long.
+
+**Method note (read before the tables):** two different, both fully
+reproducible, movement-truth reconstructions are used and are NOT
+interchangeable populations. Experiment 1 uses the same single-pass,
+self-trained-baseline reconstruction that already produced the "213
+completed disrupted episodes" figure this task started from
+(`movement_backfill.route_ticks_from_vehicle_bodies` +
+`transitions_from_ticks(scope="route", debounce_ticks=1)` over the full
+2026-06-21..08-12 archive) — reproduced exactly here (n=213, 14 distinct
+duration values, tick histogram below matches the given table to the
+episode). Experiments 2-4 instead reproduce the properly-CAUSAL truth
+(`load_r2.compute_advance_baseline` fit on the clean 06-21..07-04 window
+only, applied forward via `load_r2.build_movement_truth` to classify
+07-05..08-12, then `episodes.extract_episodes`) — this exactly reproduces
+the already-reported n=130 episodes, and, graded against a fresh pull of
+the live `state/params.json` `dwell_movement` block, reproduces n_scored=76,
+skill=-0.10348, mean_pit=0.49387, and the exact PIT histogram
+`[0,0,38,0,14,0,0,2,8,14]` bit-for-bit — strong evidence the pipeline here
+matches the one that produced the numbers this task started from. Because
+`state/params.json` is a live, mutating artifact this session (its
+training_corpus window shifted from the 07-29..08-11 cited earlier in this
+journal to 07-24..08-12 by the time it was re-fetched here), Experiments
+2-4's model comparisons do NOT depend on it further: they fit their own
+dwell curves locally and reproducibly on the same 06-21..07-04 window
+(`pooled_dwell.partially_pooled_dwell` / `dwell.dwell_samples_by_cell`),
+graded against the same causal 130-episode population (97 scored by the
+shipped continuous form after dropping 33 no-curve). The one live-params
+pull is used only once, as the validation checkpoint above and as
+Experiment 3's primary exhibit (it is the exact, already-published
+population, so its PIT lobes are the ones actually worth explaining).
+
+A structural finding surfaced along the way, worth flagging explicitly
+because it changes how (b)/(c) below should be read: `dwell.dwell_cdf`
+special-cases `x <= curve_sec[0]` as probability 0. Any curve whose lowest
+quantile ties (KM/empirical curves fit to a floor-heavy population, where
+the smallest observed duration IS the point mass) reads as **exactly 0**
+when queried at that same value — and `predicted_recovery_curve` always
+queries at exact integer minutes, so a one-tick (5min) episode graded
+against a curve whose floor is one tick always gets PIT=0, regardless of
+how much of the curve's mass actually sits there. Verified directly: model
+(c)'s PIT histogram bin0 count (66) equals the exact count of one-tick
+episodes in that population. This deflates (b) and (c) below beyond their
+genuine statistical quality — the mixture fix at the end avoids it by
+grading a closed-form CDF that bypasses `curve_sec` quantization entirely.
+
+### Experiment 1 — learning curve (does more data help?)
+
+Duration histogram, full 53-day archive reconstruction, n=213 (exact
+match to the already-measured table; only 14 distinct duration values):
+
+| ticks | minutes | count | share |
+| --- | --- | --- | --- |
+| 1 | 5 | 150 | 70.4% |
+| 2 | 10 | 27 | 12.7% |
+| 3 | 15 | 11 | 5.2% |
+| 4 | 20 | 4 | 1.9% |
+| 5-119 (10 distinct values) | 25-595 | 21 | 9.8% |
+
+Route-volume buckets (full-archive, in-sample fit — every route's own
+completed-episode count over all 53 days vs. CRPS skill on its own
+episodes):
+
+| bucket (own episodes) | n routes | n episodes | mean CRPS | baseline CRPS | skill |
+| --- | --- | --- | --- | --- | --- |
+| 1-2 | 4 | 5 | 0.89 | 0.00 | undefined (zero-variance baseline, n too small) |
+| 3-5 | 5 | 19 | 17.31 | 15.87 | -0.090 |
+| 6-10 | 4 | 37 | 8.27 | 7.67 | -0.078 |
+| 11+ | 7 | 152 | 7.34 | 7.05 | -0.040 |
+
+Training-window sweep — fit on the first N days (2026-06-21 onward), grade
+on the SAME fixed held-out window every time (2026-07-30..08-12, n=63
+episodes, held fixed so N is the only thing that changes):
+
+| N days | train window ends | n train episodes | routes w/ cell (own/pooled) | n scored | skill |
+| --- | --- | --- | --- | --- | --- |
+| 7 | 06-28 | 29 | 10 (3/7) | 51 | -0.243 |
+| 14 | 07-05 | 77 | 13 (8/5) | 55 | -0.150 |
+| 21 | 07-12 | 90 | 16 (9/7) | 62 | -0.142 |
+| 28 | 07-19 | 118 | 20 (10/10) | 63 | -0.170 |
+| 35 | 07-26 | 138 | 20 (14/6) | 63 | -0.164 |
+
+**Interpretation rule (as specified): skill rising monotonically with N
+would mean a volume problem; flat or negative regardless of N means more
+data will not fix it.** The sweep is flat-to-negative and non-monotonic
+(worse at N=28 than N=21) — more data does not fix it. The route-volume
+bucket table shows a mild, monotonic improvement with a route's own
+episode count (-0.090 → -0.078 → -0.040) but never crosses zero even at
+11+ own episodes, and it's an in-sample view (weaker evidence than the
+causal sweep). Net: volume gives at most a second-order assist; it is not
+the primary lever.
+
+### Experiment 2 — model form (is a continuous curve the wrong shape?)
+
+Same 06-21..07-04 training data, same causal 130-episode held-out
+population, three forms graded through the unmodified
+`scorecard.episode_recovery` / `recovery_dist.recovery_dist_report`:
+
+| model | n scored | n no-curve | mean CRPS | baseline CRPS | skill |
+| --- | --- | --- | --- | --- | --- |
+| a. shipped continuous log-logistic AFT (`partially_pooled_dwell`) | 97 | 33 | 6.92 | 6.36 | -0.088 |
+| b. per-route empirical/KM (`compute_dwell_quantiles`, min_samples=5) | 25 | 105 | 5.45 | 3.82 | -0.426 |
+| c. pooled climatology (one KM curve over all routes' pooled samples) | 97 | 33 | 7.15 | 6.36 | -0.126 |
+
+Restricted to the n=25 intersection every model can score (apples-to-apples,
+same episodes, same baseline):
+
+| model | mean CRPS | baseline CRPS | skill |
+| --- | --- | --- | --- |
+| a. shipped continuous | 4.42 | 3.82 | -0.157 |
+| b. per-route KM | 5.45 | 3.82 | -0.426 |
+| c. pooled climatology | 4.68 | 3.82 | -0.224 |
+
+Neither (b) nor (c) beats (a) — on the contrary, (a) is the least-bad of
+the three, both at full coverage and on the matched subset. Per the
+assignment's own framing this is evidence the parametric form per se isn't
+the destroyer of information — BUT (b)/(c)'s scores are inflated-bad by the
+`dwell_cdf` floor artifact above (both have curve_sec[0] pinned to exactly
+one tick, so every one-tick episode scores PIT=0 regardless of true fit
+quality), and (b) additionally starves for data (105/130 no-curve at
+min_samples=5, no pooling). Taking (a) at face value as "the best of three
+plain forms" is correct; taking it as "therefore the functional family is
+fine" is not — see the mixture result at the end.
+
+### Experiment 3 — where does the bimodal PIT come from?
+
+Using the exact already-published population (n=76 scored, causal 130
+episodes graded against the live `dwell_movement`, reproduced bit-for-bit
+above). Per-episode PIT, lobed at [0.2,0.3) and >=0.8 as specified (plus
+the [0.4,0.5) cluster the histogram also shows):
+
+| PIT lobe | n | share | composition |
+| --- | --- | --- | --- |
+| [0.2,0.3) | 38 | 50.0% | **100% one-tick**, 100% own-fit routes with n=5 own events (6, G, R) |
+| [0.4,0.5) | 14 | 18.4% | **100% one-tick**, 100% pooled-parent routes with n=1-2 own events (J, M, W) |
+| [0.8,1.0) | 22 | 28.9% | **100% multi-tick** (median 12.5min, max 95min), mix of own (15) and pooled (7) routes, all 6 routes represented |
+| other (<8min gap) | 2 | 2.6% | route 6, multi-tick, own-fit |
+
+This is a clean, complete explanation, not a partial one. The two opposite
+failure modes: **(1) one-tick outcomes always read as "model too
+pessimistic"** (PIT low) — even a full n=5 own-fit sample forces a smooth
+curve to spread some mass around/below the observed cluster, so it never
+assigns as much probability to "already done in exactly one tick" as the
+~70% base rate demands; pooled routes land closer to calibrated (~0.45)
+purely because shrinkage happens to center them near the population mix.
+**(2) any multi-tick outcome always reads as "model too optimistic"** (PIT
+high, 0/22 in this lobe are one-tick) — a curve compressed to front-load
+enough mass for the one-tick majority has too little tail left for the
+~30% minority that takes longer, so by the time a longer episode actually
+resolves the curve had already assigned it near-certainty. Cross-checked
+against an independently-fit local model (06-21..07-04, 13 routes instead
+of 6): the same one-tick-low / multi-tick-high split holds (66 one-tick
+episodes land in the low/mid lobes, 0 in the high lobe; 25 of 28 multi-tick
+episodes land in the high lobe) — the mechanism is structural to the
+population, not an artifact of one specific fit.
+
+### Experiment 4 — pooling
+
+Own-fit vs pooled-parent routes, split on the exact published population
+(own={6,G,R}, n=5 events each; pooled={J,M,W}, n=1-2 events each):
+
+| split | n routes | n scored | mean CRPS | baseline CRPS | skill |
+| --- | --- | --- | --- | --- | --- |
+| own-fit | 3 | 55 | 4.98 | 4.53 | -0.099 |
+| pooled-parent | 3 | 21 | 5.68 | 5.01 | -0.133 |
+
+Cross-checked on the independent local fit (8 own-fit routes incl. n=32/15
+event routes 7/M, 5 pooled-parent routes at n=1 each):
+
+| split | n routes | n scored | skill |
+| --- | --- | --- | --- |
+| own-fit | 8 | 60 | -0.094 |
+| pooled-parent | 5 | 37 | -0.079 |
+
+Own-fit and pooled-parent skill sit in the same negative band in both
+cuts (pooled is worse in one, marginally better in the other) — pooling
+shrinkage is not carrying the negative skill; well-observed routes with a
+full own-fit sample fail almost as badly as thin, shrunk ones. This rules
+out "give sparse routes more of their own data" as the fix, consistent
+with Experiment 1's volume-sweep finding.
+
+### Concrete cheapest model-form fix, measured offline (not shipped)
+
+A one-tick point-mass p0 (global, pooled across all training-window
+routes: 53/77 = 0.688 of all completed disrupted exits are exactly one
+tick) mixed with the existing partially-pooled log-logistic **refit
+conditional on T > 1 tick** (so the spike and the tail don't double-count
+the same population), graded via `recovery_dist.recovery_dist_report`
+directly on a closed-form CDF (bypassing `curve_sec` quantization, which
+cannot represent a mass this large evaluated exactly at its own grid
+point — see the artifact note above). Same training window, same 97-episode
+held-out population as Experiment 2's model (a):
+
+| model | mean CRPS | baseline CRPS | skill |
+| --- | --- | --- | --- |
+| a. shipped continuous (closed-form check, same math as the curve version) | 7.04 | 6.36 | -0.108 |
+| d. one-tick spike + conditional continuous tail mixture | 6.50 | 6.36 | **-0.023** |
+
+A 74% reduction in the skill deficit (-0.108 → -0.023), same data, zero
+extra training days, one extra parameter (the pooled one-tick fraction).
+Still short of beating climatology — mean_pit=0.746 shows the mixture is
+now calibrated too optimistically on average (a single global p0 over- or
+under-shoots per-route), so a per-route-shrunk p0 (same partial-pooling
+machinery already in `pooled_dwell.py`, applied to the binary
+one-tick-or-not outcome instead of a continuous scale) is the next-cheapest
+iteration, not attempted here. Not implemented in production; this is the
+offline number for the lead to decide on.
+
+Commands run (`murk exec -- uv run python -m training._scratch_*`, five
+throwaway scripts under `training/`, each fetching `archive/vehicles/`
+bodies for 2026-06-21..08-12 via `training.movement_backfill.
+_fetch_vehicle_bodies` — cached to `/tmp` between runs, both cache files
+and all five scripts deleted after use, nothing left in the repo or on
+disk): `movement_backfill.route_ticks_from_vehicle_bodies` +
+`transitions_from_ticks(debounce_ticks=1)` for the full-archive
+reconstruction; `load_r2.compute_advance_baseline` +
+`load_r2.build_movement_truth` + `episodes.extract_episodes` for the causal
+130-episode population; `pooled_dwell.partially_pooled_dwell` /
+`pooled_dwell.cell_from_fit` for model (a); `dwell.compute_dwell_quantiles`
+for model (b); `dwell._make_cell` over pooled samples for model (c);
+`training.r2_client.get_object_bytes` for the one `state/params.json`
+validation pull; `scorecard.episode_recovery` /
+`scorecard.movement_dwell_lookup_from_params` /
+`recovery_dist.recovery_dist_report` /
+`recovery_dist.predicted_recovery_curve` for every grading call, unmodified.
+
+## 2026-08-12 — a status glyph cannot encode three states by spacing alone at 20px, and `recovery_minutes` is 0 on 22 of 30 routes
+
+origin: agent
+
+Branding work, but two findings bind on the feed itself and are worth keeping
+whoever builds the next UI on it.
+
+**The load-bearing one: `inference.recovery_minutes` is `0` for all 22
+currently-normal routes** (30 total: 22 `normal`, 4 `not_scheduled`, 4
+`unknown`). Any UI channel bound to it — a bar, a gauge, a spacing, a width —
+is therefore motionless outside a disruption, i.e. dead in roughly 95% of
+ticks. `Snapshot.observations` ships as an empty list, and `Observation`
+(`src/momentarily/schema.py:69-82`) already reserves `kind: "headway"` /
+`unit: "seconds"` for the signal that would fix this. Nothing in the repo
+computes headway today. The Worker's existing GTFS-RT vehicle-position decode
+(`worker/src/vehicles.ts`) already knows where trains are each tick, so
+successive passings of a fixed reference stop would give it.
+
+**Spacing fails as a categorical encoding at status-icon size.** Tested three
+shape encodings for normal/disrupted/suspended at 20px with hue removed,
+scanned as a route grid (`docs/brand/mark-study.html` §6):
+
+| encoding | 20px monochrome result |
+| --- | --- |
+| gap 0 / 4 / 8 units on a 24 grid (spacing only) | fails — disrupted vs suspended indistinguishable |
+| gap 0 / 5 / 11 (spacing widened to the frame) | marginal, needs a side-by-side reference |
+| split topology + symmetric height drop | passes, read correctly cold |
+
+A 4-unit gap delta on a 24 grid is 3.3px at 20px render, and judging "how far
+apart" has no anchor at that size, whereas "one shape or two" and "tall or
+short" do. Consequence for the existing UI: `viz/app/globals.css` signals route
+state with hue-only badges (`.cond.normal|.disrupted|.suspended`) while
+line 441 of the same file already states the principle — "a second encoding so
+hue isn't the only signal" — for legend markers. The badges don't honour it.
+A shape channel is the fix, not a fourth colour.
+
+Also negative, same file: a 1.5-unit accent inside the gap disappears by 32px
+(1.25px at 20px); rotating the pair 90° is dimensionally truer to a train seen
+from above but collapses into an equals sign by 32px.
+
+**Hue is not a free channel here.** Route colours arrive at runtime from GTFS
+static (`derive.py:179`, fallback `viz/lib/feed.ts:36`) and occupy 11 values:
+`#EE352E` `#00933C` `#B933AD` `#FF6319` `#2850AD` `#FCCC0A` `#996633`
+`#6CBE45` `#A7A9AC` `#808183` `#1F4F9F`. Red, orange, yellow, green, lime,
+brown, blue, navy, magenta-purple and two greys are all spoken for by lines the
+dashboard renders beside any product chrome.
+
+**`segment_flow` is a sample, not a strip.** 56 segments, max 4 per
+(route, direction), non-contiguous when chained on `from_stop`→`to`, and all
+`normal` at time of writing. An ordered per-route station strip needs a GTFS
+static stop-ordering join; it is not derivable from one snapshot.
+
+Corrected assumption worth recording: a scheduled-headway baseline does **not**
+need a new ingest. `training/gtfs_static.py` already streams `trips.txt` and
+`stop_times.txt` off the static feed (lines 101 and 116) for segment topology,
+so arrival times are already being read and a baseline is a parse extension.
+Emitting it per (route, direction, service period) alongside the other weekly
+fit artifacts is enough to express observed headway as a deviation.
+
+## 2026-08-12 — mixture shipped: CRPS skill -0.139 -> -0.061, and two estimator bugs the offline prototype had hidden
+
+origin: agent
+
+The one-tick point-mass mixture is now the published movement dwell model
+(`atom_p`/`atom_sec` on the dwell cell, tail_ll refit left-truncated at one
+tick). Graded causally — trained 06-21..07-25, scored on 74 held-out
+episodes from 07-26..08-11, same transitions and same grader for every
+variant, only the cell construction differing:
+
+| model | CRPS | baseline | skill | mean PIT |
+| --- | --- | --- | --- | --- |
+| continuous (what shipped before) | 7.451 | 6.541 | -0.1391 | 0.579 |
+| single global atom | 6.922 | 6.541 | **-0.0582** | 0.545 |
+| per-route shrunk atom (shipped) | 6.938 | 6.541 | **-0.0606** | 0.544 |
+
+56% of the skill deficit gone. Still short of climatology, so the arm stays
+ungraduated. Global and shrunk are within noise of each other because the
+concentration estimator lands on its ceiling — the routes are not
+distinguishable at these counts, and it says so rather than pretending. The
+shrunk form ships because it degenerates to global exactly when the data is
+thin and separates on its own once it is not.
+
+### Two estimator bugs the offline prototype never exposed
+
+Both were invisible in the earlier one-off because it used a single global
+rate. Going per-route surfaced them, and the first attempt at per-route
+scored **worse than doing nothing** (-0.1459 vs -0.1391 continuous).
+
+**1. Median of per-route ratios is biased upward at small denominators.**
+Following the scale estimator's one-vote-per-route convention gave a
+population atom rate of **0.789** where the pooled ratio of totals was
+**0.733** (99 one-tick exits / 135 completed). A route that saw one episode
+and it was one tick votes 1.0 with the same weight as a route that saw
+thirty. Every cell then shrinks toward an inflated centre and the whole
+forecast reads optimistic. Fixed by using the ratio of totals for the atom
+centre — a deliberate departure from the scale's convention, for a reason
+that only applies to ratios of small counts.
+
+**2. The Beta moment inversion inverts its own purpose at small n.**
+`hierarchical.robust_concentration` reads the observed spread of per-cell
+rates as if it were all real between-cell variation. That holds at the 20+
+trials its leaves carry. At the ~5 episodes a dwell cell carries, binomial
+sampling noise dominates: a route at 1-of-1 and a route at 3-of-5 look
+wildly dispersed while being perfectly consistent with one shared rate. The
+estimator concluded "these routes differ", returned the kappa floor, refused
+to pool, and let per-route rates run to **0.957**. Var(observed) =
+Var(between) + E[p(1-p)/n]; subtracting the sampling term before inverting
+fixes it, and when nothing survives the subtraction the answer is to pool
+hard. That single change moved per-route from -0.1459 to -0.0606.
+
+Left `robust_concentration` alone — it is correct in its own high-n regime —
+and put the corrected variant next to the estimator that needs it, with a
+note on each pointing at the other.
+
+### PIT is not a valid diagnostic against a point mass
+
+Worth internalising, because it looks exactly like a catastrophic
+regression. With an atom at 300s, every one-tick episode returns the
+identical F(300) = atom_p, so the histogram collapses:
+
+| model | PIT histogram | mean PIT |
+| --- | --- | --- |
+| continuous | [0,1,7,15,25,0,1,1,8,16] | 0.579 |
+| mixture, raw PIT | [0,0,0,0,0,0,0,48,13,13] | 0.790 |
+| mixture, randomized PIT | [8,8,4,8,6,6,6,2,13,13] | 0.544 |
+
+The middle row is not miscalibration. PIT is only uniform for a *continuous*
+predictive CDF; against a jump the correct diagnostic spreads each
+observation across its own jump. Uncorrected, the mixture would have been
+published with a "badly optimistic" verdict on the Models page while being
+better calibrated than the model it replaced — the bottom row is closer to
+uniform than the continuous row on every measure. The residual is the top
+two bins: the multi-tick tail is still under-dispersed, which is the next
+thing to work on.
+
+Randomization is keyed on an FNV-1a digest of the regime, not an RNG, so the
+grade stays reproducible and does not depend on iteration order. FNV-1a
+rather than the blake3 already in `provenance.py` because the viz grading
+route recomputes this report and blake3 is not in `node:crypto` — measured
+across 74/1000/20000 realistic keys, FNV-1a, blake2b and blake3 are all
+indistinguishable from uniform (KS 0.0845/0.1004/0.0997 at n=74 against a
+0.1581 critical value), so there was no quality to buy with a dependency.
+
+### Incidental
+
+`dwell_cdf` returned 0 at `x <= curve_sec[0]`, and `curve_sec[0]` is exactly
+one tick for any cell whose shortest dwell is one tick — so the CDF read 0
+evaluated at its own grid point and every one-tick episode graded PIT=0. The
+lower guard is now strict and a repeated knot resolves to the top of its
+flat run. Numerically identical on strictly increasing curves, which is
+pinned by a test using the old formula as an oracle.
+
+A dwell cell gaining a field is silently dropped by the Worker: the zod
+schema is a plain `z.object()` with strip semantics, so `atom_p` would have
+been deleted at parse time and the fix would have trained, published and
+graded with the old math while looking shipped. `n_censored` was already
+being dropped that way. Both are now in the schema, and a golden fixture
+(`tests/fixtures/parity_dwell.json`, 42 cases) is replayed by Python, the
+Worker and viz so the three cannot drift again.
+
+## 2026-08-12 — gated the 60/120min horizons; the publish guard would have emptied the feed
+
+origin: agent
+
+Stopped publishing `p_normal_in_60min` and `p_normal_in_120min`. They are now
+`null` on every fitted-curve row. `p_normal_in_30min` is untouched and still
+always published — it is the one horizon with repeatedly measured skill
+(BSS +0.29 to +0.40). The two longer ones lose to naive persistence in every
+population cut tested (BSS -0.00 to -1.30; AUC 0.395 and 0.352, i.e. inverted),
+the loss is not a left-censoring artifact, and the projection was verified
+monotone over 45,600 comparisons — so the defect is the shape of the fitted
+elapsed-conditional dwell curve and no amount of runtime fixes it. Publishing a
+number we have measured to be anti-informative is worse than publishing nothing.
+
+Chose nullability over a `recovery_indeterminate`-style sibling flag. A flag
+leaves the inverted number in the payload for any consumer that ignores the
+flag; null cannot be misread. This follows the existing "never a fabricated
+number" precedent (`SegmentStatus.recovery: SegmentRecovery | None`,
+`movementRecovery()` returning null) rather than the clamp-plus-flag one.
+
+**The schedule arm is exempt, and that is not a detail.** When
+`recovery_source == "schedule"` the value is `resume <= now + h*60` — a
+comparison against an announced resume time, not a fitted forecast. It carries
+none of the defect above, so it keeps publishing all three horizons. A blanket
+suppression would have thrown away the only horizon information in the feed that
+is *deterministically* correct. Gated at the single point where the Inference is
+assembled rather than in each of the five arms that set these values, so the
+next arm added cannot silently miss the gate.
+
+### The near-miss worth remembering
+
+`scrubCorruptInferences` null-checks every inference field with
+`Number.isFinite`, and `Number.isFinite(null)` is `false`. Shipping the gate
+without touching that function would have scrubbed EVERY route's inference on
+EVERY tick — the guard that exists to stop one bad route from staling the feed
+would have emptied the feed of exactly the data it protects. Caught by its own
+existing regression test. The distinction the function now draws: absent is a
+valid published state, not-a-number is not.
+
+Two other consumers had to learn the difference. `training.eval` parsed with
+`float(raw["p_normal_in_60min"])`, which raises on null; it now uses an explicit
+`_opt_float` and the calibration loop skips withheld rows the same way it already
+skips `schedule` rows. Deliberately NOT `float(value or 0.0)` — a withheld
+forecast coerced to 0 scores as a confident "will not recover" and drags every
+bin it lands in. The dashboard had the same trap in reverse: `null * 100`
+renders `0%`, so a withheld horizon would have displayed as a confident zero;
+it now renders "not forecast".
+
+`SegmentRecovery` keeps all three horizons non-null. The measurement was taken
+on the route-level fields, and the segment arm is a different fitted model
+(`segment_dwell.json`); gating it would be asserting evidence we do not have.
+Filed separately rather than assumed.
+
+Eight worker tests asserted properties of the two withheld horizons. None were
+deleted: the monotonicity and probability-bounds invariants moved down onto
+`pLeaveBy`/`staysNormalFor` in `dwell.ts`, where they still hold and where the
+property actually lives. It stopped being an invariant of the published field,
+not an invariant of the model.
+
+## 2026-08-12 — advance baseline graded held-out at last: partial pooling loses to the raw leaf rate, and badly on thin leaves (Brier 0.125 vs 0.069)
+
+origin: agent
+
+First out-of-sample grade of `hierarchical.partially_pool`'s advance-rate
+baseline. Trained on 2026-06-21..07-25, scored against the Bernoulli
+advance/stall trials observed in 07-26..08-11, 2,375 leaves present in both
+windows, 2.2M held-out trials. Every predictor clipped identically at P0_FLOOR
+so log-loss is comparable.
+
+**Target choice, because it changes what the number means.** `p0` is not a
+forecast of advance; it is the healthy-baseline null `classify_direction` tests a
+live tick against, so scoring it on all held-out ticks would let any predictor
+win by baking in the disruption rate. Graded set is therefore restricted to
+held-out ticks where the route was in the `normal` movement state, with route
+truth reconstructed causally from the training window's direction baseline. In
+the event this barely matters — the held-out window is **108,657 normal
+route-ticks against 196 disrupted**, so the two targets agree to within 0.0008
+Brier. Recording it because the objection is correct in principle even though it
+did not bite here.
+
+| predictor | Brier | logloss | vs pooled |
+| --- | --- | --- | --- |
+| pooled (what ships) | 0.06519 | 0.23645 | |
+| raw leaf rate | **0.06414** | 0.23453 | -0.00105 |
+| route level | 0.18876 | 0.54609 | +0.12357 |
+| system level | 0.24298 | 0.67903 | +0.17779 |
+| pooled, fitted on normal ticks only | 0.06505 | 0.23640 | -0.00014 |
+
+Restricted to the 497 THIN training leaves (n_A < MIN_LEAF_N=20) — the leaves
+partial pooling exists to serve:
+
+| predictor | Brier | logloss | vs pooled |
+| --- | --- | --- | --- |
+| pooled | 0.12451 | 0.43691 | |
+| raw leaf rate | **0.06908** | 0.36334 | -0.05543 |
+| system level | 0.19412 | 0.58022 | +0.06960 |
+
+So: pooling is a small net loss overall and a **1.8x Brier loss exactly where it
+is supposed to help**. It does beat route- and system-level pooling by a wide
+margin (0.065 vs 0.189 and 0.243), so leaf specificity is doing real work — the
+hierarchy *above* the leaf is nearly worthless here. It is the direction of the
+shrinkage that is wrong, not the idea of a leaf-level estimate.
+
+### Why: exchangeability is violated, and not in the direction I guessed
+
+| | held-out advance rate |
+| --- | --- |
+| thin leaves (n_A < 20) | 0.8532 |
+| voting leaves (n_A >= 20) | 0.5830 |
+| centre thin leaves are shrunk toward | **0.9888** |
+
+Thin leaves run **higher** than well-observed ones, not lower. Plausible reading:
+a rarely-traversed segment has few trains on it, so nothing queues and trains
+simply advance; the busy segments that accumulate large n are exactly where
+trains stall behind each other. Either way, how much data a leaf has is
+informative about its rate, which is the assumption partial pooling rests on. I
+had predicted the opposite sign (guessing thin leaves were terminals, which
+structurally dwell) — that was wrong, and the deciles say so.
+
+The shrinkage target overshoots even so: thin leaves truly run 0.853 and are
+pulled to 0.9888. Assigning 0.99 where the truth is 0.85 is what the Brier gap
+is made of, and it points straight at the open terminal over-flagging bug — a p0
+of 0.99 puts the `0.5*p0` trip-wire at 0.494 and sets the binomial null at 0.99,
+so a modest stall streak reads as wildly significant. That link is now measured
+rather than speculated.
+
+### Negative result: the missing disruption resistance is not the problem
+
+Unlike its direction-level sibling `compute_advance_baseline`, which takes a
+per-tick MEDIAN specifically so a line that mostly runs well keeps a high
+baseline through occasional frozen stretches, `build_segment_baseline` simply
+SUMS advanced/stalled over the window — the segment leaf baseline has no
+disruption resistance at all. Refitting it on normal-only ticks was the obvious
+candidate fix and it does essentially nothing: **-0.00014 Brier overall and
++0.00067 on thin leaves** (i.e. very slightly worse there). Worth knowing before
+anyone spends time on it.
+
+### Correcting an earlier claim in this journal
+
+The entry two above reasoned that the median-of-fractions bias found in the dwell
+atom estimator would be "much smaller" here because a leaf must clear n>=20 to
+vote, so its fraction is less coarse. Measured, that reasoning is wrong: the gap
+between the median of leaf rates and the ratio of totals is **+0.3985** at system
+level and the median is higher in **52 of 52** route_direction groups (mean gap
++0.3797). The mechanism is not coarse denominators at all, it is n-weighting —
+most leaves advance nearly always, while the trials are dominated by a few busy,
+stall-heavy leaves. Which of the two is the "right" centre is a genuine modelling
+question (a prior over leaves is not a prior over trials), so this is not a bug
+on its own; what the held-out numbers do say is that 0.9888 is too high for the
+leaves that borrow it.
+
+Vote-gate clearance, previously asserted but never measured: **1,884 of 2,508
+leaves (75.1%)** clear MIN_LEAF_N=20, per-leaf n has p10=2, p50=349, p90=1171,
+max=29,487, and 2,505 of 2,508 cells take their prior from the route_direction
+level (only 3 fall back to system). So the gate is not the fragile part.
+
+206 held-out leaves have no training baseline at all and the classifier abstains
+on them.
+
+Commands run (`murk exec -- uv run python <script>` with PYTHONPATH at the repo
+root; two scripts, both under /tmp only, deleted after the run, nothing left in
+the repo or on disk): `movement_backfill._fetch_vehicle_bodies` for both windows
+(cached to /tmp between runs, cache deleted), `load_r2.build_segment_series`
+aggregated per leaf per tick, `hierarchical.partially_pool` for every pooled
+variant, `load_r2.compute_advance_baseline` +
+`load_r2.build_movement_series_by_direction` + `load_r2.build_movement_truth` for
+the causal normal-tick mask. No production code modified.
+
+## 2026-08-12 — 81.8% of our "segments" are multi-station jumps: 5-minute polling cannot see station-to-station movement
+
+origin: agent
+
+The archive records, per 5-minute tick, that a trip was at stop A last look and
+stop B this look, and we treat (A,B) as a segment. Measured how far apart A and B
+actually are in the scheduled stop order (`gtfs_static.chains` gives travel-order
+stop sequences per route+direction; hop = index difference), over
+2026-08-05..08-11, 915,906 transitions, 98.6% of them placeable in the scheduled
+order:
+
+| stops covered in one 5-min look | count | share of moves |
+| --- | --- | --- |
+| 1 (an actual segment) | 90,159 | **18.2%** |
+| 2 | 158,975 | 32.2% |
+| 3 | 192,192 | 38.9% |
+| 4 | 42,354 | 8.6% |
+| 5+ | 8,612 | 1.2% |
+
+**81.8% of observed moves skipped at least one station we never saw.** Mean 2.71
+stations per look. Worst on the busiest lines: `1` 94.8% multi-stop, `6` 89.4%,
+`L` 88.2%, `3` 78.4%.
+
+So the segment-level view is not measuring segments. It is measuring "a train was
+somewhere near A, then somewhere near A+2.71", and `canonical_adjacency` then
+labels that jump with its most common landing stop — which is exactly why the
+labels look plausible while being wrong. Any per-segment statistic built on this
+is a blend of 2-4 real segments, and the stations in between contribute nothing at
+all.
+
+This is the root cause under the advance-baseline problem graded in the entry
+above, and it is not fixable by better shrinkage. A yes/no "did it leave" carries
+almost no information per observation, which is why thin leaves must borrow, which
+is why the borrowing being miscalibrated matters. A traversal DURATION carries far
+more per observation.
+
+### Two anomalies in the same numbers, both unexplained
+
+**42.5% of placed transitions are stalls** (stop_id unchanged across 5 minutes).
+That is hard to reconcile with a moving train covering 2.71 stations per look: a
+train in revenue service should change stop_id nearly every tick. So the
+advance-rate p0 ~ 0.59 that the entire movement classifier rests on may be
+dominated by something other than "trains are running well" — layups, held
+trains, terminal relays, or stale feed entries. Not investigated here. Worth
+knowing before anyone tunes the classifier, and it is a live lead for the terminal
+over-flagging bug.
+
+**2.9% of moves read as backwards** in the scheduled order. Candidates: terminal
+relays where a train reverses, the stop_id N/S suffix disagreeing with the trip's
+actual direction, or trip_id reuse. Also not investigated.
+
+### What this justifies
+
+Polling faster alone is not the fix. At 1-minute polling a station hop (~1.85 min
+at the observed speed) still lands in 1-2 ticks, so a tick count would only pin
+arrival to +/-30s on a ~110s journey — rebuilding a coarse measure with 5x the
+storage. The resolution is already in the feed and being discarded:
+`VehiclePosition.timestamp` (the train's own measurement time) is not decoded, and
+`current_stop_sequence` IS decoded and tested but unused, and is present exactly
+when a train is STOPPED_AT. Poll rate then governs how often we CATCH a
+transition, not how precisely we time it.
+
+Note for whoever wires this: raising the cron to 1 minute without gating silently
+redefines every existing model. `advanced_n`/`stalled_n` mean "changed in 5
+minutes", the advance baseline is fitted on that, and the dwell model's one-tick
+point mass IS 5 minutes. The same handler at 1 minute keeps producing plausible
+numbers against params that assume the old meaning. The 5-minute pipeline has to
+stay gated to 5-minute boundaries with its own carry object, and the trace needs
+its own.
+
+Commands run (`murk exec -- uv run python /tmp/hop_test.py`, PYTHONPATH at the
+repo root; script and its caches under /tmp only, deleted after): 
+`movement_backfill._fetch_vehicle_bodies` for the window,
+`gtfs_static.load_successors` + `gtfs_static.chains` for scheduled travel order,
+`load_r2.build_segment_series` for the observed transitions. No production code
+modified.
+
+## 2026-08-12 — two-thirds of the stall mass is terminal layover; and the alert feed cannot grade a movement signal (4 acute onsets in a week)
+
+origin: agent
+
+### Where the 42.5% stall rate comes from — answered
+
+Stalls per (route, direction, from_stop) over 2026-08-05..08-11, cross-referenced
+against each stop's position in its scheduled travel-order chain:
+
+| position in the line | stalls | moves | stall rate | share of all stalls |
+| --- | --- | --- | --- | --- |
+| first stop (origin terminal) | 244,009 | 28,261 | **89.6%** | **63.5%** |
+| destination terminal | 12,419 | 2,434 | 83.6% | 3.2% |
+| one in from a terminal | 6,324 | 19,611 | 24.4% | 1.6% |
+| mid-line | 96,273 | 474,532 | **16.9%** | 25.1% |
+| not in a scheduled chain | 24,953 | | | 6.5% |
+
+**Two-thirds of the stall mass is trains parked at terminals by design.** It is
+also extremely concentrated: the top 25 (route, direction, stop) leaves hold
+65.6% of all stalls, top 50 hold 87.5%. The worst are stationary by construction —
+`H north H19N` (Rockaway shuttle) 15,974 stalls to 6 moves, `7 south 726S` 2,421
+to 1, `D south D01S` 7,141 to 193.
+
+So `p0 ~ 0.59`, the number the entire movement classifier rests on, is a blend of
+two physically different populations, dominated by the parked one. The in-service
+figure is 1 - 0.169 = **0.831**, which independently matches the 0.8532 held-out
+rate measured for thin leaves two entries above — thin leaves are just ordinary
+mid-line stops.
+
+This also nails the terminal over-flagging mechanism rather than guessing at
+it: a terminal genuinely stalls ~90% of the time, borrows a pooled p0 near 0.99
+from its mid-line neighbours, and its normal behaviour then reads as
+overwhelmingly significant evidence of disruption.
+
+### Progress ratio: built, and NOT yet gradeable
+
+Replaced the advance-rate binary with a scheduled-progress measure. For each
+train per 5-minute tick: `scheduled_seconds(path actually covered) / 300`. 1.0 is
+on time, 0.5 is half speed, 0 is not moving. Terminals excluded per the above.
+Scheduled run times come from a new `gtfs_static.hop_seconds` (median over trips
+of departure-to-arrival, so scheduled dwell is not counted as travel): 1,932 hops,
+median 90s, mean 122.6s. That cross-checks against the observed 300/2.71 = 111s
+per hop, so moving trains run slightly ahead of the timetable — consistent with
+schedule padding.
+
+The measure itself behaves sanely: median 0.818, p05 0.092, p95 1.056.
+
+Graded against MTA severe-alert truth (severity floor 2), 41,413 route-ticks,
+AUC where a low score should mean disrupted:
+
+| score | AUC |
+| --- | --- |
+| advance rate, as production computes it (all stops) | 0.2175 |
+| advance rate, terminals excluded | 0.3899 |
+| progress ratio, terminals excluded | 0.4229 |
+
+All three are INVERTED. Excluding terminals is worth +0.172 AUC on its own, which
+is the single largest effect measured today and comes straight from the stall
+diagnostic above. The progress ratio then adds +0.033 on top. But everything is
+still the wrong side of 0.5, so none of it is evidence of anything yet.
+
+**Ruled out: time of day.** Alert prevalence is 11.2%-13.0% in EVERY one of the 24
+UTC hours, and AUC computed within-hour is essentially unchanged (advance 0.3868,
+progress 0.4207). Not a confound.
+
+**The label is the problem, and the flatness is the proof.** No real disruption
+pattern is uniform across all 24 hours. A 12% rate at 4am and at 6pm means the
+truth is dominated by chronic standing advisories, exactly as the chronic-alert
+finding above records, so it labels thousands of normally-running ticks
+disrupted and cannot separate anything.
+
+Confirmed by trying the acute version — label a CALM route-tick positive if a new
+alert onset (normal -> not-normal transition) follows within 30 minutes:
+
+  * **4 acute onsets in the entire week, across 4 routes**, giving 24 positive
+    route-ticks out of 36,297.
+  * AUC 0.6025 progress ratio vs 0.5744 advance rate. Both now the right side of
+    0.5, and the progress ratio's mean is 0.0391 LOWER before an onset while the
+    advance rate moves +0.0019 (i.e. not at all).
+  * With 24 positives the CI on AUC is about +/-0.12. This is a direction, not a
+    result. Do not cite it as one.
+
+So the honest state: the progress ratio is a better-posed measure on every
+structural argument, it edges the advance rate on every cut tried, and there is
+currently **no label in this repo capable of grading it**. That is the blocker, not
+the model.
+
+### Known flaw in the measure as built
+
+Skip-stop inverts it. `path_seconds` sums the scheduled chain between the observed
+endpoints, so a train that BYPASSES stops during a disruption is credited with
+covering all of their scheduled time and reads as running fast. Pre-onset ticks
+average 2.266 hops per move; the normal-tick comparison came back NaN through a
+bug in the scratch script and was not re-run. Needs handling before this ships —
+probably by comparing against the trip's OWN scheduled pattern from stop_times
+rather than the route's modal chain, which is available and would also fix
+express/local sharing track.
+
+### What would actually grade it
+
+Nothing derived from the alerts feed at this severity floor. Candidates, in order
+of independence: trip-updates `assigned_n` collapses as an acute service signal;
+the 1-minute trace once it accumulates, giving real per-segment traversal times to
+compare against schedule directly; or hand-graded incident windows (1ul already
+exists for the Knicks-parade window).
+
+Commands run (`murk exec -- uv run python /tmp/{stall_why,progress,progress2,progress3}.py`,
+PYTHONPATH at the repo root; four scratch scripts and their caches under /tmp only,
+all deleted after): `movement_backfill._fetch_vehicle_bodies`,
+`load_r2.build_segment_series`, `gtfs_static.load_successors` / `chains` /
+`load_hop_seconds`, `review.build_mta_truth`. Production code changed: only the
+new `gtfs_static.hop_seconds` / `load_hop_seconds` (committed, tested).
+
+
+## 2026-08-12 — the advance signal needs an admission rule, not a terminal blacklist: through-stops-only cuts thin-leaf Brier 0.149 -> 0.081
+
+origin: agent
+
+### Terminals were the larger half of the problem, not all of it
+
+Chain endpoints read off the dominant-successor skeleton directly (a stop with no
+incoming dominant edge, or none outgoing) rather than off `chains(...).stops[0]`,
+which concatenates one walk per entry stop and so names only one origin when a
+component has two. 199 endpoint keys against 1,659 through stops. Recounted over
+2026-08-05..08-11, keyed on each transition's from_stop:
+
+| position | stalls | moves | stall rate | share of all stalls |
+| --- | --- | --- | --- | --- |
+| chain endpoint | 294,928 | 36,316 | **89.0%** | **76.8%** |
+| mid-line (through) | 64,103 | 488,522 | 11.6% | 16.7% |
+| not in the skeleton at all | 24,947 | 7,090 | **77.9%** | 6.5% |
+
+The third row is the finding. Stops the timetable never names — yard leads, rare
+patterns, stop_ids the vehicle feed emits and stop_times doesn't — stall at 77.9%,
+which is terminal behaviour, not mid-line behaviour. Excluding terminals alone
+leaves those 24,947 stalls in the admitted population: 28% of what remains after
+the endpoints go. So the rule that matters is positive, not subtractive: count a
+trip only where the schedule defines what moving means, i.e. the from_stop has
+both a scheduled predecessor and a scheduled successor.
+
+### Held out, that is worth more than the terminal cut alone
+
+Train 2026-06-21..07-25, score 07-26..08-11 on the route-ticks the severity-2
+alert truth calls normal. Pooled = `hierarchical.partially_pool`, raw-leaf = each
+leaf's own training rate.
+
+| arm | leaves | no train data | thin | pooled Brier | thin-leaf pooled | thin-leaf raw |
+| --- | --- | --- | --- | --- | --- | --- |
+| all stops (production) | 2291 | 177 | 448 | 0.06656 | 0.14857 | 0.05506 |
+| terminals excluded | 2107 | 174 | 436 | 0.06034 | 0.11144 | 0.05769 |
+| through stops only | 1617 | **0** | **69** | 0.06208 | **0.08082** | 0.07788 |
+
+Read the last three columns, not the fourth: overall Brier is dominated by the
+largest leaves and each arm scores a different population, so cross-arm overall
+comparison is not like-for-like (terminals-excluded "wins" it at 0.06034 while
+being worse everywhere the estimator is actually load-bearing). What is
+like-for-like:
+
+  * **Every held-out leaf has training data** under through-only — 177 leaves
+    that previously needed a fabricated prior are gone, because they were
+    off-skeleton stops that appear in one window and not the next.
+  * Thin leaves fall 448 -> 69 and their Brier 0.14857 -> 0.08082.
+  * Pooled and raw converge (0.06208 vs 0.06195, and 0.08082 vs 0.07788 on thin
+    leaves). The exchangeability violation measured in the earlier grade —
+    pooling *losing* to raw by 1.8x on the leaves it exists to serve — was mostly
+    terminals and off-skeleton stops sitting in one hierarchy with through stops.
+    Most of what the n-aware-shrinkage work was for dissolves with the population
+    fixed instead.
+
+Reproduction check, since the harness is new: the all-stops arm scored on all
+ticks gives pooled 0.06598 / raw 0.06472 over 2,378 leaves and 2.21M trials, 499
+of them thin, against the 0.06519 / 0.06414 / 2,375 / 2.2M / 497 recorded
+earlier. Same estimator, same finding.
+
+### AUC against the alert label: ordering reproduces, magnitude does not
+
+Same window, severity floor 2, 45,292 route-ticks, prevalence 12.4-14.7% in every
+one of the 24 UTC hours (the flatness the label was already condemned for):
+
+| arm | AUC | mean score on normal | on disrupted | overall advance rate |
+| --- | --- | --- | --- | --- |
+| all stops | 0.3388 | 0.5619 | 0.7215 | 0.5807 |
+| terminals excluded | 0.4361 | 0.8217 | 0.9112 | 0.8470 |
+| through stops only | 0.4641 | 0.8673 | 0.9099 | 0.8832 |
+
+Ordering and sign match the 0.2175 -> 0.3899 pair recorded earlier; the absolute
+values do not (different route-tick population, no presence mask). All three are
+still inverted, so this table ranks the arms and grades nothing — the label is
+still the blocker.
+
+### Negative result to carry forward: p0 now saturates
+
+The flat per-(route, direction, tod) baseline's median p0 moves 0.5333 -> 1.0000
+once layovers are out. That is arithmetically right — at 5-minute cadence a
+through stop's modal tick has every matched trip advancing — but it breaks the
+classifier's design intent. `DISRUPTED_RATIO * p0` was meant to judge each line
+against its own normal; with every cell's normal at ~1.0 the trip-wire collapses
+to a global "under 50% advancing", which is the single global cutoff the
+baseline-relative design existed to replace. The significance gate still fires on
+the same evidence, so this is not a correctness bug, but the ratio form is now
+doing nothing and should be reconsidered against a saturated baseline.
+
+### What shipped
+
+`gtfs_static.terminals` / `through_stops` / `stops_to_json`; a `counts_from_stop`
+filter on `load_r2.build_movement_series{,_by_direction}` that recomputes
+advanced_n/stalled_n from the raw `transitions` map (the archived counters are
+already summed and cannot be narrowed after the fact); the trainer fitting the
+advance baseline on through stops and publishing that same set as
+`movement_through_stops` in params.json, from one static-timetable fetch per run
+so the fit and the set cannot disagree; the Worker, viz and the offline
+reconstruction paths counting the same way. The archived `transitions` map stays
+raw and unfiltered — it is the only place terminal behaviour remains observable,
+and it is what lets one definition apply to the whole archive instead of the
+counters changing meaning at deploy.
+
+Measured with two throwaway scripts at the repo root (both deleted after) over
+`archive/vehicles/` and `archive/alerts/` via `murk exec`.
+
+
+## 2026-08-12 — the 1-minute trace reads back: 3,457 single-hop traversals in 25 minutes, tracking the timetable within 3%
+
+origin: agent
+
+Deployed the per-minute trace (ddefa71) and built the reader. Trace objects land
+at exactly 60s spacing, ~650 rows each, while archive/vehicles/ stays on its
+300s cadence — the 5-minute pipeline's gate holds.
+
+First reconstruction, over 25 minutes of live data (572 trips, 16,196 rows,
+4,337 arrivals):
+
+| outcome | n | share |
+| --- | --- | --- |
+| exact single hop | 3,457 | 91.9% |
+| interval-censored (arrival missed between polls) | 215 | 5.7% |
+| right-censored (in transit when last seen) | 89 | 2.4% |
+| dropped: stop_seq backwards | 11 | |
+| dropped: arrival with no stop_seq | 82 | |
+
+**92% of hops are cleanly measured at 1-minute polling.** That is the number the
+whole trace was built for: at 5-minute polling the mean observed move spanned
+2.71 stations, so nothing below the multi-station jump was measurable at all.
+
+### Two bounds, not one measurement
+
+A poll brackets a hop rather than pinning it, and the two ends are biased in
+opposite directions:
+
+| cut | n | ratio to schedule (median) | p10 | p90 |
+| --- | --- | --- | --- | --- |
+| arrival -> arrival | 3,420 | **1.033** | 0.667 | 1.667 |
+| departure -> arrival | 797 | 0.422 | 0.189 | 0.833 |
+
+Arrival-to-arrival includes the dwell at the origin, so it is an upper bound.
+Departure-to-arrival starts its clock at the first sighting that had already
+left, which is systematically late, so it is a lower bound — and a weak one:
+only 1,014 of 3,761 traversals catch the train in transit at all, and those skew
+toward the slow hops that are easiest to catch. The upper bound is the usable
+measurement, and it lands 3% over the timetable.
+
+**Negative result: `hop_seconds` does not need a dwell correction.** The obvious
+objection to comparing arrival-to-arrival against a departure-to-arrival
+timetable is that it double-counts station dwell. Measured instead of assumed:
+NYCT sets arrival_time == departure_time on 95.7% of stop_times rows (200k
+sampled), median 60s on the 4.3% that differ. The schedule allocates no dwell,
+so the scheduled hop IS its arrival-to-arrival time and the comparison is
+like-for-like. Real trains still spend ~30s standing at each stop that the
+timetable never allocates, which is most of the gap between the 120s observed
+median and the 90s scheduled one.
+
+### Reconstruction rules that cost real effort to get right
+
+Two of these were wrong in the first draft and produced plausible-looking
+numbers anyway, which is the reason they are written down:
+
+  * **Right-censoring needs in-transit evidence, not just absence.** A trip last
+    seen standing at a stop FURTHER ALONG than its last recorded arrival has
+    already completed the hop — we simply could not time it (the feed omitted
+    stop_seq). Recording "still running at T" there is false, not unverified,
+    and stretches every fitted traversal. The rule that holds: censor only when
+    the last sighting is in transit toward a stop other than the last arrival.
+  * **A departure observed at the same instant as the next arrival is not a
+    departure.** It bounds travel time below by zero, which is no information.
+    Emitting 0 there would drag any fit down hard; those records carry
+    moving_seconds=None instead, and 2,443 of 3,457 exact hops are in that state.
+  * A feed gap after the last in-transit sighting does not weaken the censoring
+    bound — the train demonstrably was still moving when last seen, and the
+    endpoint is the feed's own vehicle_ts, not a poll time. A gap that swallows
+    an arrival surfaces as a stop_seq jump instead, which is interval-censored.
+
+Interval-censored spans are dropped from the survival samples rather than split
+evenly across their hops: the fitters in survival.py carry a right-censored
+likelihood only, and "each of these 2 hops took at most 200s" is an upper bound
+they cannot express. Splitting would fabricate observations. At 5.7% of
+traversals the discard is small, and TraceStats reports it.
+
+Reproducible: `murk exec -- uv run python -m training.trace`.

@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import io
 import itertools
+import statistics
 import zipfile
 from collections import defaultdict
 from collections.abc import Mapping
@@ -85,6 +86,99 @@ def _trip_routes(raw: TextIO) -> dict[str, str]:
     for row in reader:
         out[row[trip_col]] = base_route(row[route_col])
     return out
+
+
+# (route, direction, from_stop, to_stop) -> scheduled seconds for that one hop.
+HopKey = tuple[str, str, str, str]
+
+
+def _gtfs_seconds(value: str) -> int | None:
+    """HH:MM:SS since noon-minus-12h into seconds. Hours run past 24 for trips
+    that cross midnight (25:14:00 is a real value in this feed), so this cannot
+    use a time parser — it is deliberately plain arithmetic."""
+    parts = value.strip().split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        h, m, s = (int(p) for p in parts)
+    except ValueError:
+        return None
+    return h * 3600 + m * 60 + s
+
+
+def hop_seconds(zf: zipfile.ZipFile) -> dict[HopKey, int]:
+    """(route, direction, from_stop, to_stop) -> median scheduled seconds for
+    that hop, from consecutive stop_sequence pairs in stop_times.txt.
+
+    This is the external reference the movement model has never had. Everything
+    the repo currently calls a baseline is fitted on the same vehicle archive it
+    then grades against, so a systematic error in the archive cannot be detected
+    from inside it. The timetable is an independent statement of how long a hop
+    is supposed to take, published by the agency, and it converts "the stop_id
+    changed" into "the train covered N scheduled seconds of ground".
+
+    Median, not mean, over the trips serving a hop: run times differ by time of
+    day and a handful of padded late-night trips would otherwise drag a hop long.
+
+    Measured from departure at from_stop to arrival at to_stop, so scheduled
+    dwell at from_stop is excluded — the quantity is travel, not travel plus
+    standing. Hops where either time is missing or non-increasing are dropped.
+    """
+    with zf.open("trips.txt") as raw:
+        trip_routes = _trip_routes(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+
+    samples: dict[HopKey, list[int]] = defaultdict(list)
+
+    def flush(route: str, trip_id: str, stops: list[tuple[int, str, int, int]]) -> None:
+        if len(stops) < 2:
+            return
+        stops.sort(key=lambda s: s[0])
+        for (_, frm, _, dep), (_, to, arr, _) in itertools.pairwise(stops):
+            direction = direction_of(frm, trip_id)
+            if direction is None or frm == to:
+                continue
+            if arr <= dep:
+                continue
+            samples[(route, direction, frm, to)].append(arr - dep)
+
+    with zf.open("stop_times.txt") as raw:
+        reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+        header = next(reader)
+        trip_col = header.index("trip_id")
+        stop_col = header.index("stop_id")
+        seq_col = header.index("stop_sequence")
+        arr_col = header.index("arrival_time")
+        dep_col = header.index("departure_time")
+
+        current_trip: str | None = None
+        current_route = ""
+        buf: list[tuple[int, str, int, int]] = []
+        for row in reader:
+            trip_id = row[trip_col]
+            if trip_id != current_trip:
+                if current_trip is not None:
+                    flush(current_route, current_trip, buf)
+                current_trip = trip_id
+                current_route = trip_routes.get(trip_id, "")
+                buf = []
+            if not current_route:
+                continue
+            arr = _gtfs_seconds(row[arr_col])
+            dep = _gtfs_seconds(row[dep_col])
+            if arr is None or dep is None:
+                continue
+            buf.append((int(row[seq_col]), row[stop_col], arr, dep))
+        if current_trip is not None:
+            flush(current_route, current_trip, buf)
+
+    return {key: int(statistics.median(v)) for key, v in samples.items()}
+
+
+def load_hop_seconds(url: str = GTFS_STATIC_URL) -> dict[HopKey, int]:
+    """Fetch + parse in one call, mirroring load_successors."""
+    data = fetch_gtfs_zip(url)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return hop_seconds(zf)
 
 
 def successors(zf: zipfile.ZipFile) -> dict[SegmentKey, list[tuple[str, int]]]:

@@ -16,6 +16,7 @@ from training.gtfs_static import (
     chains,
     direction_of,
     dominant_successor,
+    hop_seconds,
     load_successors,
     successors,
 )
@@ -184,6 +185,7 @@ def test_load_successors_composes_fetch_and_parse(
                 ["F,t1,Weekday,X,0,s1"],
             ),
         )
+
         zf.writestr(
             "stop_times.txt",
             _csv(
@@ -204,3 +206,77 @@ def test_load_successors_composes_fetch_and_parse(
         ("F", "south", "A0S"): [("B0S", 1)],
         ("F", "south", "B0S"): [("C0S", 1)],
     }
+
+
+# --- hop_seconds: the scheduled run time between adjacent stops -----------------
+
+
+def test_hop_seconds_measures_departure_to_arrival_not_including_dwell():
+    """The quantity is travel time, so a scheduled dwell at from_stop must not be
+    counted: s1N departs at 00:01:00 and s2N arrives at 00:02:30, so the hop is
+    90s even though the train was standing at s1N for a minute beforehand."""
+    zf = _zip(
+        ["A,t1,Weekday,X,0,s1"],
+        [
+            "t1,s1N,00:00:00,00:01:00,1",
+            "t1,s2N,00:02:30,00:02:40,2",
+        ],
+    )
+    assert hop_seconds(zf) == {("A", "north", "s1N", "s2N"): 90}
+
+
+def test_hop_seconds_takes_the_median_across_trips_serving_the_hop():
+    """Three trips run the same hop in 60s, 90s and 300s. The median (90) is what
+    ships — a mean would let one padded late-night trip stretch the hop."""
+    zf = _zip(
+        ["A,t1,Weekday,X,0,s1", "A,t2,Weekday,X,0,s1", "A,t3,Weekday,X,0,s1"],
+        [
+            "t1,s1N,00:00:00,00:00:00,1",
+            "t1,s2N,00:01:00,00:01:00,2",
+            "t2,s1N,01:00:00,01:00:00,1",
+            "t2,s2N,01:01:30,01:01:30,2",
+            "t3,s1N,02:00:00,02:00:00,1",
+            "t3,s2N,02:05:00,02:05:00,2",
+        ],
+    )
+    assert hop_seconds(zf)[("A", "north", "s1N", "s2N")] == 90
+
+
+def test_hop_seconds_handles_times_past_midnight():
+    """NYCT expresses a post-midnight trip as hours >= 24 (25:14:00 is real), so
+    the parse cannot use a wall-clock time type."""
+    zf = _zip(
+        ["A,t1,Weekday,X,0,s1"],
+        [
+            "t1,s1N,24:59:00,24:59:00,1",
+            "t1,s2N,25:01:00,25:01:00,2",
+        ],
+    )
+    assert hop_seconds(zf) == {("A", "north", "s1N", "s2N"): 120}
+
+
+def test_hop_seconds_drops_nonincreasing_and_unparseable_times():
+    """An arrival at or before the preceding departure is not a usable run time,
+    and neither is a blank — both drop out rather than becoming a zero or a
+    negative hop that would read as infinite speed downstream."""
+    zf = _zip(
+        ["A,t1,Weekday,X,0,s1", "A,t2,Weekday,X,0,s1"],
+        [
+            "t1,s1N,00:00:00,00:05:00,1",
+            "t1,s2N,00:04:00,00:04:00,2",
+            "t2,s1N,,,1",
+            "t2,s2N,00:02:00,00:02:00,2",
+        ],
+    )
+    assert hop_seconds(zf) == {}
+
+
+def test_hop_seconds_folds_express_route_to_base():
+    zf = _zip(
+        ["6X,t1,Weekday,X,0,s1"],
+        [
+            "t1,s1N,00:00:00,00:00:00,1",
+            "t1,s2N,00:02:00,00:02:00,2",
+        ],
+    )
+    assert hop_seconds(zf) == {("6", "north", "s1N", "s2N"): 120}

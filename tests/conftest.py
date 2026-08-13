@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+
 import pytest
 
 from momentarily.schema import (
@@ -12,6 +15,88 @@ from momentarily.schema import (
     TranslatedString,
     TranslatedText,
 )
+
+FEED_VERSION = "TEST-20260807"
+
+
+def make_gtfs_bytes(
+    trips_rows: list[str],
+    stop_times_rows: list[str],
+    *,
+    calendar_rows: list[str] | None = None,
+    calendar_dates_rows: list[str] | None = None,
+    feed_info_row: str | None = None,
+) -> bytes:
+    """A synthetic static-GTFS zip, so the parsers can be exercised without the
+    5 MB network fetch. Rows are raw CSV lines in the column order the headers
+    below declare."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            _csv(
+                "route_id,trip_id,service_id,trip_headsign,direction_id,shape_id",
+                trips_rows,
+            ),
+        )
+        zf.writestr(
+            "stop_times.txt",
+            _csv(
+                "trip_id,stop_id,arrival_time,departure_time,stop_sequence",
+                stop_times_rows,
+            ),
+        )
+        zf.writestr(
+            "calendar.txt",
+            _csv(
+                "service_id,monday,tuesday,wednesday,thursday,friday,saturday,"
+                "sunday,start_date,end_date",
+                calendar_rows
+                or [
+                    "Weekday,1,1,1,1,1,0,0,19700101,20991231",
+                    "Saturday,0,0,0,0,0,1,0,19700101,20991231",
+                ],
+            ),
+        )
+        zf.writestr(
+            "calendar_dates.txt",
+            _csv("service_id,date,exception_type", calendar_dates_rows or []),
+        )
+        zf.writestr(
+            "feed_info.txt",
+            _csv(
+                "feed_publisher_name,feed_lang,feed_start_date,feed_end_date,"
+                "feed_version",
+                [feed_info_row or f"Test,EN,20260101,20261231,{FEED_VERSION}"],
+            ),
+        )
+    return buf.getvalue()
+
+
+def make_gtfs_zip(
+    trips_rows: list[str],
+    stop_times_rows: list[str],
+    *,
+    calendar_rows: list[str] | None = None,
+    calendar_dates_rows: list[str] | None = None,
+    feed_info_row: str | None = None,
+) -> zipfile.ZipFile:
+    """make_gtfs_bytes, opened for the parsers that take a zip directly."""
+    return zipfile.ZipFile(
+        io.BytesIO(
+            make_gtfs_bytes(
+                trips_rows,
+                stop_times_rows,
+                calendar_rows=calendar_rows,
+                calendar_dates_rows=calendar_dates_rows,
+                feed_info_row=feed_info_row,
+            )
+        )
+    )
+
+
+def _csv(header: str, rows: list[str]) -> str:
+    return "\n".join([header, *rows]) + "\n"
 
 
 @pytest.fixture

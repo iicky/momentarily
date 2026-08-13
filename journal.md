@@ -2369,3 +2369,276 @@ Making the recovery block nullable is a consumer migration, not a bug fix.
 validity check for every probability. Widening one field to nullable would have
 silently deleted the entire inference block for ~60% of routes. The type system
 could not see it: `Number.isFinite` takes `unknown`.
+
+## 2026-08-13 — the scheduled reference was wrong three ways, and the one named in the bug report was the smallest: service-day pooling misprices 26% of hops, the express/local lumping misprices none
+
+origin: agent
+
+Setting out to fix the skip-stop inversion in the traversal measure — the modal
+chain crediting a bypassing train with the time of every stop it skipped — and
+finding that per-pair keying had already killed it, that the express/local
+lumping it was supposed to also fix does not exist in the data, and that the
+reference was meanwhile pooling the weekend timetable into weekday hops.
+
+Window: 2026-08-12 16:30Z..08-13 02:56Z, 650 trace snapshots, 109,257 arrivals,
+95,294 exact single hops, 6,953 interval-censored spans. All percentages below
+are of observed single hops unless stated.
+
+### Decomposing the reference error
+
+`hop_seconds` was one median per (route, direction, from, to) over every trip in
+the feed, measured departure-to-arrival. Three things are wrong with that, and
+they are separable:
+
+| change to the reference | observed hops mispriced >10% | >25% |
+| --- | --- | --- |
+| service-day slicing (weekday vs weekend) | **26.0%** | 16.0% |
+| clock (departure-to-arrival -> arrival-to-arrival) | 4.9% | 3.5% |
+| both | 27.9% | 17.1% |
+
+**Service-day pooling is the dominant error and nobody had named it.** A quarter
+of weekday hops were being judged partly against Saturday and Sunday run times.
+The clock is smaller than the 95.7% arrival==departure figure suggests, because
+the 4.3% that differ carry real scheduled holds — up to 240s at a timepoint.
+
+Fixing both recentres the population ratio: observed/scheduled median 1.050 ->
+1.000, and `own_cells.median_ratio_to_schedule` 1.056 -> 1.011.
+
+### The named bug: real, structural, and worth 0.16%
+
+At hop granularity the modal chain is already gone — `traversal.py` keys per
+(route, direction, from, to) and only accepts spans the realtime feed calls one
+hop, so there is no chain to sum along. What survives is narrower: the feed
+publishes its OWN stop sequence, so a train that bypasses a station reports two
+consecutive stops the timetable puts a station between. Resolving each traversal
+against its trip's own stopping pattern finds **148 of 95,294 such spans (0.16%)**
+and drops them; before, they landed in a cell as if they were direct hops.
+
+Real, and correctly fixed. Not the 42,596-transition problem the 5-minute
+prototype had.
+
+### Negative result: express and local do not disagree about a shared hop
+
+The premise was that pooling express and local trips over the same pair
+misprices both. 1,415 of 1,923 weekday hop keys (85.4% of observed hops) are
+served by more than one path code, so if the effect existed it would be
+everywhere. Ratio dispersion on exactly those keys, trip-exact scheduled times
+against the pooled per-key median:
+
+| reference on multi-pattern keys | IQR | MAD | sd |
+| --- | --- | --- | --- |
+| the trip's own scheduled times | 0.4667 | 0.2000 | 0.5832 |
+| median over trips serving the pair | **0.4653** | 0.2000 | 0.5855 |
+
+The pooled median is marginally *tighter*. Physically obvious in hindsight: on a
+consecutive pair both patterns serve, express and local cover the same track at
+the same scheduled speed. Express differs in which pairs it has, and per-pair
+keying already separates those. Over all keys the same comparison gives IQR
+0.4750 (trip-exact) against 0.4833 (pooled) — a 1.7% difference against a 26%
+one from the service day.
+
+So `Timetable` stores per-pattern STOP LISTS, which is what detects a bypass and
+what a span has to be summed along, and takes its TIMES from the service day's
+per-pair medians. 433 patterns and 12,248 stops, against 565,093 per-trip
+stop_time rows for no measured gain.
+
+### Matching a realtime trip to the timetable
+
+Only 81% of realtime trip ids match a static trip outright: NYCT dispatch
+origins drift off the schedule, reroutes get an `X` path code, and SIR/SS are not
+in this feed at all. Two things recover most of the rest.
+
+**The path code determines the stop list.** 433 (service, path) pairs across
+20,621 trips, not one carrying a second stop list. So the pattern can be keyed on
+the path code rather than the trip.
+
+**Unanimity beats picking.** Realtime truncates some codes (`W..N` for
+`W..N30R`), and a service day can run two calendars. Taking the answer only when
+every candidate pattern agrees, and falling back to the day's per-hop median
+otherwise, lifts pattern coverage 78.4% -> 90.1% against a unique-prefix rule.
+Layered with the median fallback:
+
+| how a hop gets priced | share |
+| --- | --- |
+| the trip's own pattern | 89.9% |
+| the service day's median for the pair | 8.8% |
+| unpriceable | **1.14%** |
+
+Key-level coverage 83.0% -> 85.9% (1,715 of 2,066 keys, then 1,718 of 2,000).
+The 14% that stay unpriced are thin keys the timetable never scheduled — 1.1% of
+traffic.
+
+### The trip id's origin field is hundredths of a minute
+
+Needed because a service day is not a calendar date. `060250` is 602.50 minutes
+past midnight, 10:02:30 — **not** 06:02:50. Read as hundredths it reproduces the
+trip's own first scheduled arrival exactly for 20,311 of 20,621 trips (the other
+310 off by a flat 90s); read as HH:MM:SS, 273. The `:50` endings are the tell:
+they are half-minutes, and no subway leaves at fifty seconds past.
+
+That gives a service-day rule with no wall-clock cutoff — rank the candidate
+midnights by how near each puts the observation to the trip's own scheduled
+origin, and let the calendar veto a day that never ran the pattern. Over 106,172
+arrivals it put every one on the right day, none more than 50 minutes early
+against its own origin. A fixed 4am cutoff was tried first and is wrong in the
+other direction: it misfiles trains put into service before their scheduled
+origin, which a naive subtraction sends back a full day (1,488 arrivals, 1.4%).
+
+### The measurement floor is the poll, not the reference
+
+Observed hop times cluster hard on 60/120/180s — the 1-minute poll brackets an
+arrival rather than pinning it, and 31% of measured hops land on an exact
+multiple of 60. The timetable is on a 30-second grid. Where the two grids line
+up, the measure looks three times sharper than where they do not:
+
+| scheduled hop | n | ratio IQR |
+| --- | --- | --- |
+| 60s (on the poll grid) | 9,071 | 0.517 |
+| 90s (off it) | 32,418 | 0.522 |
+| **120s (on it)** | 22,325 | **0.150** |
+| 150s (off it) | 8,812 | 0.387 |
+| 300s | 1,383 | 0.200 |
+
+A 120s hop is not physically three times more predictable than a 90s one. Ratio
+IQR sits near 0.48 overall under every reference tried, and a large part of that
+is the poll rather than the trains. **No further work on the scheduled side
+moves the single-hop measure much.**
+
+Which points at the 6,953 interval-censored spans currently discarded. Resolved
+against the trip's own pattern, 91% of them price, and their ratio is far
+tighter than single hops because the same +/-60s lands on a 2-3x longer span:
+
+| span | ratio IQR | sd | median |
+| --- | --- | --- | --- |
+| exact single hop | 0.478 | 0.576 | 1.000 |
+| interval, 2+ hops | **0.221** | **0.306** | 0.983 |
+
+They are deliberately kept out of the population ratio curve — that curve is
+transplanted onto thin SINGLE hops, and a distribution tightened by averaging
+would understate their spread. But as a line-speed measure they are 2.7x
+cleaner than what the model currently uses, off data it currently throws away.
+
+### The disrupted-vs-normal comparison is no longer NaN. It is worse than that
+
+Re-run under the fixed reference, joining each hop to its route's alert state at
+the enclosing 5-minute tick:
+
+| cut | share of route-ticks | disrupted median | normal median |
+| --- | --- | --- | --- |
+| Delays or Suspended | **94.8%** | 1.000 | 1.000 |
+| Delays | 84.7% | 1.000 | 1.000 |
+| severity_sum >= 100 | 26.2% | 1.000 | 1.000 |
+| Suspended | 34.1% | **1.033** | 1.000 |
+
+Only the suspended cut separates, by 3.3% on the median (p99 3.625 vs 3.000) —
+directionally right, where the 5-minute scores came out inverted, but small. The
+other three say nothing because the label says nothing: 95% of route-minutes on
+an ordinary weekday carry a Delays or Suspended alert. This is the same wall the
+advance rate hit. The measure is not gradeable until the label is.
+## 2026-08-13 — the timetable is now the instrument, not an input: thin cells abstain, and drift reads 1.0117 against feed 20260807
+
+origin: self
+
+Follow-on decision to the entry above, taken deliberately as an architectural
+constraint rather than on the coverage numbers. Movement is the only sensor. A
+segment with too little movement of its own now says nothing instead of
+borrowing a level from the schedule.
+
+### What changed
+
+`traversal_baseline` no longer has a SCHEDULED cell source. Every level is
+fitted from that segment's own traversals; under `MIN_HOP_SAMPLES` there is no
+cell. `TraversalCell.source` is gone with it — one source needs no label.
+
+| | before | after |
+| --- | --- | --- |
+| cells | 1,723 | **1,357** |
+| keys abstaining | 284 | **663** |
+| share of traffic covered | 99.1% | ~97% |
+
+The 366 cells that went away were carrying 2.1% of traffic on borrowed levels.
+That is the price, and it shrinks: those segments cross the sample floor on
+their own as the trace archive fills.
+
+### Why, in one line
+
+A reference that feeds the fit cannot then detect the fit drifting.
+
+### The drift measure, which is the point
+
+`schedule_drift` compares fitted cells against the timetable they were not
+fitted from. First reading, 2026-08-12 16:30Z..08-13 03:00Z:
+
+| | |
+| --- | --- |
+| feed_version | `20260807-H-rockaways-extension-removed` |
+| cells compared | 1,347 (10 fitted cells the timetable never names) |
+| median fitted / scheduled | **1.0117** |
+| p10 / p90 | 0.7946 / 1.3516 |
+| share of segments >= 1.25x schedule | **16.0%** |
+
+The fleet runs its own timetable to within 1.2%. One segment in six has a
+NORMAL that is a quarter over schedule — some of those are standing slow orders,
+so the level is not the alarm. The change in it is, and this is the baseline
+that change gets measured from.
+
+### The ruler can move too, so it is on the record now
+
+The static feed is a snapshot, not a standing truth. Facts as of today: the
+object at `rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip` was Last-Modified
+2026-08-07, six days old, self-versioned
+`20260807-H-rockaways-extension-removed` — the name says it dropped a branch —
+and it declares itself valid 2026-05-26..2026-10-31.
+
+Three gaps that made the drift measure meaningless until closed:
+
+- `fetch_gtfs_zip` re-downloads every run. No caching, no ETag check, no pin.
+- **Nothing recorded which feed version a measurement used.** `provenance.py`
+  still has no GTFS field; `ScheduleDrift` now carries `feed_version` so at
+  least the measure is self-describing. The trainer artifact does not yet.
+- **Nothing checked the validity window.** The vehicle archive reaches back to
+  June; the trace archive is 30 days. Replaying a window from before this feed
+  took effect would have compared trains against a schedule that did not exist
+  when they ran — and Rockaways service was *removed* in this version, so that
+  is not hypothetical. `Timetable.covers` now guards it: an out-of-window
+  observation still fits its cell and carries NO scheduled time, which keeps it
+  out of the drift measure by construction rather than by remembering to filter.
+  `n_outside_feed_window` reports it; the current window reads 0.
+
+### Also
+
+Dropped the pricing metaphor ("priced", "mispriced", "unpriceable") that had
+spread through three modules. A timetable does not price anything; it says how
+long a hop is scheduled to take.
+
+## 2026-08-13 — correction: the bypass filter was the schedule choosing the training set
+
+origin: self
+
+Both entries above describe bypasses as detected and DROPPED. That was wrong and
+is now changed: they are counted and kept.
+
+A bypass is a span the realtime feed calls one hop and the trip's own timetable
+puts a station inside. Excluding it looked like hygiene and was two mistakes.
+The train covered that stretch without stopping — physically the same movement
+an express makes on the same pair, so it is a real measurement of it. And
+bypasses cluster on bad days, so removing them taught the baseline a cleaner
+normal than the one riders got, using the schedule to decide what the model was
+allowed to learn from. Under a movement-only constraint the timetable does not
+get to choose the training set.
+
+`hop_samples` now admits observations on realtime evidence alone — EXACT, has a
+destination, one hop by the feed's own stop sequence — and reads the timetable
+only to attach a comparison. `TraversalStats.n_dropped_bypass` is `n_bypass`.
+
+Re-run over 2026-08-12 16:30Z..08-13 04:00Z (the archive is still filling, so
+this window is larger than the one above, not just a rerun of it):
+
+| | |
+| --- | --- |
+| traversals | 148,337 |
+| bypasses, kept | 202 |
+| cells | 1,533 |
+| median fitted / scheduled | **1.0058** |
+| share of segments >= 1.25x schedule | 14.45% |
+

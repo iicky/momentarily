@@ -29,13 +29,12 @@ from __future__ import annotations
 import argparse
 import itertools
 import statistics
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from training.dwell import DwellSample
-from training.gtfs_static import HopKey, load_hop_seconds
+from training.gtfs_static import Timetable, load_timetable
 from training.load_r2 import date_range, fetch_objects, list_keys
 from training.r2_client import R2Config, load_config, make_client
 
@@ -73,19 +72,24 @@ class Arrival:
 class Traversal:
     """One trip's movement from one arrival to the next.
 
+    `at` is the arrival at from_stop — when the span started. It is what lets a
+    traversal be matched to a service day, and so to the timetable that was
+    actually running.
+
     Two durations, because a 1-minute poll brackets rather than pins the hop:
     `seconds` is arrival to arrival, which includes the dwell at from_stop and
-    is therefore an UPPER bound on travel time; `moving_seconds` runs from the
-    first sighting that had left from_stop, which starts the clock late and is
-    therefore a LOWER bound. The scheduled timetable measures departure to
-    arrival, so `moving_seconds` is what compares to it like for like.
-    `moving_seconds` is None when the departure was never observed.
+    is the quantity the baselines fit; `moving_seconds` runs from the first
+    sighting that had left from_stop, which starts the clock late and is
+    therefore a LOWER bound on travel. `moving_seconds` is None when the
+    departure was never observed, which is three quarters of the time.
 
-    `n_hops` is how many scheduled stops the span covered: 1 is a real
-    station-to-station traversal, more means an arrival went unobserved between
-    polls and the individual hop times are only known to sum to `seconds`.
-    `to_stop`/`n_hops` are None when the traversal was still in progress the
-    last time the trip was seen.
+    `n_hops` is how many stops the span covered in the REALTIME feed's own stop
+    sequence: 1 is a station-to-station traversal, more means an arrival went
+    unobserved between polls and the individual hop times are only known to sum
+    to `seconds`. It is not the timetable's opinion — a train that bypasses a
+    station reports consecutive stops the schedule puts a station between, which
+    is what gtfs_static.Span.n_hops is for. `to_stop`/`n_hops` are None when the
+    traversal was still in progress the last time the trip was seen.
     """
 
     trip_id: str
@@ -93,6 +97,7 @@ class Traversal:
     direction: str | None
     from_stop: str
     to_stop: str | None
+    at: int
     seconds: int
     moving_seconds: int | None
     n_hops: int | None
@@ -309,6 +314,7 @@ def traversals_from_trace(
                     direction=prev.direction,
                     from_stop=prev.stop_id,
                     to_stop=nxt.stop_id,
+                    at=prev.at,
                     seconds=seconds,
                     moving_seconds=moving,
                     n_hops=hops,
@@ -327,6 +333,7 @@ def traversals_from_trace(
                 direction=final.direction,
                 from_stop=final.stop_id,
                 to_stop=None,
+                at=final.at,
                 seconds=at - final.at,
                 moving_seconds=(
                     None
@@ -412,41 +419,94 @@ def _ratio_stats(pairs: list[tuple[int, int]], unmatched: int) -> dict[str, Any]
     }
 
 
+@dataclass(frozen=True)
+class Scheduled:
+    """What the timetable allows for one observed traversal.
+
+    `n_hops` is how many of the trip's OWN scheduled stops the span covers, and
+    it is None when the trip could not be matched to a stopping pattern and the
+    service day's median for the observed pair was used instead. A traversal the
+    realtime feed calls one hop but whose pattern says two is a bypass: the train
+    skipped a station, and treating it as a direct hop is what makes a disrupted
+    train read as a fast one.
+    """
+
+    seconds: int
+    n_hops: int | None
+
+
+def scheduled_for(traversal: Traversal, timetable: Timetable) -> Scheduled | None:
+    """What the timetable allowed for one completed traversal, from the trip's own
+    scheduled stops where the static feed names the trip, and from the service
+    day's median for that pair otherwise.
+
+    None when no honest comparison exists, which is two different situations and
+    both are reported by callers rather than papered over: a hop the timetable
+    never scheduled at all (1.2% of live single hops, concentrated in the thin
+    keys), or a traversal from outside the loaded feed's validity window.
+
+    The window guard lives HERE, not in each caller. The vehicle archive reaches
+    back further than any one GTFS snapshot, so every comparison in the repo is
+    one replay away from measuring trains against a schedule that was not in
+    force when they ran.
+    """
+    if traversal.to_stop is None:
+        return None
+    if not timetable.covers(traversal.at, traversal.trip_id):
+        return None
+    day = timetable.day_for(traversal.at, traversal.trip_id)
+    span = day.span(traversal.trip_id, traversal.from_stop, traversal.to_stop)
+    if span is not None:
+        return Scheduled(seconds=span.seconds, n_hops=span.n_hops)
+    key = (
+        traversal.route_id,
+        traversal.direction or "",
+        traversal.from_stop,
+        traversal.to_stop,
+    )
+    want = day.hops.get(key)
+    return None if not want or want <= 0 else Scheduled(seconds=want, n_hops=None)
+
+
 def schedule_comparison(
-    traversals: list[Traversal], scheduled: Mapping[HopKey, int]
+    traversals: list[Traversal], timetable: Timetable
 ) -> dict[str, Any]:
-    """Observed single-hop times against the timetable's median for the same
-    (route, direction, from, to), both ways round.
+    """Observed single-hop times against what the timetable allowed the same
+    trip, both ways round.
 
-    gtfs_static.hop_seconds is departure-to-arrival, which sounds like it should
-    only be compared against `moving_seconds` — but NYCT schedules no dwell at
-    all at 95.7% of stop_times rows (arrival_time == departure_time, measured
-    2026-08-12 over 200k rows), so the scheduled hop is also its
-    arrival-to-arrival time and both comparisons are meaningful.
-
-    They bracket the truth from opposite sides, and the report gives both
-    because at a 1-minute cadence neither is a point estimate:
-    `arrival_to_arrival` includes the real dwell the timetable does not
-    allocate, and `departure_to_arrival` starts its clock at the first sighting
-    that had left, which is usually late and covers only the hops slow enough to
-    be caught in transit at all.
+    The reference is arrival-to-arrival, so `arrival_to_arrival` is the like-for-
+    like reading. `departure_to_arrival` is kept because the two bracket the
+    truth from opposite sides at a 1-minute cadence: it starts its clock at the
+    first sighting that had already left, which is late, and covers only the
+    quarter of hops slow enough to be caught in transit at all.
 
     Ratios, not the marginal medians: the two cuts cover different hops.
+
+    `outside_feed_window` is split out of `unmatched` because the two mean
+    opposite things: a hop the timetable never scheduled is a fact about the
+    network, while a traversal from outside the feed's validity window means this
+    whole report is measuring against the wrong timetable. Pooled into one
+    counter, the second would look like the first.
     """
     arrival_pairs: list[tuple[int, int]] = []
     moving_pairs: list[tuple[int, int]] = []
-    unmatched = 0
+    unmatched = outside = 0
     for t in traversals:
         if t.censoring != EXACT or t.to_stop is None:
             continue
-        want = scheduled.get((t.route_id, t.direction or "", t.from_stop, t.to_stop))
-        if want is None or want <= 0:
+        if not timetable.covers(t.at, t.trip_id):
+            outside += 1
+            continue
+        want = scheduled_for(t, timetable)
+        if want is None:
             unmatched += 1
             continue
-        arrival_pairs.append((t.seconds, want))
+        arrival_pairs.append((t.seconds, want.seconds))
         if t.moving_seconds is not None:
-            moving_pairs.append((t.moving_seconds, want))
+            moving_pairs.append((t.moving_seconds, want.seconds))
     return {
+        "feed_version": timetable.version.version,
+        "outside_feed_window": outside,
         "arrival_to_arrival": _ratio_stats(arrival_pairs, unmatched),
         "departure_to_arrival": _ratio_stats(moving_pairs, unmatched),
     }
@@ -476,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         f"travel; dropped {stats.n_backwards} backwards, {stats.n_unknown_seq} "
         f"without stop_seq"
     )
-    comparison = schedule_comparison(traversals, load_hop_seconds())
+    comparison = schedule_comparison(traversals, load_timetable())
     for label, cut in comparison.items():
         print(f"vs the timetable, {label}: {cut}")
     samples = to_dwell_samples(traversals)

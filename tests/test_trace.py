@@ -6,16 +6,24 @@ from worker/src/vehicles.ts deriveTrace's contract.
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from training.gtfs_static import Timetable, timetable
 from training.trace import (
     EXACT,
     INTERVAL,
     RIGHT,
+    Traversal,
     arrivals_from_trace,
+    schedule_comparison,
+    scheduled_for,
     to_dwell_samples,
     traversals_from_trace,
 )
+
+from .conftest import FEED_VERSION, make_gtfs_zip
 
 T0 = 1_786_552_200
 
@@ -285,3 +293,72 @@ def test_a_short_absence_does_not_split_a_run():
     (hop,) = traversals
     assert (hop.from_stop, hop.to_stop, hop.seconds) == ("A1S", "A2S", 240)
     assert stats.n_exact == 1
+
+
+# --- comparing a traversal to the timetable -------------------------------------
+
+_TRIP = "072000_A..S01R"  # id says it left at 12:00
+_FEED_DAY = date(2026, 8, 12)  # a Wednesday inside the fixture feed's window
+
+
+def _timetable(**kwargs: object) -> Timetable:
+    """A1S -> A2S, 90 scheduled seconds, on a feed valid for 2026 only."""
+    return timetable(
+        make_gtfs_zip(
+            [f"A,{_TRIP},Weekday,X,1,A..S01R"],
+            [f"{_TRIP},A1S,12:00:00,12:00:00,1", f"{_TRIP},A2S,12:01:30,12:01:30,2"],
+            **kwargs,  # pyright: ignore[reportArgumentType]
+        )
+    )
+
+
+def _hop(at: int) -> Traversal:
+    return Traversal(
+        trip_id=_TRIP,
+        route_id="A",
+        direction="south",
+        from_stop="A1S",
+        to_stop="A2S",
+        at=at,
+        seconds=120,
+        moving_seconds=None,
+        n_hops=1,
+        censoring=EXACT,
+    )
+
+
+def _noon(day: date) -> int:
+    return int(
+        datetime.combine(
+            day, time(12, 5), tzinfo=ZoneInfo("America/New_York")
+        ).timestamp()
+    )
+
+
+def test_a_traversal_inside_the_feed_window_is_compared():
+    tt = _timetable()
+    got = scheduled_for(_hop(_noon(_FEED_DAY)), tt)
+    assert got is not None
+    assert got.seconds == 90
+
+
+def test_a_traversal_outside_the_feed_window_is_compared_against_nothing():
+    """The vehicle archive reaches back further than any one GTFS snapshot, so
+    every comparison in the repo is one replay away from measuring trains against
+    a schedule that was not in force. The guard lives in scheduled_for so no
+    caller has to remember it."""
+    tt = _timetable()
+    assert scheduled_for(_hop(_noon(date(2025, 8, 12))), tt) is None
+
+
+def test_schedule_comparison_reports_an_out_of_window_replay_separately():
+    """Pooled into `unmatched`, a whole run against the wrong timetable would
+    look like ordinary unscheduled hops."""
+    tt = _timetable()
+    report = schedule_comparison(
+        [_hop(_noon(_FEED_DAY)), _hop(_noon(date(2025, 8, 12)))], tt
+    )
+    assert report["outside_feed_window"] == 1
+    assert report["arrival_to_arrival"]["n"] == 1
+    assert report["arrival_to_arrival"]["unmatched"] == 0
+    assert report["feed_version"] == FEED_VERSION

@@ -10,13 +10,16 @@ eval.json) carries a `provenance` block answering "which code produced this":
 
 Resolution order, so local dev, CI, and the trainer container all work:
   1. MOMENTARILY_CODE_SHA env var — authoritative; injected at build/CI time.
-  2. .build-sha file next to the package — the container path, since the image
+  2. `git rev-parse HEAD` — local dev, where the working tree is present and is
+     the only source that can also answer whether it is dirty.
+  3. .build-sha file next to the package — the container path, since the image
      excludes .git (so `git rev-parse` can't run there). Written by the deploy
-     script and COPYed into the image.
-  3. `git rev-parse HEAD` — local dev, where the working tree is present.
+     script and COPYed into the image. It also survives in a dev checkout after
+     a local `deploy:ci`, where it is stale the moment the next commit lands —
+     hence below the live tree, not above it.
   4. "unknown" — nothing else resolved.
 
-`dirty` is only known when computed from a live git tree (step 3) or passed via
+`dirty` is only known when computed from a live git tree (step 2) or passed via
 MOMENTARILY_CODE_DIRTY; otherwise None (a clean-checkout build leaves it unset
 rather than asserting a value it can't verify).
 """
@@ -68,6 +71,12 @@ def code_provenance() -> Provenance:
     if sha:
         return {"code_sha": sha.strip(), "dirty": _env_dirty(), "producer": producer}
 
+    git_sha = _git("rev-parse", "HEAD")
+    if git_sha:
+        status = _git("status", "--porcelain")
+        dirty = bool(status) if status is not None else _env_dirty()
+        return {"code_sha": git_sha, "dirty": dirty, "producer": producer}
+
     if _BUILD_SHA_FILE.is_file():
         try:
             file_sha = _BUILD_SHA_FILE.read_text().strip()
@@ -75,11 +84,5 @@ def code_provenance() -> Provenance:
             file_sha = ""
         if file_sha:
             return {"code_sha": file_sha, "dirty": _env_dirty(), "producer": producer}
-
-    git_sha = _git("rev-parse", "HEAD")
-    if git_sha:
-        status = _git("status", "--porcelain")
-        dirty = bool(status) if status is not None else _env_dirty()
-        return {"code_sha": git_sha, "dirty": dirty, "producer": producer}
 
     return {"code_sha": "unknown", "dirty": _env_dirty(), "producer": producer}

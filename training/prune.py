@@ -5,7 +5,9 @@ available to us — this job is the retention policy instead, run at the end of
 the nightly training workflow. Both date-keyed prefixes (archive/*,
 v1/predictions, v1/regime_transitions) are pruned by their YYYY-MM-DD path
 segment; versioned params snapshots by their v<epoch> filename. Retention
-windows leave plenty of headroom over what training (14d) and eval (7d) read.
+windows leave plenty of headroom over what training (14d) and eval (7d) read
+— except archive/trace/, which is capped tighter than that headroom because
+of its size, not its readers; see the comment on its entry below.
 
 Run with:
     murk exec -- python -m training.prune [--dry-run]
@@ -30,6 +32,13 @@ if TYPE_CHECKING:
 DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     ("archive/alerts/", 90),
     ("archive/ene/", 90),
+    # One object/minute, ~85 KB each: ~125 MB/day, ~45.6 GB/year unbounded —
+    # two orders of magnitude more per day than the other prefixes here, so
+    # it does not get their 90-day window. training/traversal.py's baseline
+    # is the only reader and wants a few weeks of history, not a year; 30d
+    # covers that with headroom while keeping steady-state size in the
+    # single-digit GB.
+    ("archive/trace/", 30),
     ("v1/predictions/", 90),
     ("v1/regime_transitions/", 90),
 )

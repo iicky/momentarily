@@ -66,3 +66,18 @@ def test_exact_boundary_is_kept() -> None:
     client = _FakeClient(["v1/predictions/2026-03-13/1.jsonl"])  # 90d before NOW
     expired = collect_expired(client, "b", NOW)  # type: ignore[arg-type]
     assert expired["v1/predictions/"] == []
+
+
+def test_trace_prefix_uses_its_own_narrower_window() -> None:
+    # archive/trace/ retains 30d, well short of the other dated prefixes'
+    # 90d, because at ~125 MB/day it is two orders of magnitude bigger. A
+    # 40d-old object only expires here if the prefix's own 30d window is in
+    # effect — it would still be within any of the 90d windows.
+    client = _FakeClient(
+        [
+            "archive/trace/2026-05-02/1000.json",  # 40d old → expired at 30d
+            "archive/trace/2026-06-06/2000.json",  # 5d old → kept
+        ]
+    )
+    expired = collect_expired(client, "b", NOW)  # type: ignore[arg-type]
+    assert expired["archive/trace/"] == ["archive/trace/2026-05-02/1000.json"]

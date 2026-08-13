@@ -12,9 +12,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from training.planned_work import (
+    GRADED,
     HEADWAY_ONLY,
+    NO_CONTROL_PERIOD,
+    NO_PAIRED_SERVICE,
     SERVICE_CHANGING,
     Window,
+    control_supply,
+    coverage_state,
     measure,
     pattern_shift,
     split_by_local_day,
@@ -296,6 +301,139 @@ def test_the_coverage_control_arm_rejects_a_different_service_day():
     ]
     inside = [_hop(T0 + HOUR, 100, frm="701N", to="705N", route="7", trip=express)]
     assert pattern_shift(window, saturday_same_hours + inside) == []
+
+
+def test_an_absent_control_period_is_distinguishable_from_an_absent_effect():
+    """`pattern_shift` returns nothing both when the pattern did not move and
+    when the archive holds no comparable period to move against, and those are
+    opposite conclusions. An archive shorter than two comparable days can only
+    produce the second, so reading the empty result as a miss would grade the
+    measure on supply it never had."""
+    (window,) = windows_from_alerts(
+        [
+            _alert(
+                alert_type="Planned - Express to Local",
+                routes=["7"],
+                stops=["710"],
+                periods=[(T0, T0 + 4 * HOUR)],
+            )
+        ]
+    )
+    express = "072000_7X..N"
+    same_day_but_other_hours = [
+        _hop(T0 + 10 * HOUR, 300, frm="701N", to="710N", route="7", trip=express)
+    ]
+    inside = [_hop(T0 + HOUR, 100, frm="701N", to="705N", route="7", trip=express)]
+    traversals = same_day_but_other_hours + inside
+    assert pattern_shift(window, traversals) == []
+    assert control_supply(window, traversals) == {}
+
+
+def test_the_same_clock_band_on_the_next_weekday_supplies_a_control():
+    """The counterpart: once the archive reaches a comparable day the measure
+    runs, and the supply count says so rather than staying silently zero."""
+    (window,) = windows_from_alerts(
+        [
+            _alert(
+                alert_type="Planned - Express to Local",
+                routes=["7"],
+                stops=["710"],
+                periods=[(T0, T0 + 4 * HOUR)],
+            )
+        ]
+    )
+    express = "072000_7X..N"
+    weekday = datetime.fromtimestamp(T0, ZoneInfo("America/New_York")).weekday()
+    assert weekday < 4  # the fixture instant leaves a weekday available tomorrow
+    next_weekday = [
+        _hop(T0 + 24 * HOUR + HOUR, 300, frm="701N", to="710N", route="7", trip=express)
+    ]
+    inside = [_hop(T0 + HOUR, 100, frm="701N", to="705N", route="7", trip=express)]
+    traversals = next_weekday + inside
+    assert control_supply(window, traversals) == {"7X": 1}
+    (shift,) = pattern_shift(window, traversals)
+    assert shift.service == "7X"
+    assert shift.n_outside == 1
+
+
+def test_control_supply_is_counted_per_service_not_per_route():
+    """A route-level total certifies a comparison that never happened. Here the
+    7 local has a control day and the 7X the work actually named does not, and
+    neither service has both arms, so `pattern_shift` is empty. Summed over the
+    route the diagnostic would report control and the empty result would read as
+    'compared, found nothing' — the opposite of the truth."""
+    (window,) = windows_from_alerts(
+        [
+            _alert(
+                alert_type="Planned - Express to Local",
+                routes=["7"],
+                stops=["710"],
+                periods=[(T0, T0 + 4 * HOUR)],
+            )
+        ]
+    )
+    express, local = "072000_7X..N", "072000_7..N40R"
+    # The express ran inside the window only; the local ran on the control day
+    # only. Neither pairs, and the route-level sum is nonetheless 1.
+    traversals = [
+        _hop(T0 + HOUR, 100, frm="701N", to="705N", route="7", trip=express),
+        _hop(T0 + 24 * HOUR + HOUR, 300, frm="701N", to="702N", route="7", trip=local),
+    ]
+    assert pattern_shift(window, traversals) == []
+    supply = control_supply(window, traversals)
+    assert supply == {"7": 1}
+    assert "7X" not in supply  # the named service never had a comparison
+
+
+def test_the_three_coverage_states_are_told_apart():
+    """An empty `pattern_shift` has two innocent causes and no interesting one,
+    and treating it as a result publishes a gap in the archive as a finding about
+    the subway."""
+    (window,) = windows_from_alerts(
+        [
+            _alert(
+                alert_type="Planned - Express to Local",
+                routes=["7"],
+                stops=["710"],
+                periods=[(T0, T0 + 4 * HOUR)],
+            )
+        ]
+    )
+    express, local = "072000_7X..N", "072000_7..N40R"
+    tomorrow = T0 + 24 * HOUR + HOUR
+    inside = _hop(T0 + HOUR, 100, frm="701N", to="705N", route="7", trip=express)
+
+    # Nothing to compare against: the archive never reached a comparable day.
+    assert coverage_state(window, [], [inside]) == NO_CONTROL_PERIOD
+
+    # The 7 local has a control day, the 7X the alert named does not, and neither
+    # service holds both arms. A route-level count would call this a comparison.
+    mixed = [
+        inside,
+        _hop(tomorrow, 300, frm="701N", to="702N", route="7", trip=local),
+    ]
+    assert pattern_shift(window, mixed) == []
+    assert coverage_state(window, [], mixed) == NO_PAIRED_SERVICE
+
+    # Both arms on one service, and the pattern moved: the measure ran.
+    moved = [
+        inside,
+        _hop(tomorrow, 300, frm="701N", to="710N", route="7", trip=express),
+    ]
+    shifts = pattern_shift(window, moved)
+    assert [s.service for s in shifts] == ["7X"]
+    assert coverage_state(window, shifts, moved) == GRADED
+
+    # The case that separates "no pairing" from "paired, nothing moved": a
+    # service running the SAME pairs on both sides still emits a row, of zeros.
+    # Unchanged is a measurement and must never be filed as absent supply.
+    unchanged = [
+        inside,
+        _hop(tomorrow, 100, frm="701N", to="705N", route="7", trip=express),
+    ]
+    (steady,) = pattern_shift(window, unchanged)
+    assert (steady.vanished, steady.appeared) == (0.0, 0.0)
+    assert coverage_state(window, [steady], unchanged) == GRADED
 
 
 def test_a_multi_day_closure_is_graded_one_local_day_at_a_time():

@@ -2642,3 +2642,136 @@ this window is larger than the one above, not just a rerun of it):
 | median fitted / scheduled | **1.0058** |
 | share of segments >= 1.25x schedule | 14.45% |
 
+## 2026-08-13 — the planned-work grade ran end to end and graded almost nothing: two days of trace cover disjoint clock bands, and the 7's daily work blacks out its own control
+
+origin: self
+
+`training/planned_work.py` had 436 lines of tests and no callers — the measure
+had never touched real data. It has now. The harness works; the answer is that
+the archive cannot yet supply the primary grade, and one whole class of window
+may never supply it.
+
+### What the first run saw
+
+| | |
+| --- | --- |
+| trace snapshots | 1,329 (Wed 12:20 ET -> Thu 10:41 ET, 22.3h) |
+| traversals | 171,960 (159,374 exact) |
+| announced windows in the alert archive | 394 |
+| **over the trace span** | **2**, both `Express to Local` on the 7, naming 1 stop |
+| unknown alert types | 0 |
+
+2 of 394 is not a shortfall, it is the rate: ~2.2 geo-scoped windows a day
+against a 22-hour archive.
+
+### The secondary grade ran and found nothing, which is the expected answer
+
+Difference-in-differences on the boundary hops, 4 affected keys against 36
+control keys:
+
+| window | inside | affected lift | control lift | effect |
+| --- | --- | --- | --- | --- |
+| Wed 15:00-22:00 | 321 | 1.0099 | 0.9982 | **1.0118** |
+| Thu 06:15-10:00 | 248 | 0.9990 | 0.9942 | **1.0048** |
+
+An express told to run local does not slow the hops beside it down; it stops
+making its own long hops. Duration is the wrong instrument for this type and
+the module says so — 1.007 is that prediction confirmed, not a miss.
+
+### The primary grade returned zero rows, and zero was ambiguous
+
+`pattern_shift` produced nothing for either window. The control arm wants the
+same band of the local clock on a comparable service day, and the funnel dies
+entirely at that filter:
+
+| window | on-route hops | inside | same service class | **+ same clock band** |
+| --- | --- | --- | --- | --- |
+| Wed 15:00-22:00 | 8,726 | 3,815 | 4,911 | **0** |
+| Thu 06:15-10:00 | 8,726 | 2,254 | 6,472 | **0** |
+
+Not a property of these two windows. The trace's two calendar days cover
+Wed 12:20-24:00 and Thu 00:00-10:41 — **disjoint clock bands**, so no window of
+any type, on any route, could have drawn a control from this archive.
+
+That had to be dug out with a throwaway script, because an empty
+`pattern_shift` reads the same whether the pattern held or the comparison never
+ran. Those are opposite conclusions. `control_supply` now counts the traversals
+the matched arm had to work with, and the report carries
+`coverage_no_control_period` beside `graded_coverage`: this run reads 0 graded,
+2 with no control period, which is a measurement that did not happen rather
+than a detection that failed.
+
+### The sharpest finding: recurring work erases its own control
+
+The 7's `Express to Local` runs 15:00-22:00 and 06:15-10:00 every weekday. Its
+control period is the same clock band on the adjacent weekday, which is the same
+work. The blackout that keeps other announced disruption out of the baseline
+correctly removes all of it:
+
+| tonight's window | control traversals in the trace | after blackout |
+| --- | --- | --- |
+| 7 Express to Local, 15:00 | 3,815 | **0** |
+| 6 Part Suspended, 21:30 | 1,376 | 1,376 |
+| L Part Suspended, 22:45 | 593 | 593 |
+| SI Special Schedule, 23:00 | 299 | 299 |
+| A Reroute, 23:45 | 1,588 | 1,588 |
+| A Stops Skipped, 23:45 | 1,588 | 1,588 |
+| E Stops Skipped, 23:45 | 781 | 781 |
+
+`Express to Local` is 278 of the 394 announced windows. Where it recurs daily,
+an adjacent-day control cannot exist, and the answer is not to relax the
+blackout — a control drawn from the same work is not a control. That subset
+needs a different comparison (a non-adjacent unaffected day, or the local as the
+within-window control the way the 7/7X split already reports it). Until then the
+gradeable supply is the other 116 windows, not the headline 394.
+
+### What lands next, and it is hours away, not weeks
+
+13 gradeable windows are announced in the next 4 days, and the six above already
+have their Wednesday-night control sitting in the trace. Re-running over
+2026-08-12..08-14 should produce the first coverage rows the measure has ever
+returned from real movement, on multi-stop part suspensions and reroutes — the
+shape of work this measure was actually built for.
+
+## 2026-08-13 — correction: the control diagnostic counted a route where it had to count a service
+
+origin: self
+
+Two corrections to the entry above, both caught in review before the code left
+the tree.
+
+### The diagnostic could have certified a comparison that never happened
+
+`control_supply` shipped summing control traversals over the whole ROUTE.
+`pattern_shift` emits a row only when ONE service has both arms — that is the
+entire reason it reports the 7X apart from the 7. So a route-level total can
+report control on the strength of the local while the express the work actually
+named had none, and the runner would score the empty result
+"compared, found nothing" instead of "never ran". That is the precise confusion
+the field was added to remove, reintroduced one level down.
+
+It now returns `dict[service, int]`, and `_service_of` is shared with
+`_shift_one` so the grade and the diagnosis cannot disagree about which service
+a traversal belongs to. The empty result splits into three states, because there
+are three:
+
+| | |
+| --- | --- |
+| `graded_coverage` | a service had both arms |
+| `coverage_no_paired_service` | some service had control, none had both arms |
+| `coverage_no_control_period` | no service had a control arm at all |
+
+**No published number changes.** Re-run over the same window: 0 graded, 2 with
+no control period, 0 with no paired service — and the six windows in the table
+above resolve to a single service each (`{'6': 1376}`, `{'L': 593}`,
+`{'SI': 299}`, `{'A': 1588}`, `{'E': 781}`), with the 7 an empty dict rather
+than 3,815 -> 0. The defect was latent, not active. Recorded anyway: a
+denominator that is right by accident is still the wrong denominator, and
+`Express to Local` — 278 of 394 windows, the one class that routinely carries
+two services — is exactly where it would have fired first.
+
+### The origin line was wrong
+
+The entry above reads `origin: self`. It should read `origin: artifact`: nothing
+about disjoint clock bands was found by inspection, the grader's own output
+surfaced it on first run. Left uncorrected in place, per the append-only rule.

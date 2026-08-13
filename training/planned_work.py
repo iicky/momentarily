@@ -31,11 +31,14 @@ reference and inherits no schedule.
 
 from __future__ import annotations
 
+import argparse
+import json
 import statistics
+import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -47,7 +50,7 @@ from training.gtfs_static import (
 )
 from training.load_r2 import date_range, fetch_objects, list_keys
 from training.r2_client import R2Config, load_config, make_client
-from training.trace import EXACT, Traversal
+from training.trace import EXACT, Traversal, fetch_trace_bodies, traversals_from_trace
 
 # WHAT PLANNED WORK ACTUALLY DOES TO MOVEMENT, which is not what the first cut of
 # this module assumed. Nearly every announced type changes WHICH PAIRS a train
@@ -453,6 +456,43 @@ def split_by_local_day(window: Window) -> list[Window]:
     return out or [window]
 
 
+def _is_control(
+    traversal: Traversal,
+    window: Window,
+    want_class: int,
+    blackout: Sequence[Window],
+) -> bool:
+    """Whether a traversal outside the window belongs in the matched control arm:
+    a comparable service day, the same band of the local clock, and no other
+    announced work running on its route at the time.
+
+    Shared with `control_supply` so that what the grade counts and what the
+    diagnosis counts cannot drift apart.
+    """
+    return (
+        _service_class(traversal.at) == want_class
+        and _matches_clock(traversal.at, window)
+        and not any(
+            w.contains(traversal.at) and w.covers_route(traversal.route_id)
+            for w in blackout
+        )
+    )
+
+
+def _service_of(traversal: Traversal) -> str:
+    """The service as the trip id declares it: '7X', not the '7' the Worker
+    already folded it to.
+
+    Shared with `control_supply` so the grade and the diagnosis cannot disagree
+    about which service a traversal belongs to.
+    """
+    return (
+        traversal.route_id + "X"
+        if is_express_variant(traversal.trip_id)
+        else traversal.route_id
+    )
+
+
 def _shift_one(
     window: Window,
     rows: Sequence[Traversal],
@@ -466,15 +506,13 @@ def _shift_one(
     for t in rows:
         if t.to_stop is None or not window.covers_route(t.route_id):
             continue
-        service = t.route_id + "X" if is_express_variant(t.trip_id) else t.route_id
+        service = _service_of(t)
         key: HopKey = (service, t.direction or "", t.from_stop, t.to_stop)
         if window.contains(t.at):
             inside[service].add(key)
             n_in[service] += 1
             continue
-        if _service_class(t.at) != want_class or not _matches_clock(t.at, window):
-            continue
-        if any(w.contains(t.at) and w.covers_route(t.route_id) for w in blackout):
+        if not _is_control(t, window, want_class, blackout):
             continue
         outside[service].add(key)
         n_out[service] += 1
@@ -549,6 +587,79 @@ def pattern_shift(
     ]
 
 
+def control_supply(
+    window: Window,
+    traversals: Iterable[Traversal],
+    *,
+    other_windows: Iterable[Window] = (),
+) -> dict[str, int]:
+    """Control-arm traversals PER SERVICE, summed over the window's local-day
+    pieces.
+
+    `pattern_shift` emits a row whenever one service holds both arms, including
+    when nothing moved -- an unchanged pairing is a row of zeros, not an absence.
+    So an empty result never means "measured, no effect"; it means no service was
+    in a position to be measured, and this is how the caller tells which way.
+
+    Per service, not per route, for the same reason `PatternShift` is: a row is
+    emitted only when ONE service has both arms, so a route-level total says
+    "compared" on the strength of a 7 local while the 7X the work actually named
+    had no control at all. Counted by route, the diagnostic would certify a
+    comparison that never happened -- which is the exact failure it exists to
+    catch.
+
+    An empty result means no service had a control arm; an archive shorter than
+    two comparable days cannot produce one for any window, by construction.
+    """
+    if not window.gradeable:
+        return {}
+    rows = [
+        t
+        for t in traversals
+        if t.censoring == EXACT and t.to_stop is not None and t.n_hops == 1
+    ]
+    blackout = [*(w for w in other_windows if w != window), window]
+    out: Counter[str] = Counter()
+    for piece in split_by_local_day(window):
+        want_class = _service_class(piece.start)
+        for t in rows:
+            if t.to_stop is None or not piece.covers_route(t.route_id):
+                continue
+            if piece.contains(t.at) or not _is_control(t, piece, want_class, blackout):
+                continue
+            out[_service_of(t)] += 1
+    return dict(out)
+
+
+# The three outcomes a coverage grade can reach. Only the first is a measurement;
+# the other two are the archive saying it could not supply one, and collapsing
+# them into "detected nothing" is how a supply gap gets published as a result.
+GRADED = "graded"
+NO_PAIRED_SERVICE = "no_paired_service"
+NO_CONTROL_PERIOD = "no_control_period"
+
+
+def coverage_state(
+    window: Window,
+    shifts: Sequence[PatternShift],
+    traversals: Iterable[Traversal],
+    *,
+    other_windows: Iterable[Window] = (),
+) -> str:
+    """Which of the three outcomes this window's coverage grade reached.
+
+    `shifts` is the window's own `pattern_shift` result, passed in rather than
+    recomputed: a non-empty list already establishes that some service had both
+    arms, so that question is never asked twice. What is left to distinguish is
+    whether an empty list means the archive held no comparable period at all, or
+    held one for some service while none of them paired.
+    """
+    if shifts:
+        return GRADED
+    supply = control_supply(window, traversals, other_windows=other_windows)
+    return NO_PAIRED_SERVICE if any(supply.values()) else NO_CONTROL_PERIOD
+
+
 def unknown_types(windows: Iterable[Window]) -> set[str]:
     """Alert types this module classifies as neither service-changing nor
     headway-only.
@@ -559,3 +670,124 @@ def unknown_types(windows: Iterable[Window]) -> set[str]:
     """
     known = SERVICE_CHANGING | HEADWAY_ONLY
     return {w.alert_type for w in windows if w.alert_type not in known}
+
+
+def overlaps(window: Window, start: int, end: int) -> bool:
+    """Whether an announced period intersects the span the trace actually covers.
+
+    The alert archive is 91 days deep and carries work announced up to 180 days
+    out, while the trace is a rolling few. Grading every announced window against
+    a span it does not touch would report hundreds of empty results and call the
+    denominator supply.
+    """
+    return window.start <= end and (window.end == 0 or window.end >= start)
+
+
+def _median_by_type(pairs: Sequence[tuple[str, float]]) -> dict[str, dict[str, Any]]:
+    """Grouped medians, because the types are different experiments: a stretch
+    closed for the weekend and an express dropped for a night are not one
+    population and pooling them reports neither."""
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for alert_type, value in pairs:
+        grouped[alert_type].append(value)
+    return {
+        alert_type: {
+            "n_rows": len(values),
+            "median": round(statistics.median(values), 4),
+        }
+        for alert_type, values in sorted(grouped.items())
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Grade the traversal measure against the work announced over the same span
+    the trace covers, and report the supply that produced the grade."""
+    parser = argparse.ArgumentParser(
+        description="Grade segment traversal against announced planned work"
+    )
+    parser.add_argument("--start-date", type=date.fromisoformat)
+    parser.add_argument("--end-date", type=date.fromisoformat)
+    args = parser.parse_args(argv)
+
+    today = datetime.now(UTC).date()
+    start_date = args.start_date or today - timedelta(days=1)
+    end_date = args.end_date or today
+
+    bodies = fetch_trace_bodies(start_date=start_date, end_date=end_date)
+    traversals, trace_stats = traversals_from_trace(bodies)
+    print(
+        f"{len(bodies)} trace snapshots, {len(traversals)} traversals",
+        file=sys.stderr,
+    )
+    # Hard fail rather than an empty report: no trace means the archive or the
+    # window is wrong, and every count below would read as "detected nothing".
+    if not traversals:
+        raise SystemExit(f"no traversals in {start_date}..{end_date}")
+
+    span_start = min(t.at for t in traversals)
+    span_end = max(t.at for t in traversals)
+
+    windows = windows_from_alerts(
+        fetch_alert_bodies(start_date=start_date, end_date=end_date)
+    )
+    live = [w for w in windows if overlaps(w, span_start, span_end)]
+    print(
+        f"{len(windows)} announced windows, {len(live)} over the trace span",
+        file=sys.stderr,
+    )
+
+    coverage: list[PatternShift] = []
+    duration: list[Effect] = []
+    states: Counter[str] = Counter()
+    graded_duration = 0
+    for window in live:
+        shifts = pattern_shift(window, traversals, other_windows=live)
+        effects = measure(window, traversals, other_windows=live)
+        graded_duration += bool(effects)
+        if window.gradeable:
+            states[coverage_state(window, shifts, traversals, other_windows=live)] += 1
+        coverage.extend(shifts)
+        duration.extend(effects)
+
+    print(
+        json.dumps(
+            {
+                "trace": asdict(trace_stats),
+                "supply": {
+                    "span": [span_start, span_end],
+                    "announced": len(windows),
+                    "announced_by_type": dict(
+                        Counter(w.alert_type for w in windows).most_common()
+                    ),
+                    "unknown_types": sorted(unknown_types(windows)),
+                    "over_span": len(live),
+                    "over_span_by_type": dict(
+                        Counter(w.alert_type for w in live).most_common()
+                    ),
+                    "over_span_gradeable": sum(1 for w in live if w.gradeable),
+                    "graded_coverage": states[GRADED],
+                    "coverage_no_paired_service": states[NO_PAIRED_SERVICE],
+                    "coverage_no_control_period": states[NO_CONTROL_PERIOD],
+                    "graded_duration": graded_duration,
+                },
+                "coverage": {
+                    "vanished_by_type": _median_by_type(
+                        [(r.alert_type, r.vanished) for r in coverage]
+                    ),
+                    "rows": [asdict(r) for r in coverage],
+                },
+                "duration": {
+                    "effect_by_type": _median_by_type(
+                        [(r.alert_type, r.effect) for r in duration]
+                    ),
+                    "rows": [asdict(r) for r in duration],
+                },
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2293,3 +2293,79 @@ is for.
 
 Reproducible from `training.degradation_label` + `load_r2.classify_direction`
 over any 10-day window; the sweep is three nested loops over the knobs.
+
+
+## 2026-08-13 — two arms were sharing one forecast field, and the mix scored worse than either: AUC 0.378 -> 0.856
+
+origin: agent
+
+`route_status[route].condition` has been movement-primary for a while.
+`route_status[route].inference.p_normal_in_30min` was not: it came from
+whichever arm `recovery_source` named, which was usually the alert-HMM, timing
+the alert regime on the alert clock. Both numbers sat in the same object, so a
+reader had every reason to think the forecast described the condition.
+
+Graded properly for the first time — each prediction against the condition we
+actually published 30 minutes later, six days of the stream:
+
+| rows | n | AUC |
+| --- | --- | --- |
+| movement-sourced | 4,741 | **0.856** |
+| alert-sourced | 20,497 | 0.261 |
+| all of them, one field | 25,238 | **0.084** |
+
+The mixture scoring below both components is the whole finding. The two arms
+put their probabilities on different scales, so ranking across the union tracks
+which arm answered rather than which route is at risk. Simpson's paradox, in
+production, in a field consumers read.
+
+### The rule
+
+A forecast is published only when it is about the condition that was published.
+Movement qualifies by construction — same arm, same clock, same regime. An
+announced resume time qualifies too: it is a fact about the route rather than a
+rival model of it. Everything else is withheld (null), the way the 60- and
+120-minute horizons already are. Applied to the same six days: **AUC 0.378 ->
+0.856** on the rows that still publish, and once the movement arm is sourcing
+normally that is about 80% of them (on 08-12, 6,635 of 8,352 ticks).
+
+With the alert arm no longer forecasting, `projectForward` fell out of
+`snapshot.ts` entirely, along with the whole `else { /* Normal now */ }` branch
+and the `toNormal` transition-matrix split. The alert arm still estimates
+`recovery_minutes`; it no longer estimates probabilities.
+
+### The same bug in minutes
+
+`recovery_minutes` is the same claim on a different scale, so it was graded the
+same way — time to the next tick published normal:
+
+| arm / published condition | n | MAE |
+| --- | --- | --- |
+| movement / disrupted | 10 | **3.5 min** |
+| hmm / disrupted | 23 | 13.5 min |
+| hmm / suspended | 12 | 33.8 min |
+| hmm / not_scheduled | 4,258 | **1,134.8 min** |
+
+Nineteen hours, on the dominant population. Those are overnight routes: the
+published condition is `not_scheduled` and the alert arm was timing its own
+regime's return, which has nothing to do with when the trains come back.
+
+Two fixes. The schedule countdown now gates on the PUBLISHED condition rather
+than the alert shadow, so an announced resume is used wherever one exists. Where
+none exists — the ordinary overnight gap — the estimate is withheld through the
+mechanism the contract already has for "this is not a prediction":
+`recovery_indeterminate` with the value at the ceiling, exactly as the
+outlived-every-dwell case has always done. 4,293 rows a week stop publishing a
+confidently wrong number.
+
+**Not made nullable, deliberately.** `recovery_minutes` is an integer in the
+published snapshot contract and the Home Assistant integration reads it; the
+forecast fields could widen to null because their siblings already were.
+Making the recovery block nullable is a consumer migration, not a bug fix.
+
+### Worth remembering
+
+`Number.isFinite(null)` is `false`, and `scrubCorruptInferences` used it as the
+validity check for every probability. Widening one field to nullable would have
+silently deleted the entire inference block for ~60% of routes. The type system
+could not see it: `Number.isFinite` takes `unknown`.

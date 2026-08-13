@@ -312,6 +312,14 @@ def test_p_leave_by_log_logistic_matches_conditional_survival() -> None:
     assert p_leave_by(curve, 100, 600, [shape, scale]) == _approx(1.0 - s_fut / s_now)
 
 
+def test_p_leave_by_survives_a_degenerate_tail_shape() -> None:
+    # A cell whose episodes were all one tick long fits a shape in the
+    # hundreds. At that shape (t/scale)**shape overflows the float range, so
+    # the conditional survival has to go through logs: a regime already far
+    # past the fitted scale has left with probability 1.
+    assert p_leave_by([0, 100], 100_000, 600, [172.95, 300.0]) == 1.0
+
+
 def test_flat_curve_at_value_is_indeterminate() -> None:
     # All samples identical: a regime at exactly that age has outlived the
     # whole distribution — indeterminate, not P=0.

@@ -63,11 +63,29 @@ def weibull_survival(t: float, shape: float, scale: float) -> float:
     return math.exp(-((t / scale) ** shape))
 
 
+def _log_z(t: float, shape: float, scale: float) -> float:
+    """log((t/scale)^shape), never materialising the power itself.
+
+    A degenerate sample (every duration within a few seconds of the others)
+    drives the shared shape into the hundreds, and at that shape the power
+    underflows to 0.0 or overflows well inside the log-scale range the fitters
+    sweep. The logarithm stays finite across that whole range.
+    """
+    return shape * (math.log(t) - math.log(scale))
+
+
+def _softplus(x: float) -> float:
+    """log(1 + e^x), accurate and overflow-free at both extremes."""
+    if x > 0.0:
+        return x + math.log1p(math.exp(-x))
+    return math.log1p(math.exp(x))
+
+
 def loglogistic_survival(t: float, shape: float, scale: float) -> float:
     """S(t) = 1 / (1 + (t/scale)^shape)."""
     if t <= 0:
         return 1.0
-    return 1.0 / (1.0 + (t / scale) ** shape)
+    return math.exp(-_softplus(_log_z(t, shape, scale)))
 
 
 def weibull_quantile(p: float, shape: float, scale: float) -> float:
@@ -126,16 +144,15 @@ def loglogistic_loglik(
     ll = 0.0
     for raw_t, completed in samples:
         t = max(float(raw_t), _MIN_DURATION)
-        z = (t / scale) ** shape
+        log_z = _log_z(t, shape, scale)
         if completed:
             # log f = log(shape) + log z - log t - 2 log(1+z)
-            ll += math.log(shape) + math.log(z) - math.log(t) - 2.0 * math.log1p(z)
+            ll += math.log(shape) + log_z - math.log(t) - 2.0 * _softplus(log_z)
         else:
-            ll -= math.log1p(z)
+            ll -= _softplus(log_z)
     if truncate_at > 0.0 and samples:
         # -n log S(tau); S = 1/(1+z_tau) so -log S = log1p(z_tau).
-        z_tau = (truncate_at / scale) ** shape
-        ll += len(samples) * math.log1p(z_tau)
+        ll += len(samples) * _softplus(_log_z(truncate_at, shape, scale))
     return ll
 
 
@@ -254,6 +271,16 @@ def _nelder_mead(
     return simplex[best_idx]
 
 
+# The simplex explores log-parameters, and a sample with no variance at all —
+# every hop timed at the same whole second, say — has its MLE shape at
+# infinity. Nelder-Mead's expansion step reaches log-shape 700+ and overflows
+# math.exp long before the likelihood tells it to stop. The box is wide enough
+# to be inert on any real fit: shape 400 is already a point mass, and scale
+# e^20 seconds is fifteen years.
+_LOG_SHAPE_BOUND = 6.0
+_LOG_SCALE_BOUND = 20.0
+
+
 def fit_loglogistic(
     samples: list[DwellSample], truncate_at: float = 0.0
 ) -> ParametricFit | None:
@@ -272,8 +299,12 @@ def fit_loglogistic(
     scale0 = ordered[len(ordered) // 2]
 
     def neg_ll(theta: list[float]) -> float:
-        scale, shape = math.exp(theta[0]), math.exp(theta[1])
-        return -loglogistic_loglik(samples, shape, scale, truncate_at)
+        log_scale, log_shape = theta
+        if abs(log_scale) > _LOG_SCALE_BOUND or abs(log_shape) > _LOG_SHAPE_BOUND:
+            return math.inf
+        return -loglogistic_loglik(
+            samples, math.exp(log_shape), math.exp(log_scale), truncate_at
+        )
 
     theta = _nelder_mead(neg_ll, [math.log(scale0), 0.0])
     scale, shape = math.exp(theta[0]), math.exp(theta[1])

@@ -383,10 +383,18 @@ def p_leave_by(
 
 def _loglogistic_survival(t: float, shape: float, scale: float) -> float:
     """S(t) = 1 / (1 + (t/scale)^shape). Inlined (not imported from survival.py)
-    to keep the conditional-survival math free of that module's import cycle."""
+    to keep the conditional-survival math free of that module's import cycle.
+
+    Evaluated through the logarithm: a near-degenerate cell fits a shape in the
+    hundreds, where the power raises OverflowError in Python while the TS twin
+    quietly yields Infinity. Both sides now agree on 0.0.
+    """
     if t <= 0.0 or scale <= 0.0:
         return 1.0
-    return 1.0 / (1.0 + (t / scale) ** shape)
+    log_z = shape * (math.log(t) - math.log(scale))
+    if log_z > 0.0:
+        return math.exp(-log_z - math.log1p(math.exp(-log_z)))
+    return 1.0 / (1.0 + math.exp(log_z))
 
 
 # --- Atom + truncated log-logistic mixture ---

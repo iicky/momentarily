@@ -72,6 +72,68 @@ def test_loglogistic_survival_is_monotone_and_bounded():
         s_prev = s
 
 
+# The shared shape of a partially-pooled fit runs into the hundreds whenever a
+# state's episodes are all the same length (two one-tick movement disruptions,
+# say), and the leaf scale search then sweeps scale over e^4..e^16 at that
+# shape. Evaluating (t/scale)^shape directly underflows to 0.0 at the top of
+# that sweep and overflows near the bottom, so the likelihood must be built
+# from log(t/scale) instead.
+_DEGENERATE_SHAPE = 172.95129469829655
+
+
+def test_loglogistic_loglik_is_finite_where_the_power_underflows():
+    samples: list[DwellSample] = [(294, True), (300, True)]
+    ll = loglogistic_loglik(samples, _DEGENERATE_SHAPE, 86679.20359473201)
+    assert math.isfinite(ll)
+    assert ll < 0.0
+
+
+def test_loglogistic_survival_saturates_instead_of_overflowing():
+    # t/scale far above 1 at a degenerate shape: S -> 0, and t/scale far below
+    # 1: S -> 1. Neither end may raise.
+    assert loglogistic_survival(1e6, _DEGENERATE_SHAPE, 300.0) == 0.0
+    assert math.isclose(loglogistic_survival(1.0, _DEGENERATE_SHAPE, 300.0), 1.0)
+
+
+def test_loglogistic_loglik_matches_the_direct_formula_in_range():
+    samples = _loglogistic_samples(200, shape=2.0, scale=1800.0, seed=11)
+    direct = 0.0
+    for raw_t, completed in samples:
+        t = max(float(raw_t), 1.0)
+        z = (t / 1800.0) ** 2.0
+        if completed:
+            direct += math.log(2.0) + math.log(z) - math.log(t) - 2.0 * math.log1p(z)
+        else:
+            direct -= math.log1p(z)
+    assert math.isclose(loglogistic_loglik(samples, 2.0, 1800.0), direct, rel_tol=1e-9)
+
+
+def test_loglogistic_loglik_left_truncation_matches_the_direct_formula():
+    samples = _loglogistic_samples(200, shape=2.0, scale=1800.0, seed=12)
+    samples = [(t, c) for t, c in samples if t > 300]
+    z_tau = (300.0 / 1800.0) ** 2.0
+    untruncated = loglogistic_loglik(samples, 2.0, 1800.0)
+    assert math.isclose(
+        loglogistic_loglik(samples, 2.0, 1800.0, 300.0),
+        untruncated + len(samples) * math.log1p(z_tau),
+        rel_tol=1e-9,
+    )
+
+
+def test_loglogistic_fit_terminates_on_a_zero_variance_sample():
+    """Every observation identical — a short hop timed at the same whole second
+    every time. The MLE shape is at infinity, and the simplex has to stop at
+    the admissible boundary instead of overflowing on the way there."""
+    samples: list[DwellSample] = [(180, True)] * 30
+    fit = fit_loglogistic(samples)
+    assert fit is not None
+    assert math.isfinite(fit.shape)
+    assert math.isfinite(fit.scale)
+    # The scale of a log-logistic IS its median, so a point mass at 180 must
+    # place it there however sharp the fitted shape gets.
+    assert abs(fit.scale - 180.0) / 180.0 < 0.05
+
+
 # --- MLE parameter recovery ----------------------------------------------------
 
 

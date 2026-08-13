@@ -6,13 +6,19 @@ Uses synthetic prediction/transition records — no R2 access.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
+from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
+from training.degradation_label import BIN_FN
 from training.eval import (
     BIN_COUNT,
     PredictionRecord,
     TransitionRecord,
     build_calibration,
     build_eval,
+    build_independent_recovery,
     calibrate,
     independent_recovery_metrics,
     movement_truth_by_key,
@@ -22,6 +28,9 @@ from training.eval import (
     snap_tick,
 )
 from training.load_r2 import Disruption
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 
 def _pred(
@@ -961,3 +970,44 @@ def test_independent_recovery_skips_ticks_movement_could_not_call() -> None:
     result = independent_recovery_metrics([pred], [disruption])
 
     assert result.overall.n == 0
+
+
+def test_independent_recovery_truth_uses_the_degradation_label_bins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The grading truth is the same degrade/recover call training.
+    degradation_label reports on, so it has to be binned the same way. Under
+    the HMM's 5 tod_bins the quiet edge of every wide block reads as a
+    collapse, and the arm would be graded against the clock."""
+    seen: dict[str, object] = {}
+
+    def _fake_fetch(**_: Any) -> list[dict[str, Any]]:
+        return [{"observed_at": 1_700_000_000, "rows": {"1": {"assigned_n": 10}}}]
+
+    def _fake_compute_baseline(
+        series: dict[tuple[str, int], int], **kwargs: Any
+    ) -> dict[tuple[str, str], float]:
+        seen["baseline_bin_fn"] = kwargs.get("bin_fn")
+        return {("1", "wd10"): 10.0}
+
+    def _fake_derive(
+        series: dict[tuple[str, int], int],
+        baseline: dict[tuple[str, str], float],
+        **kwargs: Any,
+    ) -> list[Disruption]:
+        seen["derive_bin_fn"] = kwargs.get("bin_fn")
+        return [Disruption(route="1", start_tick=1_700_000_000, recovered_tick=1)]
+
+    monkeypatch.setattr("training.load_r2.fetch_trip_update_metrics", _fake_fetch)
+    monkeypatch.setattr("training.load_r2.compute_baseline", _fake_compute_baseline)
+    monkeypatch.setattr("training.load_r2.derive_actual_recovery", _fake_derive)
+
+    out = build_independent_recovery(
+        cast("S3Client", object()), [], date(2026, 8, 1), date(2026, 8, 11)
+    )
+
+    assert out is not None
+    assert seen["baseline_bin_fn"] is BIN_FN
+    assert seen["derive_bin_fn"] is BIN_FN
+    assert out["n_disruptions"] == 1
+    assert out["n_baseline_cells"] == 1

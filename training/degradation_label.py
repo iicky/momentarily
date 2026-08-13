@@ -52,8 +52,9 @@ from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from momentarily.hmm import tod_bin
+from momentarily.hmm import schedule_bin
 from training.load import TICK_SECONDS
 from training.load_r2 import (
     Disruption,
@@ -63,6 +64,10 @@ from training.load_r2 import (
     fetch_trip_update_metrics,
 )
 from training.r2_client import load_config, make_client
+
+# schedule_bin's own zone — the onset diagnostic has to read the same clock the
+# bins are cut on.
+_ET = ZoneInfo("America/New_York")
 
 # --- thresholds passed to derive_actual_recovery ---------------------------
 #
@@ -110,15 +115,37 @@ AT_BASELINE_LOOKBACK_TICKS = 6
 AT_BASELINE_RATIO = RECOVER_RATIO
 
 
+# --- baseline granularity ---------------------------------------------------
+
+# This label bins by ET (weekday|weekend, hour) -- momentarily.hmm.schedule_bin,
+# already mirrored in the Worker -- NOT by the HMM's five tod_bins.
+#
+# Why: a tod_bin spans 4-6 hours and its median is set by its busiest core, so
+# the quiet edge of a block reads as a collapse against it. Measured over
+# 2026-08-03..08-13 with tod_bin, degraded-tick prevalence peaked at 26.8% in
+# UTC hour 10 (= ET 06:00, the first hour of the 06:00-09:59 rush block) and
+# 18.9% in UTC hour 03 (= ET 23:00, the last hour of the 20:00-23:59 block),
+# against 6-11% everywhere else. Neither is a disruption pattern; both are the
+# block edge.
+#
+# The weekday/weekend split rides along for free and fixes a second confound:
+# a Sunday's real service level judged against a median dominated by weekdays.
+#
+# tod_bin stays exactly as it is -- the HMM emission channel scores the live
+# service ratio against the (route, tod_bin) baseline shipped in params.json,
+# and that pairing has to keep agreeing with the Worker.
+BIN_FN = schedule_bin
+
+
 def label_ticks(
     series: dict[tuple[str, int], int],
-    baseline: dict[tuple[str, int], float],
+    baseline: dict[tuple[str, str], float],
     disruptions: Sequence[Disruption],
     *,
     onset_ticks: int = ACUTE_ONSET_TICKS,
 ) -> dict[tuple[str, int], str]:
     """(route, tick) -> "normal" | "acute" | "chronic" for every tick in
-    `series` judgeable against a baseline. A (route, tod_bin) cell with no
+    `series` judgeable against a baseline. A (route, BIN_FN) cell with no
     baseline is omitted entirely -- "can't judge", the same contract
     compute_baseline and derive_movement_state already use, never silently
     defaulted to "normal".
@@ -132,7 +159,7 @@ def label_ticks(
     labels: dict[tuple[str, int], str] = {
         (route, tick): "normal"
         for route, tick in series
-        if baseline.get((route, tod_bin(tick))) is not None
+        if baseline.get((route, BIN_FN(tick))) is not None
     }
     onset_span = onset_ticks * TICK_SECONDS
     for d in disruptions:
@@ -145,7 +172,7 @@ def label_ticks(
 
 def was_at_baseline(
     series: dict[tuple[str, int], int],
-    baseline: dict[tuple[str, int], float],
+    baseline: dict[tuple[str, str], float],
     route: str,
     start_tick: int,
     *,
@@ -159,7 +186,7 @@ def was_at_baseline(
     baseline" without data to confirm it with."""
     for i in range(1, lookback_ticks + 1):
         tick = start_tick - i * TICK_SECONDS
-        base = baseline.get((route, tod_bin(tick)))
+        base = baseline.get((route, BIN_FN(tick)))
         assigned = series.get((route, tick))
         if base is None or base <= 0 or assigned is None:
             return False
@@ -208,9 +235,23 @@ def _hourly_prevalence(
     }
 
 
+def _onsets_by_et_hour(disruptions: Sequence[Disruption]) -> dict[int, int]:
+    """Disruption onsets per ET clock hour (0-23).
+
+    The bin-edge diagnostic: a baseline whose buckets are wider than an hour
+    piles onsets into the first hour of each bucket, because that is where the
+    real service level sits furthest below the bucket's median. Keyed on ET,
+    not UTC, because the buckets are ET-local and the artifact is an artifact
+    of THEIR edges."""
+    counts: dict[int, int] = defaultdict(int)
+    for d in disruptions:
+        counts[datetime.fromtimestamp(d.start_tick, tz=_ET).hour] += 1
+    return dict(sorted(counts.items()))
+
+
 def measure_degradation(
     series: dict[tuple[str, int], int],
-    baseline: dict[tuple[str, int], float],
+    baseline: dict[tuple[str, str], float],
     start: date,
     end: date,
 ) -> dict[str, Any]:
@@ -220,6 +261,7 @@ def measure_degradation(
     disruptions = derive_actual_recovery(
         series,
         baseline,
+        bin_fn=BIN_FN,
         degrade_ratio=DEGRADE_RATIO,
         recover_ratio=RECOVER_RATIO,
         debounce=DEGRADE_DEBOUNCE_TICKS,
@@ -265,6 +307,7 @@ def measure_degradation(
         ),
         "weekly_acute_events": weekly,
         "hourly_prevalence": _hourly_prevalence(labels),
+        "onsets_by_et_hour": _onsets_by_et_hour(disruptions),
         "events_surviving_30min_at_baseline": len(surviving_30min),
     }
 
@@ -293,8 +336,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"{len(bodies)} archived trip-update ticks", file=sys.stderr)
 
     series = build_service_series(bodies)
-    baseline = compute_baseline(series)
-    print(f"{len(baseline)} (route, tod_bin) baseline cells", file=sys.stderr)
+    baseline = compute_baseline(series, bin_fn=BIN_FN)
+    print(f"{len(baseline)} (route, schedule_bin) baseline cells", file=sys.stderr)
 
     report = measure_degradation(series, baseline, start, end)
     print(json.dumps(report, indent=2))

@@ -485,16 +485,26 @@ def build_service_series(bodies: list[dict[str, Any]]) -> dict[tuple[str, int], 
     return series
 
 
-def compute_baseline(
-    series: dict[tuple[str, int], int], *, min_samples: int = 20
-) -> dict[tuple[str, int], float]:
-    """Per (route, tod_bin) median of assigned_n — the expected running-train
+# Baselines are keyed on (route, time bucket), and which bucket is a real
+# choice. `tod_bin` (5 ET blocks) is what the HMM emission channel scores
+# against and must keep; `schedule_bin` (ET weekday/weekend x hour) is what a
+# degrade/recover call wants, because a 4-6 hour block's median is set by its
+# busiest hour and a route running normal service at the quiet edge of the
+# block reads as collapsed. The bucket type rides along so a baseline can only
+# be paired with the bin_fn that built it.
+def compute_baseline[BinKey: (int, str)](
+    series: dict[tuple[str, int], int],
+    *,
+    bin_fn: Callable[[int], BinKey] = tod_bin,
+    min_samples: int = 20,
+) -> dict[tuple[str, BinKey], float]:
+    """Per (route, time bucket) median of assigned_n — the expected running-train
     count at that time of day. The median resists the disrupted minority. Cells
     with fewer than `min_samples` observations are omitted (insufficient data),
     so callers treat a missing baseline as "can't judge", not "zero service"."""
-    buckets: dict[tuple[str, int], list[int]] = {}
+    buckets: dict[tuple[str, BinKey], list[int]] = {}
     for (route, tick), assigned in series.items():
-        buckets.setdefault((route, tod_bin(tick)), []).append(assigned)
+        buckets.setdefault((route, bin_fn(tick)), []).append(assigned)
     return {
         key: statistics.median(vals)
         for key, vals in buckets.items()
@@ -587,21 +597,24 @@ class Disruption:
     recovered_tick: int  # first recovered tick
 
 
-def derive_actual_recovery(
+def derive_actual_recovery[BinKey: (int, str)](
     series: dict[tuple[str, int], int],
-    baseline: dict[tuple[str, int], float],
+    baseline: dict[tuple[str, BinKey], float],
     *,
+    bin_fn: Callable[[int], BinKey] = tod_bin,
     degrade_ratio: float = 0.5,
     recover_ratio: float = 0.8,
     debounce: int = 2,
 ) -> list[Disruption]:
     """Independent disruptions from the service metric: a route is degraded when
-    assigned_n falls below `degrade_ratio` x its (route, tod_bin) baseline for
+    assigned_n falls below `degrade_ratio` x its (route, time bucket) baseline for
     `debounce` consecutive ticks, and recovered at the first tick back above
     `recover_ratio` for `debounce` consecutive ticks. Hysteresis (recover >
     degrade) avoids flapping. Ticks with no baseline reset the run counters but
     don't end an open disruption. Disruptions still open at the window end are
-    censored (dropped)."""
+    censored (dropped).
+
+    `bin_fn` must be the one the baseline was built with — see compute_baseline."""
     by_route: dict[str, list[tuple[int, int]]] = {}
     for (route, tick), assigned in series.items():
         by_route.setdefault(route, []).append((tick, assigned))
@@ -616,7 +629,7 @@ def derive_actual_recovery(
         low_run = 0
         high_run = 0
         for tick, assigned in points:
-            base = baseline.get((route, tod_bin(tick)))
+            base = baseline.get((route, bin_fn(tick)))
             if base is None or base <= 0:
                 low_run = 0
                 high_run = 0

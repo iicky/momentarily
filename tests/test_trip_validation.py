@@ -7,7 +7,9 @@ compute_baseline, derive_actual_recovery) and the eval grading
 
 from __future__ import annotations
 
-from momentarily.hmm import tod_bin
+from datetime import UTC, datetime
+
+from momentarily.hmm import schedule_bin, tod_bin
 from training.eval import PredictionRecord, independent_recovery_metrics
 from training.load_r2 import (
     Disruption,
@@ -46,6 +48,21 @@ def test_compute_baseline_medians_and_min_samples():
     assert all(v == 10 for v in a_cells)
     # Below the sample floor → omitted (caller treats as "can't judge").
     assert not any(r == "B" for (r, _b) in base)
+
+
+def test_compute_baseline_bin_fn_selects_the_bucket_width():
+    """Same series, two bucket widths: schedule_bin splits an ET hour boundary
+    that tod_bin pools, and each cell then carries only its own hour's level.
+    The default stays tod_bin because the HMM emission channel scores against
+    it."""
+    # 2024-01-10 10:55 ET -> 11:05 ET, crossing an hour but not a tod_bin edge.
+    t = int(datetime(2024, 1, 10, 15, 55, tzinfo=UTC).timestamp())
+    series = {("A", t + i * TICK): (20 if i < 2 else 4) for i in range(4)}
+
+    wide = compute_baseline(series, min_samples=1)
+    fine = compute_baseline(series, bin_fn=schedule_bin, min_samples=1)
+    assert wide == {("A", 2): 12.0}
+    assert fine == {("A", "wd10"): 20.0, ("A", "wd11"): 4.0}
 
 
 def _series(route: str, vals: list[int]) -> dict[tuple[str, int], int]:

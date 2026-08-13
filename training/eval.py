@@ -1190,7 +1190,12 @@ def build_independent_recovery(
     grade recovery_minutes against them — a recovery truth independent of the
     HMM's own argmax. Returns None until the archive accumulates (the metric
     ships archive-first; ~2 weeks before the baseline is trustworthy). A load
-    failure is non-fatal."""
+    failure is non-fatal.
+
+    Binned by degradation_label.BIN_FN, not tod_bin: this is the same
+    degrade/recover call that module reports on, and a truth that fires at
+    every wide-bin edge would grade the arm against the clock."""
+    from training.degradation_label import BIN_FN
     from training.load_r2 import (
         build_service_series,
         compute_baseline,
@@ -1208,8 +1213,8 @@ def build_independent_recovery(
     if not bodies:
         return None
     series = build_service_series(bodies)
-    baseline = compute_baseline(series)
-    disruptions = derive_actual_recovery(series, baseline)
+    baseline = compute_baseline(series, bin_fn=BIN_FN)
+    disruptions = derive_actual_recovery(series, baseline, bin_fn=BIN_FN)
     result = independent_recovery_metrics(predictions, disruptions)
     return {
         **recovery_as_dict(result, graded_arm=MOVEMENT_ARM_LABEL),

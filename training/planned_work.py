@@ -35,7 +35,7 @@ import statistics
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -243,49 +243,21 @@ def _lift(
     return (statistics.median(ratios), len(ratios)) if ratios else None
 
 
-def measure(
+def _effect_one(
     window: Window,
-    traversals: Iterable[Traversal],
-    *,
-    other_windows: Iterable[Window] = (),
+    rows: Sequence[Traversal],
+    blackout: Sequence[Window],
 ) -> Effect | None:
-    """The SECONDARY, weaker grade: did the segments beside the work slow down?
-
-    Not a test of the named segments themselves. A closure or a skip removes their
-    traversals entirely — that absence is what `pattern_shift` measures, and it is
-    the primary claim. What survives for a duration test is spillover: a hop with
-    ONE endpoint in the named set still runs, and is where single-tracking,
-    merging and reduced frequency show up as time.
-
-    Difference-in-differences, from movement alone, because a raw before/after on
-    the boundary hops cannot tell planned work from the evening rush. Dividing by
-    what the same route's distant segments did over the same clock cancels
-    everything the two arms share — which is also why this one does not need the
-    day-matched control `pattern_shift` does.
-
-    `other_windows` is excluded from the OUTSIDE arm on the same route: a second
-    closure sitting in the control period would be compared against as though it
-    were normal service, dragging the baseline toward the disrupted state and
-    shrinking whatever effect exists. Overlapping planned work is the norm.
-
-    None when the type cannot be seen in traversals at all, or when neither arm
-    clears MIN_SIDE_SAMPLES on enough segments. Neither is a failed detection.
-    """
-    if not window.gradeable:
-        return None
-    blackout = [w for w in other_windows if w != window]
     affected: dict[HopKey, tuple[list[int], list[int]]] = {}
     control: dict[HopKey, tuple[list[int], list[int]]] = {}
-    for t in traversals:
-        if t.censoring != EXACT or t.to_stop is None or t.n_hops != 1:
-            continue
-        if not window.covers_route(t.route_id):
+    for t in rows:
+        if t.to_stop is None or not window.covers_route(t.route_id):
             continue
         key: HopKey = (t.route_id, t.direction or "", t.from_stop, t.to_stop)
         if window.at_boundary(key):
             bucket = affected
         elif window.touches(key):
-            continue  # inside the closed stretch: it vanishes, not slows
+            continue  # inside the closed stretch: it vanishes, it does not slow
         else:
             bucket = control
         inside, outside = bucket.setdefault(key, ([], []))
@@ -312,6 +284,65 @@ def measure(
         control_lift=round(control_lift, 4),
         effect=round(affected_lift / control_lift, 4),
     )
+
+
+def measure(
+    window: Window,
+    traversals: Iterable[Traversal],
+    *,
+    other_windows: Iterable[Window] = (),
+) -> list[Effect]:
+    """The SECONDARY, weaker grade: did the segments beside the work slow down?
+
+    One Effect per local day the window covers. Not a test of the named segments
+    themselves — a closure or a skip removes their traversals entirely, and that
+    absence is what `pattern_shift` measures as the primary claim. What survives
+    for a duration test is spillover: a hop with ONE endpoint in the named set
+    still runs, and is where single-tracking, merging and reduced frequency show
+    up as time.
+
+    Difference-in-differences, from movement alone, because a raw before/after on
+    the boundary hops cannot tell planned work from the evening rush. Dividing by
+    what the same route's distant segments did cancels everything the two arms
+    share.
+
+    THE OUTSIDE ARM IS DELIBERATELY UNRESTRICTED, and narrowing it to matched
+    hours would only cost samples. Both arms are measured against the same
+    comparison period, so a period that runs systematically faster or slower than
+    the window scales both lifts by the same factor and drops out of the ratio.
+    That is exactly what `pattern_shift` cannot do -- it has one arm, so its
+    control has to be built matched instead. It is still split per local day: over a Friday-to-Monday
+    closure the boundary hops and the distant ones are not observed in the same
+    proportions across the weekend, so the cancellation is only approximate when
+    the days are pooled.
+
+    `other_windows` is excluded from the OUTSIDE arm on the same route: a second
+    closure sitting in the control period would be compared against as though it
+    were normal service, dragging the baseline toward the disrupted state and
+    shrinking whatever effect exists. Overlapping planned work is the norm.
+
+    Empty when the type cannot be seen in traversals at all, or when neither arm
+    clears MIN_SIDE_SAMPLES on enough segments. Neither is a failed detection.
+    """
+    if not window.gradeable:
+        return []
+    rows = [
+        t
+        for t in traversals
+        if t.censoring == EXACT and t.to_stop is not None and t.n_hops == 1
+    ]
+    # The UNSPLIT window goes in the blackout, not just the other alerts. Each
+    # piece's control arm is "outside this piece", and without the original a
+    # Friday piece would treat the Saturday and Sunday of its own closure as
+    # normal service -- contaminating the baseline with the very disruption
+    # being measured.
+    blackout = [*(w for w in other_windows if w != window), window]
+    out: list[Effect] = []
+    for piece in split_by_local_day(window):
+        got = _effect_one(piece, rows, blackout)
+        if got is not None:
+            out.append(got)
+    return out
 
 
 @dataclass(frozen=True)
@@ -375,48 +406,65 @@ def _matches_clock(at: int, window: Window) -> bool:
     return start <= now <= end if start <= end else now >= start or now <= end
 
 
-def pattern_shift(
-    window: Window,
-    traversals: Iterable[Traversal],
-    *,
-    other_windows: Iterable[Window] = (),
-) -> list[PatternShift]:
-    """One PatternShift per service running on the window's routes, from movement
-    alone. Empty when the window is not a coverage intervention, or when no
-    matched control period exists in the data yet.
+def split_by_local_day(window: Window) -> list[Window]:
+    """One sub-window per local calendar day the period spans.
 
-    Services are recovered from the trip id, because the archived route_id has
-    already folded 7X into 7 and a folded aggregate cannot see an express-to-local
-    change at all. Each service is reported on its own so the express's vanishing
-    pairs are not averaged against the local's surviving ones.
+    An alert period is one row, but a closure is not one comparison. The J part
+    suspension announced for 2026-08-14 runs Fri 23:45 straight through to Mon
+    05:00: a Friday night, a whole Saturday, a whole Sunday and a Monday morning,
+    on three different timetables. Graded whole, the inside arm is every weekend
+    train while the control arm is whatever ran in the 23:45-05:00 band — not a
+    comparison, just two different populations.
 
-    THE CONTROL ARM IS THE SAME HOURS ON A COMPARABLE DAY, not the rest of the
-    same day, and that is not a refinement — it is what makes the measure mean
-    anything. Two ways the obvious comparison lies:
-
-      * Express service only runs at rush hour, which is exactly when this work
-        is scheduled. Measured 2026-08-13 against a 15:00-22:00 window, the 7X had
-        13 traversals outside it against 790 inside, so "outside" really meant
-        "when no express runs" and every pair would read as appearing from
-        nowhere.
-      * The 7X does not run at all on a weekend, so a Saturday control against a
-        weekday window would manufacture the entire signal.
-
-    Unlike `measure`, this has no second arm to cancel time of day against, so the
-    comparison has to be built matched rather than corrected afterwards.
+    Split, each piece has one service class and one clock band, which is what the
+    matched control in `pattern_shift` needs. A window already inside one local
+    day is returned unchanged.
     """
-    if not window.gradeable:
-        return []
-    blackout = [w for w in other_windows if w != window]
+    if window.end == 0 or window.end <= window.start:
+        return [window]
+    first = datetime.fromtimestamp(window.start, _ET).date()
+    last = datetime.fromtimestamp(window.end, _ET).date()
+    if first == last:
+        return [window]
+    out: list[Window] = []
+    day = first
+    while day <= last:
+        midnight = int(datetime.combine(day, time.min, tzinfo=_ET).timestamp())
+        nxt = int(
+            datetime.combine(day + timedelta(days=1), time.min, tzinfo=_ET).timestamp()
+        )
+        start = max(window.start, midnight)
+        end = min(window.end, nxt - 1)
+        # `>=`, not `>`: Window intervals are closed at both ends, so a piece one
+        # second wide is a real piece. A closure ending exactly at local midnight
+        # has a final piece of start == end, and dropping it loses the traversals
+        # at that instant.
+        if end >= start:
+            out.append(
+                Window(
+                    alert_type=window.alert_type,
+                    routes=window.routes,
+                    stops=window.stops,
+                    start=start,
+                    end=end,
+                )
+            )
+        day += timedelta(days=1)
+    return out or [window]
+
+
+def _shift_one(
+    window: Window,
+    rows: Sequence[Traversal],
+    blackout: Sequence[Window],
+) -> list[PatternShift]:
     want_class = _service_class(window.start)
     inside: dict[str, set[HopKey]] = defaultdict(set)
     outside: dict[str, set[HopKey]] = defaultdict(set)
     n_in: Counter[str] = Counter()
     n_out: Counter[str] = Counter()
-    for t in traversals:
-        if t.censoring != EXACT or t.to_stop is None or t.n_hops != 1:
-            continue
-        if not window.covers_route(t.route_id):
+    for t in rows:
+        if t.to_stop is None or not window.covers_route(t.route_id):
             continue
         service = t.route_id + "X" if is_express_variant(t.trip_id) else t.route_id
         key: HopKey = (service, t.direction or "", t.from_stop, t.to_stop)
@@ -451,6 +499,54 @@ def pattern_shift(
             )
         )
     return out
+
+
+def pattern_shift(
+    window: Window,
+    traversals: Iterable[Traversal],
+    *,
+    other_windows: Iterable[Window] = (),
+) -> list[PatternShift]:
+    """One PatternShift per (local day, service) the window covers, from movement
+    alone. Empty when the type cannot be seen in traversals, or when no matched
+    control period exists in the data yet.
+
+    Services are recovered from the trip id, because the archived route_id has
+    already folded 7X into 7 and a folded aggregate cannot see an express-to-local
+    change at all. Each service is reported on its own so the express's vanishing
+    pairs are not averaged against the local's surviving ones.
+
+    THE CONTROL ARM IS THE SAME HOURS ON A COMPARABLE DAY, not the rest of the
+    same day, and that is not a refinement — it is what makes the measure mean
+    anything. Three ways the obvious comparison lies:
+
+      * Express service only runs at rush hour, which is exactly when this work
+        is scheduled. Measured 2026-08-13 against a 15:00-22:00 window, the 7X had
+        13 traversals outside it against 790 inside, so "outside" really meant
+        "when no express runs" and every pair would read as appearing from
+        nowhere.
+      * The 7X does not run at all on a weekend, so a Saturday control against a
+        weekday window would manufacture the entire signal.
+      * A single alert period is not a single comparison. Multi-day closures are
+        graded per local day for the reason `split_by_local_day` gives.
+
+    Unlike `measure`, this has no second arm to cancel time of day against, so the
+    comparison has to be built matched rather than corrected afterwards.
+    """
+    if not window.gradeable:
+        return []
+    rows = [
+        t
+        for t in traversals
+        if t.censoring == EXACT and t.to_stop is not None and t.n_hops == 1
+    ]
+    # See `measure` on why the unsplit window is in the blackout.
+    blackout = [*(w for w in other_windows if w != window), window]
+    return [
+        shift
+        for piece in split_by_local_day(window)
+        for shift in _shift_one(piece, rows, blackout)
+    ]
 
 
 def unknown_types(windows: Iterable[Window]) -> set[str]:

@@ -14,8 +14,10 @@ from zoneinfo import ZoneInfo
 from training.planned_work import (
     HEADWAY_ONLY,
     SERVICE_CHANGING,
+    Window,
     measure,
     pattern_shift,
+    split_by_local_day,
     unknown_types,
     windows_from_alerts,
 )
@@ -164,8 +166,7 @@ def test_the_effect_is_what_the_boundary_did_beyond_its_own_route():
     intervention is worth 2.0 / 1.5, not 2.0. Without the control arm this measure
     cannot tell planned work from the evening rush."""
     (window,) = windows_from_alerts([_alert(stops=["J20", "J21"])])
-    effect = measure(window, _spillover_traversals())
-    assert effect is not None
+    (effect,) = measure(window, _spillover_traversals())
     assert effect.affected_lift == 2.0
     assert effect.control_lift == 1.5
     assert round(effect.effect, 3) == 1.333
@@ -183,20 +184,20 @@ def test_a_second_closure_is_kept_out_of_the_control_period():
     )
     # Every "outside" observation now falls inside the other closure, so no
     # segment has a clean before arm and the honest answer is silence.
-    assert measure(window, _spillover_traversals(), other_windows=[other]) is None
+    assert measure(window, _spillover_traversals(), other_windows=[other]) == []
 
 
 def test_a_thin_window_says_nothing_rather_than_dividing_two_tiny_medians():
     (window,) = windows_from_alerts([_alert(stops=["J20", "J21"])])
     thin = [_hop(T0 - HOUR, 100, frm="J19N", to="J20N"), _hop(T0 + HOUR, 400)]
-    assert measure(window, thin) is None
+    assert measure(window, thin) == []
 
 
 def test_neither_measure_grades_a_headway_only_window():
     """Empty here does not mean "detected nothing" — it means the trace cannot
     see this kind of change at all."""
     (window,) = windows_from_alerts([_alert(alert_type="Reduced Service")])
-    assert measure(window, _spillover_traversals()) is None
+    assert measure(window, _spillover_traversals()) == []
     assert pattern_shift(window, _spillover_traversals()) == []
 
 
@@ -217,7 +218,7 @@ def test_interval_and_multi_hop_spans_never_reach_either_measure():
             censoring=INTERVAL,
         )
     ] * 20
-    assert measure(window, spans) is None
+    assert measure(window, spans) == []
 
 
 # A window at the same clock hours one week earlier: same weekday, so the same
@@ -295,3 +296,141 @@ def test_the_coverage_control_arm_rejects_a_different_service_day():
     ]
     inside = [_hop(T0 + HOUR, 100, frm="701N", to="705N", route="7", trip=express)]
     assert pattern_shift(window, saturday_same_hours + inside) == []
+
+
+def test_a_multi_day_closure_is_graded_one_local_day_at_a_time():
+    """The J part suspension announced for 2026-08-14 runs Fri 23:45 straight
+    through to Mon 05:00 as ONE alert period: a Friday night, a whole Saturday, a
+    whole Sunday and a Monday morning, on three timetables. Graded whole, the
+    inside arm is every weekend train while the matched control arm is whatever
+    ran in the 23:45-05:00 band — two different populations, not a comparison."""
+    friday_2345 = int(
+        datetime(2026, 8, 14, 23, 45, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    )
+    monday_0500 = int(
+        datetime(2026, 8, 17, 5, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    )
+    (window,) = windows_from_alerts(
+        [_alert(stops=["J20", "J21"], periods=[(friday_2345, monday_0500)])]
+    )
+    pieces = split_by_local_day(window)
+    assert len(pieces) == 4
+    # Each piece sits inside one local day, so each has one service class and one
+    # clock band.
+    assert [_class_of(p.start) for p in pieces] == [0, 1, 2, 0]
+    assert pieces[0].start == friday_2345
+    assert pieces[-1].end == monday_0500
+    assert all(p.stops == window.stops for p in pieces)
+
+
+def _class_of(at: int) -> int:
+    weekday = datetime.fromtimestamp(at, ZoneInfo("America/New_York")).weekday()
+    return 0 if weekday < 5 else weekday - 4
+
+
+def test_a_single_day_window_is_not_split():
+    (window,) = windows_from_alerts([_alert(stops=["J20"])])
+    assert split_by_local_day(window) == [window]
+
+
+def _friday_to_monday() -> Window:
+    friday_2345 = int(
+        datetime(2026, 8, 14, 23, 45, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    )
+    monday_0500 = int(
+        datetime(2026, 8, 17, 5, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    )
+    (window,) = windows_from_alerts(
+        [_alert(stops=["J20", "J21"], periods=[(friday_2345, monday_0500)])]
+    )
+    return window
+
+
+def test_measure_reports_one_effect_per_day_of_a_multi_day_closure():
+    """Saturday's spillover is not Sunday's, and pooling the weekend hides both."""
+    window = _friday_to_monday()
+    clean = window.start - 7 * 24 * HOUR  # the same hours a week earlier
+    rows: list[Traversal] = []
+    for day, lift in ((1, 2.0), (2, 3.0)):  # Saturday doubles, Sunday triples
+        at = window.start + day * 24 * HOUR
+        rows += [_hop(at + i, int(100 * lift), frm="J19N", to="J20N") for i in range(8)]
+        rows += [_hop(at + i, 100, frm="J30N", to="J31N") for i in range(8)]
+    rows += [_hop(clean + i, 100, frm="J19N", to="J20N") for i in range(8)]
+    rows += [_hop(clean + i, 100, frm="J30N", to="J31N") for i in range(8)]
+    by_day = {
+        datetime.fromtimestamp(e.start, ZoneInfo("America/New_York")).weekday(): e
+        for e in measure(window, rows)
+    }
+    assert by_day[5].effect == 2.0  # Saturday
+    assert by_day[6].effect == 3.0  # Sunday
+
+
+def test_one_day_of_a_closure_is_not_the_control_for_another():
+    """Without the unsplit window in the blackout, Saturday's disrupted traversals
+    become Friday's idea of normal and the effect collapses toward 1.0."""
+    window = _friday_to_monday()
+    saturday = window.start + 24 * HOUR
+    rows = [_hop(saturday + i, 200, frm="J19N", to="J20N") for i in range(8)]
+    rows += [_hop(saturday + i, 100, frm="J30N", to="J31N") for i in range(8)]
+    # Friday's only candidate "outside" observations are Saturday's, inside the
+    # same closure. With them excluded there is no control period, so Friday says
+    # nothing rather than grading itself against a disrupted baseline.
+    fridays = [
+        e
+        for e in measure(window, rows)
+        if datetime.fromtimestamp(e.start, ZoneInfo("America/New_York")).weekday() == 4
+    ]
+    assert fridays == []
+
+
+def test_the_duration_control_period_need_not_match_the_clock():
+    """Why `measure` needs no day-matched control while `pattern_shift` does.
+
+    Both arms are measured against the SAME outside period, so a control period
+    that is systematically faster or slower than the window inflates
+    `affected_lift` and `control_lift` by the same factor and cancels in the
+    ratio. Here the comparison period runs 3x quicker than the closure period at
+    every segment; the effect is unchanged, because the effect is a ratio of
+    ratios. Constraining this arm by clock and weekday would only cost samples.
+    """
+    window = _friday_to_monday()
+    saturday = window.start + 24 * HOUR
+    control_period = window.start - 7 * 24 * HOUR
+    effects: list[float] = []
+    for control_level in (100, 300):  # a fast comparison week, then a slow one
+        rows = [
+            _hop(saturday + i, control_level * 2, frm="J19N", to="J20N")
+            for i in range(8)
+        ]
+        rows += [
+            _hop(saturday + i, control_level, frm="J30N", to="J31N") for i in range(8)
+        ]
+        rows += [
+            _hop(control_period + i, control_level, frm="J19N", to="J20N")
+            for i in range(8)
+        ]
+        rows += [
+            _hop(control_period + i, control_level, frm="J30N", to="J31N")
+            for i in range(8)
+        ]
+        (saturday_effect,) = [
+            e
+            for e in measure(window, rows)
+            if datetime.fromtimestamp(e.start, ZoneInfo("America/New_York")).weekday()
+            == 5
+        ]
+        effects.append(saturday_effect.effect)
+    assert effects == [2.0, 2.0]
+
+
+def test_a_closure_ending_at_local_midnight_keeps_its_final_instant():
+    """Window intervals are closed at both ends, so the last piece of a closure
+    that ends exactly at midnight is one second wide -- and real."""
+    ny = ZoneInfo("America/New_York")
+    start = int(datetime(2026, 8, 14, 23, 45, tzinfo=ny).timestamp())
+    end = int(datetime(2026, 8, 16, 0, 0, tzinfo=ny).timestamp())
+    (window,) = windows_from_alerts([_alert(stops=["J20"], periods=[(start, end)])])
+    pieces = split_by_local_day(window)
+    assert [(p.start, p.end) for p in pieces][-1] == (end, end)
+    assert pieces[-1].contains(end)
+    assert sum(1 for p in pieces if p.contains(end)) == 1

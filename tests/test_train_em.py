@@ -42,6 +42,8 @@ from training.train_em import (
     main,
     train,
     write_params,
+    write_segment_dwell,
+    write_segment_params,
 )
 
 if TYPE_CHECKING:
@@ -1256,78 +1258,30 @@ def _no_open_regimes(*_: Any, **__: Any) -> dict[str, tuple[str, int]]:
     return {}
 
 
-def test_movement_dwell_prefers_live_stream_over_backfill(
+def test_movement_dwell_ignores_the_committed_stream_and_replays_ticks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_movement_dwell must use the committed movement_transitions stream when
-    it carries route-scope records for the window, and must not fall back to
-    reconstructing them from ticks in that case."""
+    """The Worker's committed movement_transitions stream begins at the deploy
+    that introduced it, so over a training window it holds a fraction of the
+    episodes the tick replay reaches. _movement_dwell must fit the replay and
+    never let the shorter stream displace it."""
     cfg = _r2_config()
     fake_client = cast("S3Client", _FakeS3())
-    live = [
-        _movement_tr("A", "disrupted", 300, ts=1000),
-        _movement_tr("A", "disrupted", 200, ts=2000),
-    ]
-
-    def _fake_load_movement_transitions(
-        client: S3Client,
-        bucket: str,
-        start_date: date,
-        end_date: date,
-        *,
-        scope: str | None = None,
-    ) -> list[MovementTransitionRecord]:
-        assert scope == "route"
-        return live
-
-    def _fail_backfill(**_: Any) -> Any:
-        raise AssertionError("backfill must not run when the live stream has records")
-
-    monkeypatch.setattr(
-        "training.eval.load_movement_transitions", _fake_load_movement_transitions
-    )
-    monkeypatch.setattr(
-        "training.movement_backfill.reconstruct_movement_transitions", _fail_backfill
-    )
-    monkeypatch.setattr(
-        "training.movement_backfill.movement_open_regimes", _no_open_regimes
-    )
-
-    dwell_movement, stats = _movement_dwell(
-        cfg, fake_client, date(2026, 8, 4), date(2026, 8, 11), window_end=100_000
-    )
-    assert stats["source"] == "live"
-    assert stats["n_transitions"] == 2
-    assert dwell_movement["A"]["disrupted"]["n"] == 2
-
-
-def test_movement_dwell_falls_back_to_backfill_when_live_stream_is_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An empty committed stream (nothing published to it yet) must fall back
-    to reconstructing the same commits from published_condition ticks, not
-    silently publish an empty dwell_movement block."""
-    cfg = _r2_config()
-    fake_client = cast("S3Client", _FakeS3())
-    backfilled = [
+    replayed = [
         _movement_tr("B", "suspended", 900, ts=1000),
         _movement_tr("B", "suspended", 1000, ts=5000),
     ]
 
-    def _fake_load_movement_transitions(
-        *_: Any, **__: Any
-    ) -> list[MovementTransitionRecord]:
-        return []
+    def _fail_live(*_: Any, **__: Any) -> Any:
+        raise AssertionError("the committed stream must not be read")
 
     def _fake_reconstruct(
         *, client: S3Client, bucket: str, start_date: date, end_date: date, scope: str
     ) -> list[MovementTransitionRecord]:
         assert scope == "route"
-        return backfilled
+        return replayed
 
-    monkeypatch.setattr(
-        "training.eval.load_movement_transitions", _fake_load_movement_transitions
-    )
+    monkeypatch.setattr("training.eval.load_movement_transitions", _fail_live)
     monkeypatch.setattr(
         "training.movement_backfill.reconstruct_movement_transitions", _fake_reconstruct
     )
@@ -1338,9 +1292,113 @@ def test_movement_dwell_falls_back_to_backfill_when_live_stream_is_empty(
     dwell_movement, stats = _movement_dwell(
         cfg, fake_client, date(2026, 8, 4), date(2026, 8, 11), window_end=100_000
     )
-    assert stats["source"] == "backfill"
+    assert stats["source"] == "tick_replay"
     assert stats["n_transitions"] == 2
     assert dwell_movement["B"]["suspended"]["n"] == 2
+
+
+# `through` is the set params.json publishes as movement_through_stops. Every
+# fit in the run has to be scoped by it, or the Worker scores live movement
+# against a normal that was measured over a different population of stops.
+_THROUGH = frozenset({("A", "north", "A02N")})
+
+
+def test_write_segment_params_fits_the_baseline_on_through_stops_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _no_vehicles(*_: Any, **__: Any) -> list[dict[str, Any]]:
+        return []
+
+    def _fake_build_segment_baseline(
+        bodies: list[dict[str, Any]], *, counts_from_stop: Any = None
+    ) -> dict[tuple[str, str, str], Any]:
+        captured["filter"] = counts_from_stop
+        return {}
+
+    def _no_adjacency(_bodies: list[dict[str, Any]]) -> dict[tuple[str, str, str], Any]:
+        return {}
+
+    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _no_vehicles)
+    monkeypatch.setattr(
+        "training.train_em.build_segment_baseline", _fake_build_segment_baseline
+    )
+    monkeypatch.setattr("training.train_em.canonical_adjacency", _no_adjacency)
+
+    write_segment_params(
+        _r2_config(),
+        cast("S3Client", _FakeS3()),
+        "test-bucket",
+        date(2026, 8, 4),
+        date(2026, 8, 11),
+        1,
+        _STATIC_SUCCESSORS,
+        "gtfs_static",
+        _THROUGH,
+    )
+    admits = captured["filter"]
+    assert admits is not None
+    assert admits("A", "north", "A02N")
+    assert not admits("A", "north", "A01N")  # chain start, a layover
+
+
+def test_write_segment_dwell_reconstructs_from_through_stops_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_reconstruct(
+        *, counts_from_stop: Any = None, **_: Any
+    ) -> list[MovementTransitionRecord]:
+        captured["filter"] = counts_from_stop
+        return []
+
+    monkeypatch.setattr(
+        "training.movement_backfill.reconstruct_movement_transitions", _fake_reconstruct
+    )
+
+    write_segment_dwell(
+        cast("S3Client", _FakeS3()),
+        "test-bucket",
+        date(2026, 8, 4),
+        date(2026, 8, 11),
+        1,
+        _THROUGH,
+    )
+    admits = captured["filter"]
+    assert admits is not None
+    assert admits("A", "north", "A02N")
+    assert not admits("A", "north", "A01N")
+
+
+def test_segment_writers_pass_no_filter_without_a_static_timetable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed GTFS fetch publishes no movement_through_stops, so nothing may
+    be filtered either -- the fit and the published set have to agree on both
+    branches."""
+    captured: dict[str, Any] = {}
+
+    def _fake_reconstruct(
+        *, counts_from_stop: Any = None, **_: Any
+    ) -> list[MovementTransitionRecord]:
+        captured["filter"] = counts_from_stop
+        return []
+
+    monkeypatch.setattr(
+        "training.movement_backfill.reconstruct_movement_transitions", _fake_reconstruct
+    )
+
+    write_segment_dwell(
+        cast("S3Client", _FakeS3()),
+        "test-bucket",
+        date(2026, 8, 4),
+        date(2026, 8, 11),
+        1,
+        None,
+    )
+    assert captured["filter"] is None
 
 
 def test_movement_dwell_censors_open_regime_and_covers_zero_episode_route(
@@ -1455,7 +1513,7 @@ def test_main_passes_movement_dwell_through_to_write_params(
     ) -> list[PredictionRecord]:
         return []
 
-    def _fake_load_movement_transitions(
+    def _fake_reconstruct_movement_transitions(
         *_: Any, **__: Any
     ) -> list[MovementTransitionRecord]:
         return movement_transitions
@@ -1485,7 +1543,8 @@ def test_main_passes_movement_dwell_through_to_write_params(
     monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
     monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr(
-        "training.eval.load_movement_transitions", _fake_load_movement_transitions
+        "training.movement_backfill.reconstruct_movement_transitions",
+        _fake_reconstruct_movement_transitions,
     )
     monkeypatch.setattr(
         "training.movement_backfill.movement_open_regimes", _no_open_regimes

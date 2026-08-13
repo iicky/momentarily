@@ -445,6 +445,21 @@ def _static_topology() -> tuple[dict[SegmentKey, list[tuple[str, int]]] | None, 
         return None, "observed"
 
 
+def _stop_filter(
+    through: frozenset[tuple[str, str, str]] | None,
+) -> StopFilter | None:
+    """Admit only from_stops the timetable puts mid-chain. None passes
+    everything, which is what an unavailable static feed leaves us with.
+
+    One definition for every fit in this run: a rate fitted over a different
+    stop set than the one published in movement_through_stops would have the
+    Worker judging layovers against a through-stop normal.
+    """
+    if through is None:
+        return None
+    return lambda route, direction, frm: (route, direction, frm) in through
+
+
 def write_segment_params(
     cfg: R2Config,
     client: S3Client,
@@ -454,6 +469,7 @@ def write_segment_params(
     trained_at: int,
     static_successors: dict[SegmentKey, list[tuple[str, int]]] | None,
     topology_source: str,
+    through: frozenset[tuple[str, str, str]] | None,
 ) -> int:
     """Write the segment baseline + adjacency as their OWN R2 object (not
     folded into params.json, which the Worker parses on the hot per-tick
@@ -474,7 +490,9 @@ def write_segment_params(
     cells (the pooled advance-rate baseline) still needs actual cross-tick
     vehicle data, so it's scoped to baseline.items() regardless of topology
     source; the whole object is skipped when that's empty (an archive hiccup
-    leaves nothing to pair the topology with).
+    leaves nothing to pair the topology with). `through` restricts those leaves
+    to mid-chain from_stops, the same set params.json publishes — a leaf fitted
+    over layovers would hand the Worker a normal it never scores against.
     Fail-soft: a vehicle-archive hiccup skips the object, leaving the last good
     one; the station-flow surface just goes stale, never blocks the params run.
     """
@@ -482,7 +500,9 @@ def write_segment_params(
         bodies = fetch_vehicle_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
-        baseline = build_segment_baseline(bodies)
+        baseline = build_segment_baseline(
+            bodies, counts_from_stop=_stop_filter(through)
+        )
         observed_adjacency = canonical_adjacency(bodies)
 
         cells: dict[str, dict[str, Any]] = {
@@ -552,18 +572,18 @@ def write_segment_dwell(
     start_date: date,
     end_date: date,
     trained_at: int,
+    through: frozenset[tuple[str, str, str]] | None,
 ) -> tuple[int, SegmentDwellStats]:
     """Write the per-segment dwell curves as their OWN R2 object (not folded
     into segment_params.json), hierarchically pooled leaf -> route -> system
-    (training.segment_dwell) from the segment-scope movement_transitions
-    stream over this run's training window.
+    (training.segment_dwell) from the segment-scope movement regimes over this
+    run's training window.
 
-    Prefers the committed v1/movement_transitions stream, falling back to
-    reconstructing the same commits from archive/vehicles through the identical
-    regime clock the Worker runs online — the same resolution _movement_dwell
-    uses at route scope. The committed stream is new and empty for every window
-    tested so far, so the fallback is what actually runs today; segment scope
-    has no other source, since published_condition is route-level only.
+    Episodes are reconstructed from archive/vehicles through the identical
+    regime clock (training.regime) the Worker runs online, counting only
+    `through` from_stops so the curves and the published baseline describe the
+    same segments. The Worker's own committed v1/movement_transitions stream is
+    deliberately not read here — see _movement_dwell.
 
     Fail-soft like write_segment_params: an archive hiccup or an empty
     stream just skips the object, leaving the last good one, and never
@@ -574,20 +594,16 @@ def write_segment_dwell(
         n_cells_own=0, n_cells_route=0, n_cells_system=0, n_cells_skipped=0
     )
     try:
-        from training.eval import load_movement_transitions
         from training.movement_backfill import reconstruct_movement_transitions
 
-        transitions = load_movement_transitions(
-            client, bucket, start_date, end_date, scope="segment"
+        transitions = reconstruct_movement_transitions(
+            client=client,
+            bucket=bucket,
+            start_date=start_date,
+            end_date=end_date,
+            scope="segment",
+            counts_from_stop=_stop_filter(through),
         )
-        if not transitions:
-            transitions = reconstruct_movement_transitions(
-                client=client,
-                bucket=bucket,
-                start_date=start_date,
-                end_date=end_date,
-                scope="segment",
-            )
         # Same censoring boundary as the route-level dwell fit: "now", clamped
         # to the requested window.
         _, end_epoch = _aligned_window(start_date, end_date)
@@ -716,21 +732,22 @@ def _movement_dwell(
     shrunk toward the population centre until its own evidence outweighs the
     prior.
 
-    Prefers the committed v1/movement_transitions stream when it carries
-    route-scope records for the window; falls back to reconstructing the same
-    commits from the published_condition ticks the (already-live) prediction
+    Episodes are reconstructed from the published_condition ticks the prediction
     stream carries, through the identical regime clock (training.regime) the
-    Worker runs online -- not an approximation, the same commits the Worker
-    would have written had it been logging them. The committed stream is new
-    and empty for every window tested so far, so the fallback is what actually
-    runs today; once the Worker starts emitting it this flips with no caller
-    change.
+    Worker runs online. The Worker now also commits its own
+    v1/movement_transitions stream, and this deliberately does not read it: that
+    stream only starts at the deploy that introduced it, so over a two-week
+    window it holds 13 route transitions against the replay's 124, and letting
+    it win on presence alone would shrink the fit to whatever tail of the window
+    it happens to cover. Over the overlap the two agree on 10 of those 13 (same
+    route, same target state, onset within a tick), so the switch is a change of
+    source rather than of signal -- but it is a model change, and it gets made
+    once the stream spans a window and the two fits have been graded against
+    each other.
 
-    Open regimes always come from the tick replay regardless of which
-    transition source wins -- there is no separate live open-regime snapshot to
-    read instead, and a route sitting in one state for the whole window needs
-    that censored observation whichever source produced its completed
-    episodes.
+    Open regimes come from the same tick replay: a route sitting in one state
+    for the whole window contributes only a censored observation, and dropping
+    it would bias every cell short.
 
     Fail-soft like every other optional params sidecar in this file: an
     archive error yields an empty block rather than blocking the publish.
@@ -743,25 +760,19 @@ def _movement_dwell(
         "n_atom": 0,
     }
     try:
-        from training.eval import STATES, load_movement_transitions
+        from training.eval import STATES
         from training.movement_backfill import (
             movement_open_regimes,
             reconstruct_movement_transitions,
         )
 
-        transitions = load_movement_transitions(
-            client, cfg.bucket, start_date, end_date, scope="route"
+        transitions = reconstruct_movement_transitions(
+            client=client,
+            bucket=cfg.bucket,
+            start_date=start_date,
+            end_date=end_date,
+            scope="route",
         )
-        source = "live"
-        if not transitions:
-            transitions = reconstruct_movement_transitions(
-                client=client,
-                bucket=cfg.bucket,
-                start_date=start_date,
-                end_date=end_date,
-                scope="route",
-            )
-            source = "backfill"
         open_regimes = (
             movement_open_regimes(
                 client=client,
@@ -797,7 +808,7 @@ def _movement_dwell(
                 if "atom_p" in cell:
                     n_atom += 1
         return out, {
-            "source": source,
+            "source": "tick_replay",
             "n_transitions": len(transitions),
             "n_own": n_own,
             "n_pooled": n_pooled,
@@ -1059,9 +1070,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         trained_at,
         static_successors,
         topology_source,
+        through,
     )
     n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
-        client, cfg.bucket, start_date, end_date, trained_at
+        client, cfg.bucket, start_date, end_date, trained_at, through
     )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "

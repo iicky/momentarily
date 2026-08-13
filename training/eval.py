@@ -74,7 +74,14 @@ class PredictionRecord:
     p_normal: float
     p_disrupted: float
     p_suspended: float
-    p_normal_in_30min: float
+    # None when withheld: the forecast came from a different arm than the one
+    # that produced the published condition (movement vs. alert-HMM). Mixing
+    # the two arms scored AUC 0.084 against the condition published 30
+    # minutes later — worse than either arm alone (movement 0.856, hmm
+    # 0.261) — because the combined ranking then tracks which arm answered
+    # rather than the risk. Older JSONL, written before the gate, carries
+    # whichever arm answered and still grades.
+    p_normal_in_30min: float | None
     # None when withheld. The 60/120-minute forecasts measured worse than naive
     # persistence (BSS -0.00 to -1.30) so the publisher stopped emitting them
     # for fitted-curve rows; only deterministic schedule rows carry a value.
@@ -124,7 +131,7 @@ class PredictionRecord:
             p_normal=float(raw["p_normal"]),
             p_disrupted=float(raw["p_disrupted"]),
             p_suspended=float(raw["p_suspended"]),
-            p_normal_in_30min=float(raw["p_normal_in_30min"]),
+            p_normal_in_30min=_opt_float(raw.get("p_normal_in_30min")),
             p_normal_in_60min=_opt_float(raw.get("p_normal_in_60min")),
             p_normal_in_120min=_opt_float(raw.get("p_normal_in_120min")),
             recovery_minutes=int(raw["recovery_minutes"]),

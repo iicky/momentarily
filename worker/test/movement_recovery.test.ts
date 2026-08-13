@@ -164,13 +164,17 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
 
     expect(disruptedInf.recovery_source).toBe('movement');
     expect(normalInf.recovery_source).toBe('movement');
+    // Movement decided both the condition and the forecast, so both are
+    // published rather than withheld.
+    expect(disruptedInf.p_normal_in_30min).not.toBeNull();
+    expect(normalInf.p_normal_in_30min).not.toBeNull();
     // The pinning assertion: materially lower, not just "less than".
-    expect(disruptedInf.p_normal_in_30min).toBeLessThan(normalInf.p_normal_in_30min - 0.3);
-    expect(disruptedInf.p_normal_in_30min).toBeLessThan(0.5);
-    expect(normalInf.p_normal_in_30min).toBeGreaterThan(0.9);
+    expect(disruptedInf.p_normal_in_30min!).toBeLessThan(normalInf.p_normal_in_30min! - 0.3);
+    expect(disruptedInf.p_normal_in_30min!).toBeLessThan(0.5);
+    expect(normalInf.p_normal_in_30min!).toBeGreaterThan(0.9);
   });
 
-  test('no dwell_movement in params falls back to unchanged alert-HMM behaviour', () => {
+  test('a movement-published condition with no movement curve withholds the forecast', () => {
     const withoutMovementCurve = trained(['A'], { dwellMovement: false });
     const withMovement = build({
       routeId: 'A',
@@ -190,12 +194,21 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     // own condition read doesn't depend on dwell_movement)...
     expect(withMovement.route_status.A!.condition).toBe('disrupted');
     // ...but with no curve to read, recovery falls all the way back to the
-    // alert-HMM path — identical output to a tick with no movement reading
-    // at all.
+    // alert-HMM path, and nothing from that path describes the movement
+    // regime consumers were shown. The forecast is withheld and the estimate
+    // carries the indeterminate ceiling rather than the alert regime's timing.
     expect(a.recovery_source).toBe('hmm');
-    expect(a.p_normal_in_30min).toBe(b.p_normal_in_30min);
-    expect(a.p_normal_in_60min).toBe(b.p_normal_in_60min);
-    expect(a.recovery_minutes).toBe(b.recovery_minutes);
+    expect(a.p_normal_in_30min).toBeNull();
+    expect(a.p_normal_in_60min).toBeNull();
+    expect(a.recovery_indeterminate).toBe(true);
+    expect(a.recovery_minutes).toBeGreaterThan(b.recovery_minutes);
+    // The route with no movement reading at all publishes 'unknown'. Its
+    // forecast is withheld too, but there is no disruption to time, so the
+    // estimate stays 0 rather than going indeterminate.
+    expect(withoutMovementStates.route_status.A!.condition).toBe('unknown');
+    expect(b.p_normal_in_30min).toBeNull();
+    expect(b.recovery_indeterminate).toBe(false);
+    expect(b.recovery_minutes).toBe(0);
   });
 
   test('movement_regime_entered_at of 0 falls back to the alert-HMM path', () => {
@@ -208,9 +221,12 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     const noMovement = build({ routeId: 'A', movement: null, trainedParams: params });
     const a = zeroClock.route_status.A!.inference!;
     const b = noMovement.route_status.A!.inference!;
+    // A movement regime with no usable clock cannot supply the forecast, and
+    // the alert arm's timing is not about the published `disrupted`.
     expect(a.recovery_source).toBe('hmm');
-    expect(a.p_normal_in_30min).toBe(b.p_normal_in_30min);
-    expect(a.recovery_minutes).toBe(b.recovery_minutes);
+    expect(a.p_normal_in_30min).toBeNull();
+    expect(b.p_normal_in_30min).toBeNull();
+    expect(a.recovery_indeterminate).toBe(true);
   });
 
   test('a suspended movement regime defers to the alert arm rather than assuming its exit split', () => {
@@ -242,12 +258,14 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     expect(suspendedCurve.route_status.A!.condition_source).toBe('movement');
     expect(inf.recovery_source).not.toBe('movement');
 
-    // And it matches the no-movement-reading fallback exactly, so deferring is
-    // a real handoff to the alert arm, not a separate half-path.
+    // Deferring is a real handoff to the alert arm — but the published
+    // condition is still movement's `suspended`, so the alert arm's estimate
+    // is withheld rather than shown against it.
     const fallback = build({ routeId: 'A', movement: null, trainedParams: params });
     const fb = fallback.route_status.A!.inference!;
     expect(inf.p_normal_in_30min).toBe(fb.p_normal_in_30min);
-    expect(inf.recovery_minutes).toBe(fb.recovery_minutes);
+    expect(inf.p_normal_in_30min).toBeNull();
+    expect(inf.recovery_indeterminate).toBe(true);
   });
 
   test('recovery_source is "movement" only when the movement curve was actually used', () => {
@@ -306,6 +324,125 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       trainedParams: params,
     });
     expect(withReading.route_status.A!.inference!.recovery_source).toBe('movement');
+  });
+
+  test('a not_scheduled route counts down its announced resume instead of guessing', () => {
+    // An announced resume is deterministic, so it beats every dwell estimate.
+    // The interesting half is the one below it: a not_scheduled route with no
+    // announced resume has nothing to count down to, and the alert arm's
+    // estimate of its own regime is not an answer — over 6 days that estimate
+    // missed by a mean of 1,135 minutes across 4,258 rows.
+    const params = trained(['A']);
+    const resume = NOW + 90 * MIN;
+    const snaps = new Map<string, RouteSnapshot>([
+      [
+        'A',
+        {
+          route_id: 'A',
+          observation: {
+            alert_count: 0,
+            severity_sum: 0,
+            has_suspended_alert: false,
+            has_delays: false,
+            has_service_change: false,
+            has_planned: true,
+            tod_bin: 0,
+          },
+          active_alert_ids: ['lmm:planned_work:1'],
+          alerts: [],
+          severity_max: 0,
+          primary_alert_type: 'No Scheduled Service',
+          coarse_label: 'No Scheduled Service',
+          by_direction: {
+            northbound: { alerts: [], primary_alert_type: null },
+            southbound: { alerts: [], primary_alert_type: null },
+          },
+          has_realtime_alert: false,
+          is_not_scheduled: true,
+          scheduled_resume_at: resume,
+        },
+      ],
+    ]);
+    const snap = build({ routeId: 'A', routeSnapshots: snaps, trainedParams: params });
+    const inf = snap.route_status.A!.inference!;
+    expect(snap.route_status.A!.condition).toBe('not_scheduled');
+    expect(inf.condition).toBe('not_scheduled');
+    expect(inf.recovery_source).toBe('schedule');
+    expect(inf.recovery_minutes).toBe(90);
+    expect(inf.resumes_at).toBe(resume);
+    expect(inf.recovery_indeterminate).toBe(false);
+    // Deterministic, so every horizon survives: not back within 30, back
+    // within 120.
+    expect(inf.p_normal_in_30min).toBe(0);
+    expect(inf.p_normal_in_120min).toBe(1);
+
+    // The overnight case: not_scheduled with nothing announced. The alert arm
+    // still has an opinion about its own regime; it is not published as this
+    // route's recovery.
+    const unannounced = new Map(snaps);
+    unannounced.set('A', { ...snaps.get('A')!, scheduled_resume_at: null });
+    const quiet = build({
+      routeId: 'A',
+      routeSnapshots: unannounced,
+      trainedParams: params,
+    });
+    const quietInf = quiet.route_status.A!.inference!;
+    expect(quiet.route_status.A!.condition).toBe('not_scheduled');
+    expect(quietInf.recovery_source).toBe('hmm');
+    expect(quietInf.recovery_indeterminate).toBe(true);
+    expect(quietInf.p_normal_in_30min).toBeNull();
+  });
+
+  test('an announced resume does not speak for a route published unknown', () => {
+    // A planned-work window carries a resume time whether or not movement can
+    // read the route. With no movement reading the published condition is
+    // 'unknown' — we declined to judge — so counting down to a resume would
+    // assert the disruption we just said we could not see.
+    const params = trained(['A']);
+    const snaps = new Map<string, RouteSnapshot>([
+      [
+        'A',
+        {
+          route_id: 'A',
+          observation: {
+            alert_count: 1,
+            severity_sum: 0,
+            has_suspended_alert: false,
+            has_delays: false,
+            has_service_change: false,
+            has_planned: true,
+            tod_bin: 0,
+          },
+          active_alert_ids: ['lmm:planned_work:2'],
+          alerts: [],
+          severity_max: 0,
+          primary_alert_type: 'Planned - Part Suspended',
+          coarse_label: 'Planned - Part Suspended',
+          by_direction: {
+            northbound: { alerts: [], primary_alert_type: null },
+            southbound: { alerts: [], primary_alert_type: null },
+          },
+          has_realtime_alert: false,
+          is_not_scheduled: false,
+          scheduled_resume_at: NOW + 90 * MIN,
+        },
+      ],
+    ]);
+    const snap = build({
+      routeId: 'A',
+      routeSnapshots: snaps,
+      movement: null,
+      trainedParams: params,
+    });
+    const inf = snap.route_status.A!.inference!;
+    expect(snap.route_status.A!.condition).toBe('unknown');
+    expect(inf.recovery_source).toBe('hmm');
+    expect(inf.p_normal_in_30min).toBeNull();
+    expect(inf.resumes_at).toBeNull();
+    // Nothing to recover from that we are willing to claim, so no ceiling
+    // either — the route simply carries no recovery estimate.
+    expect(inf.recovery_indeterminate).toBe(false);
+    expect(inf.recovery_minutes).toBe(0);
   });
 
   test('schedule countdown still wins over the movement curve', () => {

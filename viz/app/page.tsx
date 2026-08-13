@@ -316,7 +316,16 @@ function RouteDrawer({
                 {fmtMinutes(inf.recovery_minutes_high)}
               </span>
               <span className="k">P(normal in 30m)</span>
-              <span className="v">{(inf.p_normal_in_30min * 100).toFixed(0)}%</span>
+              {inf.p_normal_in_30min == null ? (
+                <span
+                  className="v muted"
+                  title="Withheld — this forecast came from a different arm than the one that set the published condition, so it's deliberately not shown rather than plotted on a mismatched scale."
+                >
+                  not forecast
+                </span>
+              ) : (
+                <span className="v">{(inf.p_normal_in_30min * 100).toFixed(0)}%</span>
+              )}
               <span className="k">P(normal in 60m)</span>
               {inf.p_normal_in_60min == null ? (
                 <span

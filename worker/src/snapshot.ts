@@ -16,7 +16,7 @@ import { codeProvenance } from './buildinfo';
 import type { AlertOut, AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
 import { buildRoutes, metaForRoute } from './derive';
 import { conditionalRecovery, pLeaveBy } from './dwell';
-import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES, projectForward } from './hmm';
+import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { DwellQuantiles, TrainedParams } from './params';
@@ -71,17 +71,25 @@ interface Inference {
   // is so persistent the model can't bound when it ends. recovery_minutes and
   // its bounds are clamped to the ceiling in that case.
   recovery_indeterminate: boolean;
-  p_normal_in_30min: number;
-  // Only the 30-minute horizon is published as a forecast. The 60- and
-  // 120-minute horizons measured worse than naive persistence in every
-  // population cut (BSS -0.00 to -1.30, AUC 0.395 and 0.352 — inverted), and
-  // the cause is the shape of the fitted elapsed-conditional dwell curve, not
-  // censoring and not the horizon projection, so more runtime will not fix it.
-  // They are therefore null whenever the value would come from a fitted curve.
-  //
-  // They survive when recovery_source === 'schedule', where the answer is a
-  // deterministic comparison against an announced resume time and carries none
-  // of that defect. Mirrors src/momentarily/schema.py Inference.
+  // A forecast about the PUBLISHED condition, or nothing. The condition in
+  // route_status is movement-primary; this number comes from whichever arm
+  // recovery_source names, and the two are not always the same arm. Graded
+  // against the condition actually published 30 minutes later, the
+  // movement-sourced rows score AUC 0.856 and the alert-sourced rows 0.261 —
+  // but publishing them in one field scores 0.084, WORSE than either, because
+  // the arms put their probabilities on different scales and the mixed
+  // ranking tracks which arm answered rather than the risk. So it is null
+  // whenever the forecast arm is not the arm that decided the condition.
+  p_normal_in_30min: number | null;
+  // Withheld for a different reason: these two measured worse than naive
+  // persistence in every population cut (BSS -0.00 to -1.30, AUC 0.395 and
+  // 0.352 — inverted), and the cause is the shape of the fitted
+  // elapsed-conditional dwell curve, not censoring and not the horizon
+  // projection, so more runtime will not fix it. They are null whenever the
+  // value would come from a fitted curve, and survive only when
+  // recovery_source === 'schedule', where the answer is a deterministic
+  // comparison against an announced resume time. Mirrors
+  // src/momentarily/schema.py Inference.
   p_normal_in_60min: number | null;
   p_normal_in_120min: number | null;
   model_warming_up: boolean;
@@ -372,19 +380,10 @@ export function buildSnapshot(args: {
     // one exception: a planned non-run wins. When movement can't judge (cold start,
     // feed gap, thin/absent signal) the condition is 'unknown' — an honest coverage
     // gap, never an alert-derived fallback.
-    const movementCondition = movementRegime?.state;
-    let condition: string;
-    let condition_source: string;
-    if (schedule.isNotScheduled) {
-      condition = 'not_scheduled';
-      condition_source = 'schedule';
-    } else if (movementCondition !== undefined) {
-      condition = movementCondition;
-      condition_source = 'movement';
-    } else {
-      condition = 'unknown';
-      condition_source = 'unknown';
-    }
+    const { condition, source: condition_source } = resolvePublishedCondition(
+      schedule,
+      movementRegime,
+    );
     route_status[routeId] = {
       route_id: routeId,
       alerts: activeAlerts,
@@ -612,6 +611,23 @@ interface MovementRegime {
   entered_at: number;
 }
 
+// Which arm decides the published condition. buildSnapshot reads the condition
+// off it and buildInference gates the forecast on it, so the precedence lives
+// here once — a second copy that drifted would publish a forecast about a
+// condition nobody was shown.
+type ConditionSource = 'schedule' | 'movement' | 'unknown';
+
+function resolvePublishedCondition(
+  schedule: ScheduleFacts,
+  movementRegime: MovementRegime | null,
+): { condition: string; source: ConditionSource } {
+  if (schedule.isNotScheduled) return { condition: 'not_scheduled', source: 'schedule' };
+  if (movementRegime !== null) {
+    return { condition: movementRegime.state, source: 'movement' };
+  }
+  return { condition: 'unknown', source: 'unknown' };
+}
+
 // atom_p/atom_sec activate the mixture closed form in pLeaveBy/conditionalRecovery
 // only together, and only when atom_p is a genuine probability — exactly 0 or 1
 // would either no-op or swallow the whole tail, not the intended point mass. Any
@@ -641,18 +657,13 @@ function buildInference(
   const probs = roll.filter.probabilities;
   const params = paramsForRoute(trained, routeId);
 
-  // p_normal_in_X — project forward to find marginal P(normal in k min)
-  const ticksFor = (minutes: number): number =>
-    Math.max(1, Math.round((minutes * 60) / tickSeconds));
-  const p30 = projectForward(roll.filter, params, ticksFor(30));
-  const p60 = projectForward(roll.filter, params, ticksFor(60));
-  const p120 = projectForward(roll.filter, params, ticksFor(120));
-  // Geometric projection by default; overridden below with the empirical
-  // recovery curve when a dwell cell exists (it's cause-aware and heavy-tailed,
-  // where the projection is neither — roughly halves 120-min Brier).
-  let p_normal_in_30 = p30[0];
-  let p_normal_in_60 = p60[0];
-  let p_normal_in_120 = p120[0];
+  // Set only by the two arms that can also decide the published condition —
+  // see the gate at the return. The alert arm still estimates recovery_minutes
+  // below, but it no longer produces a forecast: on its own clock and its own
+  // regime, that number described a condition nobody was shown.
+  let p_normal_in_30: number | null = null;
+  let p_normal_in_60: number | null = null;
+  let p_normal_in_120: number | null = null;
 
   const argmaxIdx = argmaxOf(probs);
 
@@ -682,14 +693,27 @@ function buildInference(
   let resumes_at: number | null = null;
   let overdue = false;
 
+  // What consumers are actually shown. Every arm below is judged against it,
+  // not against the alert-HMM shadow: `condition` above hard-returns normal
+  // whenever there are no disruptive alerts, so a route published
+  // not_scheduled overnight used to look "normal" here and lose its
+  // deterministic countdown to an alert-regime dwell estimate.
+  const publishedCondition = resolvePublishedCondition(schedule, movementRegime).condition;
+
+  // Whether "when is it back" is even a question for this route. Published
+  // normal: nothing to recover from. Published unknown: we declined to judge,
+  // and answering anyway would assert the disruption we just said we could not
+  // see. Both the schedule countdown and the withholding gate below key off
+  // this one predicate so they cannot disagree about `unknown`.
+  const publishedNotNormal =
+    publishedCondition !== 'normal' && publishedCondition !== 'unknown';
+
   // A planned-work disruption announces its own resume time (the window end),
   // so recovery is a deterministic schedule lookup, not a dwell estimate — for
   // ALL planned_work, not just no-service. Real-time alerts have no trustworthy
   // end and keep HMM recovery; when both are present the real-time alert wins.
   const scheduleRecovery =
-    condition !== 'normal'
-    && !schedule.hasRealtimeAlert
-    && schedule.scheduledResumeAt !== null;
+    publishedNotNormal && !schedule.hasRealtimeAlert && schedule.scheduledResumeAt !== null;
 
   // Movement curve, conditioned on the movement clock — only when the
   // published condition actually came from movement (mirrors buildSnapshot's
@@ -742,26 +766,11 @@ function buildInference(
       // dwells the unconditional quantiles/fractions are only correct at
       // elapsed=0, so recovery is the *remaining* time.
       const elapsedSec = Math.max(0, now - roll.filter.regime_entered_at);
-      // The dwell curve is all-cause — time until the regime ends, whether to
-      // normal or by escalating to suspended. p_normal_in_X needs P(normal), not
-      // P(exited), so weight the exit probability by the share of exits that go
-      // to normal (from the transition matrix). Homogeneous approximation; a
-      // competing-risks cumulative-incidence split is the proper version.
-      const ci = condition === 'suspended' ? 2 : 1;
-      const sl = params.transition[ci]![ci]!;
-      const toNormal =
-        sl < 1 ? Math.min(1, Math.max(0, params.transition[ci]![0]! / (1 - sl))) : 0;
 
       if (empirical.curve_sec !== undefined) {
-        // p_normal: exit probability (tail-extrapolated past the curve) split to
-        // the normal destination — kept meaningful once the regime outlives every
-        // observed dwell, where recovery_minutes below goes indeterminate.
         const curve = empirical.curve_sec;
         const tail = empirical.tail_ll;
         const atom = atomFor(empirical);
-        p_normal_in_30 = pLeaveBy(curve, elapsedSec, 1800, tail, atom) * toNormal;
-        p_normal_in_60 = pLeaveBy(curve, elapsedSec, 3600, tail, atom) * toNormal;
-        p_normal_in_120 = pLeaveBy(curve, elapsedSec, 7200, tail, atom) * toNormal;
         const conditional = conditionalRecovery(curve, elapsedSec, tail, atom);
         if (conditional !== null) {
           recovery_minutes = clamp(secToMin(conditional.median_sec));
@@ -782,10 +791,8 @@ function buildInference(
         recovery_minutes_low = clamp(secToMin(empirical.q25_sec));
         recovery_minutes_high = clamp(secToMin(empirical.q75_sec));
         recovery_indeterminate = recovery_minutes >= MAX_RECOVERY_MINUTES;
-        if (empirical.recover_by_30 !== undefined) p_normal_in_30 = empirical.recover_by_30 * toNormal;
-        if (empirical.recover_by_60 !== undefined) p_normal_in_60 = empirical.recover_by_60 * toNormal;
-        if (empirical.recover_by_120 !== undefined)
-          p_normal_in_120 = empirical.recover_by_120 * toNormal;
+        // Legacy cells carry unconditional recover_by_* fractions; those were
+        // the alert arm's forecast and are no longer published.
       }
     } else {
       const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
@@ -797,29 +804,6 @@ function buildInference(
       recovery_minutes_low = clamp(dwellToMinutes(dwellTicks.q25));
       recovery_minutes_high = clamp(dwellToMinutes(dwellTicks.q75));
     }
-  } else {
-    // Normal now. The geometric projection decays a per-tick self-loop, so it
-    // reads P(still normal) down with the horizon even though a normal regime
-    // that has already run for hours is very unlikely to end in the next one —
-    // the projection has no elapsed term. Use the same conditional survival the
-    // recovery side uses, off this route's normal-regime dwell curve: exits from
-    // normal go to disrupted or suspended, never to normal, so P(normal at
-    // elapsed+H) is just the survival, with no destination split.
-    //
-    // Slight under-estimate: a route that leaves normal and returns inside the
-    // horizon counts as an exit. Over 30-120min against multi-hour normal
-    // regimes that is far smaller than the bias it replaces.
-    const empirical = dwellForRouteState(trained, routeId, 'normal');
-    const curve = empirical?.curve_sec;
-    if (empirical !== null && curve !== undefined) {
-      const elapsedSec = Math.max(0, now - roll.filter.regime_entered_at);
-      const atom = atomFor(empirical);
-      const staysNormalFor = (horizonSec: number): number =>
-        1 - pLeaveBy(curve, elapsedSec, horizonSec, empirical.tail_ll, atom);
-      p_normal_in_30 = staysNormalFor(1800);
-      p_normal_in_60 = staysNormalFor(3600);
-      p_normal_in_120 = staysNormalFor(7200);
-    }
   }
 
   // The filter is still settling when: the route just appeared (regime younger
@@ -829,6 +813,32 @@ function buildInference(
     roll.published.label === PUBLISHED_UNKNOWN
     || roll.published.pending_streak < HYSTERESIS_TICKS
     || now - roll.filter.regime_entered_at < HYSTERESIS_TICKS * tickSeconds;
+  // The forecast is published only when it is about the condition we publish.
+  // Both arms below are: movement shares the published condition's arm, clock
+  // and regime, and the schedule countdown can only fire when the published
+  // condition is already not normal. Anything else is the alert arm
+  // forecasting its own regime on its own clock, which is not the regime
+  // consumers were shown. Gated here, at the single point where the inference
+  // is assembled, rather than in each arm: there are five ways these values
+  // get set and a per-arm gate would silently miss the next one added.
+  const forecastsThePublishedCondition =
+    recovery_source === 'movement' || recovery_source === 'schedule';
+
+  // recovery_minutes is the same claim in minutes, so it gets the same gate,
+  // wherever the question arises at all. Measured over 6 days of the prediction
+  // stream: alert-arm estimates shown against schedule-published not_scheduled
+  // routes missed by a mean of 1,135 minutes over 4,258 rows (median 680) —
+  // they were timing the alert regime's return, not the route's. Withheld the
+  // way the outlived-every-dwell case already is: recovery_indeterminate says
+  // the number is not a prediction and the value carries the ceiling, rather
+  // than a fabricated estimate. Not null, because recovery_minutes is an
+  // integer in the published snapshot contract that external consumers read.
+  if (publishedNotNormal && !forecastsThePublishedCondition) {
+    recovery_minutes = MAX_RECOVERY_MINUTES;
+    recovery_minutes_low = MAX_RECOVERY_MINUTES;
+    recovery_minutes_high = MAX_RECOVERY_MINUTES;
+    recovery_indeterminate = true;
+  }
 
   return {
     condition,
@@ -846,13 +856,13 @@ function buildInference(
     recovery_minutes_low,
     recovery_minutes_high,
     recovery_indeterminate,
-    p_normal_in_30min: p_normal_in_30,
-    // Withheld for every fitted-curve forecast — see the Inference interface
-    // above. Gated here, at the single point where the inference is assembled,
-    // rather than in each arm: there are five ways these values get set and a
-    // per-arm gate would silently miss the next one added.
-    p_normal_in_60min: recovery_source === 'schedule' ? p_normal_in_60 : null,
-    p_normal_in_120min: recovery_source === 'schedule' ? p_normal_in_120 : null,
+    p_normal_in_30min: forecastsThePublishedCondition ? p_normal_in_30 : null,
+    // Same gate, plus the measured one: only the schedule arm's deterministic
+    // countdown survives at these horizons — see the Inference interface above.
+    p_normal_in_60min:
+      forecastsThePublishedCondition && recovery_source === 'schedule' ? p_normal_in_60 : null,
+    p_normal_in_120min:
+      forecastsThePublishedCondition && recovery_source === 'schedule' ? p_normal_in_120 : null,
     model_warming_up,
     recovery_source,
     resumes_at,
@@ -1234,7 +1244,7 @@ export function scrubCorruptInferences(s: Snapshot): string[] {
       Number.isFinite(inf.p_normal) &&
       Number.isFinite(inf.p_disrupted) &&
       Number.isFinite(inf.p_suspended) &&
-      Number.isFinite(inf.p_normal_in_30min) &&
+      finiteOrWithheld(inf.p_normal_in_30min) &&
       finiteOrWithheld(inf.p_normal_in_60min) &&
       finiteOrWithheld(inf.p_normal_in_120min) &&
       Number.isFinite(inf.recovery_minutes) &&

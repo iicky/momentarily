@@ -116,6 +116,28 @@ test("reliability skips a withheld (null) horizon without throwing or miscountin
   assert.equal(r120.n, 1);
 });
 
+test("reliability skips a withheld (null) 30min forecast without throwing or miscounting it", () => {
+  const tls = buildTimelines(transitions, NOW);
+  const predictions = [
+    // p_normal_in_30min withheld: the forecast arm differs from the arm
+    // that produced the published condition — mixing them scores AUC 0.084
+    // against condition, worse than either arm alone. reliability() must
+    // skip it, not coerce null -> 0 and silently score a confident-looking
+    // miss.
+    pred({ ts: 100, p_normal_in_30min: null, p_normal_in_60min: 0.6 }),
+  ];
+
+  const r30 = reliability(predictions, tls, 30);
+  assert.equal(r30.n, 0);
+  assert.ok(r30.bins.every((b) => b.n === 0));
+  assert.ok(Number.isNaN(r30.brier));
+
+  // A null neighbor on one horizon field doesn't leak into another horizon's
+  // scoring on the same record.
+  const r60 = reliability(predictions, tls, 60);
+  assert.equal(r60.n, 1);
+});
+
 test("recoveryError compares predicted band to actual time-to-normal", () => {
   const tls = buildTimelines(transitions, NOW);
   const predictions = [

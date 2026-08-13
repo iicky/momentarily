@@ -560,6 +560,37 @@ def test_schedule_rows_excluded_from_calibration_and_recovery():
     assert cal.excluded_schedule == 1
 
 
+def test_calibrate_skips_withheld_30min_forecast():
+    """p_normal_in_30min is null when the forecast arm differs from the arm
+    that produced the published condition — mixing arms scored AUC 0.084
+    against the condition published 30 minutes later, worse than either arm
+    alone (movement 0.856, hmm 0.261). calibrate() must skip a withheld row,
+    not coerce None -> 0 into a confident-looking miss."""
+    ts0 = 1_700_000_000
+    preds = [
+        # withheld 30min forecast; 60min on the same record is still real.
+        replace(_pred(ts=ts0, route="1"), p_normal_in_30min=None),
+        # recovery_source="schedule" keeps this row from also being graded as
+        # its own T+30 predictor against the ts0+3600 row below.
+        _pred(
+            ts=ts0 + 1800, route="1", condition="disrupted", recovery_source="schedule"
+        ),
+        _pred(ts=ts0 + 3600, route="1", condition="disrupted"),
+        # route 2's 30min forecast is real — proves the withheld row on
+        # route 1 doesn't suppress or corrupt another route's count.
+        _pred(ts=ts0, route="2", p_normal_in_30min=0.5),
+        _pred(ts=ts0 + 1800, route="2", condition="normal"),
+    ]
+    result_30 = calibrate(preds, horizon_min=30)
+    assert result_30.n == 1
+    assert result_30.brier == 0.25  # only route 2: (0.5 - 1.0) ** 2
+
+    # The null 30min field on route 1's record doesn't leak into the 60min
+    # horizon, which is still present and gradable on the same record.
+    result_60 = calibrate(preds, horizon_min=60)
+    assert result_60.n == 1
+
+
 def test_build_calibration_is_compact_subset():
     # build_calibration keeps the window-aggregate reliability + recovery but
     # drops the per-route/per-alert/per-version breakdowns that bloat eval.json.

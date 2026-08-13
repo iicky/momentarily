@@ -149,22 +149,27 @@ class Inference(BaseModel):
 
     # Forward predictions.
     #
-    # Only the 30-minute horizon is published as a forecast. It has real,
-    # repeatedly measured skill (BSS +0.29 to +0.40 across every population cut
-    # tested). The 60- and 120-minute horizons lose to naive persistence in
-    # every cut (BSS -0.00 to -1.30, AUC 0.395 and 0.352 — i.e. inverted, worse
-    # than a coin flip), the loss is not a left-censoring artifact, and the
-    # horizon projection itself was verified monotone, so the defect is the
-    # shape of the fitted elapsed-conditional dwell curve. That needs a
-    # model-form change and will not improve with more runtime, so rather than
-    # publish a number we have measured to be anti-informative, the two longer
-    # horizons are withheld: null whenever the value would come from a fitted
-    # curve.
+    # p_normal_in_30min is populated only when the forecast came from the same
+    # arm (movement vs. alert-HMM) that produced `condition` above. Graded
+    # against the condition actually published 30 minutes later (25,238
+    # samples over 6 days), movement-sourced rows score AUC 0.856 and
+    # hmm-sourced rows score AUC 0.261 — the two arms put probability on
+    # different scales, so mixing them scores AUC 0.084, worse than either arm
+    # alone, because the combined ranking then tracks which arm answered
+    # rather than the risk. Null whenever the sourcing arm doesn't match.
+    p_normal_in_30min: float | None = None
+    # The 60- and 120-minute horizons lose to naive persistence in every cut
+    # (BSS -0.00 to -1.30, AUC 0.395 and 0.352 — i.e. inverted, worse than a
+    # coin flip), the loss is not a left-censoring artifact, and the horizon
+    # projection itself was verified monotone, so the defect is the shape of
+    # the fitted elapsed-conditional dwell curve. That needs a model-form
+    # change and will not improve with more runtime, so rather than publish a
+    # number we have measured to be anti-informative, the two longer horizons
+    # are withheld: null whenever the value would come from a fitted curve.
     #
     # They stay populated when recovery_source == "schedule", where the answer
     # is a deterministic comparison against an announced resume time rather than
     # a forecast, and so carries none of the above defect.
-    p_normal_in_30min: float
     p_normal_in_60min: float | None = None
     p_normal_in_120min: float | None = None
 
@@ -172,9 +177,11 @@ class Inference(BaseModel):
     model_warming_up: bool = False
 
     # Where recovery_minutes comes from: "schedule" is a deterministic lookup of
-    # the planned-work resume time (no model uncertainty); "hmm" is the dwell
-    # estimate. Graders exclude "schedule" rows from HMM calibration.
-    recovery_source: str = "hmm"  # "hmm" | "schedule"
+    # the planned-work resume time (no model uncertainty); "movement" is the
+    # movement-clock dwell curve; "hmm" is the alert-regime dwell estimate, the
+    # fallback. Only the first two also decide the published condition, so only
+    # they carry a forecast. Graders exclude "schedule" rows from HMM calibration.
+    recovery_source: str = "hmm"  # "hmm" | "schedule" | "movement"
     # Announced resume time (epoch s) for schedule recovery; None for "hmm".
     resumes_at: int | None = None
     # now has passed resumes_at but the planned alert is still active — recovery
@@ -420,7 +427,7 @@ class SegmentRecovery(BaseModel):
     recovery_minutes_low: int
     recovery_minutes_high: int
     recovery_indeterminate: bool = False
-    p_normal_in_30min: float
+    p_normal_in_30min: float | None
     p_normal_in_60min: float
     p_normal_in_120min: float
 

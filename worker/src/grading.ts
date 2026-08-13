@@ -33,11 +33,13 @@ export interface PredictionRecord {
   p_normal: number;
   p_disrupted: number;
   p_suspended: number;
-  p_normal_in_30min: number;
-  // Null once withheld: the 60/120-minute forecasts measured worse than naive
-  // persistence, so they are only populated for deterministic schedule rows.
-  // The grader must skip nulls rather than coerce them (a null read as 0 would
-  // score as a confident "will not recover", which is not what was published).
+  // Null when withheld. All three horizons can be, for two different reasons:
+  // 30 when the forecast came from a different arm than the published
+  // condition, 60/120 because they measured worse than naive persistence and
+  // are only populated for deterministic schedule rows. The grader must skip
+  // nulls rather than coerce them — a null read as 0 would score as a
+  // confident "will not recover", which is not what was published.
+  p_normal_in_30min: number | null;
   p_normal_in_60min: number | null;
   p_normal_in_120min: number | null;
   recovery_minutes: number;

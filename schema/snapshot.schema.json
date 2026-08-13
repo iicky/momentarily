@@ -646,8 +646,16 @@
           "title": "P Normal In 120Min"
         },
         "p_normal_in_30min": {
-          "title": "P Normal In 30Min",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P Normal In 30Min"
         },
         "p_normal_in_60min": {
           "anyOf": [
@@ -718,8 +726,7 @@
         "regime_entered_at",
         "regime_age_seconds",
         "recovery_minutes_low",
-        "recovery_minutes_high",
-        "p_normal_in_30min"
+        "recovery_minutes_high"
       ],
       "title": "Inference",
       "type": "object"
@@ -1085,8 +1092,15 @@
           "type": "number"
         },
         "p_normal_in_30min": {
-          "title": "P Normal In 30Min",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P Normal In 30Min"
         },
         "p_normal_in_60min": {
           "title": "P Normal In 60Min",

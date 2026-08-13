@@ -298,7 +298,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     expect(snap.route_status['1']!.inference!.recovery_minutes).toBe(0);
   });
 
-  test('p_normal_in_X uses empirical recovery fractions, split to the normal destination', () => {
+  test('an alert-arm inference publishes recovery but withholds every forecast horizon', () => {
     const trained = {
       schema_version: '1',
       trained_at: 1,
@@ -347,17 +347,17 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       tickSeconds: TICK_SECONDS,
     });
     const inf = snap.route_status['1']!.inference!;
-    // Empirical recovery curve replaces the geometric projection, weighted by the
-    // share of disrupted exits that go to normal (here the default params'
-    // transition give toNormal = 0.8): the all-cause recover_by fraction is
-    // P(exited), not P(normal).
-    expect(inf.p_normal_in_30min).toBeCloseTo(0.4 * 0.8, 10);
-    // 60/120min are withheld on every fitted-curve arm (this cell has no
-    // curve_sec, so it's the "pre-curve params.json" branch — still
-    // recovery_source 'hmm', not 'schedule') — see the Inference interface
-    // in snapshot.ts.
+    // The alert arm still estimates recovery from the empirical cell, but it
+    // publishes no forecast: no movement reading here, so the published
+    // condition is 'unknown' and a probability sourced from the alert regime
+    // would describe something else entirely.
+    expect(snap.route_status['1']!.condition).toBe('unknown');
     expect(inf.recovery_source).toBe('hmm');
+    expect(inf.p_normal_in_30min).toBeNull();
     expect(inf.p_normal_in_60min).toBeNull();
     expect(inf.p_normal_in_120min).toBeNull();
+    // An unreadable route has nothing to recover from, so the estimate is not
+    // clamped to the indeterminate ceiling either.
+    expect(inf.recovery_indeterminate).toBe(false);
   });
 });

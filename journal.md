@@ -2001,3 +2001,295 @@ they cannot express. Splitting would fabricate observations. At 5.7% of
 traversals the discard is small, and TraceStats reports it.
 
 Reproducible: `murk exec -- uv run python -m training.trace`.
+
+
+## 2026-08-12 — the through-stops retrain landed, but three silent faults sat between the code and the artifact
+
+origin: agent
+
+The through-stop counting fix had been deployed and inert since 8e88644: the
+Worker falls back to counting every stop until params.json carries
+`movement_through_stops`, and the retrain is manual. Publishing it turned out
+to require fixing three things first, none of which announced themselves.
+
+### 1. `dwell_movement` had silently gone to zero cells
+
+The first dry run reported `dwell_movement_cells: 0` against the 25 routes the
+live params carried. One line on stderr: `movement dwell skipped (math domain
+error)`, swallowed by the fail-soft wrapper that exists so an archive hiccup
+can't block a publish.
+
+The cause is numerical, not statistical. `pooled_dwell` fits a shared shape
+across routes and then sweeps each route's log-scale over e^4..e^15.9 by golden
+section. When a state's episodes are all one tick long — two disrupted samples
+of 294s and 300s — the shared shape fits at **172.95**, and at the top of that
+sweep `(294/86679)**172.95` underflows to exactly 0.0. `math.log(0)` raises.
+
+Fixed by evaluating the likelihood through the logarithm: `log_z = shape *
+(log t - log scale)`, with `log(1+z)` as a softplus so neither end can overflow.
+`training/dwell._loglogistic_survival` had the mirror-image bug — at that shape
+`(t/scale)**shape` raises OverflowError in Python while the TS twin in dwell.ts
+quietly yields Infinity, so the two sides disagreed only on the inputs that
+crash. After the fix: 32 cells, and the published block is back to 25 routes.
+
+The general lesson is about the guard, not the math: `t = max(t, _MIN_DURATION)`
+keeps `t` positive, which looks like it protects `log(t)` and does — but `z` is
+a *power* of a ratio and has its own range. Flooring the input does not bound
+the intermediate.
+
+### 2. Every local retrain since 2026-08-10 stamped a stale `code_sha`
+
+The published params claimed `code_sha: fa513e5`, a commit from 2026-07-17,
+with `dirty: null` — for a run that produced a feature that commit predates.
+The previous live params said the same thing.
+
+`.build-sha` is a gitignored file that `trainer deploy:ci` writes into the
+checkout before the container build, because the image excludes `.git`.
+`code_provenance()` consulted it *above* `git rev-parse HEAD`, so once a local
+deploy has run, the file shadows the live tree forever and `dirty` can never be
+computed. Reordered: env var, then the live git tree, then the file, then
+unknown. The file is the container's only source; in a checkout the tree that
+actually ran the code is both more accurate and the only thing that can answer
+whether it was dirty.
+
+### 3. The Worker's committed movement-transition stream is not yet a source
+
+`_movement_dwell` preferred `v1/movement_transitions` whenever it was non-empty,
+falling back to replaying `published_condition` ticks. That stream started
+filling at the deploy that introduced it, so the preference flipped this week —
+silently, on presence alone. Over 2026-07-30..08-12 it holds **13 route
+transitions against the replay's 124**; episode census 3 vs 28, and cells with
+enough completed episodes to speak for themselves 0 vs 3.
+
+The two sources do agree: 10 of the 13 match a replay record on route, target
+state and onset within one tick. Exact-key agreement is 0/28, because the two
+debounce the onset differently — which is why the loose matcher is the honest
+one here. So this is a change of source, not of signal, and it is still a model
+change that has to be graded rather than triggered by a deploy. Pinned to the
+replay; the switch is its own piece of work.
+
+### The publish
+
+`v1786578716` over 2026-07-30..08-12: 28/28 routes, `movement_through_stops`
+with **1,659 stops across 25 routes**, dwell_movement 25 routes (32 cells, 7
+with an atom), baseline 210 cells. Live snapshot at the next boundary tick:
+26/30 routes movement-sourced, the 4 `unknown` being GS, 7X, 6X and FX. No
+`advance counters include every stop` line in the Worker log, which was the
+whole point.
+
+Two fits that the through-stops commit had left unscoped are now scoped by the
+same set: `write_segment_params`' per-leaf baseline (1,658 cells, one per
+published through stop) and `write_segment_dwell`'s vehicle reconstruction.
+They were fitting over layovers while the Worker scored against a through-stop
+normal.
+
+**Still false in the live artifact:** `v1786578716` was published before the
+provenance fix, so it carries the stale sha. The corrected stamp needs one more
+publish from a recorded commit.
+
+
+## 2026-08-12 — the degradation label was mostly measuring the clock: hourly bins cut degraded prevalence 11.0% -> 1.8%
+
+origin: agent
+
+The assigned_n degradation label is meant to be the truth a movement model gets
+graded against. Over 2026-08-03..08-13 it called **11.0% of all judgeable
+route-ticks degraded**, and the per-hour breakdown said most of that was not
+disruption at all:
+
+| UTC hour | ET | prevalence, tod_bin | prevalence, hourly |
+| --- | --- | --- | --- |
+| 10 | 06:00 | **26.8%** | 5.9% |
+| 03 | 23:00 | **18.9%** | 2.6% |
+| others | | 4.6-14.7% | 0.2-8.0% |
+
+Both spikes sit at a `tod_bin` edge. The bins are 4-6 hours wide (00-05, 06-09,
+10-14, 15-19, 20-23), so the 06:00-09:59 median is set by the 08:00 rush peak
+and a route running its genuine 06:00 service reads at a third of "normal".
+Measured on 14 synthetic weekday mornings ramping 6 -> 30 trains, the wide
+bucket's median is 21 and 06:00 service scores 6/21 = 0.29, under the 0.5
+degrade floor, every single morning.
+
+Switched this label — and the `recovery_independent` grading path that consumes
+the same call — to `momentarily.hmm.schedule_bin`: ET (weekday|weekend, hour),
+which already existed for the schedule-rate channel and is already mirrored in
+the Worker. `tod_bin` is untouched; the HMM emission channel still scores the
+live service ratio against the `(route, tod_bin)` baseline shipped in
+params.json, and that pairing has to keep agreeing with the Worker.
+
+Result over the same window: 1,122 baseline cells instead of 131, degraded
+prevalence **11.00% -> 1.79%**, events 210 -> 142, distinct routes 23 -> 14 (the
+nine that vanish were flagged only by the bin edge), and the share of onsets
+landing in the top two ET clock hours 42% -> 30%.
+
+**Negative result: finer than hourly is not worth it.** Same window, same
+thresholds, four granularities:
+
+| bin | cells | judgeable ticks | events | degraded | top-2 ET hours |
+| --- | --- | --- | --- | --- | --- |
+| tod_bin (4-6h) | 131 | 69,636 | 210 | 11.00% | 42% |
+| hourly | 1,122 | 69,546 | 142 | 1.79% | 30% |
+| half-hour | 1,197 | 55,963 | 66 | 1.22% | 26% |
+| quarter-hour | 2,364 | 55,621 | 54 | 0.90% | 26% |
+
+Half-hourly buys 4 points of edge concentration and costs **20% of every
+judgeable tick** (69,546 -> 55,963) plus two more routes, because cells fall
+under `min_samples`. Note the cell counts: half-hour yields 1,197 where the
+split predicts ~2,244, so nearly half the buckets never reach 20 samples in an
+11-day window. Quarter-hour drops ~47%. Hourly is the last granularity that
+costs no coverage at all (69,546 of 69,636, a 0.13% loss).
+
+The residual concentration after the fix is ET 05:00 (27 onsets) and 06:00
+(16) — the hours service ramps hardest within the hour. That is the part a
+half-hour bin would actually fix, and it is not worth a fifth of the label.
+
+
+## 2026-08-12 — per-segment traversal baselines: 1,338 of 1,924 hops fit their own curve off eight hours of trace
+
+origin: agent
+
+`training/traversal.py` turns the minute trace's per-(trip, hop) traversals
+into a per-(route, direction, from_stop, to_stop) baseline, plus the deviation
+of a live hop from it. First fit, over 2026-08-12 16:30Z..08-13 00:14Z (473
+snapshots, 7h45m — the whole archive, which started today):
+
+| | |
+| --- | --- |
+| exact single hops fitted | 74,706 |
+| distinct hops seen | 1,924 |
+| hops fitted on their own data | **1,338** |
+| hops anchored on their scheduled time | 257 |
+| hops omitted, thin and unscheduled | 329 |
+| median own-fit hop | 109.1 s |
+| median p90/median within a hop | 1.351 |
+| median observed/scheduled | 1.056 |
+
+Eight hours is already enough for 70% of hops to clear 20 observations, which
+was the open question — the median hop gets 47 samples.
+
+### Arrival-to-arrival, not travel time
+
+`Traversal` carries two clocks and `to_dwell_samples` returns the
+departure-to-arrival one, which sounds like the right thing to compare against
+a departure-to-arrival timetable. It is the wrong one to FIT, for two measured
+reasons: only 24,320 of 74,706 exact hops (26.5%) ever caught the train in
+transit and so have a departure at all, and the ones that do are selected for
+being slow — a hop still in motion when the next minute's poll lands. Fitting
+the tail-detector on a tail-biased quarter of the data is backwards.
+
+Arrival-to-arrival is also the rider's quantity, and the timetable is
+comparable to it anyway: NYCT allocates no dwell on 95.7% of stop_times rows,
+which is why observed/scheduled lands at 1.056 rather than somewhere near 1.3.
+
+Only EXACT single hops reach a cell. A RIGHT-censored traversal has `to_stop =
+None` — the train was last seen heading somewhere it never reached — so there
+is no segment to file it under, and filing it by from_stop would pool a branch
+point's two successors. It is not a right-censored observation of a known hop;
+it is an observation of an unknown one. 390 dropped, against 5,295 interval
+spans.
+
+### Thin hops take their level from the timetable, not from the population
+
+Pooling raw seconds across segments would put a 60-second hop and a 400-second
+hop in one distribution. The exchangeable quantity is the RATIO to the
+scheduled time, so a thin hop gets the population's ratio curve rescaled by its
+own scheduled hop — level from the timetable, shape and dwell allowance from
+the population. A thin hop the timetable does not name gets no cell at all.
+
+### The signal the advance rate could not reach
+
+The slowest own-fit segments run **4.03x, 3.88x and 3.82x** their scheduled
+time (n = 93, 64, 104). A binary "did it leave" cannot express that at all, and
+at 5-minute polling those stations were mostly interior to a multi-station jump
+and never observed.
+
+**Bug found by a degenerate fixture:** `fit_loglogistic` overflowed on a sample
+with zero variance (30 hops all timed at 180 s). The MLE shape is at infinity,
+and Nelder-Mead's expansion step reached log-shape 776 — `math.exp` raises long
+before the likelihood says stop. Bounded the simplex to log-shape +/-6 and
+log-scale +/-20; shape 400 is already a point mass, so the box is inert on real
+data. Same family as the log-space likelihood fix earlier today, different
+mechanism: that one underflowed inside the likelihood, this one overflowed in
+the parameterisation on the way to it.
+
+Not graded. There is one evening of archive and no held-out window; the epic
+says weeks, and nothing here is retroactive.
+
+
+## 2026-08-12 — the advance trip-wire graded against the assigned_n label: 7 firings in 54,000 ticks, zero agreement. Retuning does not fix it and neither does the estimator
+
+origin: agent
+
+The advance trip-wire (`load_r2.classify_direction`) had never been graded
+against a label that could see it. The assigned_n degradation label now can be
+trusted enough to try (see the hourly-bins entry above), so: 10 days of vehicle
+archive, through-stops counting, the live baseline, scored per (route, tick)
+against the label's degraded/normal. Read every count below as agreement with
+that proxy, not with ground truth — the last section is about the gap between
+the two.
+
+```
+label base rate                                        1.795%
+current (ratio 0.5, alpha 0.05, min_matched 3)
+  graded 53,993   fired 7   agree 0   disagree 7   missed 276
+```
+
+Seven firings in fifty-four thousand judgeable route-ticks, and not one of them
+lands on a labelled degradation. Every knob was swept — min_matched 3/8/15,
+ratio 0.5/0.25, alpha 0.05/0.001, and their combinations — and every setting
+either fires less or fires zero. There is nothing to retune.
+
+### The baseline estimator IS wrong, and fixing it changes nothing
+
+`compute_advance_baseline` takes p0 as the MEDIAN of per-tick advance
+fractions. With layovers excluded, **71.3% of ticks have zero stalls**, so the
+median sits on the ceiling and gets floored to 0.9990. That is not the cell's
+advance rate:
+
+| | median of tick fractions | pooled advanced/matched |
+| --- | --- | --- |
+| median cell | 0.9990 | **0.9443** |
+
+p0 − true rate is +0.033 at the median and +0.135 at p90, and **73 of 210 cells
+publish p0 = 0.9990 for a real rate between 0.80 and 0.95**. That matters
+because `_binom_lower_tail(advanced, matched, p0)` is a significance test and
+takes p0 as a Bernoulli rate: at 0.999 with 10 matched trips a single stall
+reads significant, in a cell where one stall in ten is ordinary.
+
+So it was fixed offline — pooled advanced/matched, with a 0/10/20% one-sided
+trim to keep outage ticks from dragging the rate down. The saturation goes away
+(median p0 0.9990 -> 0.9443, cells at/above 0.99 drop from 74.3% to 8.6%). The
+trip-wire does not improve:
+
+| baseline | ratio | fired | agree | disagree | agreement rate |
+| --- | --- | --- | --- | --- | --- |
+| median (shipped) | 0.5 | 7 | 0 | 7 | 0.000 |
+| pooled, trim 0 | 0.5 | 7 | 0 | 7 | 0.000 |
+| pooled, trim 0 | 0.7 | 896 | 3 | 893 | **0.003** |
+| pooled, trim 0.1 | 0.7 | 1,129 | 3 | 1,126 | 0.003 |
+| pooled, trim 0.2 | 0.7 | 1,421 | 3 | 1,418 | 0.002 |
+
+At a 1.795% base rate, an agreement rate of 0.003 is five times WORSE than
+firing at random. Against this label the wire is not weak, it is
+anti-correlated — the same inversion three movement scores showed against the
+alert truth, now reproduced against a proxy that shares no feed with the
+alerts.
+
+**Why, and it is structural.** assigned_n degradation is service being
+WITHDRAWN: fewer trains dispatched. The advance rate measures whether the
+trains that ARE out keep moving. Those are different failure modes, and their
+coverage is anti-correlated — withdraw service and the movement channel has too
+few matched trips to judge at all. Of 1,249 labelled degraded ticks only 276
+overlap a judgeable movement call, and at min_matched=8 only 5 do.
+
+### What this settles
+
+The estimator fix is NOT being shipped. It is correct on its own merits and it
+moves the live classifier's operating point, and by measurement it buys
+nothing — publishing an ungraded operating-point change that improves no metric
+is the churn that produced 18 params versions in 46 days. It waits for a truth
+that can see freezing rather than withdrawal, which is what the traversal model
+is for.
+
+Reproducible from `training.degradation_label` + `load_r2.classify_direction`
+over any 10-day window; the sweep is three nested loops over the knobs.

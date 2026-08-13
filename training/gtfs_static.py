@@ -67,6 +67,33 @@ def base_route(route_id: str) -> str:
     return route_id[:-1] if route_id.endswith("X") else route_id
 
 
+def parent_station(stop_id: str) -> str:
+    """Drop the directional platform suffix: 'J20N' -> 'J20', 'J20' unchanged.
+
+    The two halves of the MTA's own data disagree on which id they mean. The
+    realtime trace and stop_times.txt report directional platforms; the alerts
+    feed's informed_entity names parent stations. Joining them without this finds
+    zero matches and looks exactly like a signal that was not there.
+    """
+    return stop_id[:-1] if stop_id[-1:] in ("N", "S") else stop_id
+
+
+def is_express_variant(trip_id: str) -> bool:
+    """Whether a realtime trip id declares the express variant of its route:
+    '124850_7X..N' does, '112750_4..S06R' does not.
+
+    worker/src/vehicles.ts folds 6X/7X to 6/7 before the row is ever archived, so
+    route_id cannot tell an express from a local and every downstream key pools
+    the two. The trip id is the only surviving evidence, and anything that has to
+    distinguish the two SERVICES rather than the two tracks needs it — measured
+    2026-08-13, 870 of 5,996 traversals on route 7 were run by a 7X.
+
+    Reads only the route field ahead of '..', so a path suffix that happens to
+    contain an X ('6..S01X016') is not mistaken for an express.
+    """
+    return path_code(trip_id).split("..")[0].endswith("X")
+
+
 def direction_of(stop_id: str, trip_id: str = "") -> str | None:
     """North/south from the stop_id N/S suffix, falling back to the trip_id
     '..N'/'..S' char. Mirrors worker/src/vehicles.ts directionOf. NYCT

@@ -2775,3 +2775,239 @@ two services — is exactly where it would have fired first.
 The entry above reads `origin: self`. It should read `origin: artifact`: nothing
 about disjoint clock bands was found by inspection, the grader's own output
 surfaced it on first run. Left uncorrected in place, per the append-only rule.
+
+## 2026-08-13 — the advance rate was never the weak arm: as a continuous score it reads 0.925 where movement is visible at all, and the progress ratio reads nothing
+
+origin: artifact
+
+`training/progress.py` grades both movement arms against the assigned_n
+degradation label over the trace's own window (Wed 12:20 -> Thu 19:55 ET,
+31.6h, 1,891 snapshots, 268,813 traversals, 246,473 priced hops). Two results,
+and the arm I expected to win lost.
+
+### Both arms, same window, same denominator
+
+Scores are stated so HIGHER MEANS WORSE. Intervals are a stratified percentile
+bootstrap over 2,000 resamples. Acute is graded against NORMAL ticks only.
+
+| | progress ratio | stalled share |
+| --- | --- | --- |
+| graded against the label | 7,790 | 7,820 |
+| degraded among them | 54 | 51 |
+| pooled AUC | 0.535 [0.440, 0.628] | 0.606 [0.507, 0.712] |
+| **within-route AUC** | **0.476 [0.380, 0.579]** | **0.684 [0.618, 0.759]** |
+| acute-onset AUC | 0.605 [0.441, 0.762] (n=14) | 0.755 [0.581, 0.893] (n=17) |
+| median, normal ticks | 1.000 | 0.043 |
+| median, degraded ticks | 1.017 | 0.250 |
+
+The progress ratio's within-route interval straddles 0.5 and is centred just
+below it. Against this label, over this window, it has no signal. The medians
+say why in one line: when assigned_n collapses, the trains still running cover
+their hops in 1.017x their booked time instead of 1.000x. **Withdrawn service
+does not slow down the trains that remain.** The same ticks carry six times the
+stalling, 0.25 against 0.043.
+
+### The reversal, and it reverses my own entry from yesterday
+
+On 2026-08-12 the advance arm was written up here as anti-correlated: 7 firings
+in 53,993 ticks, 0 agreement, 0.003 when loosened, "five times WORSE than
+firing at random." That entry graded the TRIP-WIRE — `classify_direction`'s
+thresholded verdict with its p0 baseline and binomial test. This one grades the
+underlying continuous rate, and the rate separates the classes at 0.684
+within-route, interval clear of 0.5.
+
+Both are true and they do not conflict. At a 0.65% base rate a ranker at AUC
+0.68 still has dismal precision at any threshold, which is exactly what the
+sweep found. The correction is to the CAUSE, not the numbers: the wire's
+failure was never evidence that trains-not-moving is uninformative about
+service being withdrawn. It is evidence that a significance test against a
+saturated p0 is the wrong decision rule on top of an informative quantity.
+
+### The real constraint is that there is nothing to look at
+
+Raising the matched-trip floor makes the score BETTER and the measurement
+rarer — the signature of a coverage limit, not a skill limit:
+
+| min_matched | degraded ticks judgeable | coverage | within-route AUC |
+| --- | --- | --- | --- |
+| 3 | 51 | 25.5% | 0.684 [0.612, 0.752] |
+| 8 | 19 | 9.5% | **0.925 [0.903, 0.945]** |
+| 15 | 0 | 0% | no answer — empty class |
+| 25 | 0 | 0% | no answer — empty class |
+
+A small-denominator artifact would have gone the other way. This one sharpens
+to 0.925 as the floor rises, then runs out of data entirely.
+
+The number underneath it is the sharpest thing this run produced. Across the
+193 degraded ticks carrying a movement row at all:
+
+| | matched trips at through stops |
+| --- | --- |
+| median normal tick | 15 |
+| **median degraded tick** | **0** |
+| degraded ticks with exactly zero | **50.8%** |
+
+Not "few". Zero, on half of them. Yesterday's entry put this at 276 of 1,249
+degraded ticks judgeable and called the coverage anti-correlated; the median is
+the honest statement of it. A movement arm cannot be graded on the ticks that
+matter most, because withdrawing service withdraws the observations a movement
+call is made from. Every AUC above describes the mild tail where trains are
+still out.
+
+### One latent defect, no published number moved
+
+`grade` first computed the acute AUC with chronic ticks swept into the NEGATIVE
+class, scoring each arm for failing to rank a fresh collapse above a route
+already known to be down. `_split` now names both classes and drops anything in
+neither. The acute numbers moved by 0.0002 and 0.0002, because the scored
+chronic ticks are ~0.5% of a 7,700-strong negative pool. Latent, not active,
+and recorded for the same reason the `control_supply` one was: the comparator
+was right by accident.
+
+### What this settles
+
+The progress-ratio-vs-advance-rate comparison the epic has carried as
+unanswerable now has an answer against this label: advance rate, decisively, on
+the judgeable quarter. That does NOT retire the progress ratio. The two measure
+different failure modes and this label contains only one of them — withdrawal,
+not slowness — so the result is as much a statement about the answer key as
+about the arm. The instrument that can see slowness is the planned-work grade,
+which is announced, geo-scoped, and as of tonight finally has its control band
+in the trace.
+
+Two things NOT shipped on the strength of this. The advance-baseline estimator
+fix stays parked: it moves the live operating point, and nothing here shows a
+threshold that works at a 0.65% base rate. And 31.6 hours with 51 positives is
+one window on one pair of weekdays, with intervals wide enough that the
+pooled-versus-within-route gap is the only comparison I would defend.
+
+
+## 2026-08-13 — correction: nine episodes, not fifty-one ticks. The advance arm's win is not established, and the 0.925 was one incident
+
+origin: self
+
+The entry above is wrong where it says "decisively", and its headline number is
+the worst offender. Caught in review before the code left the tree; the numbers
+it reports were real, the uncertainty around them was not.
+
+### The bootstrap counted repetitions as evidence
+
+`auc` resampled TICKS. A disruption is one episode observed every five minutes,
+so fifty consecutive degraded ticks on one line are close to one observation,
+not fifty. Resampling them independently reports an interval far too narrow —
+which is precisely how a handful of incidents came to read as decisive.
+
+`_clusters` now groups each maximal run of consecutive same-class ticks on one
+route, and the bootstrap resamples those. The point estimates are unchanged.
+The intervals are not, and neither is the conclusion:
+
+| within-route AUC | by tick (wrong) | by episode (right) |
+| --- | --- | --- |
+| progress ratio | 0.476 [0.380, 0.579] | 0.476 [0.428, 0.556] |
+| **stalled share** | **0.684 [0.618, 0.759]** | **0.684 [0.450, 0.850]** |
+| acute, progress ratio | 0.605 [0.441, 0.762] | 0.605 [0.365, 0.751] |
+| acute, stalled share | 0.755 [0.581, 0.893] | 0.755 [0.352, 0.989] |
+
+**The stalled share's interval now straddles 0.5.** 51 degraded ticks are
+**9 episodes**; the acute cut's 17 ticks are **3**. The advance arm's point
+estimate is still the better of the two, and that is now the whole claim —
+"decisively" is withdrawn. Nothing here separates it from chance at 95%.
+
+### The 0.925 was a single incident, and the tight band around it was an artifact
+
+The floor sweep row I put in bold was selected after seeing the sweep, which
+alone makes it exploratory. It is worse than that:
+
+| min_matched | degraded ticks | **episodes** | coverage | within-route AUC |
+| --- | --- | --- | --- | --- |
+| 3 | 51 | 9 | 25.5% | 0.684 [0.450, 0.850] |
+| 8 | 19 | **1** | 9.5% | 0.925 — no interval |
+| 15 | 0 | 0 | 0% | no answer — empty class |
+
+Nineteen ticks of ONE episode on one route. Its old band of [0.902, 0.948] was
+a degenerate resample: with one cluster, every bootstrap draw returns that same
+cluster, so the interval collapses to a point and reads as maximum confidence
+built from a single incident. `auc` now withholds the interval entirely when
+either side has under two clusters, which is the same can't-judge contract the
+rest of this module uses, applied to the uncertainty rather than the value.
+
+So the sweep does not show the score "sharpening" to 0.925. It shows the
+measurement running out of episodes, with one left at min_matched=8 and none at
+15. The direction is still inconsistent with a small-denominator artifact, and
+that is all it is good for.
+
+### What survives unchanged
+
+The coverage census, which is a count and not an inference: median 0 matched
+trips on a degraded tick against 15 on a normal one, and 50.8% of degraded
+ticks with exactly zero. And the descriptive medians — 1.000 vs 1.017 for the
+progress ratio, 0.043 vs 0.250 for the stalled share. The mechanism those point
+at (withdrawn service does not slow the trains that remain) is unaffected by
+how many episodes produced it, because it is a statement about direction and
+magnitude, not about significance.
+
+What the real finding is, then: **this window cannot settle the comparison.**
+Thirty-one hours contains about nine independent degradations, and no interval
+built on nine episodes will separate two arms this close. That is a supply
+problem with the same shape as the planned-work grade's, and it wants more
+days, not more analysis.
+
+
+## 2026-08-13 — correction to the correction: five episodes, not nine. Cutting runs on the scored ticks split single disruptions at their coverage gaps
+
+origin: self
+
+The entry above fixed the bootstrap to resample episodes instead of ticks and
+reported nine of them. Nine was still too many, for a reason that is the same
+coverage problem wearing a different hat.
+
+`_clusters` cut its runs over the keys an arm had SCORED. A movement arm judges
+about a quarter of the degraded ticks, so one continuous disruption arrives as
+scattered ticks with unscored gaps in between, and every gap started a new
+"episode". The clustering was undone by exactly the sparsity it was introduced
+to survive.
+
+Episode identity now comes from the full label (`_episode_ids`), which has
+every tick, and the arm's ticks are filed under those boundaries:
+
+| | episodes by scored ticks | episodes by label |
+| --- | --- | --- |
+| degraded, either arm | 9 | **5** |
+| acute | 3 | 3 |
+
+| within-route AUC | 9 episodes (wrong) | 5 episodes (right) |
+| --- | --- | --- |
+| progress ratio | 0.476 [0.428, 0.556] | 0.476 [0.409, 0.528] |
+| **stalled share** | 0.684 [0.450, 0.850] | **0.684 [0.451, 0.919]** |
+| pooled, stalled share | 0.606 [0.253, 0.867] | 0.606 [0.256, 0.963] |
+
+Five. Thirty-one hours of trace against a label carrying 17 disruptions over
+the same span yields **five** that any movement arm could judge, and the
+stalled share's interval now runs from worse-than-random to nearly perfect.
+Every directional conclusion in the first entry stands withdrawn; what is left
+is a point estimate ordering and a census.
+
+The census is the part that keeps surviving these corrections, and it is worth
+noticing that it survives them because it is a count rather than an inference:
+17 disruptions in the window, 5 judgeable, median 0 matched trips on a degraded
+tick, 50.8% at exactly zero. Three passes at the uncertainty have not moved any
+of those, and they say the same thing each time — the arms are not being beaten
+on skill, they are being starved of the observations that would let them play.
+
+
+## 2026-08-13 — correction: the origin lines on both grading corrections were wrong
+
+origin: agent
+
+The two correction entries above are both headed `origin: self`. Neither was
+found by a human. Both defects — the tick-level bootstrap, and episode
+boundaries cut from scored keys instead of the label — were surfaced by
+adversarial review of the change before it left the tree, so both should read
+`origin: agent`. Left uncorrected in place, per the append-only rule.
+
+Worth recording that the review caught all three methodology defects in this
+stream and the grader's own output caught none of them. The run reported its
+numbers cheerfully in every broken state: a confident [0.902, 0.948] built from
+one incident is not a shape any assertion in the harness could have flagged,
+because nothing was wrong with the arithmetic. Only the meaning was wrong.
+

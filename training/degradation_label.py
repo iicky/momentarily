@@ -1,7 +1,7 @@
 """Independent "route is degraded now" label from trip-updates assigned_n.
 
-WHY: the severe-alert truth cannot grade a movement model (momentarily-0pb,
-measured 2026-08-12). It has 11.2-13.0% prevalence in EVERY ONE of the 24 UTC
+WHY: the severe-alert truth cannot grade a movement model (measured
+2026-08-12). It has 11.2-13.0% prevalence in EVERY ONE of the 24 UTC
 hours over a full week -- no real disruption pattern is flat across the day,
 so that flatness is direct evidence the truth is chronic-standing-advisory
 dominated, not incident dominated. Its acute cut (normal -> not-normal
@@ -213,11 +213,10 @@ def _hourly_prevalence(
 ) -> dict[int, dict[str, float]]:
     """Degraded-tick share per UTC hour (0-23), pooled across every route and
     day the label covers -- the same per-hour check that showed the
-    severe-alert truth flat at 11.2-13.0% prevalence in EVERY hour
-    (momentarily-0pb), the signature of a chronic-standing-advisory-dominated
-    truth rather than a real time-of-day incident pattern. UTC (not
-    tod_bin's ET/5-bin split) to stay directly comparable to that
-    measurement."""
+    severe-alert truth flat at 11.2-13.0% prevalence in EVERY hour, the
+    signature of a chronic-standing-advisory-dominated truth rather than a
+    real time-of-day incident pattern. UTC (not tod_bin's ET/5-bin split) to
+    stay directly comparable to that measurement."""
     total: dict[int, int] = defaultdict(int)
     degraded: dict[int, int] = defaultdict(int)
     for (_route, tick), label in labels.items():
@@ -249,6 +248,29 @@ def _onsets_by_et_hour(disruptions: Sequence[Disruption]) -> dict[int, int]:
     return dict(sorted(counts.items()))
 
 
+def build_labels(
+    series: dict[tuple[str, int], int],
+    baseline: dict[tuple[str, str], float],
+) -> tuple[list[Disruption], dict[tuple[str, int], str]]:
+    """The label itself: debounced disruption intervals and the per-tick
+    acute/chronic/normal call derived from them.
+
+    Shared by the report below and by every consumer that grades a model
+    against this label, so a grade can never be scored against a differently
+    tuned label than the one this module measures and publishes. The
+    thresholds are this module's pinned constants, not the callee's defaults.
+    """
+    disruptions = derive_actual_recovery(
+        series,
+        baseline,
+        bin_fn=BIN_FN,
+        degrade_ratio=DEGRADE_RATIO,
+        recover_ratio=RECOVER_RATIO,
+        debounce=DEGRADE_DEBOUNCE_TICKS,
+    )
+    return list(disruptions), label_ticks(series, baseline, disruptions)
+
+
 def measure_degradation(
     series: dict[tuple[str, int], int],
     baseline: dict[tuple[str, str], float],
@@ -258,15 +280,7 @@ def measure_degradation(
     """Pure: everything `main` reports, computed once over one fetched
     window. Unit-tested on synthetic series; the R2 fetch behind `main` is
     not."""
-    disruptions = derive_actual_recovery(
-        series,
-        baseline,
-        bin_fn=BIN_FN,
-        degrade_ratio=DEGRADE_RATIO,
-        recover_ratio=RECOVER_RATIO,
-        debounce=DEGRADE_DEBOUNCE_TICKS,
-    )
-    labels = label_ticks(series, baseline, disruptions)
+    disruptions, labels = build_labels(series, baseline)
     onset_span = ACUTE_ONSET_TICKS * TICK_SECONDS
 
     weekly: list[dict[str, Any]] = []

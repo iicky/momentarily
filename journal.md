@@ -3011,3 +3011,304 @@ numbers cheerfully in every broken state: a confident [0.902, 0.948] built from
 one incident is not a shape any assertion in the harness could have flagged,
 because nothing was wrong with the arithmetic. Only the meaning was wrong.
 
+
+## 2026-08-16 — the planned-work measure ranks announced work by severity without being told the ordering, and part suspensions slow the hops beside them by a third
+
+origin: artifact
+
+Four days of accumulation turned the measure from "never graded anything" into
+its first per-type read. 6,379 trace snapshots, continuous Wed 12:30 -> Sun
+22:46 ET with no gaps, 720,058 traversals, 527 announced windows.
+
+| | 08-13 | 08-14 | 08-16 |
+| --- | --- | --- | --- |
+| over the trace span | 2 | 15 | 31 |
+| gradeable | 2 | 13 | 20 |
+| **graded** | **0** | **6** | **13** |
+| no control period | 2 | 7 | 7 |
+
+### The instrument validates itself: the ordering is monotone in how much of the route the work removes
+
+Share of the route's hop keys that stop appearing inside the window:
+
+| type | rows | median vanished |
+| --- | --- | --- |
+| Suspended | 1 | 0.4375 |
+| Reroute | 4 | 0.2716 |
+| Stops Skipped | 4 | 0.1583 |
+| Part Suspended | 9 | 0.1250 |
+| Special Schedule | 2 | 0.0263 |
+
+Nothing tells this measure that a full suspension removes more service than a
+reroute, or a reroute more than a skipped stop. It ranks them in that order
+anyway, off movement alone. That ordering is the closest thing to a validation
+the measure has had, and it is worth more than any single row in the table.
+
+### Part suspensions are visible on BOTH instruments, and the duration one is the surprise
+
+Difference-in-differences on the hops at the boundary of the closed stretch:
+
+| type | rows | median effect |
+| --- | --- | --- |
+| **Part Suspended** | **10** | **1.3175** |
+| Reroute | 3 | 1.0491 |
+| Express to Local | 5 | 1.0233 |
+| Stops Skipped | 2 | 0.9895 |
+
+The hops beside a part suspension take **a third longer**, and it is not one
+outlier: 8 of 10 rows sit above 1.0, spread 1.29 to 3.07, with the two below
+at 0.77 and 0.81. Physically this is what single-tracking and turning trains
+short does to the segments either side of a closed stretch, and it is the
+answer to the question left open on 08-14 — the type with the most announced
+supply (61 windows) is not invisible to this measure, it is the one it reads
+most strongly.
+
+Two smaller confirmations. `Stops Skipped` comes in just UNDER 1.0: skipping a
+station makes the remaining hops quicker, which is the right sign. And
+`Express to Local` reads 1.0233, the third time that type has measured as
+approximately nothing (1.007, then 1.023) — duration is the wrong instrument
+for it, exactly as the module has claimed from the start, now on five rows
+instead of two.
+
+### What the 08-14 entry got right by waiting
+
+That night's read put Part Suspended at 0.0213 vanished and I flagged it as
+either a broken measure, a stop-scope gap, or thin data. It was thin data: the
+same type reads 0.125 over 9 rows. The two-and-a-half-hour first-day fragments
+carried 46 to 112 traversals each and were measuring the part of an overnight
+window before the work bites. Writing that up as a finding would have put a
+wrong mechanism in the record for the sake of reporting something.
+
+### The honest limits
+
+`n_affected_keys` is **1 or 2** on every part-suspended row. A window names a
+stretch, and only the hops at its boundary survive to be timed — everything
+inside vanishes and is counted by the other instrument. So each row's effect
+rests on one or two segments, albeit with 10 to 113 traversals apiece and a
+control arm of 15 to 74 keys. What carries the 1.32 is agreement ACROSS ten
+independent windows, not depth within any one of them.
+
+`Suspended` is a single row; 0.4375 is an anecdote. Seven of twenty gradeable
+windows still have no control period at all, all of them the recurring
+`Express to Local` blackout. And the duration rows carry no service
+attribution, so unlike the coverage rows they cannot separate a 7 from a 7X.
+
+
+## 2026-08-16 — the shippable segment model graded for the first time: not inverted, strongest exactly where the work physically constrains, and short of significance on every cut
+
+origin: artifact
+
+`planned_work` grades the raw traversal data. `training/segment_grade.py`
+grades the thing we would actually ship: `traversal.deviation`, a live hop
+scored against its own segment's fitted normal. Every movement score graded in
+this repo before now has come out at or below chance, so the question was
+binary before it was quantitative.
+
+**It is not inverted.** That is the result. Everything after this is about how
+far short of a claim it stops.
+
+| | |
+| --- | --- |
+| gradeable announced windows | 20 |
+| graded | 15 |
+| abstained | 5 (2 no fitted cell on any boundary hop, 3 thin affected arm) |
+| windows above 0.5 | **11 of 15** |
+| sign test | **p = 0.118** |
+| median AUC | 0.5705 |
+| median deviation, affected hops | 1.0116 |
+| median deviation, control hops | 0.9727 |
+
+### Where the signal actually lives
+
+| type | windows | median AUC | median affected deviation |
+| --- | --- | --- | --- |
+| **Part Suspended** | 6 | **0.674** | **1.244** |
+| Express to Local | 5 | 0.568 | 1.008 |
+| Reroute | 2 | 0.537 | 1.007 |
+| Stops Skipped | 2 | 0.491 | 1.120 |
+
+Part suspensions again, and the magnitudes on the four that work are not
+subtle: the 1 at 1.32x its own normal (AUC 0.95), the 6 at 1.42x (0.86), the J
+at 1.17x (0.66), and the L at **2.46x** (0.69). This corroborates the
+difference-in-differences result from the same weekend, which put the same type
+at 1.32x by a completely different construction — one measures boundary hops
+against control hops, the other against the segment's own fitted history. Two
+instruments, one answer.
+
+### The two windows that go the other way are both the N, and both read FASTER
+
+| route | AUC | affected deviation |
+| --- | --- | --- |
+| N | 0.431 | 0.864 |
+| N | 0.448 | 0.893 |
+
+Not noise scattered around 0.5 — two windows on the same route, both saying the
+boundary hops ran about 12% QUICKER than their own normal during a part
+suspension. The plausible mechanism is that the N's trains bypass the closed
+stretch rather than terminating short, and a hop run nonstop is genuinely
+faster. Bypasses are deliberately kept in the baseline fit (they really did run
+that stretch), so this is a real measurement rather than an artifact, and it
+means "part suspension" is not one intervention. Worth resolving before the
+type's 1.24 median is quoted as though it described all six.
+
+### The sample is smaller than fifteen, and the unit rule only got it halfway
+
+Grading per ANNOUNCED window rather than per local-day row was deliberate:
+`planned_work` splits a period per calendar day, and those fragments are the
+same work, so treating them as independent repeats the tick-versus-episode
+error that cost three corrections on the label grade. That much this module
+gets right by construction — it iterates unsplit windows.
+
+It does not go far enough. Of the 15 graded windows, **all five Express to
+Local are route 7**, the same recurring daily work observed on five different
+days, and two of the six part suspensions are the same N. So the effective
+independent sample is nearer eight or nine distinct work patterns, and the
+sign test's fifteen is optimistic. The honest reading of p = 0.118 is therefore
+"weaker than that", not "close to significant".
+
+### What is settled and what is not
+
+Settled: the score is directionally correct, it abstains rather than guessing
+when a segment has no fitted cell or an arm is thin (5 of 20 windows), and its
+magnitude tracks the physical severity of the work on the one type with enough
+windows to look at.
+
+Not settled: anything with a p-value. The baseline withheld 112,139 traversals
+as inside announced work to avoid grading the model against itself, which is
+correct and costly — it is why cells exist for only some boundary hops. More
+distinct work patterns is the only thing that moves this, and the collector
+supplies them at a few a night without any further work.
+
+
+## 2026-08-16 — correction: the entry above called it "shippable" while fitting from the future. Refitting each window from its own past only, the answer holds
+
+origin: agent
+
+The entry above grades `traversal.deviation` and calls it the model we would
+ship. It fitted every cell from clean traversals across the WHOLE archive,
+including days after each window opened. A model running live at 21:30 on a
+Thursday has only the past, and a segment whose 20 samples arrive on Saturday
+has no cell at all yet. So that result measures whether the signal is IN the
+data — retrospective — and is not by itself a deployable claim.
+
+`baseline_before` (`--causal`) now refits per window from traversals that
+FINISHED before its start. One fit per window, 3.5 minutes instead of 60
+seconds. It is strictly harsher, and the honest surprise is how little it costs:
+
+| | retrospective | causal (past only) |
+| --- | --- | --- |
+| graded | 15 | 16 |
+| abstained thin | 3 | 4 |
+| above 0.5 | 11 of 15 | 11 of 16 |
+| sign test | p = 0.118 | p = 0.210 |
+| median AUC | 0.5705 | 0.5794 |
+| **Part Suspended** | **0.674, dev 1.244** | **0.670, dev 1.245** |
+
+Part suspensions land in the same place to three decimal places on the
+deviation and within 0.004 on the AUC. Whatever the retrospective fit was
+borrowing from the future, it was not what produced the result. The
+deployable claim and the data claim agree.
+
+Both modes are kept and neither is allowed to stand in for the other, because
+they answer different questions: `--causal` asks what a live model would have
+seen, the default asks whether the signal exists at all. A future run reporting
+one of them as the other is the defect this entry exists to prevent.
+
+Unchanged: still not significant, and the effective sample is still nearer
+eight distinct work patterns than sixteen windows.
+
+
+## 2026-08-16 — correction: the causal comparison was run against a bigger archive than the retrospective one, and on equal footing the AGGREGATE result is a coin flip
+
+origin: agent
+
+The table in the entry above compares 15 retrospective windows against 16
+causal ones. Those are two different fetches — the alert archive grew between
+the runs — so it was not a controlled comparison, and "the answer holds" was
+asserted from mismatched inputs. Re-run properly: one fetch, both modes graded
+off exactly the same bytes (7,008 snapshots, 775,193 traversals, 593 announced
+windows, 28 gradeable).
+
+| | retrospective | causal (past only) |
+| --- | --- | --- |
+| graded | 22 | 21 |
+| above 0.5 | 12 of 22 | 13 of 21 |
+| **sign test** | **p = 0.832** | **p = 0.383** |
+| median AUC | 0.5439 | 0.5542 |
+| **Part Suspended** | **n=6, AUC 0.674, dev 1.242** | **n=6, AUC 0.670, dev 1.245** |
+
+Two findings, pulling opposite ways.
+
+### The causal question is settled, and favourably
+
+Now that it is a fair test, past-only fitting costs almost nothing: one window
+moves from graded to abstaining, and part suspensions match to 0.004 on the AUC
+and 0.003 on the deviation. A model with only its own history reads what the
+retrospective fit read. That claim is now earned rather than asserted.
+
+### The aggregate result died, and it should never have been the headline
+
+"11 of 15, p = 0.118" became **12 of 22, p = 0.832** on eight more windows.
+That is not a near-miss that needs more data; it is regression to chance, and I
+reported the small-sample version as the finding two entries ago.
+
+The deeper mistake is that the pooled sign test was the wrong statistic from
+the start, and this module's own sibling says so: `planned_work._median_by_type`
+groups by type precisely because **the types are different experiments**. An
+`Express to Local` window is one this measure is documented as unable to see by
+duration — it has now read approximately 1.00 four separate times. Pooling it
+with part suspensions and asking "how many windows beat 0.5" dilutes a real
+effect with windows where no effect is expected, and the answer drifts toward
+0.5 as more of them arrive. Which is exactly what happened.
+
+### What actually survives, and it is narrow
+
+Part suspensions, on six windows: median AUC ~0.67, affected hops at ~1.24x
+their own normal. That number has now been stable across a retrospective fit, a
+causal fit, and an archive that grew from 20 to 28 gradeable windows, and it
+agrees with the independent difference-in-differences estimate of 1.32x from
+`planned_work`. Everything else here is unproven, and the aggregate is not
+evidence in either direction.
+
+Next run must report per type and drop the pooled sign test, or keep it only as
+a diagnostic clearly marked as pooling incommensurable experiments.
+
+
+## 2026-08-16 — the baseline blackout tested only a traversal's start, so hops running INTO the work were fitted as normal. No published number moves
+
+origin: agent
+
+`baseline_outside` withheld a traversal when the window contained its START
+time. A hop has duration: one that began at 21:25 and arrived at 21:45 spent
+most of itself inside a window that opened at 21:30. Those are also the
+traversals nearest the work, so admitting them dragged the fitted normal toward
+the disrupted level and made the deviation read closer to 1.0. **The bias ran
+against detection** — the direction that quietly passes a broken model rather
+than failing a good one. `baseline_before` already accounted for duration, so
+the two blackouts disagreed with each other.
+
+Both now share `_overlaps_work`, which tests the traversal's whole span against
+every announced window on its route. It withholds materially more: 164,694
+traversals against 112,139, and 1,592 fitted cells against 1,687.
+
+And it changes nothing. Same fetch, both modes:
+
+| | retrospective | causal |
+| --- | --- | --- |
+| graded / above 0.5 | 22 / 12 | 21 / 13 |
+| sign test | p = 0.832 | p = 0.383 |
+| median AUC | 0.5443 | 0.5542 |
+| **Part Suspended** | **AUC 0.6745, dev 1.2429** | **AUC 0.6703, dev 1.245** |
+
+Part suspensions have now held at AUC ~0.67 and ~1.24x through a retrospective
+fit, a causal fit, an archive that grew 20 -> 28 gradeable windows, and a
+blackout fix that removed 52,555 more traversals from the baseline. Four
+different ways of being wrong, same answer.
+
+The wider view got worse, as it should have with more windows. `Reroute` now
+has 8 windows and reads 0.492 — nothing. `Stops Skipped` 0.481. `Express to
+Local` ranks marginally above chance (0.565) with a magnitude of 1.007, which
+is a ranking signal with no practical size and matches its four prior readings
+of approximately nothing. One type carries this measure, and it is the one whose
+work physically constrains the track the trains are still using.
+

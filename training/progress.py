@@ -339,7 +339,7 @@ def _grouped(
     return list(out.values())
 
 
-def _auc_from(pos: Sequence[float], neg: Sequence[float]) -> float | None:
+def auc_from(pos: Sequence[float], neg: Sequence[float]) -> float | None:
     """P(a positive scores above a negative), ties counted half."""
     if not pos or not neg:
         return None
@@ -413,7 +413,7 @@ def auc(
     normal median sits exactly on 1.0.
     """
     pos_keys, neg_keys = _split(scores, labels, positive, negative)
-    point = _auc_from([scores[k] for k in pos_keys], [scores[k] for k in neg_keys])
+    point = auc_from([scores[k] for k in pos_keys], [scores[k] for k in neg_keys])
     episodes = _episode_ids(labels)
     pos_groups = _grouped(pos_keys, episodes)
     neg_groups = _grouped(neg_keys, episodes)
@@ -446,7 +446,7 @@ def auc(
             for _ in range(len(neg_groups))
             for k in neg_groups[rng.randrange(len(neg_groups))]
         ]
-        drawn = _auc_from(rp, rn)
+        drawn = auc_from(rp, rn)
         if drawn is not None:
             draws.append(drawn)
     draws.sort()

@@ -126,6 +126,7 @@ def _prov(
         schema=SCHEMA_VERSION,
         extractor=extractor,
         feed_version=feed,
+        feed_digest=None,
         n_rows=1,
         n_source_objects=1,
         source_manifest="x",

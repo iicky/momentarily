@@ -137,6 +137,9 @@ def decode_day(blob: bytes) -> tuple[list[Window], DayProvenance]:
         schema=schema,
         extractor=int(prov_raw.get("extractor") or 0),
         feed_version=cast(str | None, prov_raw.get("feed_version")),
+        # Alerts carry no static-feed dependence, so there is no artifact whose
+        # bytes could change what a window means.
+        feed_digest=None,
         n_rows=int(prov_raw.get("n_rows") or 0),
         n_source_objects=int(prov_raw.get("n_source_objects") or 0),
         source_manifest=str(prov_raw.get("source_manifest") or ""),
@@ -161,7 +164,7 @@ class WindowReadResult:
     provenance: dict[date, DayProvenance]
 
     @property
-    def versions(self) -> set[tuple[int, int, str | None]]:
+    def versions(self) -> set[tuple[int, int, str | None, str | None]]:
         return {p.comparable_key for p in self.provenance.values()}
 
     @property

@@ -53,6 +53,11 @@ DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     # Tiny — 541 windows over five days — so the window is set by usefulness
     # rather than size.
     ("archive/windows/", 3650),
+    # NOT date-partitioned: archive/gtfs/ is content-addressed by sha256, so the
+    # date matcher below never matches it and it is intentionally absent from
+    # this table. Deleting a feed artifact by age would break replay of exactly
+    # the oldest days the traversal archive still holds, and at 5.6 MB per
+    # republish the whole history is a rounding error. See training.gtfs_archive.
     ("v1/predictions/", 90),
     ("v1/regime_transitions/", 90),
 )

@@ -32,6 +32,7 @@ def _prov(*, extractor: int = PARSER_VERSION) -> DayProvenance:
         schema=SCHEMA_VERSION,
         extractor=extractor,
         feed_version=None,
+        feed_digest=None,
         n_rows=1,
         n_source_objects=1,
         source_manifest="x",

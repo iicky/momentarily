@@ -107,6 +107,20 @@ class DayProvenance:
     schema: int
     extractor: int
     feed_version: str | None
+    # The sha256 of the feed artifact that was ACTUALLY IN FORCE while this day
+    # was being collected (see training.gtfs_archive for the store).
+    #
+    # None for every backfilled day, and that is not a gap to be filled in
+    # later. A backfill can only fetch the CURRENT feed, and `covers()` spans
+    # months, so stamping today's digest on a three-week-old day would assert
+    # bytes that may have been published after the trains ran — provenance that
+    # is WRONG rather than missing, which is the worse failure because
+    # `homogeneous` would then call the span replayable. Only a job running while
+    # the day is still open can honestly record this; until such a
+    # collection-time writer exists
+    # the field stays None and `feed_version` carries the weaker claim of "a feed
+    # that declares it covers this day".
+    feed_digest: str | None
     n_rows: int
     n_source_objects: int
     source_manifest: str
@@ -114,15 +128,20 @@ class DayProvenance:
     written_at: int
 
     @property
-    def comparable_key(self) -> tuple[int, int, str | None]:
-        """The identity two days must share to be pooled without comment."""
-        return (self.schema, self.extractor, self.feed_version)
+    def comparable_key(self) -> tuple[int, int, str | None, str | None]:
+        """The identity two days must share to be pooled without comment.
+
+        Carries the feed DIGEST as well as its version: two snapshots can share
+        a version label, and only the bytes decide what a scheduled time was.
+        """
+        return (self.schema, self.extractor, self.feed_version, self.feed_digest)
 
 
 def encode_day(
     traversals: Sequence[Traversal],
     *,
     feed_version: str | None,
+    feed_digest: str | None = None,
     source_keys: Sequence[str],
 ) -> bytes:
     """One day's traversals plus its provenance, gzipped.
@@ -137,6 +156,7 @@ def encode_day(
             "schema": SCHEMA_VERSION,
             "extractor": EXTRACTOR_VERSION,
             "feed_version": feed_version,
+            "feed_digest": feed_digest,
             "n_rows": len(traversals),
             "n_source_objects": len(source_keys),
             "source_manifest": input_manifest_hash(list(source_keys)),
@@ -179,6 +199,7 @@ def decode_day(blob: bytes) -> tuple[list[Traversal], DayProvenance]:
         schema=schema,
         extractor=int(prov_raw.get("extractor") or 0),
         feed_version=cast(str | None, prov_raw.get("feed_version")),
+        feed_digest=cast(str | None, prov_raw.get("feed_digest")),
         n_rows=int(prov_raw.get("n_rows") or 0),
         n_source_objects=int(prov_raw.get("n_source_objects") or 0),
         source_manifest=str(prov_raw.get("source_manifest") or ""),
@@ -215,7 +236,7 @@ class ReadResult:
     provenance: dict[date, DayProvenance]
 
     @property
-    def versions(self) -> set[tuple[int, int, str | None]]:
+    def versions(self) -> set[tuple[int, int, str | None, str | None]]:
         return {p.comparable_key for p in self.provenance.values()}
 
     @property
@@ -278,6 +299,7 @@ def write_day(
     day: date,
     *,
     feed: FeedVersion | None,
+    feed_digest: str | None = None,
     config: R2Config | None = None,
     client: S3Client | None = None,
     overwrite: bool = False,
@@ -318,7 +340,13 @@ def write_day(
         for k in trace_keys
     ]
     traversals, _stats = traversals_from_trace(bodies)
-    blob = encode_day(traversals, feed_version=feed_version, source_keys=trace_keys)
+    blob = encode_day(
+        traversals,
+        feed_version=feed_version,
+        # Deliberately NOT the digest fetched by this run: see DayProvenance.
+        feed_digest=feed_digest,
+        source_keys=trace_keys,
+    )
     client.put_object(
         Bucket=cfg.bucket,
         Key=key,
@@ -334,6 +362,7 @@ def backfill(
     days: Iterable[date],
     *,
     feed: FeedVersion | None,
+    feed_digest: str | None = None,
     overwrite: bool = False,
     allow_partial: bool = False,
 ) -> list[tuple[date, DayProvenance | None]]:
@@ -347,6 +376,7 @@ def backfill(
         prov = write_day(
             day,
             feed=feed,
+            feed_digest=feed_digest,
             config=cfg,
             client=client,
             overwrite=overwrite,

@@ -34,6 +34,21 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --frozen
+      # The static feed ARTIFACT, content-addressed. MTA serves no superseded
+      # snapshots, so once it republishes the feed that priced last month's hops
+      # is gone from the internet and cannot be recovered at any effort. This
+      # step preserves the CANDIDATES so that recovery stays possible.
+      #
+      # It does NOT by itself make a day replayable. No day carries a proven
+      # feed_digest yet — a backfill can only fetch the current feed, which is no
+      # evidence about which bytes were live weeks ago — so every archived day
+      # still records "feed unknown". Replay lands when the collection-time
+      # writer records a digest beside each snapshot at poll time; until then
+      # this is the necessary half, not the sufficient one.
+      - name: Store the current static GTFS feed
+        run: uv run python -m training.gtfs_archive
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
       # Derive and keep the traversal archive BEFORE pruning the raw trace it
       # comes from. The window is a trailing self-healing span rather than just
       # yesterday: GHA cron is best-effort, so a missed night must be picked up

@@ -50,7 +50,7 @@ from training.gtfs_static import (
 )
 from training.load_r2 import date_range, fetch_objects, list_keys
 from training.r2_client import R2Config, load_config, make_client
-from training.trace import EXACT, Traversal, fetch_trace_bodies, traversals_from_trace
+from training.trace import EXACT, Traversal
 
 # WHAT PLANNED WORK ACTUALLY DOES TO MOVEMENT, which is not what the first cut of
 # this module assumed. Nearly every announced type changes WHICH PAIRS a train
@@ -713,12 +713,17 @@ def main(argv: list[str] | None = None) -> int:
     start_date = args.start_date or today - timedelta(days=1)
     end_date = args.end_date or today
 
-    bodies = fetch_trace_bodies(start_date=start_date, end_date=end_date)
-    traversals, trace_stats = traversals_from_trace(bodies)
-    print(
-        f"{len(bodies)} trace snapshots, {len(traversals)} traversals",
-        file=sys.stderr,
-    )
+    # Imported here, not at module scope: archive_read imports this module for
+    # Window and windows_from_alerts, so a top-level import would be circular.
+    from training.archive_read import load_traversals, load_windows
+
+    loaded = load_traversals(start_date, end_date)
+    traversals = loaded.rows
+    print(f"traversals — {loaded.summary()}", file=sys.stderr)
+    # This grade pools every window's rows into per-type medians
+    # (`_median_by_type`), so a span crossing an extraction or feed boundary is
+    # not one measurement. Same guard the other two graders apply.
+    loaded.require_pooled("traversals")
     # Hard fail rather than an empty report: no trace means the archive or the
     # window is wrong, and every count below would read as "detected nothing".
     if not traversals:
@@ -727,9 +732,14 @@ def main(argv: list[str] | None = None) -> int:
     span_start = min(t.at for t in traversals)
     span_end = max(t.at for t in traversals)
 
-    windows = windows_from_alerts(
-        fetch_alert_bodies(start_date=start_date, end_date=end_date)
-    )
+    loaded_windows = load_windows(start_date, end_date)
+    windows = loaded_windows.rows
+    print(f"windows — {loaded_windows.summary()}", file=sys.stderr)
+    # The answer key is pooled across the span too — per-type medians here, a
+    # per-type summary in segment_grade — so a window archive written by two
+    # different parsers is two answer keys, not one. Guarded on the same terms as
+    # the traversals above.
+    loaded_windows.require_pooled("windows")
     live = [w for w in windows if overlaps(w, span_start, span_end)]
     print(
         f"{len(windows)} announced windows, {len(live)} over the trace span",
@@ -752,7 +762,23 @@ def main(argv: list[str] | None = None) -> int:
     print(
         json.dumps(
             {
-                "trace": asdict(trace_stats),
+                "source": {
+                    "traversal_archived_days": [
+                        d.isoformat() for d in loaded.archived_days
+                    ],
+                    "traversal_raw_days": [d.isoformat() for d in loaded.raw_days],
+                    "window_archived_days": [
+                        d.isoformat() for d in loaded_windows.archived_days
+                    ],
+                    # Reported per stream, never unioned: traversal days carry a
+                    # feed version and window days cannot (alerts have no static
+                    # feed dependence), so a combined set always looks mixed even
+                    # when each stream is internally consistent.
+                    "traversal_provenance": sorted(str(v) for v in loaded.versions),
+                    "window_provenance": sorted(
+                        str(v) for v in loaded_windows.versions
+                    ),
+                },
                 "supply": {
                     "span": [span_start, span_end],
                     "announced": len(windows),

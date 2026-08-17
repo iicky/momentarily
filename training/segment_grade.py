@@ -63,12 +63,10 @@ from training.gtfs_static import (
 )
 from training.planned_work import (
     Window,
-    fetch_alert_bodies,
     overlaps,
-    windows_from_alerts,
 )
 from training.progress import auc_from
-from training.trace import EXACT, Traversal, fetch_trace_bodies, traversals_from_trace
+from training.trace import EXACT, Traversal
 from training.traversal import TraversalCell, deviation, traversal_baseline
 
 # Scored traversals each arm needs before a window is graded. Below it the
@@ -369,11 +367,14 @@ def main(argv: list[str] | None = None) -> int:
     end = args.end_date or today
     start = args.start_date or (end - timedelta(days=1))
 
-    bodies = fetch_trace_bodies(start_date=start, end_date=end)
-    traversals, _trace_stats = traversals_from_trace(bodies)
-    print(
-        f"{len(bodies)} trace snapshots, {len(traversals)} traversals", file=sys.stderr
-    )
+    from training.archive_read import load_traversals, load_windows
+
+    loaded = load_traversals(start, end)
+    traversals = loaded.rows
+    print(f"traversals — {loaded.summary()}", file=sys.stderr)
+    # This grade pools windows across the whole span into one per-type summary, so
+    # a span that crosses an extraction or feed boundary is not one measurement.
+    loaded.require_pooled("traversals")
     if not traversals:
         raise SystemExit(f"no traversals in {start}..{end}")
     span_lo = min(t.at for t in traversals)
@@ -382,7 +383,14 @@ def main(argv: list[str] | None = None) -> int:
     with zipfile.ZipFile(io.BytesIO(fetch_gtfs_zip())) as zf:
         timetable = parse_timetable(zf)
 
-    announced = windows_from_alerts(fetch_alert_bodies(start_date=start, end_date=end))
+    loaded_windows = load_windows(start, end)
+    announced = loaded_windows.rows
+    print(f"windows — {loaded_windows.summary()}", file=sys.stderr)
+    # The answer key is pooled across the span too — per-type medians here, a
+    # per-type summary in segment_grade — so a window archive written by two
+    # different parsers is two answer keys, not one. Guarded on the same terms as
+    # the traversals above.
+    loaded_windows.require_pooled("windows")
     live = [w for w in announced if overlaps(w, span_lo, span_hi)]
     gradeable = [w for w in live if w.gradeable]
     print(

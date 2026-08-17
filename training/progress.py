@@ -91,9 +91,7 @@ from training.r2_client import load_config, make_client
 from training.trace import (
     EXACT,
     Traversal,
-    fetch_trace_bodies,
     scheduled_for,
-    traversals_from_trace,
 )
 
 # The label's two degraded states. "normal" is the only other value.
@@ -568,12 +566,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     client = make_client(cfg)
 
-    bodies = fetch_trace_bodies(start_date=start, end_date=end)
-    traversals, trace_stats = traversals_from_trace(bodies)
-    print(
-        f"{len(bodies)} trace snapshots, {len(traversals)} traversals",
-        file=sys.stderr,
-    )
+    from training.archive_read import load_traversals
+
+    loaded = load_traversals(start, end)
+    traversals = loaded.rows
+    print(f"traversals — {loaded.summary()}", file=sys.stderr)
+    loaded.require_pooled("traversals")
     # An empty trace would make every count below read as "detected nothing"
     # rather than "never ran", the same confusion the planned-work grade had to
     # be taught to distinguish.
@@ -633,7 +631,6 @@ def main(argv: list[str] | None = None) -> int:
                     "feed_version": timetable.version.version,
                     "min_tick_samples": args.min_samples,
                 },
-                "trace": asdict(trace_stats),
                 "ratio_supply": asdict(ratio_stats),
                 "label": {
                     "ticks_over_span": len(labels),

@@ -39,6 +39,20 @@ DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     # covers that with headroom while keeping steady-state size in the
     # single-digit GB.
     ("archive/trace/", 30),
+    # The DERIVED traversals, kept far longer than the raw trace they come from
+    # because they are ~56x smaller (1.5 MB/day gzipped against 81 MB/day,
+    # measured 2026-08-15) and are what every downstream measure actually reads.
+    # This window is the whole point: a 30-day cap on the raw trace meant no
+    # model could ever be evaluated on more than a month, and 10 years of this
+    # costs about 5 GB. Long enough to be effectively "keep", explicit so the
+    # prefix is still policed rather than silently unbounded.
+    ("archive/traversals/", 3650),
+    # The parsed ANSWER KEY. Same reasoning and same window as the traversals it
+    # grades: keeping measurements without the announced work they are graded
+    # against would leave a decade of traversals and nothing to compare them to.
+    # Tiny — 541 windows over five days — so the window is set by usefulness
+    # rather than size.
+    ("archive/windows/", 3650),
     ("v1/predictions/", 90),
     ("v1/regime_transitions/", 90),
 )

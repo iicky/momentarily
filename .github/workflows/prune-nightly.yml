@@ -1,6 +1,12 @@
-name: Prune R2 (nightly)
+name: Archive + prune R2 (nightly)
 
-# Nightly R2 retention pruning for the archive and grading streams.
+# Nightly R2 retention: DERIVE AND KEEP the traversal archive, then prune the
+# aged raw streams behind it.
+#
+# ORDER MATTERS. archive/trace/ is pruned at 30 days and is the only source the
+# derived archive can be built from, so the derive step runs FIRST. If prune ran
+# first, the day falling out of the 30-day window would be deleted before it was
+# ever preserved, and it could never be recovered.
 #
 # HMM training is NOT here — it runs weekly in the Cloudflare Container
 # (trainer/, Sunday 05:00 UTC) as the single source of state/params.json. This
@@ -28,6 +34,36 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --frozen
+      # Derive and keep the traversal archive BEFORE pruning the raw trace it
+      # comes from. The window is a trailing self-healing span rather than just
+      # yesterday: GHA cron is best-effort, so a missed night must be picked up
+      # by the next run, and anything already written is skipped. 28 days keeps
+      # the whole span inside archive/trace/'s 30-day retention with headroom.
+      - name: Derive the long-lived traversal archive
+        run: |
+          uv run python -m training.traversal_archive \
+            --start-date "$(date -u -d '28 days ago' +%F)" \
+            --end-date "$(date -u -d 'yesterday' +%F)"
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
+      # The ANSWER KEY, on the same before-prune path and for the same reason:
+      # archive/alerts/ is pruned at 90 days, and without the parsed windows the
+      # retained traversals cannot be graded against anything.
+      #
+      # ITS WINDOW MUST SPAN THE WHOLE ALERT RETENTION, not the 28 days used
+      # above. Alerts are archived as VERSIONS: an unchanged planned-work alert
+      # exists only on the date it was published, so a closure announced two
+      # months ago and running tonight appears nowhere in the last 28 days of
+      # alert objects and would never be captured. 88 days scans the full
+      # retention with headroom; days already written are skipped, so the cost
+      # is one listing plus the days actually missing.
+      - name: Derive the long-lived announced-window archive
+        run: |
+          uv run python -m training.window_archive \
+            --start-date "$(date -u -d '88 days ago' +%F)" \
+            --end-date "$(date -u -d 'yesterday' +%F)"
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
       # Bucket creds are object-scoped (no R2 lifecycle rules), so pruning aged
       # archive + grading objects rides this job.
       - name: Prune aged R2 objects

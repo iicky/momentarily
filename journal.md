@@ -3384,3 +3384,196 @@ magnitude worth the name, at ~1.2x control on six windows, agreeing with an
 independent difference-in-differences estimate. That has survived every attempt
 to break it. It is still not significant.
 
+## 2026-08-17 — recurring work does not need a different control, it needs coverage: the answer key is six days deep and every comparable day carries the work
+
+origin: self
+
+The bug said `Express to Local` recurs daily, so its adjacent-day control is the
+same work, so that subset "needs a different comparison — a non-adjacent
+unaffected day, or the local as a within-window control." I built two of those
+comparisons and measured a third. All three fail, and the premise is wrong: the
+control definition was never broken.
+
+### The estimator already admits a free day
+
+`_is_control` restricts nothing to adjacent days. Given the nearest free
+comparable weekday for the R's 12:45-18:00 reroute, a traversal at Fri 08-07
+12:55 passes every filter — service class 0 == 0, clock band true, blackout
+clear, `_is_control` true — with no code change. The 15 ungraded windows are not
+waiting on a statistic. They are waiting on archive.
+
+### What the 15 actually are, and it is broader than the bug says
+
+| work | windows | cadence |
+| --- | --- | --- |
+| 7 Express to Local | 6 | every weekday, 06:15-10:00 and 15:00-22:00 |
+| R Reroute | 6 | every weekday, 07:15-09:00 and 12:45-18:00 |
+| N Stops Skipped | 2 | every Sat and Sun, 06:00-23:00 |
+| 4 Stops Skipped | 1 | continuous, 2026-04-27 to 2026-08-18 |
+
+Not one class but four cadences, including a 113-day continuous window that no
+adjacent-day control could ever serve.
+
+### Negative: the out-of-band control does not recover the primary
+
+Same service class, same day, the hours the work does NOT run, normalised the way
+07953e6 normalised the duration effect — `vanished` on hops touching a named stop
+minus `vanished` on hops touching none, so pattern diversity in the reference
+cancels. Graded against the matched-day `vanished` on the 12 service-rows where
+both exist:
+
+| | matched-day | out-of-band |
+| --- | --- | --- |
+| mean | 0.1976 | **-0.0616** |
+| median | 0.1250 | **-0.0684** |
+| pearson r | — | **0.564** (n=12) |
+| sign agreement | — | **6 of 12** |
+
+Sign agreement at chance, and biased 0.26 the wrong way: it reports "nothing
+detected" where the primary sees a quarter of pairs vanish. The D row is the
+mechanism — matched `vanished` 0.0, out-of-band effect **-0.5078**, because the
+unnamed arm lost 51% of its pairs to out-of-band pattern diversity while the
+named arm lost none. Subtracting two unequal inflations does not cancel them.
+Rejected.
+
+### Negative: the static schedule cannot be the reference for this work
+
+The obvious escape from needing an unaffected PERIOD is an unaffected SCHEDULE —
+the booked stop pattern, pre-registered and immune to recurrence. It is
+contaminated at exactly the window that motivated the bug. Feed
+`20260807-H-rockaways-extension-removed`, covering 2026-05-26 to 2026-10-31,
+carries these path codes for the 7 on the window's service day:
+
+`7..N27R, 7..N35R, 7..N36R, 7..N38R, 7..S95R, 7..S96R, 7..S97R, 7..S99R`
+
+Zero 7X patterns. The supplemental feed has already absorbed the Express to
+Local, so the schedule agrees with the disrupted movement by construction —
+graded against itself, passing no matter how bad the model is. Meanwhile the
+realtime feed still publishes 787 trips inside the window declaring `7X..N`, of
+which 670 hops are consecutive local stops and 117 skip 3-4 stations. The
+movement shows the work; the schedule cannot certify it.
+
+### Negative, caught before it shipped: a countdown to a control we cannot certify
+
+Having concluded the fix was a diagnostic — report how far the archive must reach
+— the first version searched +/-60 days and named 2026-08-04 as the 7's nearest
+free weekday, 8 days back. It is unbacked. `archive/windows/` holds **6
+publication days** (2026-08-12 to 08-17), and an alert that ran and expired
+before the first snapshot is absent from the record, not inactive. Absence of an
+announcement is evidence of a free day only where we hold snapshots. Bounded to
+certified days, every one of the 15 reads:
+
+| | |
+| --- | --- |
+| `coverage_no_control_period` | 15 |
+| `coverage_reach_unknown` | **15** |
+| `answer_key_days` | 6 |
+| weekday windows | certified 4, covered 4 |
+| N weekend windows | certified **1**, covered 1 |
+
+`certified == covered` everywhere: every comparable day the answer key can speak
+for carries work on the route. The N's weekend windows have exactly one candidate
+day in six days of coverage, which is the whole finding in one number.
+
+### Three defects in the diagnostic itself, all found in review
+
+All three would have certified a control that never existed.
+
+* Coverage read as `first..last` rather than as a set. `load_windows` supports
+  non-contiguous coverage, so a hole between the endpoints would have counted as
+  evidence of free service.
+* The window was excluded from its own blackout and only its START date skipped,
+  so for the 4's 2026-04-27 to 2026-08-18 closure, 113 days of the closure would
+  have certified as a control for itself.
+* `_band_on` projected the clock band as `midnight + seconds`. On 2026-03-08,
+  which springs forward, local 05:00 is not 18,000 seconds after midnight — the
+  band landed at **06:00**, an hour off, twice a year. Both endpoints are now
+  built with `datetime.combine`, the way `split_by_local_day` already builds day
+  boundaries.
+
+### Where this leaves the measure
+
+Nothing about the grade changed and no published number moves: 13 graded, 22
+duration-graded, medians unchanged. What changed is that `NO_CONTROL_PERIOD` no
+longer reads the same whether a control is one week out of reach or cannot exist.
+Both archives retain 3,650 days and began 2026-08-12, so the countdown starts
+there and the windows grade themselves as coverage accumulates — the 7's own
+announced record shows free weekdays from 2026-09-07, which the record will be in
+a position to certify by then. The gradeable supply today is 13 of 28 over the
+span, not 28, and not the headline 593.
+
+## 2026-08-17 — the reach diagnostic read one band off a four-piece closure, and the tests passed because my multi-day case never crossed a service class
+
+origin: artifact
+
+The pre-commit gate blocked the entry above with a fourth defect in the same
+diagnostic, after 839 tests and both linters had passed. It is the same mistake as
+the other three, which is the part worth recording: the diagnostic answering a
+slightly different question than the grade asks. I wrote that exact warning into
+`_band_on`'s docstring and then made the error three more times.
+
+### What it got wrong
+
+`control_reach` read one clock band and one service class off the UNSPLIT window.
+The grade does not: `pattern_shift` and `control_supply` both iterate
+`split_by_local_day`, because a piece is the only thing carrying one band and one
+class. A Friday-23:45-to-Monday-05:00 closure is four pieces on three timetables —
+Friday late night, all Saturday, all Sunday, Monday morning — and its Saturday
+piece needs a SATURDAY control.
+
+Read unsplit, only Friday's weekday class is ever considered, so a free Saturday
+in the record is not even a candidate. On that fixture:
+
+| | day | lag | certified | covered |
+| --- | --- | --- | --- | --- |
+| unsplit (rejected) | **None** | None | 1 | 1 |
+| per-piece (shipped) | 2026-08-08 | -7 | 3 | 2 |
+
+It reports no reach where a control exists — the opposite direction from the
+earlier 2026-08-04 defect, and just as wrong.
+
+### Why the tests missed it
+
+`test_a_multi_day_closure_blocks_its_own_later_dates` used Wed 23:45 to Fri 05:00.
+Three pieces, all weekdays, all one service class — so it exercised splitting
+without ever crossing the boundary that splitting exists for. A multi-day fixture
+that stays inside one timetable is not a multi-day fixture. The replacement runs
+Friday to Monday and fails against the unsplit logic.
+
+### What moved in the published numbers
+
+Nothing that matters, and one thing worth noting. Still 15 blocked, all
+`certified == covered`, `coverage_reach_unknown` 15. The 4's 2026-04-27 to
+2026-08-18 closure now reports **360** candidate (piece, day) pairs rather than 4,
+because its 113 daily pieces are each searched against the six covered days — the
+earlier 4 was the unsplit window's single band, which is precisely the bug. The
+`Express to Local` duration median read 1.0118 then 1.0124 across the two runs at
+identical n_rows=6; that is the live day accumulating twelve more minutes of
+trace between them, not the change.
+
+## 2026-08-17 — the reach blackout filtered routes when building the set and then ignored them when testing it, blocking the 2 for work on the 5
+
+origin: artifact
+
+A second gate round on the same diagnostic, and the fifth instance of the same
+mistake. `control_reach` built its blackout from windows sharing a route with the
+target, then tested only temporal overlap — so for a window naming two routes, work
+on either one marked the day covered for both.
+
+That is a false negative, and the grade disagrees: `coverage_state` calls a window
+graded when ANY service pairs, so a window on the 2 and 5 against work running on
+the 5 alone still has a free control arm on the 2. On that fixture:
+
+| | day | lag | certified | covered |
+| --- | --- | --- | --- | --- |
+| routes ignored at the test (rejected) | **None** | None | 2 | 2 |
+| per-route (shipped) | 2026-08-13 | +1 | 2 | 1 |
+
+Not hypothetical: **13 of the 593** announced windows in the record name more than
+one route, the 2/5 reroute among them. A day now counts as covered only when EVERY
+route the window names is blacked out over the band.
+
+No published number moves — 13 graded, 22 duration-graded, all 15 blocked windows
+still `certified == covered`, coverage medians byte-identical to the run before the
+diagnostic existed. The fix only ever changes multi-route windows, and none of the
+15 currently blocked are.

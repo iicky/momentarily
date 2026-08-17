@@ -660,6 +660,161 @@ def coverage_state(
     return NO_PAIRED_SERVICE if any(supply.values()) else NO_CONTROL_PERIOD
 
 
+def _band_on(day: date, piece: Window) -> tuple[int, int]:
+    """A PIECE's span of the local clock projected onto `day`, absolute seconds.
+
+    The band, not the period: projecting a closure's whole duration onto a
+    candidate day would sweep months for the long ones. The caller passes a
+    `split_by_local_day` piece rather than the announced window, because a piece
+    is what carries one clock band and one service class — the unsplit Friday-to-
+    Monday closure has neither, and reading a single band off it is how a
+    diagnostic starts certifying comparisons the grade never makes. Wrap and
+    open-endedness are handled exactly as `_matches_clock` handles them, so this
+    selects the moments `_is_control` would admit.
+
+    Both endpoints are built from the wall clock with `datetime.combine`, the way
+    `split_by_local_day` builds its day boundaries, rather than by adding seconds
+    to a midnight. New York observes DST, so on a transition day the offset from
+    midnight to a wall-clock hour is not the number of seconds that hour names,
+    and a band projected arithmetically lands an hour off — enough to certify a
+    day as free against the wrong overlap twice a year.
+    """
+    if piece.end == 0:
+        return (
+            int(datetime.combine(day, time.min, tzinfo=_ET).timestamp()),
+            int(
+                datetime.combine(
+                    day + timedelta(days=1), time.min, tzinfo=_ET
+                ).timestamp()
+            )
+            - 1,
+        )
+    start_local = datetime.fromtimestamp(piece.start, _ET).time()
+    end_local = datetime.fromtimestamp(piece.end, _ET).time()
+    # A band ending earlier on the clock than it started wraps past midnight, so
+    # its close belongs to the NEXT calendar day — the same rule `_matches_clock`
+    # applies, spelled as a date rather than as 86,400 seconds.
+    end_day = day + timedelta(days=1) if end_local < start_local else day
+    return (
+        int(datetime.combine(day, start_local, tzinfo=_ET).timestamp()),
+        int(datetime.combine(end_day, end_local, tzinfo=_ET).timestamp()),
+    )
+
+
+@dataclass(frozen=True)
+class ControlReach:
+    """Whether a matched control could exist YET, judged only where the answer
+    key is in a position to answer.
+
+    `NO_CONTROL_PERIOD` says the archive held no comparable period, and on its
+    own it cannot tell a window whose control is one week out of reach from one
+    whose control cannot exist. Both read as a permanent dead end, so a report
+    that only carries the state invites the same class of mistake this module
+    already corrected once for an empty `pattern_shift`: an absence of supply
+    published as a finding.
+
+    CERTIFIED ONLY WHERE THE ANSWER KEY CAN ANSWER. A day is free when no
+    announced work runs in the window's clock band on it, and absence of an
+    announcement is evidence of that ONLY on days we hold alert snapshots for.
+    Before the first publication day the work that ran and ended is simply not in
+    the record; after the last, work is not yet announced; and between them,
+    coverage can have holes. Measured 2026-08-17, searching +/-60 days against
+    the loaded record named 2026-08-04 as the 7's nearest free weekday when the
+    record began 2026-08-12 and could not see that day at all. A countdown to a
+    contaminated control is worse than no countdown.
+    """
+
+    day: date | None
+    # Signed: negative when the free day precedes the window, so the sign says
+    # whether the answer is "reach further back" or "wait".
+    lag_days: int | None
+    certified: int  # comparable days inside the coverage span
+    covered: int  # of those, how many carry announced work in the band
+
+
+def control_reach(
+    window: Window,
+    announced: Iterable[Window],
+    coverage: Iterable[date],
+) -> ControlReach:
+    """The nearest day a matched control could come from, or nothing when the
+    record cannot certify one.
+
+    PER LOCAL-DAY PIECE, because that is what gets graded. `pattern_shift` and
+    `control_supply` both iterate `split_by_local_day`, and a piece is the only
+    thing carrying one clock band and one service class. Read off the unsplit
+    window, a Friday-23:45-to-Monday-05:00 closure yields a single 23:45-05:00
+    band on Friday's weekday class — while the grade actually wants a Friday late
+    night, a whole Saturday, a whole Sunday and a Monday morning, on three
+    different timetables. The diagnostic would then certify a free weekday as the
+    control for a Sunday piece and promise a grade that cannot run.
+
+    The nearest free day across pieces wins, mirroring `coverage_state`: a window
+    counts as graded when ANY piece produced a row, so it becomes reachable as
+    soon as any one of them has a control. `certified` and `covered` are summed
+    over (piece, candidate day) pairs for the same reason.
+
+    `coverage` is the SET of publication days held, never a first..last span.
+    `load_windows` supports non-contiguous coverage, and collapsing it to its
+    endpoints would read a day whose snapshots are missing as evidence of free
+    service — the same unbacked promise as searching before the record begins,
+    one level in.
+
+    THE WINDOW BLOCKS ITS OWN DATES. The unsplit window goes in the blackout,
+    exactly as `pattern_shift` puts it there: a closure running Friday to Monday
+    is one announced period, and without it every day of that period but the
+    first would read free. The 4's announced work spans 2026-04-27 to 2026-08-18,
+    so the difference is 113 days of its own closure certified as a control for
+    itself.
+
+    `day is None` with `certified == covered` is the informative case: every
+    comparable day the answer key can speak for carries work on the route, so the
+    remedy is more coverage rather than a different comparison. That is the state
+    all fifteen ungraded windows were in on 2026-08-17, and it is why recurring
+    work is not a defect in the control definition — `_is_control` admits a free
+    day untouched the moment the archive holds one.
+    """
+    blackout = [*(w for w in announced if w != window and (w.routes & window.routes))]
+    blackout.append(window)
+    days = sorted(set(coverage))
+    certified = 0
+    covered = 0
+    nearest: tuple[int, date] | None = None
+    for piece in split_by_local_day(window):
+        want = _service_class(piece.start)
+        own = datetime.fromtimestamp(piece.start, _ET).date()
+        for day in days:
+            start, end = _band_on(day, piece)
+            if _service_class(start) != want:
+                continue
+            certified += 1
+            # Covered only when EVERY route the window names is blacked out over
+            # the band. A window on the 2 and 5 against work running on the 5
+            # alone still has a free control arm on the 2, and `coverage_state`
+            # calls the window graded when ANY service pairs — so blocking the day
+            # on one route would report no reach for a grade that can run.
+            if all(
+                any(
+                    w.covers_route(route)
+                    and w.start <= end
+                    and (w.end == 0 or w.end >= start)
+                    for w in blackout
+                )
+                for route in window.routes
+            ):
+                covered += 1
+                continue
+            lag = (day - own).days
+            if nearest is None or abs(lag) < abs(nearest[0]):
+                nearest = (lag, day)
+    return ControlReach(
+        day=nearest[1] if nearest else None,
+        lag_days=nearest[0] if nearest else None,
+        certified=certified,
+        covered=covered,
+    )
+
+
 def unknown_types(windows: Iterable[Window]) -> set[str]:
     """Alert types this module classifies as neither service-changing nor
     headway-only.
@@ -746,16 +901,37 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
+    # The days the answer key can speak for: absence of an announcement is
+    # evidence of a free day only where we hold alert snapshots. A SET, not a
+    # span — coverage can have holes, and reading it as first..last would certify
+    # a day whose snapshots are missing. Unioned across archive and raw because
+    # both are days we captured.
+    key_days = set(loaded_windows.archived_days) | set(loaded_windows.raw_days)
+
     coverage: list[PatternShift] = []
     duration: list[Effect] = []
     states: Counter[str] = Counter()
+    blocked: list[dict[str, object]] = []
     graded_duration = 0
     for window in live:
         shifts = pattern_shift(window, traversals, other_windows=live)
         effects = measure(window, traversals, other_windows=live)
         graded_duration += bool(effects)
         if window.gradeable:
-            states[coverage_state(window, shifts, traversals, other_windows=live)] += 1
+            state = coverage_state(window, shifts, traversals, other_windows=live)
+            states[state] += 1
+            if state == NO_CONTROL_PERIOD and key_days:
+                reach = control_reach(window, windows, key_days)
+                blocked.append(
+                    {
+                        "alert_type": window.alert_type,
+                        "routes": sorted(window.routes),
+                        "start": window.start,
+                        "end": window.end,
+                        **asdict(reach),
+                        "day": reach.day.isoformat() if reach.day else None,
+                    }
+                )
         coverage.extend(shifts)
         duration.extend(effects)
 
@@ -794,8 +970,21 @@ def main(argv: list[str] | None = None) -> int:
                     "graded_coverage": states[GRADED],
                     "coverage_no_paired_service": states[NO_PAIRED_SERVICE],
                     "coverage_no_control_period": states[NO_CONTROL_PERIOD],
+                    # Of those, how many have no free comparable day anywhere the
+                    # answer key can certify one. A window here is not waiting on
+                    # a cleverer comparison; it is waiting on coverage.
+                    "coverage_reach_unknown": sum(
+                        1 for row in blocked if row["day"] is None
+                    ),
+                    "answer_key_days": len(key_days),
                     "graded_duration": graded_duration,
                 },
+                # Every window that reached NO_CONTROL_PERIOD, with how far the
+                # record would have to reach to grade it. Without this the state
+                # reads the same whether a control is a week out of reach or
+                # cannot exist, which are opposite conclusions about whether
+                # waiting helps.
+                "coverage_blocked": blocked,
                 "coverage": {
                     "vanished_by_type": _median_by_type(
                         [(r.alert_type, r.vanished) for r in coverage]

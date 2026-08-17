@@ -7,7 +7,7 @@ about which windows can be graded, with which measure, and against what.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,6 +18,7 @@ from training.planned_work import (
     NO_PAIRED_SERVICE,
     SERVICE_CHANGING,
     Window,
+    control_reach,
     control_supply,
     coverage_state,
     measure,
@@ -572,3 +573,147 @@ def test_a_closure_ending_at_local_midnight_keeps_its_final_instant():
     assert [(p.start, p.end) for p in pieces][-1] == (end, end)
     assert pieces[-1].contains(end)
     assert sum(1 for p in pieces if p.contains(end)) == 1
+
+
+_NY = ZoneInfo("America/New_York")
+WED = date(2026, 8, 12)  # T0's local day
+THU, FRI = date(2026, 8, 13), date(2026, 8, 14)
+MON, TUE = date(2026, 8, 10), date(2026, 8, 11)
+
+
+def _window(start: int, end: int, *, routes: tuple[str, ...] = ("J",)) -> Window:
+    return Window(
+        alert_type="Planned - Part Suspended",
+        routes=frozenset(routes),
+        stops=frozenset({"J20"}),
+        start=start,
+        end=end,
+    )
+
+
+def _daily(days: list[int]) -> list[Window]:
+    """The same clock band as T0's window, on each offset day given."""
+    return [_window(T0 + d * 24 * HOUR, T0 + d * 24 * HOUR + 4 * HOUR) for d in days]
+
+
+def test_recurring_work_covering_every_certified_day_reports_no_reach():
+    """The state all fifteen ungraded windows were in on 2026-08-17. Every
+    comparable day the answer key can speak for carries the same work, so
+    `certified == covered` and there is nothing to count down to -- the remedy is
+    coverage, not a different comparison."""
+    window = _window(T0, T0 + 4 * HOUR)
+    reach = control_reach(window, [window, *_daily([1, 2])], [WED, THU, FRI])
+    assert reach.day is None
+    assert reach.lag_days is None
+    assert reach.certified == reach.covered == 3
+
+
+def test_a_free_comparable_day_inside_coverage_is_named_with_its_lag():
+    """The counterpart, and the reason the diagnostic is worth reporting: a
+    window one free day away from a grade must not read like one that can never
+    have a control."""
+    window = _window(T0, T0 + 4 * HOUR)
+    reach = control_reach(window, [window, *_daily([1])], [WED, THU, FRI])
+    assert reach.day == FRI
+    assert reach.lag_days == 2
+    assert (reach.certified, reach.covered) == (3, 2)
+
+
+def test_a_day_the_answer_key_never_covered_is_never_named():
+    """Absence of an announcement is evidence of a free day only where we hold
+    alert snapshots. Monday and Tuesday carry no announced work here purely
+    because the record does not reach them, and naming either would promise a
+    control drawn from a period we cannot certify was free."""
+    window = _window(T0, T0 + 4 * HOUR)
+    announced = [window, *_daily([1, 2])]
+    assert control_reach(window, announced, [WED, THU, FRI]).day is None
+    # The same search, once those days are covered and known free.
+    widened = control_reach(window, announced, [MON, TUE, WED, THU, FRI])
+    assert widened.day == TUE  # the nearer of the two
+    assert widened.lag_days == -1
+
+
+def test_a_hole_in_coverage_is_not_read_as_a_free_day():
+    """Coverage is a set, not a span. Thursday is uncovered here while the days
+    either side are covered, so collapsing coverage to first..last would certify
+    it -- and it is exactly the day the work runs."""
+    window = _window(T0, T0 + 4 * HOUR)
+    announced = [window, *_daily([1, 2])]
+    reach = control_reach(window, announced, [WED, FRI])
+    assert reach.day is None
+    assert reach.certified == 2  # Thursday was never a candidate
+
+
+def test_a_multi_day_closure_blocks_its_own_later_dates():
+    """One announced period covers all of its own days. Without the unsplit window
+    in the blackout, Thursday -- squarely inside the closure -- would certify as a
+    control for the closure itself."""
+    start = int(datetime(2026, 8, 12, 23, 45, tzinfo=_NY).timestamp())
+    end = int(datetime(2026, 8, 14, 5, 0, tzinfo=_NY).timestamp())
+    window = _window(start, end)
+    reach = control_reach(window, [window], [WED, THU, FRI])
+    # Three weekday pieces against three covered weekdays. The whole-Thursday
+    # piece finds every candidate blocked by the closure it belongs to.
+    assert (reach.certified, reach.covered) == (9, 7)
+
+
+def test_reach_is_judged_per_local_day_piece_not_the_unsplit_window():
+    """A Friday-night-to-Monday-morning closure is graded as four pieces on three
+    timetables, so its Saturday piece needs a SATURDAY control. Read off the
+    unsplit window there is one clock band and one service class -- Friday's --
+    and the free Saturday below is never even a candidate, so the diagnostic
+    reports no reach while the grade could in fact run."""
+    closure = _window(
+        int(datetime(2026, 8, 14, 23, 45, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 17, 5, 0, tzinfo=_NY).timestamp()),
+    )
+    # Blocks the Monday piece's only weekday candidate, leaving the Saturday as
+    # the single free day in the record.
+    small_hours = _window(
+        int(datetime(2026, 8, 14, 2, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 14, 3, 0, tzinfo=_NY).timestamp()),
+    )
+    free_saturday = date(2026, 8, 8)
+    reach = control_reach(
+        closure, [closure, small_hours], [free_saturday, date(2026, 8, 14)]
+    )
+    assert reach.day == free_saturday
+    assert reach.lag_days == -7  # against the Saturday piece, not the window start
+    assert (reach.certified, reach.covered) == (3, 2)
+
+
+def test_a_day_is_only_covered_when_every_named_route_is_blacked_out():
+    """Work on the 5 does not deprive the 2 of a control arm. `coverage_state`
+    calls a window graded when ANY service pairs, so a day blocked on one of two
+    named routes still reaches -- reporting it as covered would publish a false
+    negative for a grade that can run."""
+    window = _window(T0, T0 + 4 * HOUR, routes=("2", "5"))
+    on_the_five = _window(T0 + 24 * HOUR, T0 + 24 * HOUR + 4 * HOUR, routes=("5",))
+    reach = control_reach(window, [window, on_the_five], [WED, THU])
+    assert reach.day == THU
+    assert reach.lag_days == 1
+    assert (reach.certified, reach.covered) == (2, 1)
+    # Once the 2 is blacked out over the same band the day is genuinely gone.
+    on_the_two = _window(T0 + 24 * HOUR, T0 + 24 * HOUR + 4 * HOUR, routes=("2",))
+    blocked = control_reach(window, [window, on_the_five, on_the_two], [WED, THU])
+    assert blocked.day is None
+    assert (blocked.certified, blocked.covered) == (2, 2)
+
+
+def test_the_band_keeps_its_wall_clock_across_a_daylight_saving_shift():
+    """2026-03-08 springs forward, so local 05:00 is 18,000 seconds after
+    midnight only on days that have 24 hours. Projected arithmetically the band
+    lands at 06:00, collides with the 06:00 work below, and the day reads
+    covered; on the wall clock it stays at 05:00 and is free."""
+    sunday, shift_day = date(2026, 3, 15), date(2026, 3, 8)
+    window = _window(
+        int(datetime(2026, 3, 15, 5, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 3, 15, 5, 30, tzinfo=_NY).timestamp()),
+    )
+    elsewhere = _window(
+        int(datetime(2026, 3, 8, 6, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 3, 8, 7, 0, tzinfo=_NY).timestamp()),
+    )
+    reach = control_reach(window, [window, elsewhere], [shift_day, sunday])
+    assert reach.day == shift_day
+    assert reach.lag_days == -7

@@ -202,8 +202,8 @@ def test_the_summary_counts_windows_not_hops():
     )
     report = summarise([strong, weak])
     assert report.n_graded == 2
-    assert report.windows_above_half == 1
-    assert report.sign_test_p == 1.0
+    assert report.pooled_windows_above_half == 1
+    assert report.pooled_sign_test_p == 1.0
 
 
 def test_sign_test_matches_the_exact_binomial():

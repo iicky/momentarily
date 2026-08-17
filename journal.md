@@ -3312,3 +3312,75 @@ is a ranking signal with no practical size and matches its four prior readings
 of approximately nothing. One type carries this measure, and it is the one whose
 work physically constrains the track the trains are still using.
 
+
+## 2026-08-17 — the N does not run faster during its part suspension, it runs UNCHANGED on two hops. Part suspensions are one mechanism, not two
+
+origin: self
+
+Two N windows read AUC 0.43/0.45 with affected deviations of 0.864/0.893 while
+the 1, 6, J and L read 1.17 to 2.46, and I filed that as the type splitting into
+two mechanisms — trains bypassing a closed stretch rather than terminating
+short. That was a story built on an aggregate. Looking at the hops themselves,
+there is no second mechanism.
+
+### The whole arm is two hops, and neither of them moved
+
+Both windows are 23:45-05:00, naming R09, R11, R13, R14, R15, R16. Twelve hops
+qualify as boundary hops; ten of them have almost nothing inside the window. Two
+carry the arm:
+
+| hop | in-window median | out-of-window median | n in / out |
+| --- | --- | --- | --- |
+| R17N->R16N (Wed) | 118 s | 121 s | 14 / 527 |
+| R17N->R16N (Thu) | 120 s | 121 s | 15 / 526 |
+| R08S->R09S (Wed) | 159 s | 170 s | 7 / 465 |
+| R08S->R09S (Thu) | 166 s | 170 s | 14 / 458 |
+
+One to eleven seconds on two-minute hops, off 33 and 23 observations across a
+five-hour overnight window. That is not a route running faster under
+disruption; it is a route whose boundary hops were not measurably touched, on an
+arm too thin to say much either way. An AUC of 0.43 on 33 observations is a coin
+flip, and I read a mechanism into it.
+
+So the type does not split into "slows down" and "speeds up". It splits into
+DETECTED (1, 6, J, L) and NO MEASURABLE CHANGE ON A THIN ARM (N, twice). The
+bypass-versus-terminate-short hypothesis has no support here and is withdrawn;
+what the N actually shows is that a part suspension does not necessarily
+congest its own boundary.
+
+### The absolute deviation was not comparable across windows
+
+Chasing this surfaced a real reporting defect. `median_affected_deviation`
+scores hops against a cell level fitted over ALL hours, while a window covers
+particular ones — so an overnight window carries whatever the overnight hour
+was doing, mixed into the effect. `WindowGrade.effect` now divides the affected
+arm's deviation by the control arm's over the same minutes, which absorbs the
+hour the same way `planned_work`'s difference-in-differences does, in deviation
+space. It moves the headline:
+
+| type | windows | above 0.5 | median AUC | median effect | raw deviation | sign p |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Part Suspended** | 6 | 4 | 0.670 | **1.201** | 1.245 | 0.688 |
+| Express to Local | 6 | 5 | 0.586 | 1.042 | 1.004 | 0.219 |
+| Stops Skipped | 2 | 1 | 0.494 | 1.023 | 1.080 | 1.000 |
+| Reroute | 7 | 3 | 0.498 | 0.926 | 0.981 | 1.000 |
+
+Part suspensions come down from 1.245 to 1.201 once the hour is taken out. In
+the same measurement, the control arms sat at 0.96-1.08, so the correction is
+small — but "small once measured" is a different statement from "assumed
+negligible", and only one of them is defensible.
+
+### The pooled sign test is now labelled as a diagnostic in the code
+
+`Report` renames it `pooled_sign_test_p` and carries the reason in a comment
+beside the field: it pools types that are different experiments, `Express to
+Local` has read approximately 1.00 on every window ever graded, and the 11-of-15
+to 12-of-22 collapse was composition rather than evidence. `by_type` now carries
+its own per-type sign test, and nothing in that table is significant — 4 of 6
+at p=0.688 is the best part suspensions can claim.
+
+What is still true after all of this: part suspensions are the only type with a
+magnitude worth the name, at ~1.2x control on six windows, agreeing with an
+independent difference-in-differences estimate. That has survived every attempt
+to break it. It is still not significant.
+

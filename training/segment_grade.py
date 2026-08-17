@@ -182,6 +182,15 @@ class WindowGrade:
     auc: float | None
     median_affected: float | None
     median_control: float | None
+    # median_affected / median_control: the affected arm's deviation expressed
+    # against what the untouched hops of the same routes were doing over the
+    # same minutes. THIS is the comparable number across windows, not
+    # median_affected on its own — a cell's level is fitted over all hours while
+    # a window covers particular ones, so an absolute deviation carries whatever
+    # the hour was doing. The control arm absorbs that, which is the same
+    # cancellation planned_work's difference-in-differences relies on, done in
+    # deviation space.
+    effect: float | None
 
 
 def grade_window(
@@ -227,6 +236,8 @@ def grade_window(
     else:
         state = GRADED
 
+    med_affected = statistics.median(affected) if affected else None
+    med_control = statistics.median(control) if control else None
     return WindowGrade(
         alert_type=window.alert_type,
         routes=tuple(sorted(window.routes)),
@@ -238,8 +249,13 @@ def grade_window(
         n_affected_keys=len(affected_keys),
         n_control_keys=len(control_keys),
         auc=auc_from(affected, control) if state == GRADED else None,
-        median_affected=statistics.median(affected) if affected else None,
-        median_control=statistics.median(control) if control else None,
+        median_affected=med_affected,
+        median_control=med_control,
+        effect=(
+            med_affected / med_control
+            if med_affected is not None and med_control not in (None, 0)
+            else None
+        ),
     )
 
 
@@ -270,13 +286,24 @@ class Report:
     n_windows_considered: int
     n_graded: int
     states: dict[str, int]
-    windows_above_half: int
-    sign_test_p: float | None
-    median_auc: float | None
-    median_affected_deviation: float | None
-    median_control_deviation: float | None
+    # PER TYPE IS THE RESULT. The pooled fields below are a diagnostic only.
     by_type: dict[str, dict[str, float | int]]
+    # DIAGNOSTIC, NOT A RESULT. These pool types that are different
+    # experiments: `Express to Local` is documented as invisible to a duration
+    # measure and has read approximately 1.00 on every window ever graded, so
+    # counting how many windows of all types beat 0.5 dilutes a real effect with
+    # windows where no effect is expected, and drifts toward 0.5 as more of them
+    # arrive. Measured 2026-08-16: 11 of 15 windows (p=0.118) became 12 of 22
+    # (p=0.832) on eight more windows, purely by composition. Read `by_type`.
+    pooled_windows_above_half: int
+    pooled_sign_test_p: float | None
+    pooled_median_auc: float | None
     rows: list[dict[str, object]]
+
+
+def _median_of(values: Sequence[float | None]) -> float | None:
+    present = [v for v in values if v is not None]
+    return round(statistics.median(present), 4) if present else None
 
 
 def summarise(grades: Sequence[WindowGrade]) -> Report:
@@ -288,17 +315,24 @@ def summarise(grades: Sequence[WindowGrade]) -> Report:
     by_type: dict[str, dict[str, float | int]] = {}
     for alert_type in sorted({g.alert_type for g in graded}):
         rows = [g for g in graded if g.alert_type == alert_type]
-        vals = [g.auc for g in rows if g.auc is not None]
-        by_type[alert_type] = {
+        type_aucs = [g.auc for g in rows if g.auc is not None]
+        above = sum(1 for a in type_aucs if a > 0.5)
+        entry: dict[str, float | int] = {
             "n_windows": len(rows),
-            "median_auc": round(statistics.median(vals), 4),
-            "median_affected_deviation": round(
-                statistics.median(
-                    [g.median_affected for g in rows if g.median_affected is not None]
-                ),
-                4,
-            ),
+            "windows_above_half": above,
+            "median_auc": round(statistics.median(type_aucs), 4),
         }
+        # The comparable magnitude: affected deviation over control deviation.
+        effect = _median_of([g.effect for g in rows])
+        if effect is not None:
+            entry["median_effect"] = effect
+        raw = _median_of([g.median_affected for g in rows])
+        if raw is not None:
+            entry["median_affected_deviation"] = raw
+        p = sign_test(above, len(type_aucs))
+        if p is not None:
+            entry["sign_test_p"] = round(p, 4)
+        by_type[alert_type] = entry
 
     states: dict[str, int] = {}
     for g in grades:
@@ -308,30 +342,10 @@ def summarise(grades: Sequence[WindowGrade]) -> Report:
         n_windows_considered=len(grades),
         n_graded=len(graded),
         states=states,
-        windows_above_half=wins,
-        sign_test_p=sign_test(wins, len(aucs)),
-        median_auc=round(statistics.median(aucs), 4) if aucs else None,
-        median_affected_deviation=(
-            round(
-                statistics.median(
-                    [g.median_affected for g in graded if g.median_affected is not None]
-                ),
-                4,
-            )
-            if graded
-            else None
-        ),
-        median_control_deviation=(
-            round(
-                statistics.median(
-                    [g.median_control for g in graded if g.median_control is not None]
-                ),
-                4,
-            )
-            if graded
-            else None
-        ),
         by_type=by_type,
+        pooled_windows_above_half=wins,
+        pooled_sign_test_p=sign_test(wins, len(aucs)),
+        pooled_median_auc=_median_of(list(aucs)),
         rows=[asdict(g) for g in grades],
     )
 

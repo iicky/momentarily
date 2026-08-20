@@ -646,15 +646,17 @@ def test_a_hole_in_coverage_is_not_read_as_a_free_day():
 
 def test_a_multi_day_closure_blocks_its_own_later_dates():
     """One announced period covers all of its own days. Without the unsplit window
-    in the blackout, Thursday -- squarely inside the closure -- would certify as a
-    control for the closure itself."""
+    in the blackout every band would be free, so `covered` counts only what the
+    closure itself blocks: its Thursday piece is enclosed on all three candidate
+    days, and the Friday and Wednesday pieces are blocked wherever their bands sit
+    inside it. The Wednesday whole-day band is NOT blocked -- the closure opens at
+    23:45, so that day's earlier hours are admissible and the grade would take
+    them."""
     start = int(datetime(2026, 8, 12, 23, 45, tzinfo=_NY).timestamp())
     end = int(datetime(2026, 8, 14, 5, 0, tzinfo=_NY).timestamp())
     window = _window(start, end)
     reach = control_reach(window, [window], [WED, THU, FRI])
-    # Three weekday pieces against three covered weekdays. The whole-Thursday
-    # piece finds every candidate blocked by the closure it belongs to.
-    assert (reach.certified, reach.covered) == (9, 7)
+    assert (reach.certified, reach.covered) == (9, 5)
 
 
 def test_reach_is_judged_per_local_day_piece_not_the_unsplit_window():
@@ -667,15 +669,15 @@ def test_reach_is_judged_per_local_day_piece_not_the_unsplit_window():
         int(datetime(2026, 8, 14, 23, 45, tzinfo=_NY).timestamp()),
         int(datetime(2026, 8, 17, 5, 0, tzinfo=_NY).timestamp()),
     )
-    # Blocks the Monday piece's only weekday candidate, leaving the Saturday as
-    # the single free day in the record.
-    small_hours = _window(
-        int(datetime(2026, 8, 14, 2, 0, tzinfo=_NY).timestamp()),
-        int(datetime(2026, 8, 14, 3, 0, tzinfo=_NY).timestamp()),
+    # Blocks the Monday piece's 00:00-05:00 band on its only weekday candidate,
+    # leaving the Saturday as the single free day in the record.
+    friday_small_hours = _window(
+        int(datetime(2026, 8, 14, 0, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 14, 5, 0, tzinfo=_NY).timestamp()),
     )
     free_saturday = date(2026, 8, 8)
     reach = control_reach(
-        closure, [closure, small_hours], [free_saturday, date(2026, 8, 14)]
+        closure, [closure, friday_small_hours], [free_saturday, date(2026, 8, 14)]
     )
     assert reach.day == free_saturday
     assert reach.lag_days == -7  # against the Saturday piece, not the window start
@@ -698,6 +700,55 @@ def test_a_day_is_only_covered_when_every_named_route_is_blacked_out():
     blocked = control_reach(window, [window, on_the_five, on_the_two], [WED, THU])
     assert blocked.day is None
     assert (blocked.certified, blocked.covered) == (2, 2)
+
+
+def test_work_covering_part_of_a_band_leaves_the_rest_reachable():
+    """The diagnostic must agree with the measure it describes. `_is_control`
+    tests a traversal's own instant, so a closure over the first hour of a band
+    leaves the remaining three admissible -- and `control_supply` proves the grade
+    really does take them. Rejecting the whole band on any overlap reports no
+    reach for a comparison that runs."""
+    window = _window(
+        int(datetime(2026, 8, 14, 12, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 14, 16, 0, tzinfo=_NY).timestamp()),
+    )
+    first_hour_thursday = _window(
+        int(datetime(2026, 8, 13, 12, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 13, 13, 0, tzinfo=_NY).timestamp()),
+    )
+    reach = control_reach(window, [window, first_hour_thursday], [THU, FRI])
+    assert reach.day == THU
+    assert reach.lag_days == -1
+    assert (reach.certified, reach.covered) == (2, 1)
+
+    # The grade agrees, on the same blackout: 14:00 is outside the closed hour.
+    free = _hop(int(datetime(2026, 8, 13, 14, 0, tzinfo=_NY).timestamp()), 100)
+    assert control_supply(window, [free], other_windows=[first_hour_thursday]) == {
+        "J": 1
+    }
+    # And a traversal inside that hour is still refused, so the arm is real.
+    inside = _hop(int(datetime(2026, 8, 13, 12, 30, tzinfo=_NY).timestamp()), 100)
+    assert control_supply(window, [inside], other_windows=[first_hour_thursday]) == {}
+
+
+def test_blackouts_tiling_a_whole_band_leave_no_instant():
+    """The other side of the sweep: two closures meeting inside the band cover it
+    between them, and overlapping spans must not read as a gap."""
+    window = _window(
+        int(datetime(2026, 8, 14, 12, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 14, 16, 0, tzinfo=_NY).timestamp()),
+    )
+    early = _window(
+        int(datetime(2026, 8, 13, 11, 0, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 13, 14, 0, tzinfo=_NY).timestamp()),
+    )
+    late = _window(
+        int(datetime(2026, 8, 13, 13, 30, tzinfo=_NY).timestamp()),
+        int(datetime(2026, 8, 13, 17, 0, tzinfo=_NY).timestamp()),
+    )
+    reach = control_reach(window, [window, early, late], [THU, FRI])
+    assert reach.day is None
+    assert (reach.certified, reach.covered) == (2, 2)
 
 
 def test_the_band_keeps_its_wall_clock_across_a_daylight_saving_shift():

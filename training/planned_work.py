@@ -701,6 +701,37 @@ def _band_on(day: date, piece: Window) -> tuple[int, int]:
     )
 
 
+def _free_instant(start: int, end: int, route: str, blackout: Sequence[Window]) -> bool:
+    """Whether any instant in [start, end] on `route` escapes every blackout.
+
+    AN INSTANT, NOT THE BAND. `_is_control` admits a traversal when no blackout
+    window `contains` its own timestamp, so work occupying PART of a band leaves
+    the rest admissible: against a 12:00-16:00 band, a 12:00-13:00 closure still
+    permits 13:00-16:00 controls and the grade will use them. Rejecting the whole
+    band on any overlap makes this diagnostic stricter than the measure it
+    describes, which reports no reach for a grade that can run — the same
+    disagreement, in a third place, as reading one clock band off a multi-piece
+    window and as ignoring routes in the blackout test.
+
+    Swept rather than summed because the blackout intervals may overlap each
+    other; a gap survives only where none of them reaches. Both ends are closed,
+    matching `Window.contains`, so a blocked span resumes at `hi + 1`.
+    """
+    spans = sorted(
+        (w.start, end if w.end == 0 else w.end)
+        for w in blackout
+        if w.covers_route(route) and w.start <= end and (w.end == 0 or w.end >= start)
+    )
+    cursor = start
+    for lo, hi in spans:
+        if lo > cursor:
+            return True
+        cursor = max(cursor, hi + 1)
+        if cursor > end:
+            return False
+    return cursor <= end
+
+
 @dataclass(frozen=True)
 class ControlReach:
     """Whether a matched control could exist YET, judged only where the answer
@@ -788,19 +819,12 @@ def control_reach(
             if _service_class(start) != want:
                 continue
             certified += 1
-            # Covered only when EVERY route the window names is blacked out over
-            # the band. A window on the 2 and 5 against work running on the 5
-            # alone still has a free control arm on the 2, and `coverage_state`
-            # calls the window graded when ANY service pairs — so blocking the day
-            # on one route would report no reach for a grade that can run.
-            if all(
-                any(
-                    w.covers_route(route)
-                    and w.start <= end
-                    and (w.end == 0 or w.end >= start)
-                    for w in blackout
-                )
-                for route in window.routes
+            # Free when ANY route the window names has an admissible instant in
+            # the band -- `coverage_state` calls a window graded when ANY service
+            # pairs, so blocking the day on one of two named routes would report
+            # no reach for a grade that can run.
+            if not any(
+                _free_instant(start, end, route, blackout) for route in window.routes
             ):
                 covered += 1
                 continue

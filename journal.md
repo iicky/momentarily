@@ -3577,3 +3577,58 @@ No published number moves — 13 graded, 22 duration-graded, all 15 blocked wind
 still `certified == covered`, coverage medians byte-identical to the run before the
 diagnostic existed. The fix only ever changes multi-route windows, and none of the
 15 currently blocked are.
+
+## 2026-08-17 — the reach diagnostic rejected a whole band on any overlap while the grade only rejects an instant: five of six defects were the same disagreement
+
+origin: self
+
+Sixth defect in `control_reach`, found after the commit was already pushed. It
+judged a candidate band covered if ANY blackout overlapped it. `_is_control` does
+not: it tests one traversal's own timestamp against `Window.contains`, so work
+occupying part of a band leaves the rest admissible.
+
+Against a 12:00-16:00 band with a 12:00-13:00 closure on the candidate day:
+
+| | day | lag | certified | covered |
+| --- | --- | --- | --- | --- |
+| band-level (rejected) | **None** | None | 2 | 2 |
+| instant-level (shipped) | 2026-08-13 | -1 | 2 | 1 |
+
+And the grade agrees with the second one, which is the part that settles it:
+`control_supply` on the same blackout returns `{'J': 1}` for a traversal at 14:00
+and `{}` for one at 12:30. The control arm is real; the diagnostic was denying it.
+
+Fixed by sweeping the band and asking whether any instant escapes every blackout,
+with spans sorted because blackouts can overlap each other. Both ends closed,
+matching `Window.contains`, so a blocked span resumes at `hi + 1`.
+
+### The pattern, which is the actual lesson
+
+Six defects in one small diagnostic, and five were the same mistake: the
+diagnostic answering a question slightly different from the one the grade asks.
+One band instead of per-piece bands. Routes filtered when building the blackout
+but ignored when testing it. A whole band instead of an instant. Each was a false
+reading in production output, and none was caught by the tests I wrote for it —
+the multi-day fixture stayed inside one service class, the route fixture named one
+route, the overlap fixtures used exactly-aligned bands.
+
+The guard that works is not another unit test of the diagnostic in isolation. It
+is asserting the diagnostic against the MEASURE: the new test drives
+`control_supply` over the same blackout and requires it to admit a traversal
+exactly where reach claims a control exists. Any future divergence between the two
+now fails a test rather than publishing a number.
+
+### What moved
+
+Nothing in the published numbers, again: 13 graded, 22 duration-graded, 15 blocked
+all `certified == covered`, coverage medians byte-identical to the run before the
+diagnostic existed. Today's recurring work occupies bands that align exactly with
+the windows' own, so no candidate band was ever partially covered. The fix changes
+readings only where a blackout overlaps part of a band, which the archive will
+produce as soon as the announced work stops lining up this neatly.
+
+Two existing expectations moved with it, both correctly. The Wed-23:45-to-Fri-05:00
+fixture went from covered 7 to **5**: its Wednesday whole-day band has admissible
+hours before 23:45, and the grade would take them. And the Friday-to-Monday
+fixture needed its partial blocker widened to the full 00:00-05:00 band to still
+isolate the Saturday, because a 02:00-03:00 closure no longer blocks 00:00-02:00.

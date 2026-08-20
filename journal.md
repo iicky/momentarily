@@ -3632,3 +3632,37 @@ fixture went from covered 7 to **5**: its Wednesday whole-day band has admissibl
 hours before 23:45, and the grade would take them. And the Friday-to-Monday
 fixture needed its partial blocker widened to the full 00:00-05:00 band to still
 isolate the Saturday, because a 02:00-03:00 closure no longer blocks 00:00-02:00.
+
+## 2026-08-20 — recalibrating the movement disrupted arm to match assigned_n was rejected: the two feeds measure different things, and the trains that run are moving fine
+
+origin: self
+
+With the independent assigned_n truth wired into review (0pb), the movement-primary
+published arm scored only 0.144 disrupted-recall against it, so the obvious next
+move was to loosen the movement disrupted threshold (`DISRUPTED_RATIO`, currently
+0.5·p0) and catch more. Ran the cross-tab first. It killed the idea.
+
+Over 2026-08-15..08-20, against a causal advance baseline (2026-08-01..08-14), of
+the 785 assigned_n-disrupted route-ticks:
+
+| what the movement feed sees | ticks | share |
+| --- | --- | --- |
+| unjudgeable — too few matched trips / no baseline | 550 | 70% |
+| no movement row at all | 23 | 3% |
+| judgeable, and reads **normal** (advancing >0.5·p0) | 212 | 27% |
+| judgeable, reads **disrupted** | **0** | 0% |
+
+For the 212 judgeable cells the worst-direction posterior advance ratio is median
+**0.75·p0**, min 0.53, and a quarter sit at or above **1.0·p0**. Not one dropped
+below the disrupted floor. Lowering `DISRUPTED_RATIO` to 0.8 to catch them would
+fire "disrupted" on routes advancing at three-quarters of a noisy baseline — well
+inside normal variation — corrupting what the movement arm means.
+
+The reading is that assigned_n collapse (the dispatcher pulled trips — a SUPPLY
+cut) and movement-disrupted (the trains present are FROZEN — a FLOW problem) are
+different axes of "degraded." A route routinely has one without the other, and the
+70% unjudgeable is the fingerprint of the supply cut: pull the trips and movement
+has too few left to judge. So the low cross-recall is correct, not a calibration
+miss. 07h's premise — recalibrate to raise recall — is wrong; the follow-up is to
+publish assigned_n as its own service-level axis rather than fold it into the
+movement disrupted state.

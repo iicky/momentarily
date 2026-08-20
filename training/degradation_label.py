@@ -271,6 +271,30 @@ def build_labels(
     return list(disruptions), label_ticks(series, baseline, disruptions)
 
 
+def degraded_now_truth(
+    series: dict[tuple[str, int], int],
+    baseline: dict[tuple[str, str], float],
+) -> dict[tuple[str, int], str]:
+    """The assigned_n label as a current-state truth map: (route, tick) ->
+    "normal" | "disrupted", over judgeable ticks only.
+
+    acute and chronic collapse to "disrupted" -- the acute/chronic split grades
+    events, but a confusion matrix asks only whether the route was degraded at a
+    tick. This is the independent "is this route degraded now" reference the
+    severe-alert truth could not be (0pb): assigned_n is orthogonal to both the
+    alerts feed and the vehicle-position feed the movement model is built from,
+    so it does not inherit the chronic-standing-advisory domination that left the
+    alert truth flat across every hour and unable to grade a movement signal.
+
+    "disrupted" (not "degraded") so the values live in the same space as the
+    alert truth's, and the same confusion() consumer scores both."""
+    _disruptions, labels = build_labels(series, baseline)
+    return {
+        key: "normal" if label == "normal" else "disrupted"
+        for key, label in labels.items()
+    }
+
+
 def measure_degradation(
     series: dict[tuple[str, int], int],
     baseline: dict[tuple[str, str], float],

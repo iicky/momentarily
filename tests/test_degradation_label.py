@@ -25,6 +25,7 @@ from training.degradation_label import (
     _hourly_prevalence,  # pyright: ignore[reportPrivateUsage]
     _onsets_by_et_hour,  # pyright: ignore[reportPrivateUsage]
     _week_windows,  # pyright: ignore[reportPrivateUsage]
+    degraded_now_truth,
     label_ticks,
     measure_degradation,
     was_at_baseline,
@@ -315,3 +316,29 @@ def test_quiet_edge_of_a_wide_bin_is_not_a_collapse():
     assert set(_onsets_by_et_hour(wide_onsets)) == {6}
 
     assert _recovery(series, fine) == []
+
+
+# --- degraded_now_truth: the confusion-arm current-state map ---------------
+
+
+def test_degraded_now_truth_collapses_acute_and_chronic_to_disrupted():
+    """The current-state truth for confusion(): every degraded tick -- acute or
+    chronic alike -- reads "disrupted"; normal stays normal; a route with data but
+    no baseline cell is omitted, never defaulted to normal."""
+    normal = _flat("A", 40, 8)
+    collapse_start = T0 + 40 * TICK_SECONDS
+    collapse = _flat("A", 15, 1, t0=collapse_start)  # ratio 0.125 << 0.5
+    recover_start = collapse_start + 15 * TICK_SECONDS
+    recover = _flat("A", 4, 8, t0=recover_start)
+    unjudgeable = _flat("Z", 10, 3)  # data, but no baseline cell below
+    series = _merge(normal, collapse, recover, unjudgeable)
+    baseline = _level_baseline({"A": 8}, ticks=59)
+
+    truth = degraded_now_truth(series, baseline)
+    onset_end = collapse_start + ACUTE_ONSET_TICKS * TICK_SECONDS
+    assert set(truth.values()) <= {"normal", "disrupted"}
+    assert truth[("A", collapse_start)] == "disrupted"  # acute
+    assert truth[("A", onset_end)] == "disrupted"  # chronic
+    assert truth[("A", recover_start)] == "normal"
+    assert truth[("A", T0)] == "normal"
+    assert not any(route == "Z" for route, _ in truth)  # unjudgeable omitted

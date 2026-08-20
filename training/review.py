@@ -39,6 +39,7 @@ from momentarily.mapping import (
     coarse_status,
     severity_tier,
 )
+from training.degradation_label import BIN_FN, degraded_now_truth
 from training.episodes import (
     disruptive_types_by_key,
     episodes_summary,
@@ -69,9 +70,12 @@ from training.load_r2 import (
     build_movement_truth,
     build_segment_baseline,
     build_segment_series,
+    build_service_series,
     build_tick_observations,
     compute_advance_baseline,
+    compute_baseline,
     fetch_alert_versions,
+    fetch_trip_update_metrics,
     fetch_vehicle_metrics,
     presence_mask_from_predictions,
 )
@@ -577,6 +581,27 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     print(f"  {len(movement_truth)} (route, tick) movement-derived states")
 
+    # Independent current-state truth from trip-updates assigned_n — orthogonal
+    # to both the alerts feed (the model's own input) and the vehicle-position
+    # feed (the movement arm), so unlike either confusion arm below it is a
+    # genuine cross-check. The severe-alert truth cannot grade a movement signal:
+    # chronic multi-day "Severe Delays" leave it flat across every hour. The
+    # per-(route, schedule_bin) MEDIAN baseline resists an outage lowering its own
+    # reference, so it is fit on the review window itself, matching
+    # degradation_label's own measurement.
+    print("loading trip-updates archive for independent assigned_n degraded-now truth")
+    tu_bodies = fetch_trip_update_metrics(
+        cfg, start_date=start_date, end_date=today, client=client
+    )
+    tu_series = build_service_series(tu_bodies)
+    tu_baseline = compute_baseline(tu_series, bin_fn=BIN_FN)
+    degradation_state = degraded_now_truth(tu_series, tu_baseline)
+    n_degraded = sum(1 for v in degradation_state.values() if v != "normal")
+    print(
+        f"  {len(degradation_state)} (route, tick) assigned_n states, "
+        f"{n_degraded} degraded"
+    )
+
     # Peer-comparison reliability scorecard: rank line-directions and
     # segments by held-out advance deficit — observed advance over the review
     # window vs the causal baseline. Baselines are fit on baseline_bodies (the
@@ -646,6 +671,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     # feeds the HMM, so this is a self-consistency diagnostic, not an independent
     # cross-check; the held-out yardstick is prequential_alert_truth.
     conf_movement = confusion(preds, movement_truth)
+    # HMM condition vs the independent assigned_n truth — the one confusion arm
+    # that shares no input with the model, so the only genuine current-state
+    # cross-check here.
+    conf_degradation = confusion(preds, degradation_state)
     deltas = changepoint_alignment(
         trans, truth, window_start=window_start, window_end=window_end
     )
@@ -743,6 +772,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         truth_label="movement-derived state (from vehicle positions)",
         title="Regime confusion: HMM vs vehicle movement (row-normalized)",
     )
+    plot_confusion(
+        conf_degradation,
+        out_dir / "confusion_degradation.png",
+        truth_label="assigned_n degraded-now (trip-updates)",
+        title="Regime confusion: HMM vs independent assigned_n truth (row-normalized)",
+    )
     plot_changepoint_alignment(deltas, out_dir / "changepoint_alignment.png")
 
     matched = [d for d in deltas if d is not None]
@@ -803,6 +838,18 @@ def main(argv: Iterable[str] | None = None) -> int:
             "truth_source": "vehicle_movement",
             "independence": "self_consistency (movement is an HMM input)",
         },
+        # HMM condition vs the independent trip-updates assigned_n truth. Unlike
+        # the alert arm (the model's own input) and the movement arm (a shared
+        # input), this shares nothing with the model, so it is the genuine
+        # current-state cross-check — and unlike the severe-alert truth it is not
+        # dominated by chronic standing advisories, so it can actually grade a
+        # movement signal.
+        "confusion_degradation": {
+            "matrix": conf_degradation,
+            "truth_source": "trip_updates_assigned_n",
+            "n_degraded_ticks": n_degraded,
+            "independence": "independent (orthogonal to alerts and vehicle positions)",
+        },
         # Escalation arm: movement disruptions beyond the alert feed, scored
         # against a corroboration window around each episode's onset (no
         # contemporaneous signal can adjudicate the vehicle-derived disrupted
@@ -827,7 +874,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"wrote {out_dir}/ (summary.json + 6 PNGs)")
+    print(f"wrote {out_dir}/ (summary.json + 7 PNGs)")
     return 0
 
 

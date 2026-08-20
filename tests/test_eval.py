@@ -21,9 +21,11 @@ from training.eval import (
     build_independent_recovery,
     calibrate,
     independent_recovery_metrics,
+    movement_coverage_alarm,
     movement_truth_by_key,
     open_regimes_from_predictions,
     prequential_calibration,
+    published_condition_coverage,
     recovery_metrics,
     snap_tick,
 )
@@ -1042,3 +1044,60 @@ def test_independent_recovery_truth_uses_the_degradation_label_bins(
     assert seen["derive_bin_fn"] is BIN_FN
     assert out["n_disruptions"] == 1
     assert out["n_baseline_cells"] == 1
+
+
+# --- movement coverage floor ------------------------------------------------
+
+
+def test_published_condition_coverage_counts_the_gradeable_share():
+    preds = (
+        [_pred(ts=t * 300, condition="normal") for t in range(5)]
+        + [_pred(ts=t * 300, condition="unknown") for t in range(3)]
+        + [_pred(ts=t * 300, condition="not_scheduled") for t in range(2)]
+    )
+    cov = published_condition_coverage(preds)
+    assert cov["n_ticks"] == 10
+    assert cov["unknown_share"] == 0.3
+    # not_scheduled is neither gradeable nor unknown — a line that isn't running
+    # is not one the arm judged healthy.
+    assert cov["gradeable_share"] == 0.5
+
+
+def test_coverage_alarm_silent_on_a_healthy_window():
+    assert movement_coverage_alarm({"n_ticks": 52316, "unknown_share": 0.256}) is None
+
+
+def test_coverage_alarm_fires_when_the_movement_channel_goes_dark():
+    # The 22-day empty-baseline signature: almost every tick unknown.
+    msg = movement_coverage_alarm({"n_ticks": 52316, "unknown_share": 0.91})
+    assert msg is not None
+    assert "unknown" in msg
+    assert "state/params.json" in msg
+
+
+def test_coverage_alarm_holds_fire_on_a_thin_window():
+    # Too few ticks to trust the share — a freshly deployed feed, not an outage.
+    assert movement_coverage_alarm({"n_ticks": 100, "unknown_share": 0.99}) is None
+
+
+def test_coverage_alarm_ignores_planned_work_that_keeps_movement_readable():
+    # A week heavy with planned work drives gradeable coverage down through
+    # not_scheduled, but the movement arm still reads: unknown stays low, so no
+    # page. The ceiling is on unknown, not on gradeable coverage.
+    preds = [_pred(ts=t * 300, condition="not_scheduled") for t in range(3000)] + [
+        _pred(ts=t * 300, condition="normal") for t in range(3000)
+    ]
+    cov = published_condition_coverage(preds)
+    assert cov["gradeable_share"] == 0.5
+    assert cov["unknown_share"] == 0.0
+    assert movement_coverage_alarm(cov) is None
+
+
+def test_coverage_alarm_admits_a_dark_window_through_the_real_coverage_path():
+    # End to end: a fleet-wide-unknown window built from prediction records trips
+    # the alarm, so the wiring from published_condition_coverage holds.
+    preds = [_pred(ts=t * 300, condition="unknown") for t in range(2500)] + [
+        _pred(ts=t * 300, condition="normal") for t in range(100)
+    ]
+    cov = published_condition_coverage(preds)
+    assert movement_coverage_alarm(cov) is not None

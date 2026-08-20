@@ -420,6 +420,44 @@ def published_condition_coverage(
     }
 
 
+# Fleet-wide movement 'unknown' ceiling for the daily job. The movement arm
+# publishes `unknown` when it has no reading, so an empty advance-baseline in
+# published params (or a dead vehicle feed) turns almost every tick unknown.
+# That once ran ~100% unknown for 22 days unnoticed: the share already rode in
+# eval.json under calibration_movement.coverage and nothing read it. Above this
+# the job exits non-zero so the daily workflow emails a page. Healthy windows
+# run ~0.25 unknown; a dark movement channel approaches 1.0.
+MOVEMENT_UNKNOWN_CEILING = 0.75
+# Below this many ticks the window is too thin to trust the share (a freshly
+# deployed feed), so the ceiling is not enforced. The outage this guards ran
+# tens of thousands of ticks.
+MOVEMENT_COVERAGE_MIN_TICKS = 2000
+
+
+def movement_coverage_alarm(coverage: dict[str, Any]) -> str | None:
+    """A page-worthy message when the movement arm has gone dark over the window,
+    else None.
+
+    Fleet-wide `unknown` is the signature of an empty advance-baseline in
+    published params (or a dead vehicle feed): movement can judge nothing, so
+    almost every tick publishes `unknown`. `not_scheduled` comes from a schedule
+    alert rather than movement and so stays readable through the outage, which is
+    why the ceiling is on the unknown share and not on gradeable coverage — a
+    week heavy with planned work lowers coverage without going dark."""
+    n = coverage.get("n_ticks") or 0
+    unknown_share = coverage.get("unknown_share")
+    if n < MOVEMENT_COVERAGE_MIN_TICKS or unknown_share is None:
+        return None
+    if unknown_share > MOVEMENT_UNKNOWN_CEILING:
+        return (
+            f"movement 'unknown' share {unknown_share:.3f} over {n} ticks exceeds "
+            f"ceiling {MOVEMENT_UNKNOWN_CEILING:.2f}: the movement arm is publishing "
+            "almost entirely 'unknown' -- check the advance baseline in "
+            "state/params.json and the vehicle feed"
+        )
+    return None
+
+
 # --- Calibration math ---
 
 
@@ -1319,6 +1357,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             f"published {EVAL_KEY} + {CALIBRATION_KEY}: "
             f"{len(predictions)} predictions, {len(transitions)} transitions"
         )
+
+    # Page on a dark movement channel. Published (or printed) first so the number
+    # is on record either way; the non-zero exit is what the daily workflow turns
+    # into a failure email.
+    alarm = movement_coverage_alarm(eval_doc["calibration_movement"]["coverage"])
+    if alarm is not None:
+        print(f"::error::{alarm}", file=sys.stderr)
+        return 1
     return 0
 
 

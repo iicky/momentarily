@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,6 +60,7 @@ from training.eval import (
     load_predictions,
     load_transitions,
     prequential_calibration,
+    published_arm,
     recovery_as_dict,
 )
 from training.load import TickObservation
@@ -249,16 +250,25 @@ def clearance_disruptions(
 def confusion(
     preds: list[PredictionRecord],
     truth: dict[tuple[str, int], str],
+    *,
+    arm: Callable[[PredictionRecord], str] = lambda p: p.condition,
 ) -> dict[str, dict[str, int]]:
-    """Confusion matrix: HMM `condition` (rows) vs MTA-derived state (cols)."""
+    """Confusion matrix: an HMM condition arm (rows) vs a truth-state map (cols).
+
+    `arm` picks which published axis to grade — the alert-shadow `condition` by
+    default, or `published_arm` for the movement-primary condition consumers
+    actually read. An arm value outside HMM_STATES (a movement arm's `unknown` /
+    `not_scheduled`) is skipped, not forced normal: the arm did not make a
+    normal/disrupted/suspended call there, so it is not scored."""
     matrix: dict[str, dict[str, int]] = {
         h: dict.fromkeys(MTA_STATES, 0) for h in HMM_STATES
     }
     for p in preds:
         mta = truth.get((p.route, snap_tick(p.ts)), "normal")
-        if p.condition not in matrix:
+        arm_state = arm(p)
+        if arm_state not in matrix:
             continue
-        matrix[p.condition][mta] += 1
+        matrix[arm_state][mta] += 1
     return matrix
 
 
@@ -671,10 +681,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     # feeds the HMM, so this is a self-consistency diagnostic, not an independent
     # cross-check; the held-out yardstick is prequential_alert_truth.
     conf_movement = confusion(preds, movement_truth)
-    # HMM condition vs the independent assigned_n truth — the one confusion arm
-    # that shares no input with the model, so the only genuine current-state
-    # cross-check here.
+    # The independent assigned_n truth — the one truth sharing no input with the
+    # model — graded against BOTH published axes. `condition` is the alert-shadow;
+    # `published_arm` is the movement-primary state consumers actually read and the
+    # one a movement-first nowcast lives or dies on. Grading only the shadow would
+    # answer the less interesting question.
     conf_degradation = confusion(preds, degradation_state)
+    conf_degradation_published = confusion(preds, degradation_state, arm=published_arm)
     deltas = changepoint_alignment(
         trans, truth, window_start=window_start, window_end=window_end
     )
@@ -778,6 +791,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         truth_label="assigned_n degraded-now (trip-updates)",
         title="Regime confusion: HMM vs independent assigned_n truth (row-normalized)",
     )
+    plot_confusion(
+        conf_degradation_published,
+        out_dir / "confusion_degradation_published.png",
+        truth_label="assigned_n degraded-now (trip-updates)",
+        title="Regime confusion: movement-primary published condition vs "
+        "independent assigned_n truth (row-normalized)",
+    )
     plot_changepoint_alignment(deltas, out_dir / "changepoint_alignment.png")
 
     matched = [d for d in deltas if d is not None]
@@ -838,14 +858,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             "truth_source": "vehicle_movement",
             "independence": "self_consistency (movement is an HMM input)",
         },
-        # HMM condition vs the independent trip-updates assigned_n truth. Unlike
-        # the alert arm (the model's own input) and the movement arm (a shared
-        # input), this shares nothing with the model, so it is the genuine
-        # current-state cross-check — and unlike the severe-alert truth it is not
-        # dominated by chronic standing advisories, so it can actually grade a
-        # movement signal.
+        # The independent trip-updates assigned_n truth — the one truth sharing
+        # no input with the model, and unlike the severe-alert truth not dominated
+        # by chronic standing advisories, so it can actually grade a movement
+        # signal. Graded against both published axes: `_shadow` is the alert-driven
+        # `condition`; `_published` is the movement-primary state consumers read,
+        # the arm a movement-first nowcast is judged on.
         "confusion_degradation": {
-            "matrix": conf_degradation,
+            "matrix_shadow": conf_degradation,
+            "matrix_published": conf_degradation_published,
             "truth_source": "trip_updates_assigned_n",
             "n_degraded_ticks": n_degraded,
             "independence": "independent (orthogonal to alerts and vehicle positions)",
@@ -874,7 +895,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         },
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"wrote {out_dir}/ (summary.json + 7 PNGs)")
+    print(f"wrote {out_dir}/ (summary.json + 8 PNGs)")
     return 0
 
 

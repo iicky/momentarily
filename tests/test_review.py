@@ -10,10 +10,11 @@ import pytest
 
 from momentarily.hmm import Observation
 from momentarily.mapping import CANONICAL_SEVERITY_FLOOR
-from training.eval import TransitionRecord
+from training.eval import PredictionRecord, TransitionRecord, published_arm
 from training.load import TickObservation
 from training.review import (
     changepoint_alignment,
+    confusion,
     derive_graded_mta_state,
     mta_truth,
     select_escalation_source,
@@ -246,3 +247,56 @@ def test_escalation_source_usability_is_window_scoped():
     }
     _state, source = select_escalation_source(pub, off, win)
     assert source == "offline_movement_rule"
+
+
+# --- confusion: arm selection ----------------------------------------------
+
+
+def _pred(
+    ts: int,
+    *,
+    route: str = "1",
+    condition: str = "normal",
+    published_condition: str | None = None,
+) -> PredictionRecord:
+    return PredictionRecord(
+        ts=ts,
+        route=route,
+        condition=condition,
+        regime_entered_at=ts,
+        p_normal=0.9,
+        p_disrupted=0.05,
+        p_suspended=0.05,
+        p_normal_in_30min=0.9,
+        p_normal_in_60min=0.8,
+        p_normal_in_120min=0.7,
+        recovery_minutes=0,
+        recovery_minutes_low=0,
+        recovery_minutes_high=0,
+        published_condition=published_condition,
+    )
+
+
+def test_confusion_grades_the_selected_arm():
+    """Same tick, same truth, two axes: the alert-shadow condition reads normal
+    while the movement-primary published arm reads disrupted. The default arm
+    scores the shadow; arm=published_arm scores what consumers actually read."""
+    truth = {("1", T0): "disrupted"}
+    preds = [_pred(T0, condition="normal", published_condition="disrupted")]
+
+    shadow = confusion(preds, truth)
+    assert shadow["normal"]["disrupted"] == 1
+    assert shadow["disrupted"]["disrupted"] == 0
+
+    published = confusion(preds, truth, arm=published_arm)
+    assert published["disrupted"]["disrupted"] == 1
+    assert published["normal"]["disrupted"] == 0
+
+
+def test_confusion_skips_arm_states_outside_the_matrix():
+    """A movement arm's 'unknown' is not a normal/disrupted/suspended call, so it
+    is skipped, never folded into the normal row."""
+    truth = {("1", T0): "disrupted"}
+    preds = [_pred(T0, condition="normal", published_condition="unknown")]
+    published = confusion(preds, truth, arm=published_arm)
+    assert sum(v for row in published.values() for v in row.values()) == 0

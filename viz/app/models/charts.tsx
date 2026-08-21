@@ -156,7 +156,10 @@ export function ReliabilityChart({ result }: { result: ReliabilityResult }) {
       title={`P(normal within ${result.horizonMin}m)`}
       titleMeta={
         <>
-          Brier {Number.isNaN(result.brier) ? "—" : result.brier.toFixed(3)}
+          Brier{" "}
+          {result.brier == null || Number.isNaN(result.brier)
+            ? "—"
+            : result.brier.toFixed(3)}
         </>
       }
       meta={{
@@ -245,9 +248,9 @@ export function RecoveryScatter({
       title="Predicted vs actual recovery"
       titleMeta={
         <>
-          IQR coverage {Number.isNaN(result.coverage) ? "—" : (result.coverage * 100).toFixed(0)}%
+          IQR coverage {result.coverage == null || Number.isNaN(result.coverage) ? "—" : (result.coverage * 100).toFixed(0)}%
           (target ~50%) · median abs err{" "}
-          {Number.isNaN(result.medianAbsErrorMin) ? "—" : Math.round(result.medianAbsErrorMin)}m
+          {result.medianAbsErrorMin == null || Number.isNaN(result.medianAbsErrorMin) ? "—" : Math.round(result.medianAbsErrorMin)}m
         </>
       }
       meta={{
@@ -606,8 +609,8 @@ export function Swimlane({ timelines }: { timelines: TimelineDTO[] }) {
 
 // --- Schedule reliability: resume-churn ---
 
-function pct(x: number): string {
-  return Number.isNaN(x) ? "—" : `${(x * 100).toFixed(1)}%`;
+function pct(x: number | null): string {
+  return x == null || Number.isNaN(x) ? "—" : `${(x * 100).toFixed(1)}%`;
 }
 
 /** Simple signed-value histogram into `bins` buckets over [lo, hi]. */
@@ -745,7 +748,7 @@ export function AdherencePanel({ result }: { result: AdherenceResult }) {
       titleMeta={
         <>
           median{" "}
-          {Number.isNaN(result.medianErrorMin) ? "—" : `${result.medianErrorMin > 0 ? "+" : ""}${Math.round(result.medianErrorMin)}m`}{" "}
+          {result.medianErrorMin == null || Number.isNaN(result.medianErrorMin) ? "—" : `${result.medianErrorMin > 0 ? "+" : ""}${Math.round(result.medianErrorMin)}m`}{" "}
           · overran {pct(result.overrunPct)} · on-time {pct(result.onTimePct)}
         </>
       }
@@ -823,7 +826,7 @@ export function DetectionLatencyPanel({ result }: { result: DetectionLatencyResu
       titleMeta={
         <>
           median{" "}
-          {Number.isNaN(result.medianLatencyMin) ? "—" : Math.round(result.medianLatencyMin)}m
+          {result.medianLatencyMin == null || Number.isNaN(result.medianLatencyMin) ? "—" : Math.round(result.medianLatencyMin)}m
           {result.missed > 0 && ` · ${result.missed} missed`}
         </>
       }
@@ -879,7 +882,7 @@ export function DetectionLatencyPanel({ result }: { result: DetectionLatencyResu
               <tr key={r.alertType}>
                 <td>{r.alertType}</td>
                 <td>{r.n}</td>
-                <td>{Number.isNaN(r.medianLatencyMin) ? "—" : `${Math.round(r.medianLatencyMin)}m`}</td>
+                <td>{r.medianLatencyMin == null || Number.isNaN(r.medianLatencyMin) ? "—" : `${Math.round(r.medianLatencyMin)}m`}</td>
                 <td>{r.missed}</td>
               </tr>
             ))}
@@ -1719,7 +1722,7 @@ export function RecoveryDistCurve({ result }: { result: RecoveryDistResult }) {
 
 export function RecoveryScoreCard({ result }: { result: RecoveryDistResult }) {
   const { ref, show, hide, overlay } = useTooltip();
-  const fmt = (x: number) => (Number.isNaN(x) ? "—" : Math.round(x).toString());
+  const fmt = (x: number | null) => (x == null || Number.isNaN(x) ? "—" : Math.round(x).toString());
   const { verdict, explain, tone, warning } = recoveryVerdict(result);
   const verdictColor =
     tone === "good"

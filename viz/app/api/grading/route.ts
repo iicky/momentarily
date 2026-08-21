@@ -34,7 +34,10 @@ import {
   fetchCalibration,
   calibrationReliability,
   calibrationHeatmap,
+  calibrationRoutes,
+  calibrationForLine,
 } from "@/lib/calibrationFeed";
+import { cachedRecords } from "@/lib/r2cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -83,6 +86,19 @@ async function pool<T>(
   return out;
 }
 
+// The dominant cost of this route is the ~1,600 R2 GETs, not the grading math.
+// Each object key is immutable, so cachedRecords memoizes it for the process
+// lifetime (shared with the movement route via lib/r2cache) — a line switch or
+// repeat load re-lists (cheap) and reuses every already-seen object.
+const parseAlert = (text: string): AlertVersion[] => {
+  try {
+    const v = parseAlertVersion(JSON.parse(text));
+    return v ? [v] : [];
+  } catch {
+    return []; // skip a malformed archive object rather than failing the window
+  }
+};
+
 async function readStream<T>(prefix: string, dates: string[]): Promise<{
   records: T[];
   files: number;
@@ -92,15 +108,15 @@ async function readStream<T>(prefix: string, dates: string[]): Promise<{
     FETCH_CONCURRENCY,
   );
   const keys = keyLists.flat();
-  const blobs = await pool(
-    keys.map((k) => () => getText(k)),
+  const per = await pool(
+    keys.map((k) => () => cachedRecords<T>(k, (t) => parseJsonl<T>(t))),
     FETCH_CONCURRENCY,
   );
-  const records = blobs.flatMap((b) => parseJsonl<T>(b));
-  return { records, files: keys.length };
+  return { records: per.flat(), files: keys.length };
 }
 
-/** Read the planned-work alert archive (one JSON object per version). */
+/** Planned-work alert archive. Keys are capped BEFORE fetching so a runaway
+ * window can't fan out into unbounded GETs; each version is cached by key. */
 async function readAlertVersions(dates: string[]): Promise<{
   versions: AlertVersion[];
   files: number;
@@ -113,20 +129,11 @@ async function readAlertVersions(dates: string[]): Promise<{
   let keys = keyLists.flat();
   const capped = keys.length > ALERT_CAP;
   if (capped) keys = keys.slice(0, ALERT_CAP);
-  const blobs = await pool(
-    keys.map((k) => () => getText(k)),
+  const per = await pool(
+    keys.map((k) => () => cachedRecords<AlertVersion>(k, parseAlert)),
     FETCH_CONCURRENCY,
   );
-  const versions: AlertVersion[] = [];
-  for (const b of blobs) {
-    try {
-      const v = parseAlertVersion(JSON.parse(b));
-      if (v) versions.push(v);
-    } catch {
-      // skip a malformed archive object rather than failing the whole window
-    }
-  }
-  return { versions, files: keys.length, capped };
+  return { versions: per.flat(), files: keys.length, capped };
 }
 
 export async function GET(req: NextRequest) {
@@ -136,19 +143,26 @@ export async function GET(req: NextRequest) {
   const nowSec = Math.floor(Date.now() / 1000);
   const dates = utcDateWindow(days, Date.now());
 
-  if (!(await r2Configured())) {
-    // No credentials → fall back to the public aggregate feed. Powers the
-    // reliability, recovery-summary, and transition charts without R2 access;
-    // the per-point drilldowns simply aren't in calibration.json.
+  // Default path: the prebuilt static feed (v1/calibration.json). Fast, needs no
+  // R2 LIST, and now carries per-line reliability + recovery so line-filtering
+  // works here too — including on the credential-less public deploy. The
+  // per-point drilldowns (scatter, swimlane, detection, movement) are NOT in the
+  // feed; they're the opt-in `?source=streams` credentialed recompute below.
+  const wantStreams = sp.get("source") === "streams";
+  const configured = await r2Configured();
+  if (!wantStreams || !configured) {
     try {
       const doc = await fetchCalibration();
+      const line = routeFilter ? calibrationForLine(doc, routeFilter) : null;
       const payload: GradingResponse = {
         configured: true,
         source: "calibration",
         window: { days, from: dates[dates.length - 1], to: dates[0] },
         counts: {
           predictionFiles: 0,
-          predictionRecords: doc.predictions_seen,
+          predictionRecords:
+            (routeFilter && doc.by_line?.[routeFilter]?.n_predictions) ||
+            doc.predictions_seen,
           transitionFiles: 0,
           transitionRecords: doc.transitions_seen,
           alertFiles: 0,
@@ -156,10 +170,10 @@ export async function GET(req: NextRequest) {
           alertsCapped: false,
           pointsCapped: false,
         },
-        routes: [],
+        routes: calibrationRoutes(doc),
         states: doc.transition_matrices.states ?? STATES,
-        reliability: calibrationReliability(doc),
-        recovery: doc.recovery,
+        reliability: line ? line.reliability : calibrationReliability(doc),
+        recovery: line ? line.recovery : doc.recovery,
         resumeChurn: null,
         adherence: null,
         detectionLatency: null,
@@ -171,14 +185,18 @@ export async function GET(req: NextRequest) {
       };
       return NextResponse.json(payload);
     } catch {
-      return NextResponse.json({
-        configured: false,
-        error:
-          "R2 credentials not set and the public calibration feed is unreachable. " +
-          "Add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY to viz/.env.local " +
-          "for the full history, or set NEXT_PUBLIC_FEED_BASE to a reachable feed.",
-        window: { days, from: dates[dates.length - 1], to: dates[0] },
-      });
+      if (!configured) {
+        return NextResponse.json({
+          configured: false,
+          error:
+            "The public calibration feed is unreachable and no R2 credentials are set. " +
+            "Add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY to viz/.env.local, " +
+            "or set NEXT_PUBLIC_FEED_BASE to a reachable feed.",
+          window: { days, from: dates[dates.length - 1], to: dates[0] },
+        });
+      }
+      // Static feed unreadable but credentialed — fall through to the streams
+      // recompute rather than fail.
     }
   }
 

@@ -1,38 +1,49 @@
-// Per-date fetch cache for the archive streams.
+// Per-key fetch cache for the archive streams.
 //
-// The archive is partitioned by UTC date (archive/vehicles/<date>/…,
-// v1/predictions/<date>/…). Once a date is in the past it is IMMUTABLE — no new
-// objects land under it — so its parsed contents can be cached for the life of
-// the process. Only today's partition is still being written, so it's always
-// refetched. This is what makes the dominant cost (hundreds of small R2 GETs)
-// disappear on window changes and refreshes: a 7-day window after warmup only
-// re-reads today.
+// The archive is partitioned by UTC date, and every object under it is written
+// once and never rewritten (one tick's snapshot per key). So a KEY's parsed
+// value is cached for the life of the process — including today's, because a
+// key that exists is already final; only genuinely new keys (today's latest
+// ticks) are ever fetched. This is what makes the dominant cost — hundreds to
+// thousands of small R2 GETs — vanish on window changes, line filters, and
+// refreshes: a re-list is cheap, and everything already seen comes from memory.
+// (Per-key, not per-date: the old per-date cache refetched all of today every
+// request, which for the per-minute vehicle archive was the whole cost.)
 
 import { listKeys, getText } from "./r2";
 
-const DAY_CACHE = new Map<string, unknown[]>();
+const KEY_CACHE = new Map<string, unknown[]>();
 
-function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-async function poolFetch(keys: string[], limit: number): Promise<string[]> {
-  const out: string[] = new Array(keys.length);
+async function pool<T>(items: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const out: T[] = new Array(items.length);
   let i = 0;
-  const workers = Array.from({ length: Math.min(limit, keys.length) }, async () => {
-    while (i < keys.length) {
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) {
       const idx = i++;
-      out[idx] = await getText(keys[idx]);
+      out[idx] = await items[idx]();
     }
   });
   await Promise.all(workers);
   return out;
 }
 
+/** Parse one immutable object key, cached for the process lifetime. `parse`
+ * turns the object's text into 0+ records (one JSON body, or many JSONL rows). */
+export async function cachedRecords<T>(
+  key: string,
+  parse: (text: string) => T[],
+): Promise<T[]> {
+  const hit = KEY_CACHE.get(key);
+  if (hit !== undefined) return hit as T[];
+  const records = parse(await getText(key));
+  KEY_CACHE.set(key, records);
+  return records;
+}
+
 /**
- * Fetch + parse every object under `prefix/<date>/`. Past UTC dates are cached
- * (immutable); today is always live. `parse` turns one object's text into 0+
- * records (one JSON body, or many JSONL rows).
+ * Fetch + parse every object under `prefix/<date>/`, each key cached. Re-lists
+ * the date each call (cheap) so new keys are picked up, but only uncached keys
+ * are fetched.
  */
 export async function fetchDate<T>(
   prefix: string,
@@ -40,15 +51,7 @@ export async function fetchDate<T>(
   parse: (text: string) => T[],
   concurrency = 8,
 ): Promise<T[]> {
-  const cacheKey = `${prefix}/${date}`;
-  const past = date < todayUtc();
-  if (past) {
-    const hit = DAY_CACHE.get(cacheKey);
-    if (hit) return hit as T[];
-  }
   const keys = await listKeys(`${prefix}/${date}/`);
-  const blobs = await poolFetch(keys, concurrency);
-  const records = blobs.flatMap(parse);
-  if (past) DAY_CACHE.set(cacheKey, records);
-  return records;
+  const per = await pool(keys.map((k) => () => cachedRecords<T>(k, parse)), concurrency);
+  return per.flat();
 }

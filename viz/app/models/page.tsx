@@ -30,7 +30,7 @@ import {
   type RouteBaselineDTO,
   type RecoveryDistResult,
 } from "./charts";
-import { ChartMetaProvider } from "./ChartFrame";
+import { ChartMetaProvider, ChartErrorBoundary } from "./ChartFrame";
 import type { GradingResponse, HeatmapEntry } from "@/lib/types";
 
 interface MovementResponse {
@@ -55,6 +55,10 @@ export default function ModelsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [movement, setMovement] = useState<MovementResponse | null>(null);
   const [movLoading, setMovLoading] = useState(false);
+  // "static" (default) reads the prebuilt feed — fast, line-filterable, works
+  // with no R2. "streams" is the opt-in credentialed recompute that adds the
+  // per-point drilldowns (scatter, swimlane, detection, movement).
+  const [source, setSource] = useState<"static" | "streams">("static");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -62,6 +66,7 @@ export default function ModelsPage() {
     try {
       const qs = new URLSearchParams({ days: String(days) });
       if (route) qs.set("route", route);
+      if (source === "streams") qs.set("source", "streams");
       const res = await fetch(`/api/grading?${qs}`);
       const json = (await res.json()) as GradingResponse;
       setData(json);
@@ -71,7 +76,7 @@ export default function ModelsPage() {
     } finally {
       setLoading(false);
     }
-  }, [days, route]);
+  }, [days, route, source]);
 
   const loadMovement = useCallback(async () => {
     setMovLoading(true);
@@ -89,8 +94,11 @@ export default function ModelsPage() {
 
   useEffect(() => {
     load();
-    loadMovement();
-  }, [load, loadMovement]);
+    // Movement is a credentialed per-tick drilldown, not part of the fast
+    // static view — only fetch it once the user opts into the R2 recompute.
+    if (source === "streams") loadMovement();
+    else setMovement(null);
+  }, [load, loadMovement, source]);
 
   const aggregate = data?.source === "calibration";
   const rel = (data?.reliability ?? []) as ReliabilityResult[];
@@ -134,8 +142,7 @@ export default function ModelsPage() {
           <select
             value={route}
             onChange={(e) => setRoute(e.target.value)}
-            disabled={aggregate}
-            title={aggregate ? "Per-line filtering needs R2 credentials" : undefined}
+            disabled={(data?.routes ?? []).length === 0}
           >
             <option value="">all</option>
             {(data?.routes ?? []).map((r) => (
@@ -148,6 +155,19 @@ export default function ModelsPage() {
         <button onClick={load} disabled={loading}>
           {loading ? "loading…" : "refresh"}
         </button>
+        {source === "static" ? (
+          <button
+            onClick={() => setSource("streams")}
+            disabled={loading}
+            title="Recompute the per-point drilldowns (recovery scatter, regime swimlane, detection latency, movement) live from R2 — slower, needs credentials."
+          >
+            load drilldowns
+          </button>
+        ) : (
+          <button onClick={() => setSource("static")} disabled={loading}>
+            fast view
+          </button>
+        )}
         {data?.counts && (
           <span className="counts">
             {data.counts.predictionRecords.toLocaleString()} predictions ·{" "}
@@ -186,17 +206,16 @@ export default function ModelsPage() {
 
       {aggregate && !err && (
         <div className="warnbox" style={{ maxWidth: 640 }}>
-          <strong>Public aggregate feed.</strong> Reading{" "}
-          <code>v1/calibration.json</code> — no R2 credentials needed. The
-          window-aggregate reliability, recovery, and transition charts are
-          shown below. Per-point drilldowns (recovery scatter, detection
-          latency, schedule reliability, regime swimlane, per-line filtering)
-          need the credentialed stream history — launch with{" "}
-          <code>npm run dev</code> to see them.
+          <strong>Fast view</strong> — prebuilt <code>v1/calibration.json</code>:
+          reliability, recovery, transition, and drift, filterable by line, no R2
+          recompute. The per-point drilldowns (recovery scatter, regime swimlane,
+          detection latency, schedule reliability, movement) aren&apos;t in the
+          feed — hit <em>load drilldowns</em> to recompute them from R2.
         </div>
       )}
 
       {data?.configured && !err && (
+        <ChartErrorBoundary key={`${route}:${days}`} label="the charts">
         <ChartMetaProvider
           value={{
             feed: aggregate ? "public" : "credentialed",
@@ -328,6 +347,12 @@ export default function ModelsPage() {
             the interesting ones — and movement is the read we&apos;re hoping to lean on
             for &ldquo;is this line stuck right now?&rdquo;
           </p>
+          {source === "static" && (
+            <div className="muted">
+              Not in the fast feed — hit <em>load drilldowns</em> to compare the
+              published status against live train movement.
+            </div>
+          )}
           {movLoading && !movement && <div className="muted">loading movement archive…</div>}
           {movement && !movement.configured && (
             <div className="warnbox" style={{ maxWidth: 640 }}>
@@ -373,6 +398,7 @@ export default function ModelsPage() {
             trainedAt={data.paramsTrainedAt}
           />
         </ChartMetaProvider>
+        </ChartErrorBoundary>
       )}
     </div>
   );

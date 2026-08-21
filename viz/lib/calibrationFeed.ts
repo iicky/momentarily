@@ -87,6 +87,20 @@ export interface CalibrationDoc {
     states: string[];
     routes: Record<string, number[][]>;
   };
+  // Per-route reliability + recovery summary (training/eval.build_by_line), so
+  // the Models tab can filter by line straight off this static feed. Absent on
+  // feeds published before the per-line work.
+  by_line?: Record<
+    string,
+    {
+      n_predictions: number;
+      calibration: CalibrationDoc["calibration"];
+      recovery: {
+        overall: CalibrationRecoveryStats;
+        per_regime: CalibrationRecoveryStats;
+      };
+    }
+  >;
 }
 
 export async function fetchCalibration(base = FEED_BASE): Promise<CalibrationDoc> {
@@ -112,8 +126,10 @@ export interface AggregateReliability {
   };
 }
 
-export function calibrationReliability(doc: CalibrationDoc): AggregateReliability[] {
-  return doc.calibration.map((c) => {
+function reshapeReliability(
+  calibration: CalibrationDoc["calibration"],
+): AggregateReliability[] {
+  return calibration.map((c) => {
     const nn = c.by_current?.normal_now;
     const xn = c.by_current?.not_normal_now;
     return {
@@ -138,6 +154,28 @@ export function calibrationReliability(doc: CalibrationDoc): AggregateReliabilit
       })),
     };
   });
+}
+
+export function calibrationReliability(doc: CalibrationDoc): AggregateReliability[] {
+  return reshapeReliability(doc.calibration);
+}
+
+/** Routes the static feed carries a per-line breakdown for, sorted. */
+export function calibrationRoutes(doc: CalibrationDoc): string[] {
+  return Object.keys(doc.by_line ?? {}).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true }),
+  );
+}
+
+/** Per-line reliability + recovery from the static feed, or null when the feed
+ * has no breakdown for this route (thin line, or a pre-per-line feed). */
+export function calibrationForLine(
+  doc: CalibrationDoc,
+  route: string,
+): { reliability: AggregateReliability[]; recovery: CalibrationDoc["recovery"] } | null {
+  const bl = doc.by_line?.[route];
+  if (!bl) return null;
+  return { reliability: reshapeReliability(bl.calibration), recovery: bl.recovery };
 }
 
 export function calibrationHeatmap(doc: CalibrationDoc): HeatmapEntry[] {

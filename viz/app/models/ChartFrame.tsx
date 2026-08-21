@@ -1,10 +1,12 @@
 "use client";
 
 import {
+  Component,
   createContext,
   useContext,
   useRef,
   useState,
+  type ErrorInfo,
   type ReactNode,
   type Ref,
 } from "react";
@@ -18,6 +20,41 @@ import {
 // predicted-vs-observed overlays so the two never collide in a reader's head.
 export const FORECAST = "var(--forecast)";
 export const REALIZED = "var(--realized)";
+
+// One chart throwing must not white-screen the whole diagnostics page — that
+// left the model unevaluable when any single panel hit a degenerate slice (e.g.
+// a thin per-line filter). Each panel renders inside one of these, so a failure
+// degrades to an inline note and every other panel still renders.
+interface ChartErrorBoundaryProps {
+  children: ReactNode;
+  label?: string;
+}
+interface ChartErrorBoundaryState {
+  message: string | null;
+}
+export class ChartErrorBoundary extends Component<
+  ChartErrorBoundaryProps,
+  ChartErrorBoundaryState
+> {
+  state: ChartErrorBoundaryState = { message: null };
+  static getDerivedStateFromError(error: Error): ChartErrorBoundaryState {
+    return { message: error.message };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("chart panel failed:", this.props.label, error, info);
+  }
+  render() {
+    if (this.state.message !== null) {
+      return (
+        <div className="chart-error" role="alert">
+          Couldn&apos;t render {this.props.label ?? "this panel"} for the current
+          selection. <span className="muted">{this.state.message}</span>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export interface ChartMeta {
   // Truth the panel grades against, e.g. "argmax transition", "alert

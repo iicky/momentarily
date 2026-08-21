@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -1074,6 +1074,40 @@ SHADOW_ARM_LABEL = "condition (alert-shadow)"
 MOVEMENT_ARM_LABEL = "published_condition (movement-primary)"
 
 
+def build_by_line(
+    predictions: list[PredictionRecord],
+    transitions: list[TransitionRecord],
+    *,
+    min_predictions: int = 50,
+) -> dict[str, dict[str, Any]]:
+    """Per-route reliability + recovery summary, so the Models tab can filter by
+    line straight off the static feed — no credentialed R2 recompute, and the
+    filter works on the public (credential-less) deploy where the streams path is
+    unavailable. Same estimators as the window-aggregate blocks, sliced per
+    route; routes below `min_predictions` over the window are omitted as too thin
+    to chart. Per-POINT drilldowns (scatter, swimlane) are deliberately NOT here
+    — those stay on the credentialed streams recompute."""
+    preds_by_route: dict[str, list[PredictionRecord]] = defaultdict(list)
+    for p in predictions:
+        preds_by_route[p.route].append(p)
+    trans_by_route: dict[str, list[TransitionRecord]] = defaultdict(list)
+    for t in transitions:
+        trans_by_route[t.route].append(t)
+    out: dict[str, dict[str, Any]] = {}
+    for route, preds in sorted(preds_by_route.items()):
+        if len(preds) < min_predictions:
+            continue
+        rec = recovery_metrics(preds, trans_by_route.get(route, []))
+        out[route] = {
+            "n_predictions": len(preds),
+            "calibration": _calibration_as_dicts(
+                [calibrate(preds, h) for h in HORIZONS_MIN]
+            ),
+            "recovery": recovery_as_dict(rec, graded_arm=SHADOW_ARM_LABEL),
+        }
+    return out
+
+
 def build_eval(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
@@ -1135,6 +1169,10 @@ def build_eval(
         },
         "recovery": recovery_as_dict(recovery, graded_arm=SHADOW_ARM_LABEL),
         "drift": {"unmapped_alert_type": unmapped_alert_type_drift(predictions)},
+        # Per-route reliability + recovery so the Models tab filters by line off
+        # the static feed (see build_by_line); the compact subset lands in
+        # calibration.json too.
+        "by_line": build_by_line(predictions, transitions),
     }
 
 
@@ -1207,6 +1245,20 @@ def build_calibration(
         },
         "drift": eval_doc["drift"],
         "transition_matrices": transition_matrices,
+        # Per-route reliability + recovery for the line filter, trimmed to what
+        # the Models tab draws (bins/brier/skill + overall & per-regime recovery)
+        # — the per-route/per-alert recovery breakdowns stay in eval.json.
+        "by_line": {
+            route: {
+                "n_predictions": v["n_predictions"],
+                "calibration": v["calibration"],
+                "recovery": {
+                    "overall": v["recovery"]["overall"],
+                    "per_regime": v["recovery"]["per_regime"],
+                },
+            }
+            for route, v in eval_doc.get("by_line", {}).items()
+        },
     }
 
 

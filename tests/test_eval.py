@@ -14,8 +14,10 @@ import pytest
 from training.degradation_label import BIN_FN
 from training.eval import (
     BIN_COUNT,
+    HORIZONS_MIN,
     PredictionRecord,
     TransitionRecord,
+    build_by_line,
     build_calibration,
     build_eval,
     build_independent_recovery,
@@ -1101,3 +1103,24 @@ def test_coverage_alarm_admits_a_dark_window_through_the_real_coverage_path():
     ]
     cov = published_condition_coverage(preds)
     assert movement_coverage_alarm(cov) is not None
+
+
+def test_build_by_line_groups_by_route_and_thresholds():
+    # 3 predictions on "1", 1 on "2"; min_predictions=2 drops the thin route.
+    preds = [_pred(ts=t * 300, route="1") for t in range(3)] + [_pred(ts=0, route="2")]
+    out = build_by_line(preds, [], min_predictions=2)
+    assert set(out) == {"1"}  # "2" is below threshold, omitted
+    assert out["1"]["n_predictions"] == 3
+    # one calibration block per horizon, and a recovery summary with overall
+    assert [c["horizon_min"] for c in out["1"]["calibration"]] == list(HORIZONS_MIN)
+    assert "overall" in out["1"]["recovery"]
+
+
+def test_build_by_line_flows_into_calibration_feed():
+    preds = [_pred(ts=t * 300, route="1") for t in range(60)]
+    eval_doc = build_eval(preds, [], window_start=0, window_end=60 * 300)
+    cal = build_calibration(eval_doc, {"trained_at": None, "states": [], "routes": {}})
+    assert "1" in cal["by_line"]
+    assert cal["by_line"]["1"]["n_predictions"] == 60
+    # trimmed: recovery keeps overall + per_regime only
+    assert set(cal["by_line"]["1"]["recovery"]) == {"overall", "per_regime"}

@@ -76,6 +76,25 @@ export interface AdvanceRegimesOptions {
 }
 
 /**
+ * Drop cells unobserved for longer than `maxIdleSec` — the idle-expiry half of
+ * advanceRegimes, exported so a stateful classifier (the service hysteresis
+ * band) can expire a stale regime BEFORE it reads the prior state, instead of
+ * letting advanceRegimes expire it only afterward and recreate it from a call
+ * the stale state already biased.
+ */
+export function pruneIdleRegimes<C extends string>(
+  prev: Record<string, RegimeEntry<C>> | null | undefined,
+  observedAt: number,
+  maxIdleSec: number = MAX_IDLE_SEC,
+): Record<string, RegimeEntry<C>> {
+  const out: Record<string, RegimeEntry<C>> = {};
+  for (const [key, entry] of Object.entries(prev ?? {})) {
+    if (observedAt - entry.last_seen_at <= maxIdleSec) out[key] = entry;
+  }
+  return out;
+}
+
+/**
  * Advance every cell's regime by one tick.
  *
  * `observed` holds this tick's raw classifier calls; a key absent from it is an
@@ -92,8 +111,7 @@ export function advanceRegimes<C extends string>(
   const maxIdleSec = options.maxIdleSec ?? MAX_IDLE_SEC;
 
   const entries: Record<string, RegimeEntry<C>> = {};
-  for (const [key, entry] of Object.entries(prev ?? {})) {
-    if (observedAt - entry.last_seen_at > maxIdleSec) continue;
+  for (const [key, entry] of Object.entries(pruneIdleRegimes(prev, observedAt, maxIdleSec))) {
     entries[key] = Object.prototype.hasOwnProperty.call(observed, key)
       ? entry
       : { ...entry, pending: null, pending_since: 0, pending_run: 0 };

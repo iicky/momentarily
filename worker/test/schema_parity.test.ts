@@ -321,6 +321,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       movementBaseline: {},
       throughStops: null,
       serviceBaseline: {},
+      serviceBaselineHourly: {},
       scheduleRate: {},
     };
     const snap = buildSnapshot({

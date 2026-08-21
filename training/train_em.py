@@ -30,7 +30,13 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from momentarily.hmm import EmissionParams, HMMParams, Observation, fit_em
+from momentarily.hmm import (
+    EmissionParams,
+    HMMParams,
+    Observation,
+    fit_em,
+    schedule_bin,
+)
 from training.drift import build_input_profile
 from training.dwell import (
     DwellQuantiles,
@@ -332,6 +338,7 @@ def write_params(
     movement_baseline: dict[str, Any] | None = None,
     movement_through_stops: dict[str, dict[str, list[str]]] | None = None,
     service_baseline: dict[str, Any] | None = None,
+    service_baseline_hourly: dict[str, Any] | None = None,
     schedule_rate: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
@@ -397,6 +404,12 @@ def write_params(
     # movement_baseline.
     if service_baseline:
         doc["service_baseline"] = service_baseline
+    # Per-(route, schedule_bin) assigned_n baseline the Worker divides live
+    # assigned_n by to publish the service-degradation axis. Finer than
+    # service_baseline above (hourly, weekday/weekend) so a supply cut is judged
+    # against the same-hour normal, not a wide tod block's busy core.
+    if service_baseline_hourly:
+        doc["service_baseline_hourly"] = service_baseline_hourly
     # Per-(route, schedule_bin) scheduled-presence rate the Worker uses to split a
     # no-service reading into suspended vs not_scheduled. Top-level beside the
     # baselines.
@@ -688,28 +701,37 @@ def _service_baseline(
     client: S3Client,
     start_date: date,
     end_date: date,
-) -> tuple[dict[str, Any], int, dict[str, Any], int]:
-    """Per-(route, tod) assigned_n baseline AND per-(route, schedule_bin)
-    scheduled-presence rate over the training window, from one trip-updates fetch,
-    serialized for params.json. The Worker forms the service ratio from the first
-    and splits suspended vs not_scheduled with the second. Fail-soft: a trip-updates
-    archive error returns empty sidecars (both optional and back-compat). Returns
-    (baseline, n_baseline_cells, schedule, n_schedule_cells)."""
+) -> tuple[dict[str, Any], int, dict[str, Any], int, dict[str, Any], int]:
+    """Per-(route, tod) assigned_n baseline, per-(route, schedule_bin) assigned_n
+    baseline, AND per-(route, schedule_bin) scheduled-presence rate over the
+    training window, from one trip-updates fetch, serialized for params.json.
+
+    The tod_bin baseline is the service emission's live-ratio denominator; the
+    schedule_bin baseline is the published service-degradation axis's denominator
+    (finer, so the quiet edge of a wide tod block doesn't read as a supply cut —
+    see degradation_label's BIN_FN note). The schedule rate splits a no-service
+    reading into suspended vs not_scheduled. Fail-soft: a trip-updates archive
+    error returns empty sidecars (all optional and back-compat). Returns
+    (baseline, n_cells, schedule, n_schedule, hourly_baseline, n_hourly_cells)."""
     try:
         bodies = fetch_trip_update_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
-        baseline = compute_baseline(build_service_series(bodies))
+        series = build_service_series(bodies)
+        baseline = compute_baseline(series)
+        hourly = compute_baseline(series, bin_fn=schedule_bin)
         rate = compute_schedule_rate(bodies)
         return (
             service_baseline_to_json(baseline),
             len(baseline),
             schedule_rate_to_json(rate),
             len(rate),
+            service_baseline_to_json(hourly),
+            len(hourly),
         )
     except Exception as exc:
         print(f"service baseline skipped ({exc})", file=sys.stderr)
-        return {}, 0, {}, 0
+        return {}, 0, {}, 0, {}, 0
 
 
 def _movement_dwell(
@@ -911,9 +933,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     # Assigned_n service baseline (per route, tod) for the Worker's service
     # emission channel — it divides live assigned_n by this to form the ratio.
-    service_baseline, n_service_cells, schedule_rate, n_schedule_cells = (
-        _service_baseline(cfg, client, start_date, end_date)
-    )
+    (
+        service_baseline,
+        n_service_cells,
+        schedule_rate,
+        n_schedule_cells,
+        service_baseline_hourly,
+        n_service_hourly_cells,
+    ) = _service_baseline(cfg, client, start_date, end_date)
 
     global_prior, per_route = train(
         series,
@@ -1058,6 +1085,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         movement_baseline=movement_baseline,
         movement_through_stops=(None if through is None else stops_to_json(through)),
         service_baseline=service_baseline,
+        service_baseline_hourly=service_baseline_hourly,
         schedule_rate=schedule_rate,
         trained_at=trained_at,
     )
@@ -1086,7 +1114,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"atom={movement_dwell_stats['n_atom']}, "
         f"source={movement_dwell_stats['source']}], "
         f"baseline_cells={n_baseline_cells}, "
-        f"service_cells={n_service_cells}, schedule_cells={n_schedule_cells}, "
+        f"service_cells={n_service_cells} (hourly {n_service_hourly_cells}), "
+        f"schedule_cells={n_schedule_cells}, "
         f"segment_cells={n_segment_cells}, segment_dwell_cells={n_segment_dwell_cells} "
         f"[own={segment_dwell_stats.n_cells_own}, "
         f"route={segment_dwell_stats.n_cells_route}, "

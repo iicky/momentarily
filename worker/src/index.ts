@@ -41,6 +41,10 @@ import { deriveRouteMovementMetric, deriveTrace, stopPositions } from './vehicle
 import {
   MOVEMENT_STATE_PUBLISH,
   deriveMovementStates,
+  SERVICE_DEBOUNCE_TICKS,
+  deriveServiceRatios,
+  deriveServiceStates,
+  seedNormalServiceRegimes,
   movementObservationFields,
   serviceObservationFields,
 } from './movement_state';
@@ -55,7 +59,7 @@ import {
 import type { FilterState, Observation, PublishedState } from './hmm';
 import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
 import { loadParams, paramsForRoute } from './params';
-import { advanceRegimes } from './regime';
+import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
@@ -658,9 +662,42 @@ export default {
               deriveMovementStates(moveRows, rows, trainedParams, observedAt),
               observedAt,
             );
+            // Service-level regime, the SUPPLY axis (assigned_n vs its hourly
+            // baseline), advanced on its own clock beside the movement regimes.
+            // The degrade/recover band and the 2-tick debounce match the offline
+            // label (derive_actual_recovery). No transition stream — no service
+            // dwell curves; it exists only to publish the current service_condition.
+            //
+            // Expire stale regimes FIRST: the hysteresis band and the cold-start
+            // seed both read the prior state, so a regime that went blind past
+            // MAX_IDLE_SEC must be gone before they run, or a returning route
+            // would inherit its pre-gap degraded state. This idle reset is an
+            // INTENTIONAL divergence from the offline label, which has no idle
+            // expiry and holds degraded across a gap — MAX_IDLE_SEC freshness (the
+            // same Worker semantic the movement axis uses) takes precedence for a
+            // live feed, where a regime resuming after an hour blind is not
+            // knowably the one that stopped.
+            const liveServiceRegimes = pruneIdleRegimes(
+              prevMovement?.service_regimes,
+              observedAt,
+            );
+            const observedService = deriveServiceStates(
+              rows,
+              trainedParams,
+              observedAt,
+              liveServiceRegimes,
+            );
+            const service = advanceRegimes(
+              seedNormalServiceRegimes(liveServiceRegimes, observedService, observedAt),
+              observedService,
+              observedAt,
+              { debounceTicks: SERVICE_DEBOUNCE_TICKS },
+            );
             await writeMovementState(env.MOMENTARILY, {
               observed_at: observedAt,
               regimes: entries,
+              service_regimes: service.entries,
+              service_ratios: deriveServiceRatios(rows, trainedParams, observedAt),
             });
             try {
               await writeMovementTransitions(

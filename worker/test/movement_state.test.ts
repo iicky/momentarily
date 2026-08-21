@@ -9,11 +9,21 @@ import { schedule_bin, tod_bin } from '../src/hmm';
 import {
   deriveMovementState,
   deriveMovementStates,
+  deriveServiceRatios,
+  deriveServiceState,
+  deriveServiceStates,
+  seedNormalServiceRegimes,
+  serviceRatioFor,
+  SERVICE_DEGRADE_RATIO,
+  SERVICE_DEBOUNCE_TICKS,
   MAX_MOVEMENT_METRIC_LAG_SECONDS,
   MAX_SERVICE_METRIC_LAG_SECONDS,
   movementObservationFields,
   serviceObservationFields,
 } from '../src/movement_state';
+import { advanceRegimes, pruneIdleRegimes, MAX_IDLE_SEC } from '../src/regime';
+import type { RegimeEntry } from '../src/regime';
+import type { ServiceCondition } from '../src/movement_state';
 
 function move(over: Partial<MovementRow>): MovementRow {
   return {
@@ -51,6 +61,7 @@ function trainedWithBaseline(
     movementBaseline,
     throughStops: null,
     serviceBaseline: {},
+    serviceBaselineHourly: {},
     scheduleRate,
   };
 }
@@ -474,6 +485,7 @@ describe('movementObservationFields', () => {
       movementBaseline,
       throughStops: null,
       serviceBaseline: {},
+      serviceBaselineHourly: {},
       scheduleRate: {},
     };
   }
@@ -598,6 +610,7 @@ describe('serviceObservationFields', () => {
       movementBaseline: {},
       throughStops: null,
       serviceBaseline,
+      serviceBaselineHourly: {},
       scheduleRate: {},
     };
   }
@@ -695,5 +708,159 @@ describe('serviceObservationFields', () => {
       });
       expect(serviceObservationFields(metric, trained, ROUTE, tickAt)).toBeNull();
     });
+  });
+});
+
+describe('deriveServiceState / deriveServiceStates (supply axis)', () => {
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000; // 12:00 ET
+  const ROUTE = 'Q';
+  const BIN = schedule_bin(T0);
+
+  function trainedWithHourly(hourly: ServiceBaseline): TrainedParams {
+    return {
+      schema_version: 'test',
+      trained_at: 0,
+      routes: {},
+      dwell: {},
+      dwellByAlert: {},
+      dwellMovement: {},
+      movementBaseline: {},
+      throughStops: null,
+      serviceBaseline: {},
+      serviceBaselineHourly: hourly,
+      scheduleRate: {},
+    };
+  }
+  const trained = trainedWithHourly({ [ROUTE]: { [BIN]: 10 } });
+
+  test('assigned_n well below baseline reads degraded', () => {
+    expect(deriveServiceState(ROUTE, svc({ assigned_n: 4 }), trained, T0)).toBe('degraded');
+  });
+
+  test('assigned_n near baseline reads normal', () => {
+    expect(deriveServiceState(ROUTE, svc({ assigned_n: 8 }), trained, T0)).toBe('normal');
+  });
+
+  test('the degrade threshold is strict: exactly at the floor is not degraded', () => {
+    const atFloor = svc({ assigned_n: SERVICE_DEGRADE_RATIO * 10 }); // ratio 0.5
+    expect(deriveServiceState(ROUTE, atFloor, trained, T0)).toBe('normal');
+  });
+
+  test('hysteresis: once degraded, a ratio in the [degrade, recover) band holds degraded', () => {
+    const mid = svc({ assigned_n: 6 }); // ratio 0.6: above 0.5 floor, below 0.8 ceiling
+    expect(deriveServiceState(ROUTE, mid, trained, T0, 'degraded')).toBe('degraded');
+    // From normal the same reading is normal — the band only holds an open one.
+    expect(deriveServiceState(ROUTE, mid, trained, T0, 'normal')).toBe('normal');
+  });
+
+  test('hysteresis: a degraded route recovers only at/above the recover ceiling', () => {
+    expect(deriveServiceState(ROUTE, svc({ assigned_n: 8 }), trained, T0, 'degraded')).toBe('normal'); // 0.8
+    expect(deriveServiceState(ROUTE, svc({ assigned_n: 7 }), trained, T0, 'degraded')).toBe('degraded'); // 0.7
+  });
+
+  test('deriveServiceStates keys the band off the prior committed regimes', () => {
+    const rows = new Map<string, ServiceRow>([[ROUTE, svc({ assigned_n: 6 })]]); // ratio 0.6
+    const priorDegraded: Record<string, { state: ServiceCondition }> = { [ROUTE]: { state: 'degraded' } };
+    expect(deriveServiceStates(rows, trained, T0, priorDegraded)).toEqual({ [ROUTE]: 'degraded' });
+    expect(deriveServiceStates(rows, trained, T0)).toEqual({ [ROUTE]: 'normal' });
+  });
+
+  test('no hourly baseline for the cell is unknown, never a default call', () => {
+    expect(deriveServiceState(ROUTE, svc({ assigned_n: 4 }), trainedWithHourly({}), T0)).toBe(
+      'unknown',
+    );
+  });
+
+  test('no service row is unknown', () => {
+    expect(deriveServiceState(ROUTE, undefined, trained, T0)).toBe('unknown');
+  });
+
+  test('the axis uses the schedule bin, not the coarse tod bin', () => {
+    // A baseline keyed only by tod_bin (the emission channel's granularity) is
+    // NOT found by the schedule_bin-keyed axis lookup, so it reads unknown.
+    const todKeyed = trainedWithHourly({ [ROUTE]: { [String(tod_bin(T0))]: 10 } });
+    expect(deriveServiceState(ROUTE, svc({ assigned_n: 4 }), todKeyed, T0)).toBe('unknown');
+  });
+
+  test('deriveServiceStates keeps judgeable routes and omits unknown ones', () => {
+    const rows = new Map<string, ServiceRow>([
+      [ROUTE, svc({ assigned_n: 4 })], // degraded
+      ['1', svc({ assigned_n: 12 })], // no baseline -> unknown -> omitted
+    ]);
+    expect(deriveServiceStates(rows, trained, T0)).toEqual({ [ROUTE]: 'degraded' });
+  });
+
+  test('serviceRatioFor is assigned_n / baseline, null when unjudgeable', () => {
+    expect(serviceRatioFor(ROUTE, svc({ assigned_n: 4 }), trained, T0)).toBe(0.4);
+    expect(serviceRatioFor(ROUTE, undefined, trained, T0)).toBeNull();
+    expect(serviceRatioFor(ROUTE, svc({ assigned_n: 4 }), trainedWithHourly({}), T0)).toBeNull();
+  });
+
+  test('deriveServiceRatios returns raw ratios for judgeable routes, omits the rest', () => {
+    const rows = new Map<string, ServiceRow>([
+      [ROUTE, svc({ assigned_n: 4 })], // 0.4
+      ['1', svc({ assigned_n: 12 })], // no baseline -> omitted
+    ]);
+    expect(deriveServiceRatios(rows, trained, T0)).toEqual({ [ROUTE]: 0.4 });
+  });
+
+  test('cold start + both flips need SERVICE_DEBOUNCE_TICKS, with hysteresis (matches derive_actual_recovery)', () => {
+    const STEP = 300;
+    let regimes: Record<string, RegimeEntry<ServiceCondition>> | undefined; // fresh doc: no established regime
+    const advance = (assigned: number, i: number): string | undefined => {
+      const at = T0 + i * STEP;
+      const rows = new Map<string, ServiceRow>([[ROUTE, svc({ assigned_n: assigned })]]);
+      const live = pruneIdleRegimes(regimes, at);
+      const observed = deriveServiceStates(rows, trained, at, live);
+      // Mirror index.ts: expire stale regimes, then seed cold-start routes normal
+      // so the FIRST drop debounces too.
+      const { entries } = advanceRegimes(
+        seedNormalServiceRegimes(live, observed, at),
+        observed,
+        at,
+        { debounceTicks: SERVICE_DEBOUNCE_TICKS },
+      );
+      regimes = entries;
+      return entries[ROUTE]?.state;
+    };
+    expect(advance(4, 0)).toBe('normal'); // COLD first low tick — seeded normal, pending, NOT degraded
+    expect(advance(4, 1)).toBe('degraded'); // second low tick commits
+    expect(advance(6, 2)).toBe('degraded'); // 0.6 in the band — held, no flap
+    expect(advance(9, 3)).toBe('degraded'); // one high tick — not yet
+    expect(advance(9, 4)).toBe('normal'); // second high tick commits
+  });
+
+  test('seedNormalServiceRegimes only fills newly observed routes, leaving existing ones intact', () => {
+    const existing: Record<string, RegimeEntry<ServiceCondition>> = {
+      A: { state: 'degraded', entered_at: 1, last_seen_at: 1, pending: null, pending_since: 0, pending_run: 0 },
+    };
+    const seeded = seedNormalServiceRegimes(existing, { A: 'normal', B: 'degraded' }, 100);
+    expect(seeded.A).toBe(existing.A); // untouched
+    expect(seeded.B).toEqual({ state: 'normal', entered_at: 100, last_seen_at: 100, pending: null, pending_since: 0, pending_run: 0 });
+  });
+
+  test('MAX_IDLE_SEC expiry resets a returning route to cold (intentional divergence from the offline label)', () => {
+    // The offline label has no idle expiry and would hold degraded across the
+    // gap; the Worker resets after MAX_IDLE_SEC as a live-feed freshness rule.
+    const AT = T0 + MAX_IDLE_SEC + 300; // returns after a blind gap longer than the idle limit
+    const trainedGap = trainedWithHourly({
+      [ROUTE]: { [schedule_bin(T0)]: 10, [schedule_bin(AT)]: 10 },
+    });
+    const stale: Record<string, RegimeEntry<ServiceCondition>> = {
+      [ROUTE]: { state: 'degraded', entered_at: T0, last_seen_at: T0, pending: null, pending_since: 0, pending_run: 0 },
+    };
+    const live = pruneIdleRegimes(stale, AT);
+    expect(live[ROUTE]).toBeUndefined(); // stale regime expired before anything reads it
+    const rows = new Map<string, ServiceRow>([[ROUTE, svc({ assigned_n: 6 })]]); // ratio 0.6
+    const observed = deriveServiceStates(rows, trainedGap, AT, live);
+    // With the pre-gap 'degraded' gone, the band no longer holds; 0.6 reads normal.
+    expect(observed[ROUTE]).toBe('normal');
+    const { entries } = advanceRegimes(
+      seedNormalServiceRegimes(live, observed, AT),
+      observed,
+      AT,
+      { debounceTicks: SERVICE_DEBOUNCE_TICKS },
+    );
+    expect(entries[ROUTE]?.state).toBe('normal');
   });
 });

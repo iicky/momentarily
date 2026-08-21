@@ -205,6 +205,9 @@ const TrainedParamsWrapperSchema = z.object({
   // Validated separately too, so a malformed service baseline degrades the
   // service channel only, not the whole params upload.
   service_baseline: z.unknown().optional(),
+  // Validated separately too, like service_baseline; feeds the published
+  // service-degradation axis (finer, schedule_bin-keyed).
+  service_baseline_hourly: z.unknown().optional(),
   // Validated separately too, so a malformed schedule rate degrades the
   // suspended/not_scheduled split only, not the whole params upload.
   schedule_rate: z.unknown().optional(),
@@ -269,6 +272,10 @@ export interface TrainedParams {
   throughStops: ReadonlySet<string> | null;
   // Per-(route, tod_bin) assigned_n baseline for the service emission channel.
   serviceBaseline: ServiceBaseline;
+  // Per-(route, schedule_bin) assigned_n baseline for the published
+  // service-degradation axis. Finer than serviceBaseline (hourly) so a supply
+  // cut is judged against the same-hour normal, not a wide tod block's core.
+  serviceBaselineHourly: ServiceBaseline;
   // Per-(route, schedule_bin) in-service rate; the Worker splits a no-service
   // reading into suspended (normally runs now) vs not_scheduled (rush-only gap).
   scheduleRate: ScheduleRate;
@@ -392,6 +399,17 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     }
   }
 
+  // Hourly service baseline, validated on its own like service_baseline.
+  let serviceBaselineHourly: ServiceBaseline = {};
+  if (wrapper.data.service_baseline_hourly !== undefined) {
+    const parsed = ServiceBaselineSchema.safeParse(wrapper.data.service_baseline_hourly);
+    if (parsed.success) {
+      serviceBaselineHourly = parsed.data;
+    } else {
+      console.warn('params.json service_baseline_hourly invalid; service axis off:', parsed.error.issues);
+    }
+  }
+
   // Schedule rate, validated on its own like the baselines.
   let scheduleRate: ScheduleRate = {};
   if (wrapper.data.schedule_rate !== undefined) {
@@ -423,6 +441,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     movementBaseline,
     throughStops,
     serviceBaseline,
+    serviceBaselineHourly,
     scheduleRate,
     dwellMovement,
   };
@@ -479,6 +498,19 @@ export function serviceBaselineFor(
   todBin: number,
 ): number | null {
   return trained?.serviceBaseline?.[routeId]?.[String(todBin)] ?? null;
+}
+
+/**
+ * Median assigned_n for a (route, schedule_bin) cell, the denominator of the
+ * published service-degradation axis. Null when the trainer hasn't established
+ * one yet — the axis then reads 'unknown' for that cell.
+ */
+export function serviceBaselineHourlyFor(
+  trained: TrainedParams | null,
+  routeId: string,
+  scheduleBin: string,
+): number | null {
+  return trained?.serviceBaselineHourly?.[routeId]?.[scheduleBin] ?? null;
 }
 
 /**

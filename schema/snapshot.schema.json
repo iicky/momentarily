@@ -1054,6 +1054,23 @@
         "route_id": {
           "title": "Route Id",
           "type": "string"
+        },
+        "service_condition": {
+          "default": "unknown",
+          "title": "Service Condition",
+          "type": "string"
+        },
+        "service_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Ratio"
         }
       },
       "required": [

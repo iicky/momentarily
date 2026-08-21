@@ -512,15 +512,18 @@ def compute_baseline[BinKey: (int, str)](
     }
 
 
-def service_baseline_to_json(
-    baseline: dict[tuple[str, int], float],
+def service_baseline_to_json[BinKey: (int, str)](
+    baseline: dict[tuple[str, BinKey], float],
 ) -> dict[str, dict[str, float]]:
-    """Serialize the assigned_n baseline for params.json delivery to the Worker,
-    nested route -> tod_bin (stringified int) -> median. The Worker divides the
-    live assigned_n by this to form the service ratio the emission scores."""
+    """Serialize an assigned_n baseline for params.json delivery to the Worker,
+    nested route -> bin (stringified) -> median. Serves both the tod_bin baseline
+    (the service emission's live-ratio denominator) and the finer schedule_bin
+    baseline (the published service-degradation axis) — the bin key is whatever
+    the baseline was built with. The Worker divides live assigned_n by the median
+    to form the ratio."""
     out: dict[str, dict[str, float]] = {}
-    for (route, tod), median in baseline.items():
-        out.setdefault(route, {})[str(tod)] = median
+    for (route, bin_key), median in baseline.items():
+        out.setdefault(route, {})[str(bin_key)] = median
     return out
 
 

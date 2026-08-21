@@ -26,8 +26,9 @@
 
 import { schedule_bin, tod_bin } from './hmm';
 import type { Observation } from './hmm';
-import { advanceBaselineFor, scheduleRateFor, serviceBaselineFor } from './params';
+import { advanceBaselineFor, scheduleRateFor, serviceBaselineFor, serviceBaselineHourlyFor } from './params';
 import type { AdvanceBaselineCell, TrainedParams } from './params';
+import type { RegimeEntry } from './regime';
 import type { MovementMetricDoc, ServiceMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
@@ -186,6 +187,127 @@ export function deriveMovementStates(
     }
   }
   return out;
+}
+
+export type ServiceCondition = 'normal' | 'degraded' | 'unknown';
+
+// Hysteresis band and debounce, ported from the offline degradation label
+// (load_r2.derive_actual_recovery) so the published axis and the grading truth
+// agree: a route degrades below DEGRADE_RATIO and only recovers back above the
+// higher RECOVER_RATIO, each confirmed for DEBOUNCE_TICKS consecutive ticks, so
+// a route riding the threshold doesn't flap.
+export const SERVICE_DEGRADE_RATIO = 0.5;
+export const SERVICE_RECOVER_RATIO = 0.8;
+export const SERVICE_DEBOUNCE_TICKS = 2;
+
+// assigned_n against its own (route, schedule_bin) baseline for one route at one
+// tick — the raw supply level. null when there is no reading or no baseline to
+// judge it against.
+export function serviceRatioFor(
+  routeId: string,
+  svc: ServiceRow | undefined,
+  trained: TrainedParams | null,
+  observedAt: number,
+): number | null {
+  if (svc === undefined) return null;
+  const baseline = serviceBaselineHourlyFor(trained, routeId, schedule_bin(observedAt));
+  if (baseline === null || baseline <= 0) return null;
+  return svc.assigned_n / baseline;
+}
+
+// The raw hysteresis call for one route at one tick — the target state fed to the
+// regime clock, which then debounces it. Keyed off `priorState` (the route's
+// currently committed service regime, undefined when never seen): once degraded,
+// only a ratio back above RECOVER_RATIO returns 'normal'; otherwise a strict drop
+// below DEGRADE_RATIO is what degrades. 'unknown' when the ratio can't be formed
+// — the caller omits it so the clock holds the prior regime across a blind tick.
+export function deriveServiceState(
+  routeId: string,
+  svc: ServiceRow | undefined,
+  trained: TrainedParams | null,
+  observedAt: number,
+  priorState?: ServiceCondition,
+): ServiceCondition {
+  const ratio = serviceRatioFor(routeId, svc, trained, observedAt);
+  if (ratio === null) return 'unknown';
+  if (priorState === 'degraded') {
+    return ratio >= SERVICE_RECOVER_RATIO ? 'normal' : 'degraded';
+  }
+  return ratio < SERVICE_DEGRADE_RATIO ? 'degraded' : 'normal';
+}
+
+/**
+ * Per-route service-level call for this tick — a SUPPLY axis, orthogonal to
+ * deriveMovementStates' FLOW axis: a route can have its trips pulled (degraded
+ * here) while the trains still running advance fine (normal there), and the
+ * reverse. `priorRegimes` is last tick's committed service regimes, so the
+ * hysteresis band keys off the state actually published. Only judgeable routes
+ * ('normal'/'degraded') are returned; 'unknown' is omitted so the regime clock
+ * holds the prior regime across a blind tick, exactly as deriveMovementStates
+ * does. Feed the result to advanceRegimes with SERVICE_DEBOUNCE_TICKS.
+ */
+export function deriveServiceStates(
+  svcRows: Map<string, ServiceRow>,
+  trained: TrainedParams | null,
+  observedAt: number,
+  priorRegimes?: Record<string, { state: ServiceCondition }>,
+): Record<string, ServiceCondition> {
+  const out: Record<string, ServiceCondition> = {};
+  for (const [route, svc] of svcRows) {
+    const state = deriveServiceState(route, svc, trained, observedAt, priorRegimes?.[route]?.state);
+    if (state !== 'unknown') out[route] = state;
+  }
+  return out;
+}
+
+/**
+ * Per-route raw service ratio for this tick — the magnitude behind the
+ * service_condition axis. Judgeable routes only (null ratios omitted), so a
+ * route absent here publishes service_ratio null, matching service_condition
+ * 'unknown'. Not debounced: this is the latest reading, beside the debounced
+ * regime the condition comes from.
+ */
+export function deriveServiceRatios(
+  svcRows: Map<string, ServiceRow>,
+  trained: TrainedParams | null,
+  observedAt: number,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [route, svc] of svcRows) {
+    const ratio = serviceRatioFor(route, svc, trained, observedAt);
+    if (ratio !== null) out[route] = ratio;
+  }
+  return out;
+}
+
+/**
+ * Seed every newly observed route as 'normal' before the service regime clock.
+ *
+ * derive_actual_recovery starts every route NOT degraded and requires the
+ * debounce even for the FIRST drop. advanceRegimes instead commits a brand-new
+ * key's first call immediately, so a cold start (a fresh service_regimes doc
+ * after deploy, or a regime that expired after a long blind gap) would flip
+ * straight to 'degraded' on a single low tick. Seeding 'normal' makes that first
+ * degrade go through the same 2-tick debounce as every later one, matching the
+ * offline label exactly rather than only after the first commit.
+ */
+export function seedNormalServiceRegimes(
+  prev: Record<string, RegimeEntry<ServiceCondition>> | null | undefined,
+  observed: Record<string, ServiceCondition>,
+  observedAt: number,
+): Record<string, RegimeEntry<ServiceCondition>> {
+  const seeded: Record<string, RegimeEntry<ServiceCondition>> = { ...(prev ?? {}) };
+  for (const route of Object.keys(observed)) {
+    seeded[route] ??= {
+      state: 'normal',
+      entered_at: observedAt,
+      last_seen_at: observedAt,
+      pending: null,
+      pending_since: 0,
+      pending_run: 0,
+    };
+  }
+  return seeded;
 }
 
 // A carried movement metric older than this (seconds) is a feed gap, not "now" —

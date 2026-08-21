@@ -178,9 +178,32 @@ const MovementRegimeSchema = z.object({
   pending_run: z.number().int().nonnegative(),
 });
 
+// Service-level regime, a SUPPLY axis beside the movement (flow) regimes above.
+// 'unknown' is permitted so the type lines up with deriveServiceStates' return,
+// but is never actually committed — unknown ticks abstain from the clock.
+const ServiceConditionSchema = z.enum(['normal', 'degraded', 'unknown']);
+const ServiceRegimeSchema = z.object({
+  state: ServiceConditionSchema,
+  entered_at: z.number(),
+  last_seen_at: z.number(),
+  pending: ServiceConditionSchema.nullable(),
+  pending_since: z.number(),
+  pending_run: z.number().int().nonnegative(),
+});
+export type ServiceRegime = z.infer<typeof ServiceRegimeSchema>;
+
 const MovementStateSchema = z.object({
   observed_at: z.number(),
   regimes: z.record(z.string(), MovementRegimeSchema),
+  // Per-route service-level regimes, one-tick lagged like `regimes`. Optional:
+  // absent in docs written before the service axis, and on a params set with no
+  // hourly service baseline. The snapshot then publishes service_condition
+  // 'unknown'.
+  service_regimes: z.record(z.string(), ServiceRegimeSchema).optional(),
+  // Per-route raw service ratio (assigned_n / hourly baseline) this tick — the
+  // magnitude the service_condition axis debounces. Optional, same lifecycle as
+  // service_regimes.
+  service_ratios: z.record(z.string(), z.number()).optional(),
 });
 export type MovementRegime = z.infer<typeof MovementRegimeSchema>;
 export type MovementStateDoc = z.infer<typeof MovementStateSchema>;

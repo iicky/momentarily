@@ -119,6 +119,15 @@ interface RouteStatusOut {
   // positions), 'schedule' (a planned "No Scheduled Service" alert), or 'unknown'
   // (movement can't judge — an honest coverage gap, never an alert fallback).
   condition_source: string;
+  // Supply axis — assigned_n against its own hourly baseline, one-tick lagged
+  // like `condition`. 'normal' | 'degraded' | 'unknown'. Distinct from
+  // `condition` (flow): a route's trips can be pulled (degraded here) while the
+  // trains still running advance fine (normal there), and the reverse.
+  service_condition: string;
+  // Magnitude behind service_condition: assigned_n / its hourly baseline this
+  // tick. null when unjudgeable (service_condition then 'unknown'). Raw, not
+  // debounced — service_condition is the debounced regime over this.
+  service_ratio: number | null;
   // Cause axis — our vocabulary, derived from the MTA alert_type.
   category: string;
   primary_alert_type: string | null;
@@ -295,6 +304,13 @@ export function buildSnapshot(args: {
   movementStates?: {
     observed_at: number;
     regimes: Record<string, { state: string; entered_at: number }>;
+    // Per-route service-level regimes; the published service_condition (supply
+    // axis). Absent on docs from before the axis or a params set with no hourly
+    // service baseline — service_condition then reads 'unknown'.
+    service_regimes?: Record<string, { state: string; entered_at: number }> | undefined;
+    // Per-route raw service ratio behind service_condition. Same lifecycle as
+    // service_regimes; absent -> service_ratio null.
+    service_ratios?: Record<string, number> | undefined;
   } | null;
   /** Last tick's per-station service flow, one-tick lagged like movementStates.
    * Null/undefined before the first vehicle tick after deploy. */
@@ -359,6 +375,7 @@ export function buildSnapshot(args: {
       scheduledResumeAt: snap?.scheduled_resume_at ?? null,
     };
     const movementRegime = movementStates?.regimes[routeId] ?? null;
+    const serviceRegime = movementStates?.service_regimes?.[routeId] ?? null;
     const inference: Inference | null = roll
       ? buildInference(
           roll,
@@ -389,6 +406,8 @@ export function buildSnapshot(args: {
       alerts: activeAlerts,
       condition,
       condition_source,
+      service_condition: serviceRegime?.state ?? 'unknown',
+      service_ratio: movementStates?.service_ratios?.[routeId] ?? null,
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,

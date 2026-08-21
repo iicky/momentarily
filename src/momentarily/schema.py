@@ -209,6 +209,17 @@ class RouteStatus(BaseModel):
     # Python alert-only path (derive_route_status) has no movement feed and emits
     # the default "hmm".
     condition_source: str = "hmm"
+    # Supply axis — assigned_n against its own hourly baseline, one-tick lagged
+    # like `condition`. Distinct from `condition` (flow): a route's trips can be
+    # pulled (degraded) while the trains still running advance fine (normal), and
+    # the reverse. The alert-only Python path can't judge it and leaves "unknown";
+    # the Worker publisher sets it from the service regime.
+    #   "normal" | "degraded" | "unknown"
+    service_condition: str = "unknown"
+    # Magnitude behind service_condition: assigned_n / its hourly baseline this
+    # tick, or None when unjudgeable. Raw (not debounced); service_condition is
+    # the debounced regime over it. The alert-only Python path leaves it None.
+    service_ratio: float | None = None
     # Cause axis — our stable vocabulary, derived from the MTA alert_type.
     #   "none" | "planned_work" | "delays" | "service_change" |
     #   "service_suspension" | "slow_speeds" | "information" | "other"

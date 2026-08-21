@@ -188,3 +188,58 @@ describe('buildSnapshot: movement-determined condition', () => {
     expect(snap.system.most_degraded_line).toBe('Q');
   });
 });
+
+describe('buildSnapshot: service_condition (supply axis)', () => {
+  test('publishes the service regime state, independent of the movement condition', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Delays', route: 'A' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: snaps,
+      rolls: { A: roll('normal') },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      // Trains moving fine (movement normal) while trips are pulled (service
+      // degraded): the two axes carry different states, as they must.
+      movementStates: {
+        observed_at: NOW - 300,
+        regimes: settled({ A: 'normal' }),
+        service_regimes: settled({ A: 'degraded' }),
+        service_ratios: { A: 0.3 },
+      },
+    });
+    const a = snap.route_status.A!;
+    expect(a.condition).toBe('normal');
+    expect(a.service_condition).toBe('degraded');
+    expect(a.service_ratio).toBe(0.3);
+  });
+
+  test('a route absent from service_regimes reads unknown', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'b', alertType: 'Delays', route: 'B' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: snaps,
+      rolls: { B: roll('normal') },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      movementStates: { observed_at: NOW - 300, regimes: settled({ B: 'normal' }), service_regimes: settled({}) },
+    });
+    expect(snap.route_status.B!.service_condition).toBe('unknown');
+  });
+
+  test('a doc without service_regimes at all reads unknown (back-compat)', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'c', alertType: 'Delays', route: 'A' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: snaps,
+      rolls: { A: roll('normal') },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'normal' }) },
+    });
+    expect(snap.route_status.A!.service_condition).toBe('unknown');
+    expect(snap.route_status.A!.service_ratio).toBeNull();
+  });
+});

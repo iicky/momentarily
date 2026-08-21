@@ -620,6 +620,8 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     sentinel_json: dict[str, Any] = {"A": {"0": 6.0, "1": 5.0}}
     sentinel_schedule_rate: dict[tuple[str, str], float] = {("A", "wd06"): 0.5}
     sentinel_schedule_json: dict[str, Any] = {"A": {"wd06": 0.5}}
+    sentinel_hourly_baseline: dict[tuple[str, str], float] = {("A", "wd06"): 6.0}
+    sentinel_hourly_json: dict[str, Any] = {"A": {"wd06": 6.0}}
 
     def _fake_fetch(
         cfg: R2Config,
@@ -641,15 +643,22 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
 
     def _fake_compute_baseline(
         series: dict[tuple[str, int], int],
-    ) -> dict[tuple[str, int], float]:
+        *,
+        bin_fn: Any = None,
+    ) -> dict[tuple[str, Any], float]:
         series_seen.append(series)
-        return sentinel_baseline
+        # bin_fn set only on the hourly (schedule_bin) call.
+        return sentinel_hourly_baseline if bin_fn is not None else sentinel_baseline
 
     def _fake_to_json(
-        baseline: dict[tuple[str, int], float],
+        baseline: dict[tuple[str, Any], float],
     ) -> dict[str, Any]:
         baseline_seen.append(baseline)
-        return sentinel_json
+        return (
+            sentinel_hourly_json
+            if baseline is sentinel_hourly_baseline
+            else sentinel_json
+        )
 
     def _fake_compute_schedule_rate(
         bodies: list[dict[str, Any]],
@@ -679,16 +688,24 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     start = date(2026, 6, 1)
     end = date(2026, 6, 14)
 
-    result, n_cells, schedule_result, n_schedule_cells = _service_baseline(
-        cfg, client, start, end
-    )
+    (
+        result,
+        n_cells,
+        schedule_result,
+        n_schedule_cells,
+        hourly_result,
+        n_hourly_cells,
+    ) = _service_baseline(cfg, client, start, end)
 
     assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
     assert bodies_seen == [sentinel_bodies]
-    assert series_seen == [sentinel_series]
-    assert baseline_seen == [sentinel_baseline]
+    # Both baselines come off the SAME series (one fetch, one build).
+    assert series_seen == [sentinel_series, sentinel_series]
+    assert baseline_seen == [sentinel_baseline, sentinel_hourly_baseline]
     assert result == sentinel_json
     assert n_cells == 2
+    assert hourly_result == sentinel_hourly_json
+    assert n_hourly_cells == 1
     # Schedule chain reuses the SAME fetch — not a second trip-updates call.
     assert schedule_bodies_seen == [sentinel_bodies]
     assert schedule_rate_seen == [sentinel_schedule_rate]
@@ -714,14 +731,21 @@ def test_service_baseline_fails_soft_on_archive_error(
 
     monkeypatch.setattr("training.train_em.fetch_trip_update_metrics", _raise_fetch)
 
-    result, n_cells, schedule_result, n_schedule_cells = _service_baseline(
-        _r2_config(), cast("S3Client", _FakeS3()), date(2026, 6, 1), date(2026, 6, 14)
+    result, n_cells, schedule_result, n_schedule_cells, hourly_result, n_hourly = (
+        _service_baseline(
+            _r2_config(),
+            cast("S3Client", _FakeS3()),
+            date(2026, 6, 1),
+            date(2026, 6, 14),
+        )
     )
 
     assert result == {}
     assert n_cells == 0
     assert schedule_result == {}
     assert n_schedule_cells == 0
+    assert hourly_result == {}
+    assert n_hourly == 0
     assert "service baseline skipped" in capsys.readouterr().err
 
 
@@ -943,6 +967,7 @@ def test_main_passes_service_baseline_through_to_write_params(
     )
     sentinel_baseline: dict[str, Any] = {"SENTINEL_ROUTE": {"0": 6.0}}
     sentinel_schedule_rate: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 0.5}}
+    sentinel_hourly: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 6.0}}
     captured_kwargs: dict[str, Any] = {}
 
     def _fake_load_config() -> R2Config:
@@ -968,8 +993,8 @@ def test_main_passes_service_baseline_through_to_write_params(
 
     def _fake_service_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
-    ) -> tuple[dict[str, Any], int, dict[str, Any], int]:
-        return sentinel_baseline, 4, sentinel_schedule_rate, 6
+    ) -> tuple[dict[str, Any], int, dict[str, Any], int, dict[str, Any], int]:
+        return sentinel_baseline, 4, sentinel_schedule_rate, 6, sentinel_hourly, 3
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         captured_kwargs.update(kwargs)
@@ -995,6 +1020,7 @@ def test_main_passes_service_baseline_through_to_write_params(
 
     assert exit_code == 0
     assert captured_kwargs["service_baseline"] == sentinel_baseline
+    assert captured_kwargs["service_baseline_hourly"] == sentinel_hourly
     assert captured_kwargs["schedule_rate"] == sentinel_schedule_rate
 
 

@@ -185,6 +185,20 @@ function RouteCard({
         <span className={`cond ${condClass(r)}`}>
           {warming ? "warming up" : r.condition}
         </span>
+        {r.service_condition === "degraded" && (
+          <span
+            className="svc degraded"
+            title={
+              r.service_ratio != null
+                ? `Assigned trains ${(r.service_ratio * 100).toFixed(
+                    0,
+                  )}% of the normal level for this hour`
+                : "Fewer trains assigned than normal"
+            }
+          >
+            supply low
+          </span>
+        )}
       </div>
 
       {inf && !warming && (
@@ -253,6 +267,32 @@ function RouteDrawer({
         <span className="k">Primary alert</span>
         <span className="v">{r.primary_alert_type ?? "—"}</span>
       </div>
+
+      <div className="section-title">Service (supply)</div>
+      <div className="kv">
+        <span className="k">Level</span>
+        <span className="v">
+          {r.service_condition === "degraded"
+            ? "Degraded — fewer trains than normal"
+            : r.service_condition === "normal"
+              ? "Normal"
+              : "Unknown"}
+        </span>
+        <span className="k">Assigned vs normal</span>
+        <span className="v">
+          {r.service_ratio != null
+            ? `${(r.service_ratio * 100).toFixed(0)}%`
+            : "—"}
+        </span>
+      </div>
+      {r.service_condition === "degraded" && (
+        <div className="note">
+          Supply is a different axis from the status above: it counts how many
+          trains are <b>assigned</b> vs normal for this hour. A line can run
+          fewer trains (supply low) while the ones running still move fine, and
+          the reverse.
+        </div>
+      )}
 
       {inf && inf.model_warming_up && (
         <div className="warnbox">Model warming up — inference not yet reliable.</div>

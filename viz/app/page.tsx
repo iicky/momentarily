@@ -414,6 +414,11 @@ function RouteDrawer({
       {inf && (
         <>
           <div className="section-title">Regime probabilities</div>
+          <div className="section-note">
+            The model&apos;s alert-aware read. The status above follows train
+            movement, so when an advisory is up but trains keep moving, the two
+            differ.
+          </div>
           <div
             className="pbar"
             style={{ height: 10 }}

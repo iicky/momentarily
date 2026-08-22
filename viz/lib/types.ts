@@ -42,6 +42,8 @@ export interface RouteStatus {
   route_id: string;
   alerts: string[];
   condition: string;
+  // Where `condition` came from: 'movement' | 'schedule' | 'unknown' | 'hmm'.
+  condition_source: string;
   // Supply axis (assigned_n vs its hourly baseline), distinct from `condition`
   // (flow). 'normal' | 'degraded' | 'unknown'.
   service_condition: string;

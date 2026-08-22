@@ -5,7 +5,6 @@ import Nav from "./Nav";
 import {
   fetchSnapshot,
   conditionRank,
-  impliedCondition,
   routeColor,
   routeLabel,
   fmtAgo,
@@ -54,7 +53,11 @@ export default function StatusPage() {
   return (
     <div className="wrap">
       <div className="topbar">
-        <h1>Momentarily</h1>
+        <h1>
+          <span className="brand">
+            <StateMark kind="logo" size={18} /> Momentarily
+          </span>
+        </h1>
         <Nav />
       </div>
       <div className="sub">
@@ -160,6 +163,85 @@ function condClass(r: RouteStatus): string {
   return r.condition || "unknown";
 }
 
+// Two-car brand mark. The gap between the cars encodes delay and the bars drop
+// height when suspended — geometry from docs/brand/assets/mark-*.svg. Colour is
+// the state colour, inherited via currentColor (see .mark.* in globals.css).
+type MarkKind = "normal" | "disrupted" | "suspended" | "muted" | "logo";
+
+const MARK_BARS: Record<MarkKind, [number, number, number][]> = {
+  // [x, y, height]; each bar is width 5, rx 2.5, on a 24 grid.
+  normal: [[5, 3, 18], [14, 3, 18]],
+  disrupted: [[3.02, 3, 18], [15.98, 3, 18]],
+  suspended: [[1.5, 7, 10], [17.5, 7, 10]],
+  muted: [[5, 3, 18], [14, 3, 18]],
+  logo: [[5, 3, 18], [14, 3, 18]],
+};
+
+function StateMark({ kind, size = 20 }: { kind: MarkKind; size?: number }) {
+  return (
+    <svg
+      className={`mark ${kind}`}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      {MARK_BARS[kind].map(([x, y, h], i) => (
+        <rect key={i} x={x} y={y} width={5} height={h} rx={2.5} />
+      ))}
+    </svg>
+  );
+}
+
+function markKind(r: RouteStatus): MarkKind {
+  if (!r.inference || r.inference.model_warming_up) return "muted";
+  if (r.condition === "disrupted") return "disrupted";
+  if (r.condition === "suspended") return "suspended";
+  if (r.condition === "normal") return "normal";
+  return "muted"; // not_scheduled / unknown
+}
+
+// Where the published condition came from — the fact that resolves "Normal
+// despite a Delays alert": the status is observed from train movement, not the
+// alert feed.
+function sourceTag(r: RouteStatus): string {
+  switch (r.condition_source) {
+    case "movement":
+      return "observed · train movement";
+    case "schedule":
+      return "from schedule";
+    case "unknown":
+      return "no live signal";
+    default:
+      return "model · HMM";
+  }
+}
+
+// One plain-English line: lead with the observed movement status; the MTA alert
+// is a second, separate clause, never a competing headline.
+function headline(r: RouteStatus): { lead: string; alt?: string } {
+  const alert =
+    r.category !== "none" && r.primary_alert_type
+      ? `The MTA has a “${r.primary_alert_type}” advisory up.`
+      : undefined;
+  switch (r.condition) {
+    case "normal":
+      return { lead: "Trains are moving normally.", alt: alert };
+    case "disrupted":
+      return { lead: "Trains are moving slowly or stalling.", alt: alert };
+    case "suspended":
+      return { lead: "No trains are running on this line.", alt: alert };
+    case "not_scheduled":
+      return { lead: "Not scheduled to run right now." };
+    default:
+      return {
+        lead: "No live movement signal to confirm status.",
+        alt: alert,
+      };
+  }
+}
+
 function RouteCard({
   snap,
   r,
@@ -182,6 +264,7 @@ function RouteCard({
         >
           {routeLabel(snap, r.route_id)}
         </span>
+        <StateMark kind={markKind(r)} />
         <span className={`cond ${condClass(r)}`}>
           {warming ? "warming up" : r.condition}
         </span>
@@ -252,11 +335,22 @@ function RouteDrawer({
         >
           {routeLabel(snap, r.route_id)}
         </span>
+        <StateMark kind={markKind(r)} size={22} />
         <span className={`cond ${condClass(r)}`}>
           {!inf || inf.model_warming_up ? "warming up" : r.condition}
         </span>
-        <span className="axis-tag">model · HMM</span>
+        <span className="src-tag">{sourceTag(r)}</span>
       </h2>
+
+      {(() => {
+        const h = headline(r);
+        return (
+          <div className="headline">
+            {h.lead}
+            {h.alt && <span className="alt"> {h.alt}</span>}
+          </div>
+        );
+      })()}
 
       <div className="section-title">Alert (MTA)</div>
       <div className="kv">
@@ -300,19 +394,10 @@ function RouteDrawer({
 
       {inf &&
         !inf.model_warming_up &&
-        impliedCondition(r.category) !== inf.condition && (
+        r.primary_alert_type === "No Scheduled Service" && (
           <div className="note">
-            The badge is the <b>model&apos;s</b> read ({inf.condition}); the
-            status above is from the <b>MTA alert</b> ({r.label}). They&apos;re
-            different axes and can differ.
-            {r.primary_alert_type === "No Scheduled Service" && (
-              <>
-                {" "}
-                “No Scheduled Service” means this line just isn&apos;t scheduled
-                to run right now (it doesn&apos;t run 24/7) — nothing&apos;s
-                broken, so the model doesn&apos;t treat it as a suspension.
-              </>
-            )}
+            “No Scheduled Service” means this line just isn&apos;t scheduled to
+            run right now (it doesn&apos;t run 24/7) — nothing&apos;s broken.
           </div>
         )}
 

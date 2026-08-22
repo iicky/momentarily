@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Momentarily mark in ground ink, for LIGHT surfaces via <img>/background-image, where currentColor cannot be inherited. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="#16181d" role="img">
+  <rect x="5" y="3" width="5" height="18" rx="2.5"/>
+  <rect x="14" y="3" width="5" height="18" rx="2.5"/>
+</svg>

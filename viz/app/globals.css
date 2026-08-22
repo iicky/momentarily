@@ -1,15 +1,40 @@
+@font-face {
+  font-family: "Inter";
+  src: url("/brand/fonts/inter-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Meslo";
+  src: url("/brand/fonts/meslo-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Meslo";
+  src: url("/brand/fonts/meslo-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --bg: #0c0d10;
-  --panel: #15171c;
-  --panel-2: #1c1f26;
-  --border: #2a2e37;
-  --text: #e7e9ee;
-  --muted: #9aa0ad;
-  --normal: #3fb950;
-  --disrupted: #d29922;
-  --suspended: #f85149;
-  --unknown: #6e6e73;
+  /* Brand palette — docs/brand contact sheet. The state trio is the two-car
+     mark family's; ground/surface/line are the brand dark. */
+  --bg: #16181d;
+  --panel: #1b1e24;
+  --panel-2: #22262e;
+  --border: #2c313a;
+  --text: #c8ccd4;
+  --muted: #828997;
+  --normal: #98c379;
+  --disrupted: #e5c07b;
+  --suspended: #e06c75;
+  --unknown: #5c6370;
   --accent: #4493f8;
+  --mono: "Meslo", ui-monospace, SFMono-Regular, Menlo, monospace;
   /* Predicted-vs-observed overlays. Kept separate from the state colors above
      so "model forecast" / "what really happened" never reads as a line state. */
   --forecast: #4493f8;
@@ -26,7 +51,8 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font: 14px/1.5 "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    system-ui, sans-serif;
 }
 
 a {
@@ -506,4 +532,76 @@ code {
   .charts-row {
     flex-direction: column;
   }
+}
+
+/* --- Brand: two-car state mark + wordmark + drawer clarity ---------------- */
+
+/* The wordmark and the small uppercase labels are Meslo (brand's mono
+   headings); body stays Inter. */
+.topbar h1 {
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.section-title,
+.axis-tag,
+.src-tag,
+.px,
+.cap {
+  font-family: var(--mono);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Two-car mark. Gap encodes delay, height drops when suspended — its colour is
+   the state colour, inherited via currentColor. */
+.mark {
+  display: block;
+  flex: none;
+}
+.mark.normal {
+  color: var(--normal);
+}
+.mark.disrupted {
+  color: var(--disrupted);
+}
+.mark.suspended {
+  color: var(--suspended);
+}
+.mark.muted {
+  color: var(--muted);
+}
+.mark.logo {
+  color: var(--text);
+}
+
+/* Drawer plain-English headline + provenance tag. */
+.headline {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 2px 0 12px;
+}
+.headline .alt {
+  color: var(--muted);
+}
+.src-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.chart-error {
+  border: 1px solid color-mix(in srgb, var(--suspended) 30%, transparent);
+  background: color-mix(in srgb, var(--suspended) 8%, transparent);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  margin: 8px 0;
 }

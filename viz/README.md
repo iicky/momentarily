@@ -9,12 +9,27 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-## Two views
+## Views
 
 **Status** (`/`) — glanceable "what's running right now". Reads the public
 `https://feed.momentarily.nyc/v1/snapshot.json` (no credentials), polls every
 60s. Route grid colored by line, per-line regime probabilities, recovery ETAs,
 feed freshness, accessibility rollup. Click a line for the full inference.
+
+**Lines** (`/lines`) — one page per subway line. `/lines/<route>` lists the
+line's stations in running order (topology from `state/segment_params.json`),
+each with its live service flow, ADA, and a link to the station page. Pick a
+direction to walk the trip northbound or southbound.
+
+**Station** (`/stations/<gtfs_stop_id>`) — everything about one stop: the lines
+it serves, borough, structure, coordinates and platform labels, ADA breakdown,
+elevator/escalator outages, the live service-flow verdict, and every segment
+that touches it.
+
+**Map** (`/map`) — select a trip (a line + direction) to draw its pairwise
+segments on a geographic map, colored by live movement status, with the segment
+list beside it. Station coordinates come from NYS Open Data 39hk-dx4f; the
+segment topology needs the R2 vault (falls back to plotting stations only).
 
 **Models** (`/models`) — does the model deserve trust? Reads the prediction and
 regime-transition history from R2 and scores the forecasts against what actually

@@ -43,6 +43,20 @@ export function routeLabel(snap: Snapshot, routeId: string): string {
   return snap.compat?.subwaynow_routes?.[routeId]?.name ?? routeId;
 }
 
+// Resolve an alert id (as carried on RouteStatus.alerts) against snap.alerts to
+// its human headline. Returns the alert_type and English header text; either can
+// be null when the id isn't in the published set or carries no header.
+export function alertHeadline(
+  snap: Snapshot,
+  id: string,
+): { type: string | null; text: string | null } {
+  const a = snap.alerts?.find((x) => x.id === id);
+  if (!a) return { type: null, text: null };
+  const tr = a.header_text?.translation ?? [];
+  const en = tr.find((t) => t.language === "en") ?? tr[0];
+  return { type: a.alert_type ?? null, text: en?.text ?? null };
+}
+
 export function fmtAgo(epochSec: number | null | undefined, nowSec: number): string {
   if (epochSec == null) return "—";
   const d = Math.max(0, nowSec - epochSec);

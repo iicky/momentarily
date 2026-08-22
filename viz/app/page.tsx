@@ -7,6 +7,7 @@ import {
   conditionRank,
   routeColor,
   routeLabel,
+  alertHeadline,
   fmtAgo,
   fmtMinutes,
 } from "@/lib/feed";
@@ -159,8 +160,24 @@ function FreshnessStrip({ snap, now }: { snap: Snapshot; now: number }) {
 }
 
 function condClass(r: RouteStatus): string {
-  if (!r.inference || r.inference.model_warming_up) return "warming";
   return r.condition || "unknown";
+}
+
+// Human-readable badge text for a route's published condition. Raw codes like
+// "not_scheduled" would render with an underscore under the capitalize style.
+function condLabel(r: RouteStatus): string {
+  switch (r.condition) {
+    case "normal":
+      return "Normal";
+    case "disrupted":
+      return "Disrupted";
+    case "suspended":
+      return "Suspended";
+    case "not_scheduled":
+      return "Not scheduled";
+    default:
+      return "No live signal";
+  }
 }
 
 // Two-car brand mark. The gap between the cars encodes delay and the bars drop
@@ -195,7 +212,6 @@ function StateMark({ kind, size = 20 }: { kind: MarkKind; size?: number }) {
 }
 
 function markKind(r: RouteStatus): MarkKind {
-  if (!r.inference || r.inference.model_warming_up) return "muted";
   if (r.condition === "disrupted") return "disrupted";
   if (r.condition === "suspended") return "suspended";
   if (r.condition === "normal") return "normal";
@@ -254,7 +270,6 @@ function RouteCard({
   onClick: () => void;
 }) {
   const inf = r.inference;
-  const warming = !inf || inf.model_warming_up;
   return (
     <div className={`card${selected ? " sel" : ""}`} onClick={onClick}>
       <div className="card-head">
@@ -266,7 +281,7 @@ function RouteCard({
         </span>
         <StateMark kind={markKind(r)} />
         <span className={`cond ${condClass(r)}`}>
-          {warming ? "warming up" : r.condition}
+          {condLabel(r)}
         </span>
         {r.service_condition === "degraded" && (
           <span
@@ -284,7 +299,7 @@ function RouteCard({
         )}
       </div>
 
-      {inf && !warming && (
+      {inf && (
         <div
           className="pbar"
           title={`normal ${(inf.p_normal * 100).toFixed(1)}% · disrupted ${(
@@ -302,7 +317,7 @@ function RouteCard({
           {r.primary_alert_type ?? (r.alerts.length ? "alert" : "good service")}
         </span>
         <span>
-          {inf && !warming && inf.is_disrupted
+          {inf && inf.is_disrupted
             ? inf.recovery_indeterminate
               ? "recovery: indeterminate"
               : `~${fmtMinutes(inf.recovery_minutes)}`
@@ -337,7 +352,7 @@ function RouteDrawer({
         </span>
         <StateMark kind={markKind(r)} size={22} />
         <span className={`cond ${condClass(r)}`}>
-          {!inf || inf.model_warming_up ? "warming up" : r.condition}
+          {condLabel(r)}
         </span>
         <span className="src-tag">{sourceTag(r)}</span>
       </h2>
@@ -388,12 +403,7 @@ function RouteDrawer({
         </div>
       )}
 
-      {inf && inf.model_warming_up && (
-        <div className="warnbox">Model warming up — inference not yet reliable.</div>
-      )}
-
       {inf &&
-        !inf.model_warming_up &&
         r.primary_alert_type === "No Scheduled Service" && (
           <div className="note">
             “No Scheduled Service” means this line just isn&apos;t scheduled to
@@ -401,7 +411,7 @@ function RouteDrawer({
           </div>
         )}
 
-      {inf && !inf.model_warming_up && (
+      {inf && (
         <>
           <div className="section-title">Regime probabilities</div>
           <div
@@ -497,7 +507,23 @@ function RouteDrawer({
       {r.alerts.length > 0 && (
         <>
           <div className="section-title">Active alerts ({r.alerts.length})</div>
-          <div className="alertlist">{r.alerts.join(", ")}</div>
+          <ul className="alertlist">
+            {r.alerts.map((id) => {
+              const { type, text } = alertHeadline(snap, id);
+              return (
+                <li key={id}>
+                  {text ? (
+                    <>
+                      {type && <span className="alert-type">{type}</span>}
+                      {text}
+                    </>
+                  ) : (
+                    id
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         </>
       )}
     </aside>

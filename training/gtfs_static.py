@@ -31,11 +31,11 @@ import io
 import itertools
 import statistics
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import TextIO
+from typing import Any, TextIO
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -779,3 +779,95 @@ def chains(
         result.sort(key=lambda c: (-len(c.stops), c.stops[0] if c.stops else ""))
         out[group] = result
     return out
+
+
+@dataclass(frozen=True)
+class RoutePattern:
+    """One scheduled stopping pattern of a (route, direction): the exact ordered
+    directional stop ids of a trip, and how many trips run it. The most-run
+    pattern is the canonical line order; the minor ones are the express/local
+    variants and branch tails. Unlike `successors` (which reduces every trip to
+    consecutive pairs) this keeps each whole run intact, so a display can order a
+    line end to end instead of relinearizing a single-successor graph."""
+
+    stops: tuple[str, ...]
+    n_trips: int
+
+
+def route_patterns(zf: zipfile.ZipFile) -> dict[tuple[str, str], list[RoutePattern]]:
+    """(route, direction) -> its distinct stopping patterns, most-run first.
+
+    Read off each trip's full ordered stop_times sequence. Directional stop ids,
+    the same convention as `successors`; streamed trip-by-trip the same way, off
+    the same contiguous-rows assumption.
+    """
+    with zf.open("trips.txt") as raw:
+        meta = _trip_meta(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+
+    counts: dict[tuple[str, str], Counter[tuple[str, ...]]] = defaultdict(Counter)
+
+    def flush(route: str, trip_id: str, stops: list[tuple[int, str]]) -> None:
+        if not route or len(stops) < 2:
+            return
+        stops.sort(key=lambda s: s[0])
+        ordered = tuple(stop for _, stop in stops)
+        direction = direction_of(ordered[0], trip_id)
+        if direction is not None:
+            counts[(route, direction)][ordered] += 1
+
+    with zf.open("stop_times.txt") as raw:
+        reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+        header = next(reader)
+        trip_col = header.index("trip_id")
+        stop_col = header.index("stop_id")
+        seq_col = header.index("stop_sequence")
+
+        current_trip: str | None = None
+        current_route = ""
+        buf: list[tuple[int, str]] = []
+        for row in reader:
+            trip_id = row[trip_col]
+            if trip_id != current_trip:
+                if current_trip is not None:
+                    flush(current_route, current_trip, buf)
+                current_trip = trip_id
+                current_route = meta.get(trip_id, ("", ""))[0]
+                buf = []
+            if current_route:
+                buf.append((int(row[seq_col]), row[stop_col]))
+        if current_trip is not None:
+            flush(current_route, current_trip, buf)
+
+    return {
+        key: [
+            RoutePattern(stops=stops, n_trips=n) for stops, n in counter.most_common()
+        ]
+        for key, counter in counts.items()
+    }
+
+
+def patterns_to_json(
+    patterns: Mapping[tuple[str, str], list[RoutePattern]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Serialize route patterns for segment_params.json: 'route|direction' ->
+    [{stops, n_trips}, ...], most-run first — the canonical line order a
+    consumer reads instead of relinearizing the adjacency graph."""
+    return {
+        f"{route}|{direction}": [
+            {"stops": list(p.stops), "n_trips": p.n_trips} for p in pats
+        ]
+        for (route, direction), pats in sorted(patterns.items())
+    }
+
+
+def load_topology(
+    url: str = GTFS_STATIC_URL,
+) -> tuple[
+    dict[SegmentKey, list[tuple[str, int]]],
+    dict[tuple[str, str], list[RoutePattern]],
+]:
+    """Fetch once, return both static-topology reads a training run needs — the
+    successor skeleton and the stopping patterns — off one download."""
+    data = fetch_gtfs_zip(url)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return successors(zf), route_patterns(zf)

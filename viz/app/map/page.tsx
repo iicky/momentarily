@@ -5,10 +5,10 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useCoords, useTopology } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
-import { undirected, edgesFor, orderStops, projector } from "@/lib/stations";
+import { undirected, edgesFor, orderTrip, projector } from "@/lib/stations";
 import { fmtMinutes } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
-import type { StationCoord, AdjEdge } from "@/lib/stations";
+import type { StationCoord, Topology } from "@/lib/stations";
 
 type Dir = "north" | "south";
 const W = 760;
@@ -72,7 +72,7 @@ function MapView() {
   };
 
   const trip = useMemo(
-    () => buildTrip(snap, coords, topo?.configured ? topo.edges : [], route, dir),
+    () => buildTrip(snap, coords, topo, route, dir),
     [snap, coords, topo, route, dir],
   );
 
@@ -140,21 +140,28 @@ interface Trip {
 function buildTrip(
   snap: Snapshot | null,
   coords: Record<string, StationCoord> | null,
-  edges: AdjEdge[],
+  topo: Topology | null,
   route: string,
   dir: Dir,
 ): Trip {
   if (!snap || !coords || !route) return { segs: [], markers: [] };
 
-  const rdEdges = edges.length ? edgesFor(edges, route, dir) : [];
-  // Which stations belong to this trip: the topology's stops when we have it,
-  // else every station that names the line (markers-only fallback).
+  const rdEdges = topo?.configured ? edgesFor(topo.edges, route, dir) : [];
+  // Which stations belong to this trip, in order: the trainer's canonical
+  // patterns when the topology names this route+direction, else every station
+  // that serves the line (markers-only fallback, also covering a configured-but-
+  // empty or stale topology response).
   const dirSuffix = dir === "north" ? "N" : "S";
-  const stopIds = rdEdges.length
-    ? orderStops(rdEdges)
+  const topoStops = topo?.configured
+    ? orderTrip(topo.routeStops, topo.edges, route, dir)
+    : [];
+  const stopIds = topoStops.length
+    ? topoStops
     : Object.values(snap.stations)
         .filter((s) => s.routes_served.includes(route))
         .map((s) => `${s.gtfs_stop_id}${dirSuffix}`);
+  const orderOf: Record<string, number> = {};
+  stopIds.forEach((s, i) => (orderOf[undirected(s)] = i));
 
   const withCoords = stopIds
     .map((s) => ({ stop: s, id: undirected(s), c: coords[undirected(s)] }))
@@ -201,6 +208,8 @@ function buildTrip(
       recoveryMin: live?.recovery?.recovery_minutes ?? null,
     });
   }
+  // Read in trip order — the panel lists the segments as you'd ride them.
+  segs.sort((a, b) => (orderOf[a.fromId] ?? 1e9) - (orderOf[b.fromId] ?? 1e9));
   return { segs, markers };
 }
 

@@ -3,9 +3,9 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useSnapshot, useCoords, useTopology } from "../../useData";
+import { useSnapshot, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
-import { undirected, edgesFor, orderStops } from "@/lib/stations";
+import { undirected, orderTrip } from "@/lib/stations";
 import { fmtMinutes } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 
@@ -18,21 +18,21 @@ export default function LinePage() {
   const { data: topo } = useTopology();
   const [dir, setDir] = useState<Dir>("north");
 
-  // Ordered stops when the topology is loaded; otherwise every station that
-  // names this line, alphabetized, so the page is still useful with no R2.
-  const stops = useMemo<string[]>(() => {
-    if (topo?.configured && topo.edges.length) {
-      const ordered = orderStops(edgesFor(topo.edges, route, dir));
-      if (ordered.length) return ordered;
+  // Canonical order from the trainer's published patterns (falling back to an
+  // adjacency walk) when topology is loaded; otherwise every station that names
+  // this line, alphabetized, so the page is still useful with no R2.
+  const { stops, ordered } = useMemo<{ stops: string[]; ordered: boolean }>(() => {
+    if (topo?.configured) {
+      const s = orderTrip(topo.routeStops, topo.edges, route, dir);
+      if (s.length) return { stops: s, ordered: true };
     }
-    if (!snap) return [];
-    return Object.values(snap.stations)
+    if (!snap) return { stops: [], ordered: false };
+    const alpha = Object.values(snap.stations)
       .filter((s) => s.routes_served.includes(route))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((s) => `${s.gtfs_stop_id}${dir === "north" ? "N" : "S"}`);
+    return { stops: alpha, ordered: false };
   }, [topo, snap, route, dir]);
-
-  const ordered = topo?.configured && topo.edges.length > 0;
 
   return (
     <div className="wrap">

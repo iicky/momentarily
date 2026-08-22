@@ -31,11 +31,23 @@ export interface AdjEdge {
   successors: { to: string; n_trips: number }[];
 }
 
+/** One scheduled stopping pattern of a route+direction: the exact ordered
+ * directional stop ids of a trip, and how many trips run it. Published by the
+ * trainer from static GTFS; the most-run pattern is the canonical line order. */
+export interface RoutePattern {
+  stops: string[];
+  n_trips: number;
+}
+
+/** Patterns keyed by `route|direction`, most-run first. */
+export type RouteStops = Record<string, RoutePattern[]>;
+
 export interface Topology {
   configured: boolean;
   trained_at?: number;
   topology_source?: string;
   edges: AdjEdge[];
+  routeStops: RouteStops;
 }
 
 /** Collapse a directional stop id to its station: strip a trailing N/S.
@@ -55,6 +67,61 @@ const TOPO_ROUTES: Record<string, string[]> = {
 export function edgesFor(edges: AdjEdge[], route: string, direction: string): AdjEdge[] {
   const routes = TOPO_ROUTES[route] ?? [route];
   return edges.filter((e) => routes.includes(e.route) && e.direction === direction);
+}
+
+/** The scheduled patterns for a trip, most-run first, resolving the S/SIR line
+ * badge to its topology route ids. */
+export function patternsForTrip(
+  routeStops: RouteStops,
+  route: string,
+  direction: string,
+): RoutePattern[] {
+  const routes = TOPO_ROUTES[route] ?? [route];
+  const out: RoutePattern[] = [];
+  for (const r of routes) out.push(...(routeStops[`${r}|${direction}`] ?? []));
+  return out.sort((a, b) => b.n_trips - a.n_trips);
+}
+
+/** Fold a route+direction's patterns into one ordered stop list. The most-run
+ * pattern is the spine; every other pattern's extra stops splice in next to the
+ * neighbour they follow, so express/local variants interleave correctly and
+ * disjoint runs (branch tails, the three S shuttles) append as blocks. */
+export function mergePatterns(patterns: RoutePattern[]): string[] {
+  if (patterns.length === 0) return [];
+  const result = [...patterns[0].stops];
+  const placed = new Set(result);
+  for (let p = 1; p < patterns.length; p++) {
+    const stops = patterns[p].stops;
+    for (let i = 0; i < stops.length; i++) {
+      const s = stops[i];
+      if (placed.has(s)) continue;
+      let at = -1;
+      for (let j = i - 1; j >= 0 && at < 0; j--) {
+        const k = result.indexOf(stops[j]);
+        if (k >= 0) at = k + 1;
+      }
+      for (let j = i + 1; j < stops.length && at < 0; j++) {
+        const k = result.indexOf(stops[j]);
+        if (k >= 0) at = k;
+      }
+      if (at < 0) at = result.length;
+      result.splice(at, 0, s);
+      placed.add(s);
+    }
+  }
+  return result;
+}
+
+/** Canonical ordered stops for a trip: the merged scheduled patterns when the
+ * trainer published them, else a best-effort walk of the adjacency graph. */
+export function orderTrip(
+  routeStops: RouteStops,
+  edges: AdjEdge[],
+  route: string,
+  direction: string,
+): string[] {
+  const merged = mergePatterns(patternsForTrip(routeStops, route, direction));
+  return merged.length ? merged : orderStops(edgesFor(edges, route, direction));
 }
 
 /** Order the stops of a route+direction. Walks the highest-traffic successor

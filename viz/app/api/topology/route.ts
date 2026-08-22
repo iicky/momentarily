@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { r2Configured, getJson } from "@/lib/r2";
-import type { AdjEdge } from "@/lib/stations";
+import type { AdjEdge, RouteStops } from "@/lib/stations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,11 +19,12 @@ interface SegmentParamsDoc {
     string,
     { to: string; successors?: { to: string; n_trips: number }[] }
   >;
+  route_stops?: RouteStops;
 }
 
 export async function GET() {
   if (!(await r2Configured())) {
-    return NextResponse.json({ configured: false, edges: [] });
+    return NextResponse.json({ configured: false, edges: [], routeStops: {} });
   }
   try {
     const doc = await getJson<SegmentParamsDoc>(SEGMENT_PARAMS_KEY);
@@ -42,8 +43,9 @@ export async function GET() {
       trained_at: doc.trained_at,
       topology_source: doc.topology_source,
       edges,
+      routeStops: doc.route_stops ?? {},
     });
   } catch (e) {
-    return NextResponse.json({ configured: true, error: (e as Error).message, edges: [] });
+    return NextResponse.json({ configured: true, error: (e as Error).message, edges: [], routeStops: {} });
   }
 }

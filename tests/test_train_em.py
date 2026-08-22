@@ -17,6 +17,7 @@ import pytest
 from momentarily.hmm import EmissionParams, HMMParams, Observation, schedule_bin
 from training.dwell import DwellQuantiles
 from training.eval import MovementTransitionRecord, PredictionRecord, TransitionRecord
+from training.gtfs_static import RoutePattern
 from training.load_r2 import (
     MIN_MATCHED_TRIPS,
     MIN_SCHEDULE_TICKS,
@@ -57,6 +58,12 @@ if TYPE_CHECKING:
 _STATIC_SUCCESSORS: dict[tuple[str, str, str], list[tuple[str, int]]] = {
     ("A", "north", "A01N"): [("A02N", 5)],
     ("A", "north", "A02N"): [("A03N", 5)],
+}
+
+# The stopping patterns the same fixture would publish: the A-north chain as one
+# ordered run, so a stubbed static topology carries route_stops like a real one.
+_STATIC_PATTERNS: dict[tuple[str, str], list[RoutePattern]] = {
+    ("A", "north"): [RoutePattern(stops=("A01N", "A02N", "A03N"), n_trips=5)],
 }
 
 
@@ -930,7 +937,7 @@ def test_main_passes_movement_baseline_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
-        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1003,7 +1010,7 @@ def test_main_passes_service_baseline_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
-        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1089,7 +1096,7 @@ def test_main_passes_advance_priors_through_to_train(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
-        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1159,7 +1166,7 @@ def test_main_refuses_empty_movement_baseline(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
-        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1242,7 +1249,7 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
-        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1360,6 +1367,7 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
         date(2026, 8, 11),
         1,
         _STATIC_SUCCESSORS,
+        _STATIC_PATTERNS,
         "gtfs_static",
         _THROUGH,
     )
@@ -1560,7 +1568,7 @@ def test_main_passes_movement_dwell_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
-        lambda: (_STATIC_SUCCESSORS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(

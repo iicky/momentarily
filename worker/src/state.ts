@@ -372,6 +372,19 @@ const SegmentParamsSchema = z.object({
         .optional(),
     }),
   ),
+  // Canonical per-(route, direction) stop order: the scheduled trip patterns,
+  // most-run first, keyed 'route|direction'. Written by the trainer from static
+  // GTFS (training/gtfs_static.route_patterns) for off-Worker consumers (the
+  // viz line/map surfaces) that need line order; the Worker itself doesn't read
+  // it. Absent on docs written before this field, and {} on the observed
+  // fallback. Read as a whole, so a malformed entry degrades the ordering, not
+  // the segment scoring.
+  route_stops: z
+    .record(
+      z.string(),
+      z.array(z.object({ stops: z.array(z.string()), n_trips: z.number().int().nonnegative() })),
+    )
+    .optional(),
 });
 export type SegmentParamsDoc = z.infer<typeof SegmentParamsSchema>;
 

@@ -390,6 +390,44 @@ export async function readSegmentParams(
   }
 }
 
+// Per-(route, schedule_bin) assigned_n baseline — the denominator of the
+// published service-degradation (supply) axis. Its OWN object, written by the
+// trainer like segment_params.json, so the display axis is decoupled from the
+// frozen HMM artifact in params.json: landing or refreshing this baseline never
+// changes params.json's trained_at, so it never reseeds the filter or splits the
+// grader's params-version window. The Worker prefers this object and falls back
+// to params.json's legacy service_baseline_hourly when it's absent.
+export const SERVICE_BASELINE_KEY = 'state/service_baseline.json';
+
+const ServiceBaselineDocSchema = z.object({
+  schema_version: z.literal('1'),
+  // The sidecar's OWN publication stamp, and its versioned-snapshot key. Kept
+  // distinct from params.json's trained_at: each refresh gets a fresh stamp so
+  // it never overwrites a prior immutable copy nor moves the model version.
+  generated_at: z.number(),
+  // The frozen model this baseline was computed to accompany. Provenance only —
+  // the Worker never keys off it.
+  params_trained_at: z.number().optional(),
+  // route -> schedule_bin (stringified) -> median assigned_n.
+  baseline: z.record(z.string(), z.record(z.string(), z.number().nonnegative())),
+});
+export type ServiceBaselineDoc = z.infer<typeof ServiceBaselineDocSchema>;
+
+/** Read the service-baseline sidecar. Null when absent or corrupt — the supply
+ * axis then falls back to params.json's baseline, else reads 'unknown'. */
+export async function readServiceBaseline(
+  bucket: R2Bucket,
+): Promise<ServiceBaselineDoc | null> {
+  const obj = await bucket.get(SERVICE_BASELINE_KEY);
+  if (!obj) return null;
+  try {
+    return ServiceBaselineDocSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('service_baseline.json corrupt; supply axis falls back to params:', err);
+    return null;
+  }
+}
+
 // Decaying per-segment advance/matched accumulator, carried tick to tick so a
 // ~1-train-per-tick segment accrues enough to judge. Its own object, step 8b.
 export const SEGMENT_FLOW_KEY = 'state/segment_flow.json';

@@ -26,8 +26,8 @@
 
 import { schedule_bin, tod_bin } from './hmm';
 import type { Observation } from './hmm';
-import { advanceBaselineFor, scheduleRateFor, serviceBaselineFor, serviceBaselineHourlyFor } from './params';
-import type { AdvanceBaselineCell, TrainedParams } from './params';
+import { advanceBaselineFor, scheduleRateFor, serviceBaselineFor } from './params';
+import type { AdvanceBaselineCell, ServiceBaseline, TrainedParams } from './params';
 import type { RegimeEntry } from './regime';
 import type { MovementMetricDoc, ServiceMetricDoc } from './state';
 import type { MovementRow } from './vehicles';
@@ -206,13 +206,13 @@ export const SERVICE_DEBOUNCE_TICKS = 2;
 export function serviceRatioFor(
   routeId: string,
   svc: ServiceRow | undefined,
-  trained: TrainedParams | null,
+  baseline: ServiceBaseline | null,
   observedAt: number,
 ): number | null {
   if (svc === undefined) return null;
-  const baseline = serviceBaselineHourlyFor(trained, routeId, schedule_bin(observedAt));
-  if (baseline === null || baseline <= 0) return null;
-  return svc.assigned_n / baseline;
+  const median = baseline?.[routeId]?.[schedule_bin(observedAt)] ?? null;
+  if (median === null || median <= 0) return null;
+  return svc.assigned_n / median;
 }
 
 // The raw hysteresis call for one route at one tick — the target state fed to the
@@ -224,11 +224,11 @@ export function serviceRatioFor(
 export function deriveServiceState(
   routeId: string,
   svc: ServiceRow | undefined,
-  trained: TrainedParams | null,
+  baseline: ServiceBaseline | null,
   observedAt: number,
   priorState?: ServiceCondition,
 ): ServiceCondition {
-  const ratio = serviceRatioFor(routeId, svc, trained, observedAt);
+  const ratio = serviceRatioFor(routeId, svc, baseline, observedAt);
   if (ratio === null) return 'unknown';
   if (priorState === 'degraded') {
     return ratio >= SERVICE_RECOVER_RATIO ? 'normal' : 'degraded';
@@ -248,13 +248,13 @@ export function deriveServiceState(
  */
 export function deriveServiceStates(
   svcRows: Map<string, ServiceRow>,
-  trained: TrainedParams | null,
+  baseline: ServiceBaseline | null,
   observedAt: number,
   priorRegimes?: Record<string, { state: ServiceCondition }>,
 ): Record<string, ServiceCondition> {
   const out: Record<string, ServiceCondition> = {};
   for (const [route, svc] of svcRows) {
-    const state = deriveServiceState(route, svc, trained, observedAt, priorRegimes?.[route]?.state);
+    const state = deriveServiceState(route, svc, baseline, observedAt, priorRegimes?.[route]?.state);
     if (state !== 'unknown') out[route] = state;
   }
   return out;
@@ -269,12 +269,12 @@ export function deriveServiceStates(
  */
 export function deriveServiceRatios(
   svcRows: Map<string, ServiceRow>,
-  trained: TrainedParams | null,
+  baseline: ServiceBaseline | null,
   observedAt: number,
 ): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [route, svc] of svcRows) {
-    const ratio = serviceRatioFor(route, svc, trained, observedAt);
+    const ratio = serviceRatioFor(route, svc, baseline, observedAt);
     if (ratio !== null) out[route] = ratio;
   }
   return out;

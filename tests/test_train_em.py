@@ -950,13 +950,13 @@ def test_main_passes_movement_baseline_through_to_write_params(
     assert captured_kwargs["movement_through_stops"] == {"A": {"north": ["A02N"]}}
 
 
-def test_main_passes_service_baseline_through_to_write_params(
+def test_main_threads_service_baselines_to_their_writers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression guard for compute-but-forget-to-pass: main() must thread
-    both the service baseline and the schedule rate it computes into the
-    write_params call, not just log them. The service fake returns a
-    4-tuple (movement's is a 3-tuple)."""
+    """Regression guard for compute-but-forget-to-pass: main() must thread the
+    service baseline and schedule rate into write_params, and the finer hourly
+    baseline into write_service_baseline (its own decoupled sidecar object),
+    not just log them."""
     cfg = _r2_config()
     fake_client = cast("S3Client", _FakeS3())
     series = {"R1": _quiet(10)}
@@ -969,6 +969,7 @@ def test_main_passes_service_baseline_through_to_write_params(
     sentinel_schedule_rate: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 0.5}}
     sentinel_hourly: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 6.0}}
     captured_kwargs: dict[str, Any] = {}
+    captured_service: dict[str, Any] = {}
 
     def _fake_load_config() -> R2Config:
         return cfg
@@ -1000,6 +1001,16 @@ def test_main_passes_service_baseline_through_to_write_params(
         captured_kwargs.update(kwargs)
         return "state/params/v1.json"
 
+    def _fake_write_service_baseline(
+        client: S3Client,
+        bucket: str,
+        hourly: dict[str, Any],
+        generated_at: int,
+        params_trained_at: int | None = None,
+    ) -> int:
+        captured_service["hourly"] = hourly
+        return len(hourly)
+
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em._static_topology",
@@ -1013,6 +1024,9 @@ def test_main_passes_service_baseline_through_to_write_params(
     monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
     monkeypatch.setattr("training.train_em._service_baseline", _fake_service_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
+    monkeypatch.setattr(
+        "training.train_em.write_service_baseline", _fake_write_service_baseline
+    )
 
     exit_code = main(
         ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
@@ -1020,7 +1034,8 @@ def test_main_passes_service_baseline_through_to_write_params(
 
     assert exit_code == 0
     assert captured_kwargs["service_baseline"] == sentinel_baseline
-    assert captured_kwargs["service_baseline_hourly"] == sentinel_hourly
+    assert "service_baseline_hourly" not in captured_kwargs
+    assert captured_service["hourly"] == sentinel_hourly
     assert captured_kwargs["schedule_rate"] == sentinel_schedule_rate
 
 

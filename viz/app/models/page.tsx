@@ -194,11 +194,11 @@ export default function ModelsPage() {
         <div className="warnbox" style={{ maxWidth: 640 }}>
           <strong>R2 credentials not available.</strong> Phase B reads the
           prediction/transition history from R2 using the R2_* secrets in the
-          project&apos;s murk vault. Launch with <code>npm run dev</code> (it
-          sources <code>../.env</code> and wraps Next in <code>murk exec</code>).
-          If you still see this, make sure your murk key is set —{" "}
-          <code>source .env</code> at the repo root (sets{" "}
-          <code>MURK_KEY_FILE</code>), or run <code>direnv allow</code>.
+          project&apos;s murk vault. Launch with <code>npm run dev</code>, which
+          wraps Next in <code>murk exec</code>. In a fresh worktree run{" "}
+          <code>murk-wt link</code> once — murk keys on the vault&apos;s path, so
+          each worktree needs its own link. If a stale <code>MURK_KEY_FILE</code>
+          {" "}is exported in your shell it overrides that link; unset it.
         </div>
       )}
 

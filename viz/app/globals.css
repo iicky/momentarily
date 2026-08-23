@@ -544,6 +544,25 @@ code {
   border-color: color-mix(in srgb, var(--normal) 30%, transparent);
 }
 
+/* Per-arm scoreline in the reliability panel: one block per grading of the same
+   forecast. The nested .chart-meta keeps the chip row but drops its footer rule,
+   so the arm blocks read as siblings rather than as stacked card footers. */
+.arm-score {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.arm-score-head {
+  font-size: 11px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+.arm-score .chart-meta {
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: none;
+}
+
 /* Empty state: same footprint as a populated card, no layout jump. */
 .chart-empty {
   font-size: 12px;

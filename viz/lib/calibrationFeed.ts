@@ -46,6 +46,49 @@ export interface DriftDoc {
   };
 }
 
+export interface CalibrationStratum {
+  n: number;
+  brier: number | null;
+  bss_persistence: number | null;
+  // Sharpness vs realized rate. The pair is the tell for a degenerate forecast:
+  // mean_pred 0.99 against mean_outcome 0.50 is not a calibration nit, it is a
+  // forecast that ignores the state it is conditioned on. Optional: feeds
+  // published before the sharpness fields landed carry only n and skill.
+  mean_pred?: number | null;
+  mean_outcome?: number | null;
+  auc?: number | null;
+}
+
+export interface CalibrationHorizon {
+  horizon_min: number;
+  n: number;
+  brier: number | null;
+  brier_persistence: number | null;
+  brier_climatology: number | null;
+  bss_persistence: number | null;
+  bss_climatology: number | null;
+  auc?: number | null;
+  excluded_schedule?: number;
+  // Split by the current condition at T — "normal_now" (the sticky-regime case)
+  // vs "not_normal_now" (the recovery forecast), so the UI can show which slice
+  // drags the overall skill negative.
+  by_current?: Record<string, CalibrationStratum>;
+  bins: {
+    bin_lo: number;
+    bin_hi: number;
+    n: number;
+    mean_pred: number | null;
+    mean_outcome: number | null;
+  }[];
+}
+
+export interface MovementCoverage {
+  n_ticks: number;
+  unknown_share: number;
+  gradeable_share: number;
+  by_condition: Record<string, number>;
+}
+
 export interface CalibrationDoc {
   generated_at: number;
   window: { start: number; end: number };
@@ -54,30 +97,24 @@ export interface CalibrationDoc {
   // Present only on calibration.json published after the drift work; older
   // feeds omit it, so the panel is gated on its presence.
   drift?: DriftDoc;
-  calibration: {
-    horizon_min: number;
-    n: number;
-    brier: number | null;
-    brier_persistence: number | null;
-    brier_climatology: number | null;
-    bss_persistence: number | null;
-    bss_climatology: number | null;
-    excluded_schedule?: number;
-    // Persistence loss split by the current condition at T — "normal_now" (the
-    // sticky-regime case) vs "not_normal_now" (the recovery forecast), so the UI
-    // can show which slice drags the overall skill negative.
-    by_current?: Record<
-      string,
-      { n: number; brier: number | null; bss_persistence: number | null }
-    >;
-    bins: {
-      bin_lo: number;
-      bin_hi: number;
-      n: number;
-      mean_pred: number | null;
-      mean_outcome: number | null;
-    }[];
-  }[];
+  // One entry per horizon. `auc` is the metric Brier cannot supply: when the
+  // outcome is ~99% one class, a degenerate forecast still posts a small Brier,
+  // and only rank discrimination shows it is pointed the wrong way.
+  calibration: CalibrationHorizon[];
+  // Which condition arm `calibration` graded against. Absent on feeds published
+  // before both arms shipped, where the block is the alert-shadow one.
+  calibration_arm?: string;
+  // The SAME forecast graded against the published movement-primary arm — the
+  // one p_normal_in_H is actually a forecast of. Absent on older feeds.
+  calibration_movement?: {
+    graded_arm: string;
+    // How much of the window the movement arm could judge, over the scope this
+    // block covers. `unknown_share` is the fraction of ticks it had no reading
+    // for; those are dropped rather than scored as calm, so a high share means
+    // this arm's n is a thin slice of the window.
+    coverage?: MovementCoverage;
+    horizons: CalibrationHorizon[];
+  };
   recovery: {
     overall: CalibrationRecoveryStats;
     per_regime: CalibrationRecoveryStats;
@@ -94,7 +131,13 @@ export interface CalibrationDoc {
     string,
     {
       n_predictions: number;
-      calibration: CalibrationDoc["calibration"];
+      calibration: CalibrationHorizon[];
+      // Null when the publisher had no movement truth map; absent on older feeds.
+      calibration_movement?: CalibrationHorizon[] | null;
+      // THIS route's movement coverage. Never substitute the window-aggregate
+      // rate here: the chip renders as the selected route's own coverage, and
+      // the aggregate can be true of no individual route.
+      movement_coverage?: MovementCoverage | null;
       recovery: {
         overall: CalibrationRecoveryStats;
         per_regime: CalibrationRecoveryStats;
@@ -109,55 +152,118 @@ export async function fetchCalibration(base = FEED_BASE): Promise<CalibrationDoc
   return res.json();
 }
 
-// Reshape the published bins into the same ReliabilityResult the client charts
-// expect (bin midpoint, predicted/observed means), carrying through the skill
-// scores and the normal-now/not-normal-now decomposition the feed publishes.
-export interface AggregateReliability {
-  horizonMin: number;
-  bins: { p: number; predictedMean: number; observedFreq: number; n: number }[];
-  brier: number;
+// Reshape the published bins into the shape the reliability chart draws (bin
+// midpoint, predicted/observed means), carrying the skill scores, AUC, and the
+// normal-now/not-normal-now decomposition.
+//
+// One horizon can be graded by more than one arm. p_normal_in_H is a movement-arm
+// forecast, so the movement grading is the one that answers "was the forecast
+// right"; the shadow grading answers "does the alert filter agree with it". They
+// disagreed by 0.55 AUC on the 2026-08-22 feed, so the chart draws both rather
+// than picking — see training/eval.build_calibration.
+export interface ReliabilityStratum {
   n: number;
-  excludedSchedule: number;
+  bss: number | null;
+  meanPred: number | null;
+  meanOutcome: number | null;
+}
+
+export interface ReliabilityArm {
+  /** Feed-supplied arm label, e.g. "published_condition (movement-primary)". */
+  arm: string;
+  /** True for the movement arm: the forecast's own target, not the filter's. */
+  isForecastTarget: boolean;
+  n: number;
+  brier: number;
+  auc: number | null;
   skillPersistence: number | null;
   skillClimatology: number | null;
+  /** Fraction of ticks this arm had no reading for and therefore dropped. */
+  unknownShare?: number;
+  bins: { p: number; predictedMean: number; observedFreq: number; n: number }[];
   decomp?: {
-    normalNow?: { n: number; bss: number | null };
-    notNormalNow?: { n: number; bss: number | null };
+    normalNow?: ReliabilityStratum;
+    notNormalNow?: ReliabilityStratum;
   };
 }
 
+export interface AggregateReliability {
+  horizonMin: number;
+  excludedSchedule: number;
+  arms: ReliabilityArm[];
+}
+
+const SHADOW_FALLBACK_ARM = "condition (alert-shadow)";
+
+function stratum(s: CalibrationStratum | undefined): ReliabilityStratum | undefined {
+  if (!s) return undefined;
+  return {
+    n: s.n,
+    bss: s.bss_persistence,
+    meanPred: s.mean_pred ?? null,
+    meanOutcome: s.mean_outcome ?? null,
+  };
+}
+
+export function reshapeArm(
+  c: CalibrationHorizon,
+  arm: string,
+  isForecastTarget: boolean,
+  unknownShare?: number,
+): ReliabilityArm {
+  const nn = stratum(c.by_current?.normal_now);
+  const xn = stratum(c.by_current?.not_normal_now);
+  return {
+    arm,
+    isForecastTarget,
+    n: c.n,
+    brier: c.brier ?? NaN,
+    auc: c.auc ?? null,
+    skillPersistence: c.bss_persistence,
+    skillClimatology: c.bss_climatology,
+    unknownShare,
+    decomp: nn || xn ? { normalNow: nn, notNormalNow: xn } : undefined,
+    bins: c.bins.map((b) => ({
+      p: (b.bin_lo + b.bin_hi) / 2,
+      predictedMean: b.mean_pred ?? NaN,
+      observedFreq: b.mean_outcome ?? NaN,
+      n: b.n,
+    })),
+  };
+}
+
+/** Pair the two gradings by horizon. The movement arm leads: it is the one the
+ * forecast is about, so it should be read first even when it is the thinner
+ * sample. Horizons come from the shadow block, which is always published. */
 function reshapeReliability(
-  calibration: CalibrationDoc["calibration"],
+  shadow: CalibrationHorizon[],
+  movement: CalibrationHorizon[] | null | undefined,
+  shadowArm: string,
+  movementArm: string,
+  unknownShare?: number,
 ): AggregateReliability[] {
-  return calibration.map((c) => {
-    const nn = c.by_current?.normal_now;
-    const xn = c.by_current?.not_normal_now;
+  return shadow.map((c) => {
+    // Three horizons; a linear scan beats building a lookup for each call.
+    const m = (movement ?? []).find((x) => x.horizon_min === c.horizon_min);
     return {
       horizonMin: c.horizon_min,
-      n: c.n,
-      brier: c.brier ?? NaN,
       excludedSchedule: c.excluded_schedule ?? 0,
-      skillPersistence: c.bss_persistence,
-      skillClimatology: c.bss_climatology,
-      decomp:
-        nn || xn
-          ? {
-              normalNow: nn ? { n: nn.n, bss: nn.bss_persistence } : undefined,
-              notNormalNow: xn ? { n: xn.n, bss: xn.bss_persistence } : undefined,
-            }
-          : undefined,
-      bins: c.bins.map((b) => ({
-        p: (b.bin_lo + b.bin_hi) / 2,
-        predictedMean: b.mean_pred ?? NaN,
-        observedFreq: b.mean_outcome ?? NaN,
-        n: b.n,
-      })),
+      arms: [
+        ...(m ? [reshapeArm(m, movementArm, true, unknownShare)] : []),
+        reshapeArm(c, shadowArm, false),
+      ],
     };
   });
 }
 
 export function calibrationReliability(doc: CalibrationDoc): AggregateReliability[] {
-  return reshapeReliability(doc.calibration);
+  return reshapeReliability(
+    doc.calibration,
+    doc.calibration_movement?.horizons,
+    doc.calibration_arm ?? SHADOW_FALLBACK_ARM,
+    doc.calibration_movement?.graded_arm ?? "",
+    doc.calibration_movement?.coverage?.unknown_share,
+  );
 }
 
 /** Routes the static feed carries a per-line breakdown for, sorted. */
@@ -175,7 +281,19 @@ export function calibrationForLine(
 ): { reliability: AggregateReliability[]; recovery: CalibrationDoc["recovery"] } | null {
   const bl = doc.by_line?.[route];
   if (!bl) return null;
-  return { reliability: reshapeReliability(bl.calibration), recovery: bl.recovery };
+  return {
+    reliability: reshapeReliability(
+      bl.calibration,
+      bl.calibration_movement,
+      doc.calibration_arm ?? SHADOW_FALLBACK_ARM,
+      doc.calibration_movement?.graded_arm ?? "",
+      // This route's own coverage, never the window aggregate. Undefined on
+      // feeds published before per-route coverage, which suppresses the chip
+      // rather than showing a rate that isn't about this line.
+      bl.movement_coverage?.unknown_share,
+    ),
+    recovery: bl.recovery,
+  };
 }
 
 export function calibrationHeatmap(doc: CalibrationDoc): HeatmapEntry[] {

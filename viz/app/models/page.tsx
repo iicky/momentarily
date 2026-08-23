@@ -248,8 +248,17 @@ export default function ModelsPage() {
               <p className="grp-note">
                 When the model gave a line an x% chance of being back within a set
                 time, did it actually come back that often? Dots on the dashed line
-                are spot-on; bigger dots mean more cases. (For the richer
-                curve-and-score view, launch with <code>npm run dev</code>.)
+                are spot-on; bigger dots mean more cases.
+              </p>
+              <p className="grp-note">
+                Each panel grades the <em>same</em> forecast twice, because
+                &ldquo;did it come back?&rdquo; has two answers here. Green checks it
+                against train movement — the thing this forecast is actually about.
+                Amber checks it against the alert-driven filter&apos;s own label,
+                which is a self-consistency check, not a verdict. They disagree
+                sharply, so read each arm&apos;s own sample count and coverage chip
+                before you believe either — disrupted cases are rare in any window,
+                and movement can&apos;t judge every tick.
               </p>
               <div className="charts-grid-3">
                 {rel.map((r) => (

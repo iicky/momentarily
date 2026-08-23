@@ -617,6 +617,131 @@ def test_build_calibration_is_compact_subset():
     assert "current_params" not in calib
 
 
+def test_build_calibration_publishes_both_graded_arms():
+    """The compact feed must carry the movement grading, not just the shadow one.
+
+    p_normal_in_H is a movement-arm forecast (worker/src/snapshot.ts gates it to
+    recovery_source movement/schedule), so grading it against the alert-shadow
+    `condition` measures cross-arm disagreement rather than forecast error. When
+    only the shadow block shipped, the Models page reported AUC 0.406 for a
+    forecast that scored 0.961 against the arm it forecasts. Both blocks ship,
+    each labelled, so neither can be mistaken for the whole answer.
+    """
+    t0 = 1_700_000_000
+    # The arms disagree on every tick: the alert filter reads disrupted while the
+    # published (movement) condition reads normal. Same 0.9 forecast either way.
+    preds = [
+        replace(
+            _pred(ts=t0 + i * 300, condition="disrupted", params_version=200),
+            published_condition="normal",
+        )
+        for i in range(24)
+    ]
+    eval_doc = build_eval(preds, [], window_start=t0, window_end=t0 + 86400)
+    calib = build_calibration(eval_doc, {"trained_at": 200, "states": [], "routes": {}})
+
+    assert calib["calibration_arm"] == eval_doc["calibration_arm"]
+    movement = calib["calibration_movement"]
+    assert movement["graded_arm"] != calib["calibration_arm"]
+    assert {c["horizon_min"] for c in movement["horizons"]} == set(HORIZONS_MIN)
+    # Coverage ships too: without it a thin movement n reads as a small sample
+    # rather than as an arm that could not judge most of the window.
+    assert "unknown_share" in movement["coverage"]
+
+    shadow_30 = next(c for c in calib["calibration"] if c["horizon_min"] == 30)
+    movement_30 = next(c for c in movement["horizons"] if c["horizon_min"] == 30)
+    # Identical forecast, opposite verdicts — the exact confusion this fixes.
+    assert shadow_30["n"] > 0
+    assert movement_30["n"] > 0
+    assert shadow_30["brier"] > movement_30["brier"]
+
+
+def test_build_by_line_carries_the_movement_arm_when_truth_is_supplied():
+    """The line filter must not silently drop to shadow-only grading — selecting a
+    route would then swap the truth source without saying so."""
+    t0 = 1_700_000_000
+    preds = [
+        replace(
+            _pred(ts=t0 + i * 300, condition="disrupted"), published_condition="normal"
+        )
+        for i in range(60)
+    ]
+    truth = movement_truth_by_key(preds)
+    out = build_by_line(preds, [], movement_truth=truth)
+    assert [c["horizon_min"] for c in out["1"]["calibration_movement"]] == list(
+        HORIZONS_MIN
+    )
+    # Omitted rather than empty when no truth map is passed, so "not computed" is
+    # distinguishable from "nothing gradeable".
+    assert "calibration_movement" not in build_by_line(preds, [])["1"]
+
+
+def test_build_by_line_coverage_is_route_scoped_not_window_wide():
+    """Each route's movement coverage must be computed on its own ticks.
+
+    The viz renders this as the selected line's own coverage rate, so handing it
+    a window aggregate is a false claim about that line: a route movement can
+    never judge and one it always can average to a figure true of neither.
+    """
+    t0 = 1_700_000_000
+    # Route "1" is fully judgeable; route "2" is entirely unknown to movement.
+    judgeable = [
+        replace(
+            _pred(ts=t0 + i * 300, route="1", condition="disrupted"),
+            published_condition="normal",
+        )
+        for i in range(60)
+    ]
+    dark = [
+        replace(
+            _pred(ts=t0 + i * 300, route="2", condition="disrupted"),
+            published_condition="unknown",
+        )
+        for i in range(60)
+    ]
+    preds = judgeable + dark
+    out = build_by_line(preds, [], movement_truth=movement_truth_by_key(preds))
+
+    assert out["1"]["movement_coverage"]["unknown_share"] == 0.0
+    assert out["2"]["movement_coverage"]["unknown_share"] == 1.0
+    # The window aggregate is half and half — the number that would be wrong for
+    # both lines if it were substituted per route.
+    assert published_condition_coverage(preds)["unknown_share"] == 0.5
+
+
+def test_build_by_line_grading_is_unaffected_by_other_routes():
+    """A route's blocks must depend only on that route's rows.
+
+    The T+horizon outcome index is keyed (route, tick), so a route's own rows
+    already contain every outcome its forecasts look up — which is why
+    build_by_line passes no `coverage_predictions` override, unlike the
+    params_version segmentation in build_eval, where a segment genuinely can miss
+    a future row. Grading one route alone must equal grading it alongside others;
+    if this ever fails, a per-route number has started depending on the window.
+    """
+    t0 = 1_700_000_000
+    only_1 = [
+        replace(
+            _pred(ts=t0 + i * 300, route="1", condition="disrupted"),
+            published_condition="normal",
+        )
+        for i in range(60)
+    ]
+    # A second route on the same ticks, with both arms inverted.
+    noise = [
+        replace(
+            _pred(ts=t0 + i * 300, route="2", condition="normal"),
+            published_condition="disrupted",
+        )
+        for i in range(60)
+    ]
+    alone = build_by_line(only_1, [], movement_truth=movement_truth_by_key(only_1))
+    together = build_by_line(
+        only_1 + noise, [], movement_truth=movement_truth_by_key(only_1 + noise)
+    )
+    assert together["1"] == alone["1"]
+
+
 def test_prediction_record_from_json_defaults_params_version():
     raw = {
         "ts": 1,

@@ -10,6 +10,8 @@ import {
   AxisTicks,
   GridLines,
   SkillChip,
+  AucChip,
+  Chip,
 } from "./ChartFrame";
 import { recoveryVerdict } from "@/lib/recovery_dist";
 
@@ -17,21 +19,37 @@ import { recoveryVerdict } from "@/lib/recovery_dist";
 // scatter on a diagonal, regime swimlane, transition heatmap) where a generic
 // charting lib would fight us more than help.
 
-export interface ReliabilityResult {
-  horizonMin: number;
-  bins: { p: number; predictedMean: number; observedFreq: number; n: number }[];
-  brier: number;
+export interface ReliabilityStratum {
   n: number;
-  excludedSchedule: number;
-  // Brier skill vs baselines, and the persistence decomposition by current
-  // state — present on the public aggregate feed, absent on the credentialed
-  // recompute (the reliability chart only renders on the feed path anyway).
+  bss: number | null;
+  meanPred: number | null;
+  meanOutcome: number | null;
+}
+
+export interface ReliabilityArm {
+  arm: string;
+  isForecastTarget: boolean;
+  n: number;
+  brier: number;
+  auc: number | null;
   skillPersistence?: number | null;
   skillClimatology?: number | null;
+  unknownShare?: number;
+  bins: { p: number; predictedMean: number; observedFreq: number; n: number }[];
   decomp?: {
-    normalNow?: { n: number; bss: number | null };
-    notNormalNow?: { n: number; bss: number | null };
+    normalNow?: ReliabilityStratum;
+    notNormalNow?: ReliabilityStratum;
   };
+}
+
+export interface ReliabilityResult {
+  horizonMin: number;
+  excludedSchedule: number;
+  // One entry per grading of the SAME forecast. The movement arm is what
+  // p_normal_in_H forecasts; the shadow arm is the alert filter's own label.
+  // Both are drawn because either alone misleads: on the 2026-08-22 feed the
+  // shadow grading read AUC 0.406 and the movement grading 0.961.
+  arms: ReliabilityArm[];
 }
 
 export interface RecoveryResult {
@@ -140,85 +158,186 @@ function binBy(
 
 // --- Reliability diagram ---
 
+// Green (filled) = the arm the forecast is actually about: movement, the
+// published condition. Amber (hollow) = the alert filter grading itself, which
+// is the page's caution hue because a self-check is not a verdict. Fill differs
+// too, so the comparison doesn't rest on hue alone. Grey was tried first and
+// vanished against the green at these overlapping bin positions.
+const TARGET_ARM_COLOR = "var(--realized)";
+const SHADOW_ARM_COLOR = "var(--disrupted)";
+
+const armColor = (a: ReliabilityArm) =>
+  a.isForecastTarget ? TARGET_ARM_COLOR : SHADOW_ARM_COLOR;
+const armLabel = (a: ReliabilityArm) =>
+  a.isForecastTarget ? "vs movement (forecast target)" : "vs alert filter (self-check)";
+
 export function ReliabilityChart({ result }: { result: ReliabilityResult }) {
   const S = 220;
   const pad = 28;
   const sc = (v: number) => pad + v * (S - 2 * pad);
   const scY = (v: number) => S - pad - v * (S - 2 * pad);
-  const maxN = Math.max(1, ...result.bins.map((b) => b.n));
-  const hasSkill =
-    result.skillPersistence !== undefined || result.skillClimatology !== undefined;
-  const xn = result.decomp?.notNormalNow;
-  const nn = result.decomp?.normalNow;
+  const graded = result.arms.filter((a) => a.n > 0);
+  // Radii comparable across arms, so the bigger sample visibly is the bigger dot.
+  const maxN = Math.max(1, ...graded.flatMap((a) => a.bins.map((b) => b.n)));
+
+  // Nothing graded at either arm. Say so instead of drawing an empty diagonal —
+  // a blank calibration plot reads as "no skill" when it means "no samples".
+  if (graded.length === 0) {
+    return (
+      <ChartFrame
+        title={`P(normal within ${result.horizonMin}m)`}
+        meta={{ unit: "per-forecast", n: 0, excluded: result.excludedSchedule }}
+        empty
+        emptyText={
+          <>
+            No gradeable forecasts at this horizon.
+            {result.excludedSchedule > 0 && (
+              <>
+                {" "}
+                {result.excludedSchedule.toLocaleString()} planned-work rows were
+                excluded as deterministic resume lookups; if that is every row the
+                horizon carries, this panel can never fill.
+              </>
+            )}
+          </>
+        }
+      />
+    );
+  }
 
   return (
     <ChartFrame
       title={`P(normal within ${result.horizonMin}m)`}
-      titleMeta={
-        <>
-          Brier{" "}
-          {result.brier == null || Number.isNaN(result.brier)
-            ? "—"
-            : result.brier.toFixed(3)}
-        </>
+      note={
+        graded.length > 1
+          ? "One forecast, graded against both arms. Gaps between the series are arm disagreement, not forecast error."
+          : undefined
       }
-      meta={{
-        source: "the model's own status stream",
-        independent: false,
-        unit: "per-forecast",
-        n: result.n,
-        excluded: result.excludedSchedule,
-        extra: hasSkill ? (
-          <>
-            <SkillChip label="vs persistence" bss={result.skillPersistence} />
-            <SkillChip label="vs climatology" bss={result.skillClimatology} />
-          </>
-        ) : undefined,
-      }}
+      meta={{ unit: "per-forecast", excluded: result.excludedSchedule }}
     >
       <svg viewBox={`0 0 ${S} ${S}`} width="100%" style={{ maxWidth: 260 }}>
         <rect x={pad} y={pad} width={S - 2 * pad} height={S - 2 * pad} fill="none" stroke="var(--border)" />
         {/* perfect-calibration diagonal */}
         <line x1={sc(0)} y1={scY(0)} x2={sc(1)} y2={scY(1)} stroke="var(--muted)" strokeDasharray="3 3" />
-        {result.bins
-          .filter((b) => b.n > 0)
-          .map((b, i) => (
-            <circle
-              key={i}
-              cx={sc(b.predictedMean)}
-              cy={scY(b.observedFreq)}
-              r={3 + 6 * Math.sqrt(b.n / maxN)}
-              fill="var(--accent)"
-              fillOpacity={0.75}
-              stroke="var(--accent)"
-            >
-              <title>
-                predicted {(b.predictedMean * 100).toFixed(0)}% · observed{" "}
-                {(b.observedFreq * 100).toFixed(0)}% · n={b.n}
-              </title>
-            </circle>
-          ))}
+        {graded.map((a) =>
+          a.bins
+            .filter((b) => b.n > 0)
+            .map((b, i) => (
+              <circle
+                key={`${a.arm}:${i}`}
+                cx={sc(b.predictedMean)}
+                cy={scY(b.observedFreq)}
+                r={3 + 6 * Math.sqrt(b.n / maxN)}
+                fill={a.isForecastTarget ? armColor(a) : "none"}
+                fillOpacity={a.isForecastTarget ? 0.7 : 1}
+                stroke={armColor(a)}
+                strokeWidth={a.isForecastTarget ? 1 : 1.5}
+              >
+                <title>
+                  {armLabel(a)} — predicted {(b.predictedMean * 100).toFixed(0)}% ·
+                  observed {(b.observedFreq * 100).toFixed(0)}% · n={b.n}
+                </title>
+              </circle>
+            )),
+        )}
         <AxisTitle x={pad} y={S - 6} anchor="start">predicted →</AxisTitle>
         <AxisTitle x={6} y={pad + 4} anchor="start">observed ↑</AxisTitle>
       </svg>
-      {(nn || xn) && (
-        <div className="grp-note" style={{ marginTop: 6 }}>
-          Skill by state at forecast time:{" "}
-          {nn && (
-            <>
-              normal-now {fmtBss(nn.bss)} (n={nn.n})
-            </>
-          )}
-          {nn && xn && " · "}
-          {xn && (
-            <>
-              recovery {fmtBss(xn.bss)} (n={xn.n})
-            </>
-          )}
-        </div>
-      )}
+      {graded.map((a) => (
+        <ArmScore key={a.arm} arm={a} />
+      ))}
     </ChartFrame>
   );
+}
+
+/** Per-arm scoreline: which truth, how many samples, and the three numbers that
+ * together say whether the forecast is any good — Brier (closeness), AUC
+ * (direction), and skill against the baselines. Then the state split, which is
+ * where a forecast that ignores its own conditioning state shows up: a sharpness
+ * of 0.99 against a realized 0.50 is not a calibration nit. */
+function ArmScore({ arm }: { arm: ReliabilityArm }) {
+  const nn = arm.decomp?.normalNow;
+  const xn = arm.decomp?.notNormalNow;
+  const hasSkill =
+    arm.skillPersistence !== undefined || arm.skillClimatology !== undefined;
+  return (
+    <div className="arm-score">
+      <div className="arm-score-head">
+        {/* Same mark as the plot — filled for the forecast's target arm, hollow
+            for the self-check — so the numbers below are attributable to a series
+            without a separate legend repeating these labels. */}
+        <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden>
+          <circle
+            cx="4.5"
+            cy="4.5"
+            r="3.5"
+            fill={arm.isForecastTarget ? armColor(arm) : "none"}
+            fillOpacity={0.7}
+            stroke={armColor(arm)}
+            strokeWidth={1.5}
+          />
+        </svg>{" "}
+        <span style={{ color: armColor(arm) }} title={arm.arm}>
+          {armLabel(arm)}
+        </span>
+        <span className="muted">
+          {" "}
+          n={arm.n.toLocaleString()} · Brier{" "}
+          {Number.isNaN(arm.brier) ? "—" : arm.brier.toFixed(4)}
+        </span>
+      </div>
+      <div className="chart-meta">
+        <AucChip auc={arm.auc} />
+        {hasSkill && (
+          <>
+            <SkillChip label="vs persistence" bss={arm.skillPersistence} />
+            <SkillChip label="vs climatology" bss={arm.skillClimatology} />
+          </>
+        )}
+        {arm.unknownShare != null && arm.unknownShare > 0 && (
+          <Chip
+            tone={arm.unknownShare > 0.1 ? "warn" : undefined}
+            title="ticks this arm had no reading for; dropped rather than scored as calm, so the graded n is a slice of the window"
+          >
+            {arm.unknownShare > 0.1 ? "⚠ " : ""}
+            {(arm.unknownShare * 100).toFixed(0)}% unjudgeable
+          </Chip>
+        )}
+      </div>
+      {(nn || xn) && (
+        <div className="grp-note" style={{ marginTop: 4 }}>
+          {nn && <StratumLine label="normal now" s={nn} />}
+          {nn && xn && " · "}
+          {xn && <StratumLine label="recovery" s={xn} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** "predicted → actual" for one conditioning state. The arrow is the point: a
+ * wide gap means the forecast is not reading the state it is conditioned on. */
+function StratumLine({ label, s }: { label: string; s: ReliabilityStratum }) {
+  const gap =
+    s.meanPred != null && s.meanOutcome != null
+      ? Math.abs(s.meanPred - s.meanOutcome)
+      : null;
+  return (
+    <span title={`Brier skill vs persistence ${fmtBss(s.bss)}`}>
+      {label}{" "}
+      <strong style={{ color: gap != null && gap > 0.2 ? "var(--suspended)" : undefined }}>
+        {fmtPct(s.meanPred)} → {fmtPct(s.meanOutcome)}
+      </strong>{" "}
+      <span className="muted">
+        (n={s.n.toLocaleString()}, skill {fmtBss(s.bss)})
+      </span>
+    </span>
+  );
+}
+
+function fmtPct(v: number | null): string {
+  if (v == null || Number.isNaN(v)) return "—";
+  return `${(v * 100).toFixed(1)}%`;
 }
 
 function fmtBss(bss: number | null): string {

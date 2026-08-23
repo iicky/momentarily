@@ -101,15 +101,27 @@ export interface ReliabilityBin {
   n: number;
 }
 
+/** Single-arm reliability from the credentialed recompute. This path grades
+ * `pr.condition` — the alert-shadow arm — via the route timeline, so it carries
+ * one arm and says so. The public feed path (lib/calibrationFeed) pairs the
+ * shadow grading with the movement arm the forecast is actually about; this
+ * recompute has no movement truth to hand, and must not imply otherwise. */
 export interface ReliabilityResult {
   horizonMin: number;
-  bins: ReliabilityBin[];
-  brier: number;
-  n: number;
-  // schedule-recovery predictions skipped — they're deterministic resume
-  // lookups, perfect by construction, so grading them would flatter the HMM.
   excludedSchedule: number;
+  arms: {
+    arm: string;
+    isForecastTarget: boolean;
+    n: number;
+    brier: number;
+    auc: number | null;
+    skillPersistence: number | null;
+    skillClimatology: number | null;
+    bins: ReliabilityBin[];
+  }[];
 }
+
+export const SHADOW_ARM = "condition (alert-shadow)";
 
 const HORIZON_FIELD: Record<number, keyof PredictionRecord> = {
   30: "p_normal_in_30min",
@@ -137,6 +149,10 @@ export function reliability(
   let brierSum = 0;
   let n = 0;
   let excludedSchedule = 0;
+  // AUC inputs: forecast values split by realized outcome. Two number arrays
+  // rather than a list of pairs — this is the whole input the rank statistic needs.
+  const pos: number[] = [];
+  const neg: number[] = [];
 
   for (const pr of predictions) {
     if (pr.condition === "normal") continue;
@@ -159,20 +175,56 @@ export function reliability(
     bins[idx].n += 1;
     brierSum += (p - y) * (p - y);
     n += 1;
+    if (y === 1) pos.push(p);
+    else neg.push(p);
   }
 
   return {
     horizonMin,
-    n,
     excludedSchedule,
-    brier: n ? brierSum / n : NaN,
-    bins: bins.map((b, i) => ({
-      p: (i + 0.5) / nBins,
-      predictedMean: b.n ? b.sumP / b.n : NaN,
-      observedFreq: b.n ? b.sumY / b.n : NaN,
-      n: b.n,
-    })),
+    arms: [
+      {
+        arm: SHADOW_ARM,
+        isForecastTarget: false,
+        n,
+        brier: n ? brierSum / n : NaN,
+        auc: rankAuc(pos, neg),
+        // The recompute has no baseline forecasts to score against; the public
+        // feed supplies these. Null reads as "not measured here", not "zero".
+        skillPersistence: null,
+        skillClimatology: null,
+        bins: bins.map((b, i) => ({
+          p: (i + 0.5) / nBins,
+          predictedMean: b.n ? b.sumP / b.n : NaN,
+          observedFreq: b.n ? b.sumY / b.n : NaN,
+          n: b.n,
+        })),
+      },
+    ],
   };
+}
+
+/** Mann-Whitney U with midranks, mirroring training/eval._auc so the recompute
+ * and the feed report the same statistic. Ties share the mean of the positions
+ * they span, so a constant forecast lands at exactly 0.5 instead of being scored
+ * by input order. Null when either class is absent — discrimination is undefined
+ * without both. Below 0.5 means the forecast ranks backwards. */
+function rankAuc(pos: number[], neg: number[]): number | null {
+  if (pos.length === 0 || neg.length === 0) return null;
+  const ordered = [...pos, ...neg].sort((a, b) => a - b);
+  const midrank: Record<number, number> = {};
+  for (let i = 0; i < ordered.length; ) {
+    let j = i;
+    while (j + 1 < ordered.length && ordered[j + 1] === ordered[i]) j += 1;
+    // 1-based ranks.
+    midrank[ordered[i]] = (i + j) / 2 + 1;
+    i = j + 1;
+  }
+  let rankSum = 0;
+  for (const p of pos) rankSum += midrank[p];
+  return (
+    (rankSum - (pos.length * (pos.length + 1)) / 2) / (pos.length * neg.length)
+  );
 }
 
 export interface RecoveryPoint {

@@ -5,6 +5,7 @@ import {
   reliability,
   recoveryError,
   detectionLatency,
+  SHADOW_ARM,
 } from "../lib/calibration.ts";
 import type { PredictionRecord, TransitionRecord } from "../lib/types.ts";
 
@@ -80,15 +81,19 @@ test("reliability scores forecasts against real recovery; censors the unobservab
     pred({ ts: 8000, p_normal_in_30min: 0.5 }),
   ];
 
-  const r30 = reliability(predictions, tls, 30);
+  const res30 = reliability(predictions, tls, 30);
+  assert.equal(res30.excludedSchedule, 0);
+  const r30 = res30.arms[0];
   assert.equal(r30.n, 1); // only the ts=2300 point is observable & non-normal
-  assert.equal(r30.excludedSchedule, 0);
+  // The recompute has no movement truth to hand, so it grades one arm and names it.
+  assert.equal(r30.arm, SHADOW_ARM);
+  assert.equal(r30.isForecastTarget, false);
   // recovered in 45m > 30m → y=0; p=0.2 → brier=0.04
   assert.ok(Math.abs(r30.brier - 0.04) < 1e-9);
   const bin30 = r30.bins.find((b) => b.n > 0)!;
   assert.equal(bin30.observedFreq, 0);
 
-  const r60 = reliability(predictions, tls, 60);
+  const r60 = reliability(predictions, tls, 60).arms[0];
   assert.equal(r60.n, 1);
   // recovered in 45m <= 60m → y=1; p=0.7 → brier=0.09
   assert.ok(Math.abs(r60.brier - 0.09) < 1e-9);
@@ -105,14 +110,17 @@ test("reliability skips a withheld (null) horizon without throwing or miscountin
     pred({ ts: 100, p_normal_in_60min: null, p_normal_in_120min: 0.6 }),
   ];
 
-  const r60 = reliability(predictions, tls, 60);
+  const r60 = reliability(predictions, tls, 60).arms[0];
   assert.equal(r60.n, 0);
   assert.ok(r60.bins.every((b) => b.n === 0));
   assert.ok(Number.isNaN(r60.brier));
+  // One outcome class absent — discrimination is undefined, and must read as
+  // "not measurable" rather than as the 0.5 of a coin flip.
+  assert.equal(r60.auc, null);
 
   // A null neighbor on one horizon field doesn't leak into another horizon's
   // scoring on the same record.
-  const r120 = reliability(predictions, tls, 120);
+  const r120 = reliability(predictions, tls, 120).arms[0];
   assert.equal(r120.n, 1);
 });
 
@@ -127,14 +135,14 @@ test("reliability skips a withheld (null) 30min forecast without throwing or mis
     pred({ ts: 100, p_normal_in_30min: null, p_normal_in_60min: 0.6 }),
   ];
 
-  const r30 = reliability(predictions, tls, 30);
+  const r30 = reliability(predictions, tls, 30).arms[0];
   assert.equal(r30.n, 0);
   assert.ok(r30.bins.every((b) => b.n === 0));
   assert.ok(Number.isNaN(r30.brier));
 
   // A null neighbor on one horizon field doesn't leak into another horizon's
   // scoring on the same record.
-  const r60 = reliability(predictions, tls, 60);
+  const r60 = reliability(predictions, tls, 60).arms[0];
   assert.equal(r60.n, 1);
 });
 
@@ -160,7 +168,7 @@ test("schedule-recovery predictions are excluded from HMM calibration", () => {
     pred({ ts: 2400, recovery_source: "schedule", resumes_at: 5000 }), // excluded
   ];
   const r30 = reliability(predictions, tls, 30);
-  assert.equal(r30.n, 1);
+  assert.equal(r30.arms[0].n, 1);
   assert.equal(r30.excludedSchedule, 2);
 
   const rec = recoveryError(predictions, tls);

@@ -1078,6 +1078,7 @@ def build_by_line(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
     *,
+    movement_truth: dict[tuple[str, int], str] | None = None,
     min_predictions: int = 50,
 ) -> dict[str, dict[str, Any]]:
     """Per-route reliability + recovery summary, so the Models tab can filter by
@@ -1086,7 +1087,12 @@ def build_by_line(
     unavailable. Same estimators as the window-aggregate blocks, sliced per
     route; routes below `min_predictions` over the window are omitted as too thin
     to chart. Per-POINT drilldowns (scatter, swimlane) are deliberately NOT here
-    — those stay on the credentialed streams recompute."""
+    — those stay on the credentialed streams recompute.
+
+    `movement_truth` grades the same forecast against the published
+    movement-primary arm, mirroring the window-aggregate pair. Passed in rather
+    than derived per route so the truth map is identical to the aggregate's:
+    built once over the whole stream, then sliced by the (route, tick) key."""
     preds_by_route: dict[str, list[PredictionRecord]] = defaultdict(list)
     for p in predictions:
         preds_by_route[p.route].append(p)
@@ -1102,6 +1108,40 @@ def build_by_line(
             "n_predictions": len(preds),
             "calibration": _calibration_as_dicts(
                 [calibrate(preds, h) for h in HORIZONS_MIN]
+            ),
+            # Same forecast, graded against the arm consumers read. Omitted (not
+            # empty) when no truth map was supplied, so a caller that skips it is
+            # distinguishable from a route with nothing gradeable.
+            #
+            # Every input here is this route's slice. Coverage especially: the
+            # window-aggregate unknown_share is not a per-route rate — a shuttle
+            # movement can never judge and a trunk line it always can average to
+            # a number true of neither — and the viz renders it as the selected
+            # line's own coverage, so the aggregate would be a false claim.
+            #
+            # No `coverage_predictions` override, unlike the params_version
+            # segmentation in build_eval. The T+horizon index is keyed
+            # (route, tick), so a route's own rows already contain every outcome
+            # its forecasts can look up; passing the whole stream is provably a
+            # no-op here and only invites the reader to wonder whether the
+            # aggregate leaks into a per-route number.
+            **(
+                {
+                    "calibration_movement": _calibration_as_dicts(
+                        [
+                            calibrate(
+                                preds,
+                                h,
+                                truth_by_key=movement_truth,
+                                truth_default=None,
+                            )
+                            for h in HORIZONS_MIN
+                        ]
+                    ),
+                    "movement_coverage": published_condition_coverage(preds),
+                }
+                if movement_truth is not None
+                else {}
             ),
             "recovery": recovery_as_dict(rec, graded_arm=SHADOW_ARM_LABEL),
         }
@@ -1172,7 +1212,9 @@ def build_eval(
         # Per-route reliability + recovery so the Models tab filters by line off
         # the static feed (see build_by_line); the compact subset lands in
         # calibration.json too.
-        "by_line": build_by_line(predictions, transitions),
+        "by_line": build_by_line(
+            predictions, transitions, movement_truth=movement_truth
+        ),
     }
 
 
@@ -1230,6 +1272,15 @@ def build_calibration(
     overall + per-regime recovery, plus the transition matrices. Drops the heavy
     breakdowns (current_params, recovery.by_route, recovery.by_alert_type) that
     multiply by route/alert-type/params-version — those stay in eval.json.
+
+    Both graded arms ship, each with its label. Publishing only the shadow block
+    is what made the Models page report AUC 0.406 for a forecast that scores
+    0.961 against the arm it actually forecasts: p_normal_in_H comes from the
+    movement arm (worker/src/snapshot.ts gates it to recovery_source movement or
+    schedule), while the shadow block grades it against the alert regime. Neither
+    number is the answer on its own — the movement arm carries far thinner
+    not-normal support and loses to climatology — so the surface gets both plus
+    the coverage that says how much of the window movement could judge at all.
     """
     return {
         "generated_at": eval_doc["generated_at"],
@@ -1239,6 +1290,8 @@ def build_calibration(
         "predictions_seen": eval_doc["predictions_seen"],
         "transitions_seen": eval_doc["transitions_seen"],
         "calibration": eval_doc["calibration"],
+        "calibration_arm": eval_doc["calibration_arm"],
+        "calibration_movement": eval_doc["calibration_movement"],
         "recovery": {
             "overall": eval_doc["recovery"]["overall"],
             "per_regime": eval_doc["recovery"]["per_regime"],
@@ -1252,6 +1305,10 @@ def build_calibration(
             route: {
                 "n_predictions": v["n_predictions"],
                 "calibration": v["calibration"],
+                "calibration_movement": v.get("calibration_movement"),
+                # This route's own movement coverage, so the line view never
+                # renders the window-aggregate rate as a route-specific one.
+                "movement_coverage": v.get("movement_coverage"),
                 "recovery": {
                     "overall": v["recovery"]["overall"],
                     "per_regime": v["recovery"]["per_regime"],

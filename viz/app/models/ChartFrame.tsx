@@ -156,6 +156,28 @@ export function SkillChip({
   );
 }
 
+// Rank discrimination as a chip. This is the metric Brier cannot supply: against
+// a ~99%-one-class outcome a degenerate forecast still posts a small Brier, and
+// only AUC shows whether it is pointed the right way at all. 0.5 is no
+// discrimination and below 0.5 is backwards, so 0.5 — not 0 — is the warn line.
+export function AucChip({ auc }: { auc: number | null | undefined }) {
+  if (auc == null || Number.isNaN(auc))
+    return <Chip tone="muted" title="one outcome class absent — discrimination undefined">AUC —</Chip>;
+  const backwards = auc < 0.5;
+  return (
+    <Chip
+      tone={backwards ? "warn" : "good"}
+      title={
+        backwards
+          ? "below 0.5: the forecast ranks backwards — it reads higher right before the route leaves normal"
+          : "0.5 = no discrimination, 1.0 = perfect ranking"
+      }
+    >
+      {backwards ? "⚠ " : ""}AUC {auc.toFixed(3)}
+    </Chip>
+  );
+}
+
 export function MetaFooter({ meta }: { meta: ChartMeta }) {
   const ctx = useContext(ChartCtx);
   const feed = meta.feed ?? ctx.feed;

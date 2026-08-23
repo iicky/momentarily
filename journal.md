@@ -3934,3 +3934,73 @@ Standing constraint the fix cannot lift: `published_condition` is 43 days old, s
 the movement arm's support grows with the calendar and caps at the 90-day
 retention. 28d is the conservative widening (fully inside the published era);
 beyond ~43d there is nothing yet to read.
+
+## 2026-08-23 — the clamp fights the ceiling on every route because "disrupted" is 94% ordinary Delays, not because the corpus is thin
+
+origin: self
+
+Chasing why `_cap_self_loops` fires on 23/28 routes (normal), 28/28 (disrupted)
+and 27/28 (suspended). Two hypotheses died on the way to the answer; both are
+recorded with the number that killed them.
+
+**Dead hypothesis 1 — "the 14-day training corpus is too thin."** The code comment
+at `train_em.py:113` says EM on a thin or mostly-quiet corpus drives self-loops
+toward 1.0, so widening the corpus should let real per-line dynamics emerge.
+Patched `_cap_self_loops` to record the pre-clamp diagonal and refit both widths:
+
+| corpus | normal over cap | disrupted | suspended | mean excess |
+| --- | --- | --- | --- | --- |
+| 14 days | 21/28 | 22/28 | 14/28 | +0.014 … +0.046 |
+| 28 days | 23/28 | 18/28 | 19/28 | +0.016 … +0.048 |
+
+Doubling the data changed nothing. EM wants stickier regimes at any corpus size,
+so the clamp is not a thin-data artifact and widening the corpus buys nothing.
+
+**Dead hypothesis 2 — "the ceiling is calibrated circularly."** `MAX_SELF_LOOP`
+was set from median regime dwell in `v1/regime_transitions`, and that stream is
+the filter's own argmax flips — `worker/src/grading.ts:11-13` literally calls it
+"ground-truth dwell times." A loop on paper. But the numbers refuse to close it:
+the cap implies a **48 min** median dwell and the filter's measured argmax dwell
+is **15 min** (median, n=231 over 28d). The cap is ~3x *looser* than the
+behaviour it supposedly came from, so it is not enforcing its own justification.
+
+**What is actually true.** Of the 1,086 route-ticks where the filter says
+not-normal, split by the severity of the alert behind them:
+
+| tier | meaning | ticks | share |
+| --- | --- | --- | --- |
+| 3 | suspension | 2 | 0.2% |
+| 2 | severe delays | 60 | 5.5% |
+| 1 | ordinary `Delays` | **1,024** | **94.3%** |
+| 0 | planned work | 0 | correctly excluded |
+
+The latent "disrupted" regime is routine `Delays`, which the MTA posts constantly.
+Planned work is properly excluded, so that earlier suspicion was wrong too. And
+the duration distributions explain the EM fight exactly:
+
+| population | n | median | mean | mean/median |
+| --- | --- | --- | --- | --- |
+| raw alert presence, any tier | 1,692 | 55 min | 284 min | 5.2x |
+| raw alert presence, tier>=2 | 45 | 50 min | 56 min | **1.1x** |
+| filter argmax not-normal | 231 | 15 min | 24 min | 1.6x |
+| movement arm | 136 | 5 min | 11 min | 2.2x |
+
+Severe events are nearly symmetric and perfectly representable by a geometric
+self-loop. The heavy tail is *entirely* tier<2. A single self-loop fitted across
+both populations splits the difference — EM lands on 0.965 (~97 min) and the cap
+clips to 0.930 (~48 min), which happens to sit near the tier>=2 median of 50 min.
+The cap is accidentally about right for real disruptions, which is probably why
+this went unnoticed.
+
+The missing input is severity, and it is missing by construction:
+`training/load.py:36-38` — "Counted (HMM-included) alert_types active on this
+route-tick. Only the R2 truth builder populates it — used by the review to grade
+ground truth by severity; **the HMM training path leaves it empty**." Grading is
+severity-aware (`CANONICAL_SEVERITY_FLOOR`, truth_version 2 = severe-only); the
+model is not. It predicts when the `Delays` banner clears and is scored on when
+the severe event ends.
+
+That single mismatch is the best available explanation for the two worst numbers
+on the page — recovery MAE 74 min and IQR coverage 1.8% against a nominal 50% —
+since both are "how long will this last" inheriting a dwell learned from a
+population 94% composed of the wrong events.

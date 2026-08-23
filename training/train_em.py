@@ -340,7 +340,6 @@ def write_params(
     movement_baseline: dict[str, Any] | None = None,
     movement_through_stops: dict[str, dict[str, list[str]]] | None = None,
     service_baseline: dict[str, Any] | None = None,
-    service_baseline_hourly: dict[str, Any] | None = None,
     schedule_rate: dict[str, Any] | None = None,
     trained_at: int | None = None,
 ) -> str:
@@ -406,12 +405,6 @@ def write_params(
     # movement_baseline.
     if service_baseline:
         doc["service_baseline"] = service_baseline
-    # Per-(route, schedule_bin) assigned_n baseline the Worker divides live
-    # assigned_n by to publish the service-degradation axis. Finer than
-    # service_baseline above (hourly, weekday/weekend) so a supply cut is judged
-    # against the same-hour normal, not a wide tod block's busy core.
-    if service_baseline_hourly:
-        doc["service_baseline_hourly"] = service_baseline_hourly
     # Per-(route, schedule_bin) scheduled-presence rate the Worker uses to split a
     # no-service reading into suspended vs not_scheduled. Top-level beside the
     # baselines.
@@ -593,6 +586,48 @@ def write_segment_params(
     except Exception as exc:
         print(f"segment params skipped ({exc})", file=sys.stderr)
         return 0
+
+
+SERVICE_BASELINE_KEY = "state/service_baseline.json"
+VERSIONED_SERVICE_PREFIX = "state/service_baseline/"
+
+
+def write_service_baseline(
+    client: S3Client,
+    bucket: str,
+    hourly: dict[str, Any],
+    generated_at: int,
+    params_trained_at: int | None = None,
+) -> int:
+    """Write the per-(route, schedule_bin) assigned_n baseline -- the supply
+    axis's denominator -- as its OWN versioned R2 object, decoupled from
+    params.json. Refreshing it never moves the HMM artifact's trained_at, so it
+    cannot reseed the Worker's filter or split the grader's params-version
+    window. Versioned by its OWN `generated_at` (not the model's trained_at) so a
+    later refresh can't overwrite a prior immutable snapshot; `params_trained_at`
+    records which frozen model it was computed to accompany. Mirrors
+    write_segment_params: live pointer + immutable versioned snapshot, skipped
+    when empty. Returns the route count."""
+    if not hourly:
+        return 0
+    doc: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "baseline": hourly,
+    }
+    if params_trained_at is not None:
+        doc["params_trained_at"] = params_trained_at
+    body = json.dumps(doc).encode()
+    versioned = f"{VERSIONED_SERVICE_PREFIX}v{generated_at}.json"
+    for key in (SERVICE_BASELINE_KEY, versioned):
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+            CacheControl="no-store",
+        )
+    return len(hourly)
 
 
 SEGMENT_DWELL_KEY = "state/segment_dwell.json"
@@ -1105,9 +1140,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         movement_baseline=movement_baseline,
         movement_through_stops=(None if through is None else stops_to_json(through)),
         service_baseline=service_baseline,
-        service_baseline_hourly=service_baseline_hourly,
         schedule_rate=schedule_rate,
         trained_at=trained_at,
+    )
+    write_service_baseline(
+        client,
+        cfg.bucket,
+        service_baseline_hourly,
+        trained_at,
+        params_trained_at=trained_at,
     )
     n_segment_cells = write_segment_params(
         cfg,
@@ -1135,7 +1176,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"atom={movement_dwell_stats['n_atom']}, "
         f"source={movement_dwell_stats['source']}], "
         f"baseline_cells={n_baseline_cells}, "
-        f"service_cells={n_service_cells} (hourly {n_service_hourly_cells}), "
+        f"service_cells={n_service_cells} (hourly sidecar {n_service_hourly_cells}), "
         f"schedule_cells={n_schedule_cells}, "
         f"segment_cells={n_segment_cells}, segment_dwell_cells={n_segment_dwell_cells} "
         f"[own={segment_dwell_stats.n_cells_own}, "

@@ -10,6 +10,7 @@ import {
   readMovementMetric,
   readMovementState,
   readSegmentDwell,
+  readServiceBaseline,
   readServiceMetric,
   readVehicleStops,
   writeMovementMetric,
@@ -252,5 +253,36 @@ describe('segment dwell curves', () => {
       }),
     );
     expect(await readSegmentDwell(bucket)).toBeNull();
+  });
+});
+
+describe('service-baseline sidecar', () => {
+  const doc = {
+    schema_version: '1' as const,
+    generated_at: 1_700_000_000,
+    params_trained_at: 1_699_000_000,
+    baseline: { Q: { '48': 10 }, R: { '48': 8 } },
+  };
+
+  test('round-trips a valid sidecar', async () => {
+    const { bucket, store } = fakeBucket();
+    store.set('state/service_baseline.json', JSON.stringify(doc));
+    expect(await readServiceBaseline(bucket)).toEqual(doc);
+  });
+
+  test('returns null when the object is absent', async () => {
+    const { bucket } = fakeBucket();
+    expect(await readServiceBaseline(bucket)).toBeNull();
+  });
+
+  test('returns null when the object is corrupt', async () => {
+    const { bucket, store } = fakeBucket();
+    // A non-numeric median must be rejected so a bad publish leaves the axis
+    // falling back to params, not half-parsed.
+    store.set(
+      'state/service_baseline.json',
+      JSON.stringify({ schema_version: '1', generated_at: 1, baseline: { Q: { '48': 'nope' } } }),
+    );
+    expect(await readServiceBaseline(bucket)).toBeNull();
   });
 });

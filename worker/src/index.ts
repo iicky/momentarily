@@ -71,6 +71,7 @@ import {
   readSegmentDwell,
   readSegmentFlow,
   readSegmentParams,
+  readServiceBaseline,
   readServiceMetric,
   readStationFlow,
   readVehicleStops,
@@ -657,6 +658,12 @@ export default {
           // changes are the stream those curves are fitted from.
           if (MOVEMENT_STATE_PUBLISH) {
             const prevMovement = await readMovementState(env.MOMENTARILY);
+            // Supply-axis baseline: prefer the standalone sidecar object, fall
+            // back to params.json's legacy field. Sourcing it here keeps the axis
+            // decoupled from the frozen HMM artifact.
+            const serviceBaselineDoc = await readServiceBaseline(env.MOMENTARILY);
+            const serviceBaseline =
+              serviceBaselineDoc?.baseline ?? trainedParams?.serviceBaselineHourly ?? null;
             const { entries, changes } = advanceRegimes(
               prevMovement?.regimes,
               deriveMovementStates(moveRows, rows, trainedParams, observedAt),
@@ -683,7 +690,7 @@ export default {
             );
             const observedService = deriveServiceStates(
               rows,
-              trainedParams,
+              serviceBaseline,
               observedAt,
               liveServiceRegimes,
             );
@@ -697,7 +704,7 @@ export default {
               observed_at: observedAt,
               regimes: entries,
               service_regimes: service.entries,
-              service_ratios: deriveServiceRatios(rows, trainedParams, observedAt),
+              service_ratios: deriveServiceRatios(rows, serviceBaseline, observedAt),
             });
             try {
               await writeMovementTransitions(

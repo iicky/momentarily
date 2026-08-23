@@ -159,11 +159,24 @@ export interface StationFlow {
   stations: Record<string, StationServiceFlow>;
 }
 
+// Full alert record from snap.alerts — the resolvable detail behind the ids
+// carried on RouteStatus.alerts. Mirrors worker/src/derive.ts AlertOut.
+export interface Alert {
+  id: string;
+  alert_type: string;
+  source: string;
+  sort_order: number;
+  active_period: Array<{ start?: number; end?: number }>;
+  header_text: { translation: Array<{ text: string; language: string }> } | null;
+  informed_entities: Array<{ route_id: string; direction_id?: number }>;
+}
+
 export interface Snapshot {
   schema_version: string;
   generated_at: number;
   attribution: string;
   freshness: Freshness;
+  alerts: Alert[];
   route_status: Record<string, RouteStatus>;
   system: SystemStatus;
   compat: { subwaynow_routes: Record<string, CompatRoute> };

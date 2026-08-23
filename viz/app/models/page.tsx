@@ -244,7 +244,9 @@ export default function ModelsPage() {
         <ChartMetaProvider
           value={{
             feed: aggregate ? "public" : "credentialed",
-            window: `${days}d`,
+            // The response's window, not the selector: on the static feed the
+            // selector doesn't choose the data, the publisher already did.
+            window: `${data.window.days}d`,
             generatedAt: data.generatedAt ?? null,
           }}
         >

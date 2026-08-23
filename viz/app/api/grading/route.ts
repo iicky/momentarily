@@ -158,7 +158,18 @@ export async function GET(req: NextRequest) {
       const payload: GradingResponse = {
         configured: true,
         source: "calibration",
-        window: { days, from: dates[dates.length - 1], to: dates[0] },
+        // The feed's OWN window, not the day selector. The selector drives the
+        // credentialed recompute; the static feed is whatever the publisher
+        // graded (28d as of eval-daily). Reporting the selector here stamped
+        // every chart footer with a span the data never came from.
+        window: {
+          days: Math.max(
+            1,
+            Math.round((doc.window.end - doc.window.start) / 86_400),
+          ),
+          from: new Date(doc.window.start * 1000).toISOString().slice(0, 10),
+          to: new Date(doc.window.end * 1000).toISOString().slice(0, 10),
+        },
         counts: {
           predictionFiles: 0,
           predictionRecords:

@@ -1,9 +1,20 @@
 name: Eval (daily)
 
-# Self-grade the live publisher: read trailing 7 days of v1/predictions/ +
+# Self-grade the live publisher: read a trailing window of v1/predictions/ +
 # v1/regime_transitions/ from R2, compute reliability + recovery accuracy,
 # publish v1/eval.json. Public, max-age=300. Independent of the nightly
 # trainer — they run as separate jobs with their own concurrency groups.
+#
+# 28 days, not 7. Per-tick n was never the sample size: six consecutive 7-day
+# windows on the published arm carried 56k-58k tick-rows each (indistinguishable)
+# and 5, 8, 8, 16, 26 and 89 incidents — a 17.8x swing in real support, so a
+# week-over-week metric move said more about which week landed than about the
+# model. 28 days quadruples the support and stays inside the era where
+# published_condition exists (from 2026-07-11), so the movement arm is graded on
+# its own data rather than falling back to the alert shadow. Fixed length rather
+# than "everything retained": a window that grows each run changes its own
+# denominator, which is the same confound wearing a different hat. Ceiling is
+# training/prune.py's 90-day retention.
 
 on:
   schedule:
@@ -31,6 +42,6 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - name: Run eval
-        run: uv run python -m training.eval --days 7 ${{ inputs.no_publish && '--no-publish' || '' }}
+        run: uv run python -m training.eval --days 28 ${{ inputs.no_publish && '--no-publish' || '' }}
         env:
           MURK_KEY: ${{ secrets.MURK_KEY }}

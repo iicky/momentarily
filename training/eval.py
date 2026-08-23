@@ -1244,12 +1244,29 @@ def load_transition_matrices(client: S3Client, bucket: str) -> dict[str, Any]:
     heatmap without LIST/credentialed access to state/. trained_at is the params
     version the matrices came from; routes maps route -> matrix in STATES order.
     Empty (trained_at=None) before the first weekly train.
+
+    `self_loop_cap` carries the per-state ceiling the fit was clamped to
+    (train_em.MAX_SELF_LOOP), because a diagonal sitting exactly on its ceiling
+    is a hyperparameter, not a learned rate, and the heatmap must be able to say
+    so. On the 2026-08-13 params that is 23/28 routes for normal and effectively
+    28/28 and 27/28 for disrupted and suspended — so most of what the panel
+    presents as this line's dynamics is the cap.
     """
+    # Imported here, not at module scope: train_em imports training.dwell, which
+    # imports this module for TransitionRecord, so a top-level import would be
+    # circular. Same pattern as planned_work's archive_read import.
+    from training.train_em import MAX_SELF_LOOP
+
     try:
         body = client.get_object(Bucket=bucket, Key=PARAMS_KEY)["Body"].read()
         params: dict[str, Any] = json.loads(body)
     except Exception:
-        return {"trained_at": None, "states": list(STATES), "routes": {}}
+        return {
+            "trained_at": None,
+            "states": list(STATES),
+            "routes": {},
+            "self_loop_cap": list(MAX_SELF_LOOP),
+        }
     raw_routes: dict[str, Any] = params.get("routes") or {}
     routes: dict[str, Any] = {
         route: p["transition"]
@@ -1260,6 +1277,7 @@ def load_transition_matrices(client: S3Client, bucket: str) -> dict[str, Any]:
         "trained_at": params.get("trained_at"),
         "states": list(STATES),
         "routes": routes,
+        "self_loop_cap": list(MAX_SELF_LOOP),
     }
 
 

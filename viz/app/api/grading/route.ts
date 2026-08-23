@@ -180,6 +180,7 @@ export async function GET(req: NextRequest) {
         timelines: [],
         heatmap: calibrationHeatmap(doc),
         paramsTrainedAt: doc.transition_matrices.trained_at ?? null,
+        paramsSelfLoopCap: doc.transition_matrices.self_loop_cap ?? null,
         generatedAt: doc.generated_at ?? null,
         drift: doc.drift,
       };

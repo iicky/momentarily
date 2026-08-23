@@ -1215,15 +1215,35 @@ export function TransitionHeatmaps({
   entries,
   states,
   trainedAt,
+  selfLoopCap,
 }: {
   entries: { route: string; transition: number[][] }[];
   states: string[];
   trainedAt?: number | null;
+  // Per-state self-loop ceiling the fit was clamped to, in `states` order.
+  selfLoopCap?: number[] | null;
 }) {
   const { ref, show, hide, overlay } = useTooltip();
   const k = states.length;
   if (!entries.length || k === 0)
     return <ChartFrame empty emptyText="No trained params available yet." />;
+
+  // A diagonal within this of its ceiling is the ceiling. The clamp redistributes
+  // the freed mass, so a pinned value can land an ulp or two under the literal
+  // (observed: one route 2e-8 below on disrupted) — an exact compare would call
+  // that unpinned and understate how much of the panel is hyperparameter.
+  const CAP_EPS = 1e-6;
+  const pinnedAt = (state: number, v: number) => {
+    const cap = selfLoopCap?.[state];
+    return cap != null && cap - v < CAP_EPS && v <= cap + CAP_EPS;
+  };
+  // How much of the diagonal is ceiling rather than fit, per state, so the note
+  // reports what this params version actually did instead of a baked-in claim.
+  const pinnedByState = selfLoopCap
+    ? states.map(
+        (_, s) => entries.filter((e) => pinnedAt(s, e.transition[s]?.[s] ?? 0)).length,
+      )
+    : null;
 
   // System-average transition matrix — the "typical line" every route is read
   // against. Rows are P(next state | current), so each sums to ~1.
@@ -1268,6 +1288,11 @@ export function TransitionHeatmaps({
           const b = baseline[r][c];
           const d = v - b;
           const diag = r === c;
+          // Diagonal sitting on its training ceiling: not a learned rate. The
+          // system-average card is a mean of per-route values, so a pinned cell
+          // there would be an artifact of the routes, not a clamp — only the
+          // per-route cards can be pinned.
+          const pinned = diag && mode === "delta" && pinnedAt(r, v);
           let fill = "var(--panel-2)";
           let op = 1;
           if (mode === "baseline") {
@@ -1293,6 +1318,15 @@ export function TransitionHeatmaps({
                     </span>
                     <br />
                     <span className="muted">row-normalized: P(next | {states[r]} now)</span>
+                    {pinned && (
+                      <>
+                        <br />
+                        <span style={{ color: "var(--disrupted)" }}>
+                          at the {selfLoopCap?.[r]} training ceiling — this is the
+                          clamp, not a rate fitted for this line
+                        </span>
+                      </>
+                    )}
                   </>,
                 )
               }
@@ -1307,12 +1341,21 @@ export function TransitionHeatmaps({
                 rx={3}
                 fill={diag && mode === "delta" ? "transparent" : fill}
                 fillOpacity={diag && mode === "delta" ? 1 : op}
-                stroke={diag ? "var(--border)" : "none"}
+                stroke={
+                  pinned ? "var(--disrupted)" : diag ? "var(--border)" : "none"
+                }
+                strokeDasharray={pinned ? "2 2" : undefined}
               />
               <text
                 x={labelW + c * cell + (cell - 2) / 2}
                 y={top + r * cell + (cell - 2) / 2 + 3}
-                fill={diag && mode === "delta" ? "var(--muted)" : "var(--text)"}
+                fill={
+                  pinned
+                    ? "var(--disrupted)"
+                    : diag && mode === "delta"
+                      ? "var(--muted)"
+                      : "var(--text)"
+                }
                 fontSize="10"
                 textAnchor="middle"
               >
@@ -1338,7 +1381,7 @@ export function TransitionHeatmaps({
       overlay={overlay}
       note={
         <>
-          Each line&apos;s learned transition odds, row-normalized (P of the next state
+          Each line&apos;s fitted transition odds, row-normalized (P of the next state
           given the current one). The <strong>system average</strong> card anchors
           the absolute rates; each line card colors only its{" "}
           <strong>off-diagonal</strong> cells by deviation from that average —{" "}
@@ -1346,6 +1389,31 @@ export function TransitionHeatmaps({
           <span style={{ color: "var(--accent)" }}>less</span> likely to switch than
           typical — so self-loop stickiness on the diagonal doesn&apos;t drown out
           where a line actually differs.
+          {pinnedByState && pinnedByState.some((n) => n > 0) && (
+            <>
+              {" "}
+              <span style={{ color: "var(--disrupted)" }}>
+                Dashed cells sit on the training ceiling
+              </span>{" "}
+              — training caps each self-loop, and a cell at its cap is that cap,
+              not a rate measured for this line. This params version:{" "}
+              {pinnedByState
+                .map((n, s) => `${states[s]} ${n}/${entries.length}`)
+                .join(", ")}
+              . Where a whole column is pinned, the diagonal carries no per-line
+              information at all.
+            </>
+          )}
+          {!selfLoopCap && (
+            <>
+              {" "}
+              <span className="muted">
+                The self-loop ceiling isn&apos;t published on this view, so cells
+                sitting on it can&apos;t be marked — absence of a mark here is not
+                evidence the diagonal was fitted.
+              </span>
+            </>
+          )}
         </>
       }
       meta={{

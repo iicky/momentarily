@@ -405,6 +405,7 @@ export default function ModelsPage() {
             entries={heatmap}
             states={states}
             trainedAt={data.paramsTrainedAt}
+            selfLoopCap={data.paramsSelfLoopCap}
           />
         </ChartMetaProvider>
         </ChartErrorBoundary>

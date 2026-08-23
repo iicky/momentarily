@@ -123,6 +123,9 @@ export interface CalibrationDoc {
     trained_at: number | null;
     states: string[];
     routes: Record<string, number[][]>;
+    // Per-state self-loop ceiling the fit was clamped to, in `states` order.
+    // Absent on feeds published before the cap shipped.
+    self_loop_cap?: number[] | null;
   };
   // Per-route reliability + recovery summary (training/eval.build_by_line), so
   // the Models tab can filter by line straight off this static feed. Absent on

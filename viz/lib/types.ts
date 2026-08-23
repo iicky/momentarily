@@ -202,6 +202,11 @@ export interface GradingResponse {
   timelines: unknown[];
   heatmap: HeatmapEntry[];
   paramsTrainedAt: number | null;
+  // Per-state self-loop ceiling the fit was clamped to (train_em.MAX_SELF_LOOP),
+  // in `states` order. A diagonal sitting on its ceiling is a hyperparameter,
+  // not a learned rate, so the heatmap marks those cells rather than presenting
+  // them as this line's dynamics. Absent on feeds published before the cap shipped.
+  paramsSelfLoopCap?: number[] | null;
   // When the underlying feed was generated (public aggregate). null on the
   // credentialed streams view, which reads live up to "now".
   generatedAt?: number | null;

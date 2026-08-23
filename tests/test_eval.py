@@ -5,6 +5,8 @@ Uses synthetic prediction/transition records — no R2 access.
 
 from __future__ import annotations
 
+import io
+import json
 from dataclasses import replace
 from datetime import date
 from typing import TYPE_CHECKING, Any, cast
@@ -23,6 +25,7 @@ from training.eval import (
     build_independent_recovery,
     calibrate,
     independent_recovery_metrics,
+    load_transition_matrices,
     movement_coverage_alarm,
     movement_truth_by_key,
     open_regimes_from_predictions,
@@ -740,6 +743,40 @@ def test_build_by_line_grading_is_unaffected_by_other_routes():
         only_1 + noise, [], movement_truth=movement_truth_by_key(only_1 + noise)
     )
     assert together["1"] == alone["1"]
+
+
+def test_load_transition_matrices_publishes_the_self_loop_ceiling() -> None:
+    """The heatmap needs the ceiling to tell a clamp from a learned rate.
+
+    A diagonal sitting exactly on MAX_SELF_LOOP is a hyperparameter, and without
+    the cap in the feed the panel presents it as this line's own dynamics. On the
+    2026-08-13 params that is 23/28 routes for normal and effectively 28/28 and
+    27/28 for disrupted and suspended.
+    """
+    from training.train_em import MAX_SELF_LOOP
+
+    matrix = [[0.975, 0.007, 0.018], [0.065, 0.93, 0.005], [0.07, 0.0, 0.93]]
+
+    class _Params:
+        def get_object(self, **_: Any) -> dict[str, Any]:
+            body = json.dumps(
+                {"trained_at": 200, "routes": {"1": {"transition": matrix}}}
+            ).encode()
+            return {"Body": io.BytesIO(body)}
+
+    doc = load_transition_matrices(cast("S3Client", _Params()), "bucket")
+    assert doc["self_loop_cap"] == list(MAX_SELF_LOOP)
+    assert doc["routes"] == {"1": matrix}
+
+    # Absent params must still carry the cap: the viz distinguishes "no cell is
+    # pinned" from "the ceiling is unknown", and a missing cap means the latter.
+    class _Missing:
+        def get_object(self, **_: Any) -> dict[str, Any]:
+            raise RuntimeError("no params yet")
+
+    empty = load_transition_matrices(cast("S3Client", _Missing()), "bucket")
+    assert empty["trained_at"] is None
+    assert empty["self_loop_cap"] == list(MAX_SELF_LOOP)
 
 
 def test_prediction_record_from_json_defaults_params_version():

@@ -53,12 +53,18 @@ The grading streams are timestamped JSONL; reading a window needs an R2 LIST,
 which the public Worker doesn't expose. So Models reads R2 directly, using the
 `R2_*` secrets already in the project's **murk** vault.
 
-`npm run dev` handles this: it sources `../.env` (which exports `MURK_KEY_FILE`)
-and runs Next under `murk exec --vault ../.murk`, so the R2 secrets land in the
-server's environment. No hand-managed keys.
+`npm run dev` handles this: it runs Next under `murk exec`, which finds the
+vault at the repo root and injects the R2 secrets into the server's
+environment. No hand-managed keys, no `.env`.
 
-If your murk key isn't loaded you'll get a setup notice — `source .env` at the
-repo root (or `direnv allow`) and restart.
+In a fresh git worktree, run `murk-wt link` once. murk keys its identity on the
+vault's absolute path, so each worktree looks in a key slot of its own and only
+the original checkout has one; without the link you get "MURK_KEY not set".
+`.bb-env-setup.sh` does this automatically for bb-managed worktrees.
+
+If a `MURK_KEY_FILE` is already exported in your shell it overrides the linked
+key, and a stale one fails with "not a recipient" rather than anything about
+keys. Unset it and retry.
 
 Credential resolution order (`lib/r2.ts`): `process.env.R2_*` (murk exec / CI /
 `.env.local`) → the [`@iicky/murk-secrets`](https://www.npmjs.com/package/@iicky/murk-secrets)

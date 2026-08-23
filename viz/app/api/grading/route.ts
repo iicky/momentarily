@@ -17,6 +17,7 @@ import {
   routeUniverse,
 } from "@/lib/calibration";
 import { recoveryDistReport, type RecoveryDistSample } from "@/lib/recovery_dist";
+import { regimeBands } from "@/lib/regime_band";
 import { predictedRecoveryCurve } from "@/lib/dwell";
 import {
   adherence,
@@ -291,6 +292,10 @@ export async function GET(req: NextRequest) {
     }
     const recoveryDist = recoveryDistReport(recoverySamples);
 
+    // The model's belief over time, bucketed onto a fixed grid. Filtered
+    // predictions only, so a line selection narrows this to that one band.
+    const bands = regimeBands(predictions);
+
     return NextResponse.json({
       configured: true,
       source: "streams",
@@ -310,6 +315,7 @@ export async function GET(req: NextRequest) {
       reliability: rel,
       recovery: rec,
       recoveryDist,
+      regimeBands: bands,
       resumeChurn: churn,
       adherence: adher,
       detectionLatency: detection,

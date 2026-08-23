@@ -753,7 +753,12 @@ function RouteDrawer({
             <span className="v">{(inf.p_disrupted * 100).toFixed(2)}%</span>
             <span className="k">P(suspended)</span>
             <span className="v">{(inf.p_suspended * 100).toFixed(2)}%</span>
-            <span className="k">Regime age</span>
+            {/* This clock belongs to the model above: it restarts whenever the
+                model's top state changes, which is often. The badge runs on the
+                movement arm's own clock, so the label has to say whose age this
+                is — swapping in the movement clock would leave this section
+                timing a regime it does not show. */}
+            <span className="k">Model regime age</span>
             <span className="v">
               {fmtMinutes(inf.regime_age_seconds / 60)}
             </span>
@@ -763,17 +768,22 @@ function RouteDrawer({
         </>
       )}
 
-      <div className="section-title">By direction</div>
+      {/* Alert feed only. These rows never see train movement, so a direction
+          with nothing posted reads "no alerts" rather than "good" — the badge
+          above can say disrupted on movement while the MTA has posted nothing.
+          A real per-direction movement read needs segment_flow coverage, which
+          currently publishes only a handful of cells system-wide. */}
+      <div className="section-title">Alerts by direction</div>
       <div className="kv">
         <span className="k">Northbound</span>
         <span className="v">
           {r.by_direction.northbound.primary_alert_type ??
-            (r.by_direction.northbound.alerts.length ? "alert" : "good")}
+            (r.by_direction.northbound.alerts.length ? "alert" : "no alerts")}
         </span>
         <span className="k">Southbound</span>
         <span className="v">
           {r.by_direction.southbound.primary_alert_type ??
-            (r.by_direction.southbound.alerts.length ? "alert" : "good")}
+            (r.by_direction.southbound.alerts.length ? "alert" : "no alerts")}
         </span>
       </div>
 

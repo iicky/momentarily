@@ -95,6 +95,70 @@ export interface CompatRoute {
   status: string;
 }
 
+// --- Station + segment surfaces (mirrors worker/src/snapshot.ts + schema) ---
+
+export interface Station {
+  gtfs_stop_id: string;
+  station_complex_id: string | null;
+  name: string;
+  borough: string | null;
+  routes_served: string[];
+  ada: 0 | 1 | 2;
+  ada_northbound: boolean;
+  ada_southbound: boolean;
+}
+
+export interface StationStatus {
+  station_complex_id: string;
+  alerts: string[];
+  ada_status: string;
+  elevators_total: number;
+  elevators_out: number;
+  escalators_total: number;
+  escalators_out: number;
+  earliest_elevator_return: number | null;
+  oldest_outage_since: number | null;
+}
+
+export interface SegmentRecovery {
+  recovery_minutes: number;
+  recovery_minutes_low: number;
+  recovery_minutes_high: number;
+  recovery_indeterminate: boolean;
+  p_normal_in_30min: number | null;
+  p_normal_in_60min: number;
+  p_normal_in_120min: number;
+}
+
+export interface SegmentStatus {
+  route: string;
+  direction: string;
+  from_stop: string;
+  to: string | null;
+  status: "normal" | "disrupted";
+  entered_at: number;
+  recovery: SegmentRecovery | null;
+}
+
+export interface SegmentFlow {
+  observed_at: number;
+  segments: Record<string, SegmentStatus>;
+}
+
+export interface StationServiceFlow {
+  status: "flowing" | "degraded";
+  worst_deficit: number;
+  worst_segment: [string, string] | null;
+  routes: string[];
+  n_segments: number;
+  worst_recovery: SegmentRecovery | null;
+}
+
+export interface StationFlow {
+  observed_at: number;
+  stations: Record<string, StationServiceFlow>;
+}
+
 // Full alert record from snap.alerts — the resolvable detail behind the ids
 // carried on RouteStatus.alerts. Mirrors worker/src/derive.ts AlertOut.
 export interface Alert {
@@ -116,6 +180,10 @@ export interface Snapshot {
   route_status: Record<string, RouteStatus>;
   system: SystemStatus;
   compat: { subwaynow_routes: Record<string, CompatRoute> };
+  stations: Record<string, Station>;
+  station_status: Record<string, StationStatus>;
+  station_flow: StationFlow | null;
+  segment_flow: SegmentFlow | null;
 }
 
 // --- Grading streams (Phase B) ---

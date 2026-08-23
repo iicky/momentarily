@@ -5,8 +5,15 @@ import { usePathname } from "next/navigation";
 
 const LINKS = [
   { href: "/", label: "Status" },
+  { href: "/lines", label: "Lines" },
+  { href: "/map", label: "Map" },
   { href: "/models", label: "Models" },
 ];
+
+function isActive(path: string, href: string): boolean {
+  if (href === "/") return path === "/";
+  return path === href || path.startsWith(`${href}/`);
+}
 
 export default function Nav() {
   const path = usePathname();
@@ -16,7 +23,7 @@ export default function Nav() {
         <Link
           key={l.href}
           href={l.href}
-          className={path === l.href ? "active" : ""}
+          className={isActive(path, l.href) ? "active" : ""}
         >
           {l.label}
         </Link>

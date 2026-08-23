@@ -208,6 +208,10 @@ export interface GradingResponse {
   // RecoveryDistResult — recovery-time CDF + CRPS/PIT report. Streams view only;
   // typed structurally on the client.
   recoveryDist?: unknown;
+  // RegimeBands — per-line stacked probability series over the window. Streams
+  // view only (the aggregate feed carries no per-tick history); typed
+  // structurally on the client.
+  regimeBands?: unknown;
   // DriftDoc from the calibration feed — input-drift signals (unmapped
   // alert_type rate, emission-channel PSI). Absent on the streams view and on
   // older feeds; typed structurally on the client.

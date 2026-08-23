@@ -13,6 +13,7 @@ import {
   DetectionLatencyPanel,
   DriftPanel,
   Swimlane,
+  RegimeBandChart,
   TransitionHeatmaps,
   MovementConfusion,
   AdvanceBaselineChart,
@@ -30,6 +31,7 @@ import {
   type RouteBaselineDTO,
   type RecoveryDistResult,
 } from "./charts";
+import type { RegimeBands } from "@/lib/regime_band";
 import { ChartMetaProvider, ChartErrorBoundary } from "./ChartFrame";
 import type { GradingResponse, HeatmapEntry } from "@/lib/types";
 
@@ -109,6 +111,7 @@ export default function ModelsPage() {
   const detection = data?.detectionLatency as DetectionLatencyResult | undefined;
   const drift = data?.drift as DriftResult | undefined;
   const timelines = (data?.timelines ?? []) as TimelineDTO[];
+  const regimeBands = data?.regimeBands as RegimeBands | undefined;
   const recoveryDist = data?.recoveryDist as RecoveryDistResult | undefined;
   const heatmap = (data?.heatmap ?? []) as HeatmapEntry[];
   const states = data?.states ?? ["normal", "disrupted", "suspended"];
@@ -332,6 +335,18 @@ export default function ModelsPage() {
                 that spent the most time away from normal.
               </p>
               <Swimlane timelines={timelines} />
+
+              <h3 className="grp">How sure was it, minute to minute?</h3>
+              <p className="grp-note">
+                The same lines, but instead of the one label the model settled on,
+                this is the confidence behind it: the three colours are the chances
+                it gave normal, disrupted and suspended, stacked to fill each row.
+                Solid green is a confident, quiet line. Where the colours mix, the
+                model was hedging — and a band that shifts well before the block
+                above changes colour is it seeing trouble coming. Breaks in a row
+                are gaps in the archive, not calm.
+              </p>
+              {regimeBands && <RegimeBandChart result={regimeBands} />}
             </>
           )}
 

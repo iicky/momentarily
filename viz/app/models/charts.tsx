@@ -12,6 +12,8 @@ import {
   SkillChip,
 } from "./ChartFrame";
 import { recoveryVerdict } from "@/lib/recovery_dist";
+import { bucketRuns } from "@/lib/regime_band";
+import type { RegimeBands, RegimeBandBucket, RegimeBandSeries } from "@/lib/regime_band";
 
 // Hand-rolled SVG charts — these are bespoke scientific plots (calibration
 // scatter on a diagonal, regime swimlane, transition heatmap) where a generic
@@ -599,6 +601,236 @@ export function Swimlane({ timelines }: { timelines: TimelineDTO[] }) {
                   </title>
                 </rect>
               ))}
+            </g>
+          );
+        })}
+      </svg>
+    </ChartFrame>
+  );
+}
+
+// --- Regime probability bands ---
+//
+// The swimlane above answers "what did the model call this line?". This answers
+// "how sure was it?" on the same time axis, so the two read together: a row that
+// spends an hour at 60/40 before the swimlane block ever changes colour was a
+// slow escalation the hard label can't express, and a knife-edge flip back and
+// forth is a different failure from a confident one.
+//
+// Buckets are averages over a fixed grid, so the fill is honest about its own
+// resolution; a hole in the archive breaks the fill instead of interpolating
+// across it.
+
+// Path coordinates at 0.1px. Sub-pixel precision is invisible here, and these
+// paths are big: 14 rows x 3 bands x up to 240 buckets, four coordinates each.
+// Full-precision floats would put tens of KB of noise into the DOM.
+const svgPx = (n: number) => Math.round(n * 10) / 10;
+
+/** Step-wise stacked area: each bucket is a flat segment over its own width,
+ *  which is what a bucket mean actually claims — no interpolation between
+ *  bucket centres. Walks the upper edge left-to-right, the lower edge back. */
+function stepArea(
+  run: RegimeBandBucket[],
+  bucketSec: number,
+  sx: (t: number) => number,
+  sy: (p: number) => number,
+  lo: (b: RegimeBandBucket) => number,
+  hi: (b: RegimeBandBucket) => number,
+): string {
+  let d = "";
+  for (let i = 0; i < run.length; i++) {
+    const b = run[i];
+    const y = svgPx(sy(hi(b)));
+    d += `${i === 0 ? "M" : "L"}${svgPx(sx(b.t))},${y}L${svgPx(sx(b.t + bucketSec))},${y}`;
+  }
+  for (let i = run.length - 1; i >= 0; i--) {
+    const b = run[i];
+    const y = svgPx(sy(lo(b)));
+    d += `L${svgPx(sx(b.t + bucketSec))},${y}L${svgPx(sx(b.t))},${y}`;
+  }
+  return `${d}Z`;
+}
+
+/** Bucket covering `t`, or null when `t` falls in a gap. Binary search — this
+ *  runs on every mousemove across up to 240 buckets a row. */
+function bucketAt(
+  buckets: RegimeBandBucket[],
+  t: number,
+  bucketSec: number,
+): RegimeBandBucket | null {
+  let lo = 0;
+  let hi = buckets.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (buckets[mid].t <= t) {
+      found = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  if (found < 0) return null;
+  const b = buckets[found];
+  return t < b.t + bucketSec ? b : null;
+}
+
+const BANDS: {
+  key: "pNormal" | "pDisrupted" | "pSuspended";
+  state: string;
+  label: string;
+}[] = [
+  { key: "pNormal", state: "normal", label: "normal" },
+  { key: "pDisrupted", state: "disrupted", label: "disrupted" },
+  { key: "pSuspended", state: "suspended", label: "suspended" },
+];
+
+export function RegimeBandChart({ result }: { result: RegimeBands }) {
+  const tip = useTooltip();
+  const { series, bucketSec, t0, t1 } = result;
+
+  if (!series.length)
+    return (
+      <ChartFrame
+        empty
+        emptyText="No predictions in this window."
+        containerRef={tip.ref}
+      />
+    );
+
+  const W = 820;
+  const labelW = 44;
+  const rowH = 36;
+  const gap = 8;
+  const padR = 8;
+  const top = 20;
+  const plotW = W - labelW - padR;
+  const span = Math.max(1, t1 - t0);
+  const sx = (ts: number) => labelW + ((ts - t0) / span) * plotW;
+  const H = series.length * (rowH + gap) + top + 4;
+
+  // Five gridlines at 1/5 of the span, skipping the right edge: a centred label
+  // there overflows the viewBox and gets clipped by the SVG bounds.
+  const tickVals = Array.from({ length: 5 }, (_, i) => t0 + (span * i) / 5);
+  const fmtTick = (ts: number) =>
+    new Date(ts * 1000).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+    });
+  const fmtFull = (ts: number) =>
+    new Date(ts * 1000).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  const bucketMin = Math.round(bucketSec / 60);
+
+  const onMove = (e: React.MouseEvent<SVGRectElement>, s: RegimeBandSeries) => {
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const box = svg.getBoundingClientRect();
+    // The SVG scales to its container, so go back through the viewBox.
+    const vx = ((e.clientX - box.left) / box.width) * W;
+    const b = bucketAt(s.buckets, t0 + ((vx - labelW) / plotW) * span, bucketSec);
+    if (b === null) {
+      tip.hide();
+      return;
+    }
+    tip.show(
+      e,
+      <>
+        <b>{s.route}</b> · {fmtFull(b.t)}
+        <br />
+        normal {(b.pNormal * 100).toFixed(0)}% · disrupted{" "}
+        {(b.pDisrupted * 100).toFixed(0)}% · suspended{" "}
+        {(b.pSuspended * 100).toFixed(0)}%
+        <br />
+        <span className="muted">
+          mean of {b.n} tick{b.n === 1 ? "" : "s"}
+        </span>
+      </>,
+    );
+  };
+
+  return (
+    <ChartFrame
+      titleMeta={`${bucketMin}-min buckets${
+        result.truncated ? ` · ${result.truncated} quieter lines not shown` : ""
+      }`}
+      legend={BANDS.map((b) => ({ color: `var(--${b.state})`, label: b.label }))}
+      meta={{
+        source: "the model's own prediction stream",
+        // Only claim a ranking when one actually excluded something — with a
+        // line filter on, "top 1 by time away from normal" is noise.
+        unit: `P(state) · bucket mean${
+          result.truncated ? ` · top ${series.length} by time away from normal` : ""
+        }`,
+        n: series.reduce((a, s) => a + s.n, 0),
+      }}
+      containerRef={tip.ref}
+      overlay={tip.overlay}
+    >
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%">
+        <GridLines axis="x" scale={sx} ticks={tickVals} from={top - 4} to={H - 4} />
+        <AxisTicks axis="x" scale={sx} ticks={tickVals} at={11} format={fmtTick} />
+        {series.map((s, ri) => {
+          const y0 = top + ri * (rowH + gap);
+          const sy = (p: number) => y0 + rowH * (1 - p);
+          const runs = bucketRuns(s.buckets, bucketSec);
+          return (
+            <g key={s.route}>
+              <text
+                x={4}
+                y={y0 + rowH / 2 + 4}
+                fill="var(--text)"
+                fontSize="11"
+                fontWeight={600}
+              >
+                {s.route}
+              </text>
+              {runs.map((run, ri2) => (
+                <g key={ri2}>
+                  {BANDS.map((band, bi) => {
+                    // Stack bottom-up in severity order, so "how much of this
+                    // row is not green" reads directly as trouble.
+                    const below = BANDS.slice(0, bi);
+                    const lo = (b: RegimeBandBucket) =>
+                      below.reduce((a, x) => a + b[x.key], 0);
+                    return (
+                      <path
+                        key={band.key}
+                        d={stepArea(run, bucketSec, sx, sy, lo, (b) =>
+                          lo(b) + b[band.key],
+                        )}
+                        fill={stateColor(band.state)}
+                        fillOpacity={band.state === "normal" ? 0.32 : 0.85}
+                      />
+                    );
+                  })}
+                </g>
+              ))}
+              {/* 50% reference: above it the model still favours the state
+                  stack's lower half, so a band crossing this line is a call
+                  that was genuinely close. */}
+              <line
+                x1={labelW}
+                x2={W - padR}
+                y1={sy(0.5)}
+                y2={sy(0.5)}
+                stroke="var(--border)"
+                strokeWidth={1}
+                strokeDasharray="2 3"
+                opacity={0.4}
+              />
+              <rect
+                x={labelW}
+                y={y0}
+                width={plotW}
+                height={rowH}
+                fill="transparent"
+                onMouseMove={(e) => onMove(e, s)}
+                onMouseLeave={tip.hide}
+              />
             </g>
           );
         })}

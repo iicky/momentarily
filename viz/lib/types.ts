@@ -207,6 +207,11 @@ export interface GradingResponse {
   // not a learned rate, so the heatmap marks those cells rather than presenting
   // them as this line's dynamics. Absent on feeds published before the cap shipped.
   paramsSelfLoopCap?: number[] | null;
+  // Effective sample support behind every per-tick count above: the number of
+  // independent incidents in the window. Ticks inside one regime are
+  // autocorrelated, so a flat tick count can hide a 17.8x swing in real support.
+  // Typed structurally on the client. Absent on older feeds and on the streams view.
+  episodeSupport?: unknown;
   // When the underlying feed was generated (public aggregate). null on the
   // credentialed streams view, which reads live up to "now".
   generatedAt?: number | null;

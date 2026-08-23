@@ -181,6 +181,7 @@ export async function GET(req: NextRequest) {
         heatmap: calibrationHeatmap(doc),
         paramsTrainedAt: doc.transition_matrices.trained_at ?? null,
         paramsSelfLoopCap: doc.transition_matrices.self_loop_cap ?? null,
+        episodeSupport: doc.episode_support,
         generatedAt: doc.generated_at ?? null,
         drift: doc.drift,
       };

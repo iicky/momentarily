@@ -1148,6 +1148,72 @@ def build_by_line(
     return out
 
 
+def episode_support(
+    predictions: list[PredictionRecord], *, window_start: int, window_end: int
+) -> dict[str, Any]:
+    """Effective sample support: how many independent incidents back the window.
+
+    Every per-tick `n` in this document counts 5-minute ticks, and ticks inside
+    one regime are almost perfectly autocorrelated — a route sitting disrupted
+    for two hours contributes 24 rows and one incident. Reporting only the tick
+    count implies a statistical power the window does not have.
+
+    Measured on the published arm over 2026-07-11..08-23, six consecutive 7-day
+    windows carried 56k-58k tick-rows each (indistinguishable) and 5, 8, 8, 16,
+    26 and 89 episodes — a 17.8x spread in real support behind a flat advertised
+    n. That is why this ships next to the tick counts rather than in a CLI report.
+
+    Restricted to rows that actually carry `published_condition`. `model_episodes`
+    resolves the arm through `published_arm`, which falls back to the alert-shadow
+    `condition` for rows written before the published field shipped (2026-07-11) —
+    so feeding it the raw window silently mixes arms as soon as the window reaches
+    back past that date. Measured: the full 91-day archive scores 1,781 episodes
+    that way against 153 on the published arm alone, a 12x inflation from the
+    shadow arm's flapping. Legacy rows are excluded and counted, and the covered
+    span is reported, so a widened `--days` cannot quietly restate the arm.
+    """
+    # Imported here, not at module scope: scorecard and episodes both import this
+    # module, so a top-level import would be circular. Same pattern as
+    # load_transition_matrices' cap import.
+    from training.episodes import episodes_summary
+    from training.scorecard import model_episodes
+
+    on_arm = [p for p in predictions if p.published_condition is not None]
+    if not on_arm:
+        return {
+            "graded_arm": MOVEMENT_ARM_LABEL,
+            "n_episodes": 0,
+            "n_left_censored": 0,
+            "n_right_censored": 0,
+            "n_standing": 0,
+            "standing_tick_share": 0.0,
+            "tick_rows": 0,
+            "excluded_pre_arm_rows": len(predictions),
+            "covered": None,
+        }
+    # The support describes the span the arm actually covers, not the requested
+    # window: asking for 90 days when the field is 43 days old must not read as
+    # 43 days' worth of incidents spread over 90.
+    covered_start = max(window_start, min(p.ts for p in on_arm))
+    episodes = model_episodes(on_arm, window_start=covered_start, window_end=window_end)
+    s = episodes_summary(episodes)
+    return {
+        "graded_arm": MOVEMENT_ARM_LABEL,
+        "n_episodes": s["n"],
+        # Censored episodes have an unobserved endpoint, so they cannot support a
+        # duration or recovery claim even though they are real incidents.
+        "n_left_censored": s["n_left_censored"],
+        "n_right_censored": s["n_right_censored"],
+        # Standing advisories (>=24h) are single incidents that dominate a tick
+        # count outright; held out of acute grading, reported here.
+        "n_standing": s["n_standing"],
+        "standing_tick_share": s["standing_tick_share"],
+        "tick_rows": len(on_arm),
+        "excluded_pre_arm_rows": len(predictions) - len(on_arm),
+        "covered": {"start": covered_start, "end": window_end},
+    }
+
+
 def build_eval(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
@@ -1199,6 +1265,12 @@ def build_eval(
         "window": {"start": window_start, "end": window_end},
         "predictions_seen": len(predictions),
         "transitions_seen": len(transitions),
+        # Effective sample support behind every per-tick n above. Ticks inside one
+        # regime are autocorrelated, so the episode count is the number that says
+        # how much independent evidence the window carries.
+        "episode_support": episode_support(
+            predictions, window_start=window_start, window_end=window_end
+        ),
         "current_params": current_params,
         "calibration": _calibration_as_dicts(calibrations),
         "calibration_arm": SHADOW_ARM_LABEL,
@@ -1307,6 +1379,9 @@ def build_calibration(
         "window": eval_doc["window"],
         "predictions_seen": eval_doc["predictions_seen"],
         "transitions_seen": eval_doc["transitions_seen"],
+        # Small and load-bearing: without it the page advertises a tick count that
+        # overstates independent evidence by three orders of magnitude.
+        "episode_support": eval_doc["episode_support"],
         "calibration": eval_doc["calibration"],
         "calibration_arm": eval_doc["calibration_arm"],
         "calibration_movement": eval_doc["calibration_movement"],

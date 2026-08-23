@@ -32,6 +32,7 @@ import {
 } from "./charts";
 import { ChartMetaProvider, ChartErrorBoundary } from "./ChartFrame";
 import type { GradingResponse, HeatmapEntry } from "@/lib/types";
+import type { EpisodeSupport } from "@/lib/calibrationFeed";
 
 interface MovementResponse {
   configured: boolean;
@@ -112,6 +113,7 @@ export default function ModelsPage() {
   const recoveryDist = data?.recoveryDist as RecoveryDistResult | undefined;
   const heatmap = (data?.heatmap ?? []) as HeatmapEntry[];
   const states = data?.states ?? ["normal", "disrupted", "suspended"];
+  const support = data?.episodeSupport as EpisodeSupport | undefined;
 
   return (
     <div className="wrap">
@@ -172,6 +174,26 @@ export default function ModelsPage() {
           <span className="counts">
             {data.counts.predictionRecords.toLocaleString()} predictions ·{" "}
             {data.counts.transitionRecords.toLocaleString()} transitions
+            {support && (
+              <span
+                className="support"
+                title={
+                  `${support.n_episodes.toLocaleString()} independent incidents on the ` +
+                  `${support.graded_arm} arm. Every count to the left is 5-minute ticks, and ` +
+                  `ticks inside one regime say almost the same thing — a route disrupted for two ` +
+                  `hours is 24 rows and one incident. Six consecutive weeks of near-identical ` +
+                  `tick counts carried 5 to 89 incidents, so this is the number that says how ` +
+                  `much the window can actually settle.` +
+                  (support.excluded_pre_arm_rows
+                    ? ` ${support.excluded_pre_arm_rows.toLocaleString()} rows predate this arm and are excluded.`
+                    : "")
+                }
+              >
+                {" · "}
+                <strong>{support.n_episodes.toLocaleString()} incidents</strong>{" "}
+                of real support
+              </span>
+            )}
             {aggregate ? (
               " · public aggregate feed"
             ) : (

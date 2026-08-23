@@ -17,6 +17,7 @@ from training.degradation_label import BIN_FN
 from training.eval import (
     BIN_COUNT,
     HORIZONS_MIN,
+    MOVEMENT_ARM_LABEL,
     PredictionRecord,
     TransitionRecord,
     build_by_line,
@@ -24,6 +25,7 @@ from training.eval import (
     build_eval,
     build_independent_recovery,
     calibrate,
+    episode_support,
     independent_recovery_metrics,
     load_transition_matrices,
     movement_coverage_alarm,
@@ -743,6 +745,80 @@ def test_build_by_line_grading_is_unaffected_by_other_routes():
         only_1 + noise, [], movement_truth=movement_truth_by_key(only_1 + noise)
     )
     assert together["1"] == alone["1"]
+
+
+def test_episode_support_counts_incidents_not_ticks() -> None:
+    """One regime spanning many ticks is one incident, not many samples.
+
+    Every per-tick n in the feed counts 5-minute rows, and rows inside one regime
+    are near-perfectly autocorrelated. Measured on the published arm, six
+    consecutive 7-day windows carried 56k-58k tick-rows each and 5, 8, 8, 16, 26
+    and 89 episodes — so the tick count cannot stand in for support.
+    """
+    t0 = 1_700_000_000
+    # One 12-tick disrupted run, then normal: 12 rows, one incident.
+    rows = [
+        replace(
+            _pred(ts=t0 + i * 300, condition="disrupted"),
+            published_condition="disrupted",
+        )
+        for i in range(12)
+    ] + [
+        replace(
+            _pred(ts=t0 + (12 + i) * 300, condition="normal"),
+            published_condition="normal",
+        )
+        for i in range(4)
+    ]
+    s = episode_support(rows, window_start=t0, window_end=t0 + 16 * 300)
+    assert s["n_episodes"] == 1
+    assert s["tick_rows"] == 16
+
+
+def test_episode_support_never_mixes_in_the_shadow_arm() -> None:
+    """Rows predating published_condition must be excluded, not fallen back on.
+
+    model_episodes resolves through published_arm, which falls back to the
+    alert-shadow `condition`. Feeding it a window that reaches past the published
+    field's ship date silently counts shadow episodes under a movement label: the
+    full 91-day archive scores 1,781 episodes that way against 153 on the arm
+    alone. The covered span must also shrink to what the arm really spans, so
+    asking for a long window cannot read as that many days of incidents.
+    """
+    t0 = 1_700_000_000
+    legacy = [
+        _pred(ts=t0 + i * 300, condition="disrupted" if i % 2 == 0 else "normal")
+        for i in range(40)
+    ]
+    on_arm_start = t0 + 40 * 300
+    on_arm = [
+        replace(
+            _pred(ts=on_arm_start + i * 300, condition="normal"),
+            published_condition="disrupted" if i < 3 else "normal",
+        )
+        for i in range(10)
+    ]
+    end = on_arm_start + 10 * 300
+    s = episode_support(legacy + on_arm, window_start=t0, window_end=end)
+
+    # The 20 flapping shadow episodes must not appear; only the one real incident.
+    assert s["n_episodes"] == 1
+    assert s["graded_arm"] == MOVEMENT_ARM_LABEL
+    assert s["excluded_pre_arm_rows"] == len(legacy)
+    assert s["tick_rows"] == len(on_arm)
+    # Covered span starts where the arm does, not where the window was asked to.
+    assert s["covered"] == {"start": on_arm_start, "end": end}
+
+
+def test_episode_support_with_no_published_arm_reports_zero_not_shadow() -> None:
+    """A window entirely before the arm shipped has no support to report."""
+    t0 = 1_700_000_000
+    legacy = [_pred(ts=t0 + i * 300, condition="disrupted") for i in range(20)]
+    s = episode_support(legacy, window_start=t0, window_end=t0 + 20 * 300)
+    assert s["n_episodes"] == 0
+    assert s["tick_rows"] == 0
+    assert s["excluded_pre_arm_rows"] == 20
+    assert s["covered"] is None
 
 
 def test_load_transition_matrices_publishes_the_self_loop_ceiling() -> None:

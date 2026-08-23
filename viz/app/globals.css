@@ -415,6 +415,14 @@ a:hover {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
+/* Effective support beside the tick counts. Given prominence over the counts it
+   sits next to: the tick number is the one that misleads, this is the one that
+   says how much the window can settle. cursor:help marks the tooltip. */
+.counts .support {
+  color: var(--text);
+  cursor: help;
+  border-bottom: 1px dotted var(--border);
+}
 .grp {
   margin: 28px 0 4px;
   font-size: 15px;

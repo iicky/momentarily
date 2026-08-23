@@ -89,11 +89,33 @@ export interface MovementCoverage {
   by_condition: Record<string, number>;
 }
 
+/** Effective sample support behind the per-tick counts. Ticks inside one regime
+ * are autocorrelated, so the episode count — not the tick count — is how much
+ * independent evidence the window carries. Measured on the published arm, six
+ * consecutive 7-day windows carried indistinguishable tick counts (56k-58k) and
+ * 5 to 89 episodes: a 17.8x spread in real support behind a flat advertised n. */
+export interface EpisodeSupport {
+  graded_arm: string;
+  n_episodes: number;
+  n_left_censored: number;
+  n_right_censored: number;
+  n_standing: number;
+  standing_tick_share: number;
+  tick_rows: number;
+  // Rows dropped for predating the published arm; a widened window can exclude
+  // most of its own span this way.
+  excluded_pre_arm_rows?: number;
+  // The span the arm actually covers, which can be far shorter than the window.
+  covered?: { start: number; end: number } | null;
+}
+
 export interface CalibrationDoc {
   generated_at: number;
   window: { start: number; end: number };
   predictions_seen: number;
   transitions_seen: number;
+  // Absent on feeds published before effective support shipped.
+  episode_support?: EpisodeSupport;
   // Present only on calibration.json published after the drift work; older
   // feeds omit it, so the panel is gated on its presence.
   drift?: DriftDoc;

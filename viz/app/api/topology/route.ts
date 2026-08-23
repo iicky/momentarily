@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { r2Configured, getJson } from "@/lib/r2";
-import type { AdjEdge, RouteStops } from "@/lib/stations";
+import type { AdjEdge, RouteStops, Provenance } from "@/lib/stations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +20,7 @@ interface SegmentParamsDoc {
     { to: string; successors?: { to: string; n_trips: number }[] }
   >;
   route_stops?: RouteStops;
+  provenance?: Provenance;
 }
 
 export async function GET() {
@@ -42,6 +43,7 @@ export async function GET() {
       configured: true,
       trained_at: doc.trained_at,
       topology_source: doc.topology_source,
+      provenance: doc.provenance,
       edges,
       routeStops: doc.route_stops ?? {},
     });

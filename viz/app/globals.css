@@ -606,6 +606,13 @@ code {
   margin: 8px 0;
 }
 
+.prov-note {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-top: 14px;
+}
+
 /* --- Lines / Station / Map surfaces -------------------------------------- */
 
 .line-grid {

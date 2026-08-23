@@ -1377,6 +1377,57 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
     assert not admits("A", "north", "A01N")  # chain start, a layover
 
 
+def test_write_segment_params_stamps_provenance_and_route_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    fake = _FakeS3()
+
+    def _vehicles(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        return [{}]
+
+    def _baseline(
+        _bodies: list[dict[str, Any]], *, counts_from_stop: Any = None
+    ) -> dict[tuple[str, str, str], Any]:
+        return {("A", "north", "A02N"): SimpleNamespace(p0=0.5, n=10)}
+
+    def _no_adjacency(_bodies: list[dict[str, Any]]) -> dict[tuple[str, str, str], Any]:
+        return {}
+
+    def _prov() -> dict[str, Any]:
+        return {"code_sha": "abc123", "dirty": False, "producer": "test"}
+
+    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _vehicles)
+    monkeypatch.setattr("training.train_em.build_segment_baseline", _baseline)
+    monkeypatch.setattr("training.train_em.canonical_adjacency", _no_adjacency)
+    monkeypatch.setattr("training.train_em.code_provenance", _prov)
+
+    n = write_segment_params(
+        _r2_config(),
+        cast("S3Client", fake),
+        "test-bucket",
+        date(2026, 8, 4),
+        date(2026, 8, 11),
+        42,
+        _STATIC_SUCCESSORS,
+        _STATIC_PATTERNS,
+        "gtfs_static",
+        _THROUGH,
+    )
+
+    assert n == 1
+    doc = json.loads(fake.objects["state/segment_params.json"])
+    assert doc["provenance"] == {
+        "code_sha": "abc123",
+        "dirty": False,
+        "producer": "test",
+    }
+    assert doc["route_stops"]["A|north"] == [
+        {"stops": ["A01N", "A02N", "A03N"], "n_trips": 5}
+    ]
+
+
 def test_write_segment_dwell_reconstructs_from_through_stops_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

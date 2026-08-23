@@ -42,10 +42,17 @@ export interface RoutePattern {
 /** Patterns keyed by `route|direction`, most-run first. */
 export type RouteStops = Record<string, RoutePattern[]>;
 
+export interface Provenance {
+  code_sha: string;
+  dirty: boolean | null;
+  producer: string;
+}
+
 export interface Topology {
   configured: boolean;
   trained_at?: number;
   topology_source?: string;
+  provenance?: Provenance;
   edges: AdjEdge[];
   routeStops: RouteStops;
 }

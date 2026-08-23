@@ -120,6 +120,17 @@ function MapView() {
           <SegPanel snap={snap} route={route} trip={trip} />
         </div>
       )}
+
+      {topo?.provenance && (
+        <div className="prov-note">
+          topology · {topo.provenance.producer} @{" "}
+          <code>{topo.provenance.code_sha.slice(0, 7)}</code>
+          {topo.provenance.dirty ? " (dirty)" : ""}
+          {topo.trained_at
+            ? ` · trained ${new Date(topo.trained_at * 1000).toISOString().slice(0, 10)}`
+            : ""}
+        </div>
+      )}
     </div>
   );
 }

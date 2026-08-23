@@ -385,6 +385,17 @@ const SegmentParamsSchema = z.object({
       z.array(z.object({ stops: z.array(z.string()), n_trips: z.number().int().nonnegative() })),
     )
     .optional(),
+  // Which code produced this doc — {code_sha, dirty, producer}, the same block
+  // params.json/eval.json carry (training/provenance.py). Absent on docs written
+  // before this field. The Worker doesn't read it; it's for off-Worker consumers
+  // (viz) that surface the topology's lineage.
+  provenance: z
+    .object({
+      code_sha: z.string(),
+      dirty: z.boolean().nullable(),
+      producer: z.string(),
+    })
+    .optional(),
 });
 export type SegmentParamsDoc = z.infer<typeof SegmentParamsSchema>;
 

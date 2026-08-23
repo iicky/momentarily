@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { fetchSnapshot } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
-import type { StationCoord, Topology, AdjEdge, RouteStops } from "@/lib/stations";
+import type { StationCoord, Topology, AdjEdge, RouteStops, Provenance } from "@/lib/stations";
 
 const SNAP_POLL_MS = 60_000;
 
@@ -78,6 +78,7 @@ export function useTopology(): Async<Topology> {
           configured?: boolean;
           trained_at?: number;
           topology_source?: string;
+          provenance?: Provenance;
           edges?: AdjEdge[];
           routeStops?: RouteStops;
           error?: string;
@@ -88,6 +89,7 @@ export function useTopology(): Async<Topology> {
             configured: json.configured ?? false,
             trained_at: json.trained_at,
             topology_source: json.topology_source,
+            provenance: json.provenance,
             edges: json.edges ?? [],
             routeStops: json.routeStops ?? {},
           },

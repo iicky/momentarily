@@ -562,6 +562,10 @@ def write_segment_params(
         doc = {
             "schema_version": SCHEMA_VERSION,
             "trained_at": trained_at,
+            # Which code produced this doc, matching params.json/eval.json — the
+            # off-Worker consumers (viz) read the topology and its ordering, so
+            # they can name the tree that built it. See training/provenance.py.
+            "provenance": code_provenance(),
             "min_share": MIN_SHARE,
             "topology_source": topology_source,
             "cells": cells,

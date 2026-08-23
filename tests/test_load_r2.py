@@ -5,15 +5,18 @@ Synthetic alert-version bodies — no R2 access.
 
 from __future__ import annotations
 
+import random
+from collections.abc import Callable
 from itertools import pairwise
 from typing import Any
 
 import pytest
 
-from momentarily.hmm import tod_bin
+from momentarily.hmm import schedule_bin, tod_bin
 from training.load_r2 import (
     AdvanceBaseline,
     PresenceMask,
+    ServiceQuantiles,
     _binom_lower_tail,  # pyright: ignore[reportPrivateUsage]
     _snap_tick,  # pyright: ignore[reportPrivateUsage]
     advance_baseline_to_json,
@@ -23,9 +26,12 @@ from training.load_r2 import (
     build_tick_observations,
     classify_direction,
     compute_advance_baseline,
+    compute_baseline,
+    compute_service_quantiles,
     input_manifest_hash,
     presence_mask_from_predictions,
     service_baseline_to_json,
+    service_quantiles_to_json,
 )
 
 
@@ -536,6 +542,97 @@ def test_service_baseline_to_json_nests_route_tod():
     doc = service_baseline_to_json(baseline)
     assert doc == {"A": {"1": 6.0, "3": 4.5}, "B": {"1": 2.0}}
     # JSON object keys must be strings (tod_bin stringified for delivery).
+    assert all(isinstance(k, str) for k in doc["A"])
+
+
+def _assigned_series(route: str, vals: list[int]) -> dict[tuple[str, int], int]:
+    return {(route, T0 + i * TICK): v for i, v in enumerate(vals)}
+
+
+def test_compute_service_quantiles_nearest_rank_p10_p90():
+    """Nearest-rank on the cell's own sorted assigned_n samples: for the 10
+    values 1..10, p10 is sorted[n // 10] (the 2nd-smallest) and p90 is
+    sorted[int(n * 0.9)] (the largest) — both an OBSERVED assigned_n value,
+    never interpolated between two samples."""
+    series = _assigned_series("A", list(range(1, 11)))  # 1..10, n=10
+    cells = compute_service_quantiles(series, min_samples=10)
+    cell = cells[("A", tod_bin(T0))]
+    assert cell.p10 == 2.0
+    assert cell.p90 == 10.0
+
+
+def test_compute_service_quantiles_omits_cells_below_min_samples():
+    # route A: 8 samples (< min_samples); route B: a single sample.
+    series = _assigned_series("A", [10] * 8)
+    series[("B", T0)] = 5
+    cells = compute_service_quantiles(series, min_samples=10)
+    # Below the sample floor -> omitted, same as compute_baseline (caller
+    # treats a missing cell as "can't judge").
+    assert cells == {}
+
+
+def test_service_quantiles_bracket_the_baseline_median_cell_for_cell():
+    """p10 <= median <= p90 for every cell, so the Worker's derived low/high
+    ratios always straddle 1.0. The median and the quantiles are computed by two
+    separate functions over the same series; nothing in the types stops one of
+    them from drifting (a different min_samples, bin_fn, or an added filter), and
+    the failure is silent — a high ratio under 1.0 would mark a route as running
+    notably high while it sits below its own median."""
+    rng = random.Random(20260823)
+    series: dict[tuple[str, int], int] = {}
+    # Gate at the production floor of 20, which is the point separate filtering
+    # could drift. TICK is 300s, so only 12 ticks fit one wall-clock hour and a
+    # single hour can never reach 20 for an hourly schedule_bin. So stack four
+    # same-weekday dates at the SAME local hour: 4 x 12 = 48 samples in one
+    # (route, bin) under both bin functions. Flooring the base to 3600 aligns it
+    # to a UTC hour, which is also an ET hour (ET is a whole-hour offset), and a
+    # 7-day step is a whole number of hours, so every tick lands in that same
+    # local hour and daytype. The one-cell assertion below fails loudly if that
+    # ever stops holding.
+    floor = 20
+    base = (T0 // 3600) * 3600
+    for route in ("A", "B", "C"):
+        for week in range(4):
+            for i in range(12):
+                tick = base + week * 7 * 86400 + i * TICK
+                # Skewed and bimodal cells, which is the shape that actually
+                # occurs: a route-hour with two operating modes, not noise
+                # around one.
+                series[(route, tick)] = rng.choice([1, 2, 2, 3, 9, 40])
+
+    # BinKey is a constrained TypeVar (int or str, never a union), so a loop
+    # variable holding both bin functions cannot satisfy it. Take one function
+    # per call and keep the parameter generic.
+    def check[BinKey: (int, str)](bin_fn: Callable[[int], BinKey]) -> None:
+        baseline = compute_baseline(series, bin_fn=bin_fn, min_samples=floor)
+        quantiles = compute_service_quantiles(series, bin_fn=bin_fn, min_samples=floor)
+        assert len(baseline) == 3, (
+            f"{bin_fn.__name__}: expected one cell per route, got {sorted(baseline)}"
+        )
+        assert set(baseline) == set(quantiles), "cells must be gated identically"
+        for key, cell in quantiles.items():
+            median = baseline[key]
+            assert cell.p10 <= median <= cell.p90, (
+                f"{key}: p10={cell.p10} median={median} p90={cell.p90}"
+            )
+            assert cell.p10 / median <= 1.0 <= cell.p90 / median
+
+    check(tod_bin)
+    check(schedule_bin)
+
+
+def test_service_quantiles_to_json_nests_route_bin_and_stringifies_keys():
+    quantiles = {
+        ("A", 1): ServiceQuantiles(p10=8.0, p90=13.0),
+        ("A", 3): ServiceQuantiles(p10=4.0, p90=9.0),
+        ("B", 1): ServiceQuantiles(p10=1.0, p90=2.0),
+    }
+    doc = service_quantiles_to_json(quantiles)
+    assert doc == {
+        "A": {"1": {"p10": 8.0, "p90": 13.0}, "3": {"p10": 4.0, "p90": 9.0}},
+        "B": {"1": {"p10": 1.0, "p90": 2.0}},
+    }
+    # JSON object keys must be strings (bin key stringified for delivery).
     assert all(isinstance(k, str) for k in doc["A"])
 
 

@@ -3666,3 +3666,271 @@ has too few left to judge. So the low cross-recall is correct, not a calibration
 miss. 07h's premise — recalibrate to raise recall — is wrong; the follow-up is to
 publish assigned_n as its own service-level axis rather than fold it into the
 movement disrupted state.
+
+## 2026-08-22 — the drawer's alert-HMM posterior is one-hot on 24 of 29 routes, and its regime clock resets on 14 of them in a single tick
+
+origin: self
+
+Reading the route drawer against the live feed to explain "P(suspended) 100.00%,
+Regime age —" on the 2, the J and the 4. The section is honest about *which* arm it
+shows (the alert-aware read, not the published movement condition), but two of its
+four numbers are not usable as displayed.
+
+In one snapshot (generated_at 1787432444), of the 29 routes carrying an inference:
+
+| what the alert filter shows | routes |
+| --- | --- |
+| posterior numerically one-hot (max p > 0.999999) | 24 / 29 |
+| `regime_age_seconds == 0` — argmax flipped on this very tick | 14 / 29 |
+
+The posteriors are not near-certain, they are saturated: the 2 reads
+`p_normal = 2.0e-44`, `p_disrupted = 4.1e-33`, `p_suspended = 1`. Six independent
+likelihood channels multiply per tick (`logEmission`: Poisson count, four
+Bernoullis, binomial movement, Gaussian service), so the log-odds run to hundreds
+and the argmax is decided by whichever channel moved last. That is why half the
+system changes regime in the same tick — and since `regime_entered_at` only
+advances on an argmax change (`hmm.ts:192`), the drawer's "Regime age" is the age
+of that flapping alert argmax, NOT the age of the movement regime the badge is
+published from. Age "—" is `fmtMinutes(0)`: it flipped this tick.
+
+Two display consequences worth separating from the model problem: `fmtMinutes`
+rounded the hour remainder on its own, so 1379.7 minutes printed as "22h 60m"
+(fixed); and for a movement regime in state `normal`, `movementRecovery` returns
+`recovery_minutes = 0` by construction and `p_normal_in_30` is P(*stays* normal),
+so the "Recovery forecast" block renders "Median —" against "P(normal in 30m) 93%"
+— the label is wrong for normal routes, not the number.
+
+Also confirmed the supply axis reads far above baseline routinely, not just below
+it: same snapshot has the 2 at 217%, the J at 175%, the 1 at 169%, while the axis
+only degrades below 50%. A bare "Normal / 217%" pair is unreadable without the
+thresholds, which is what the new drawer meter marks.
+
+## 2026-08-22 — a fixed ratio-vs-median threshold cannot mark "more trains than usual": p90/median spans 1.09x to 12.0x across cells, and MAD is degenerate in 14% of them
+
+origin: agent
+
+Marking the supply axis's over-baseline readings on the route cards needed a
+threshold, and ">100% of the hourly median" was the obvious one. It fires on the
+majority of the grid. Measured over the same 28-day window the live sidecar is
+built from (2026-07-26..08-22, 8,065 archived trip-updates ticks, 193,017
+(route, tick) samples, 1,129 cells at >=20 samples), for the MEDIAN cell:
+
+| threshold vs own cell median | share of that cell's own history flagged |
+| --- | --- |
+| > 1.00x | 35.8% |
+| > 1.10x | 16.7% |
+| > 1.25x | 1.7% |
+| > 1.50x | 0.0% |
+
+Note it is 35.8% and not ~50%: `assigned_n` is a small integer count, so the
+median sits ON a heavily-tied value — the median cell has 29.2% of its readings
+exactly AT its median (max 100%). A median partitions the cell's historical
+values with ties, and says nothing about what share of a cross-sectional
+snapshot will exceed it. Claiming "half by construction" is wrong twice over.
+
+**The reason no single multiple works is that the ratio is not comparable across
+cells.** Measured p90/median: median 1.14x, p25 1.09x, p75 1.29x, max 12.00x
+(FS we22 has median 1 train and p90 of 12). So 1.14x is an ordinary afternoon
+for one cell and a once-a-month event for another. At the small end the ratio is
+pure quantisation: GS/FS at median 1 train means one extra train is +100%, while
+the F and 7 at rush (median 37-38) price the same extra train at +3% — a 33x
+spread in the number for an identical physical event.
+
+Robust z-score via MAD is not the fix either: MAD is exactly 0 in 161 of 1,129
+cells (14%), IQR in 86 (8%), because a line that always runs the same count at
+3am has no spread to normalise by. A modified z-score is undefined or infinite
+for one cell in seven.
+
+What this points at is per-cell empirical quantiles in the baseline sidecar
+(p10/p50/p90 beside the median it already ships), scored as "above this cell's
+own p90" rather than any global multiple — the same shape `compute_dwell_quantiles`
+already uses for dwell. Not built yet; the card threshold moved to a global 1.25x
+as a stopgap that at least does not fire on most of the grid (13 of 22 judgeable
+routes at 1.00x, 4 of 30 at 1.25x).
+
+Loose thread worth pulling: > 1.50x flagged 0.0% of the median cell's history in
+this window, yet the live snapshot minutes later had the 1 at 170% and the 2 at
+188% at we23. Either late-Saturday service is genuinely off the historical
+distribution or the denominator for those cells is wrong.
+
+## 2026-08-22 — the supply denominator is not soft: the 1 and 2 really did run weekday-level service on a Saturday. But the ratio cannot tell a rare day from a recurring second mode, and a per-cell percentile can
+
+origin: agent
+
+Chased the suspicion that the we23 baseline for the 1/2 was wrong, because they
+read 170%/188% of their usual late-Saturday service. The denominator is fine and
+the readings are real. What is wrong is the measure.
+
+Per-ET-date median `assigned_n` across all hours, weekends only, over
+2026-07-20..08-23 (9,935 archived ticks):
+
+| route | 07-25 | 08-01 | 08-08 | 08-15 | 08-22 | weekday level |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 13 | 13 | 12 | 13 | **20** | 21-23 |
+| 2 | 11 | 11 | 11 | 11 | **21** | 25-26 |
+| C | 11 | 11 | 9 | 10 | 11 | 14-15 |
+
+On Saturday 08-22 the 1 and 2 ran at nearly weekday levels all day while the C
+ran an ordinary Saturday. No `Extra Service` alert was published for either line
+— `assigned_n` is the only witness. So the axis worked: it caught a real service
+anomaly the alert feed never announced.
+
+**The finding that matters for the measure.** Those two readings look identical
+as ratios and are nothing alike as percentiles:
+
+| cell | n | median | p90 | p95 | observed | ratio | percentile | >1.25x median? | >p90? |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 @ we23 | 120 | 11 | 13 | 17 | 18 | 164% | 96th | yes | yes |
+| 2 @ we23 | 120 | 9 | 16 | 16 | 16 | 178% | 88th | yes | **no** |
+
+The 2's cell is BIMODAL — value counts `{6:1, 7:5, 8:42, 9:42, 10:6, 14:8, 15:1,
+16:15}`, the 14-16 mode occurring on 2 of 5 weekends. Sixteen trains is that
+line's ordinary high mode, sitting exactly at its own p90, and the ratio calls it
+a bigger deviation (178%) than the 1's genuinely once-a-month 18 (164%). A
+median-plus-multiple cannot represent a two-mode cell at all; the percentile
+separates them correctly with no tuning.
+
+This is the concrete case for moving the axis off ratio-vs-median and onto
+per-cell quantiles, beyond the cross-cell comparability argument recorded above.
+
+
+## 2026-08-23 — the Models page reliability panel graded the movement forecast against the alert arm: same forecast, AUC 0.406 published vs 0.961 correct
+
+origin: self
+
+`p_normal_in_30min` is published only when `recovery_source` is `movement` or
+`schedule` (`worker/src/snapshot.ts:878`) — it is a movement dwell-curve survival
+probability. `calibrate()` took its outcome from `future.condition`
+(`training/eval.py:670`), the alert-shadow regime. `published_arm()` had existed
+for exactly this since the two arms diverged, and `_grade_recovery` already used
+it; `calibrate()` was never migrated.
+
+`build_eval` computed both blocks all along. `build_calibration` published only
+the shadow one, dropping `calibration_movement` and `calibration_arm`, so the
+page could never see the correct pairing and the feed did not even say which arm
+it graded.
+
+Live feed 2026-08-22 (`code_sha 1982fd6`), 30-minute horizon, one forecast:
+
+| graded against | n | Brier | BSS vs clim | AUC |
+| --- | --- | --- | --- | --- |
+| `condition` (alert-shadow) — published | 35,078 | 0.0175 | -0.031 | **0.406** |
+| `published_condition` (movement) — dropped | 34,740 | 0.0009 | -0.108 | **0.961** |
+
+The tell was in the strata. Shadow `not_normal_now`: `mean_pred` 0.9939 against
+`mean_outcome` 0.5049, and 35,017 of 35,078 samples in the single [0.9,1.0)
+reliability bin. That reads as a degenerate constant forecast, but the forecast is
+not constant — it is conditioned on the *movement* state while the stratum splits
+on the *alert* condition, and the two are nearly independent. Sharpness of 0.99
+against a realized 0.50 was cross-arm disagreement being reported as forecast
+error.
+
+**The correction is not "publish the better number".** The movement arm has
+`not_normal_now` n=**4** and `unknown_share` 0.247, so its AUC 0.961 rests on 28
+non-normal outcomes out of 34,740, and its BSS vs climatology (-0.108) is *worse*
+than the shadow arm's (-0.031). Swapping 0.406 for 0.961 would have moved the
+dishonesty rather than removed it. Both arms now ship with their label, sample
+count, and coverage, and the panel draws both series.
+
+Two things this did not fix, recorded so they are not mistaken for it:
+
+- Horizons 60 and 120 grade n=0 permanently. Those fields are emitted only for
+  `recovery_source === 'schedule'` (`worker/src/snapshot.ts:881-884`) and
+  `calibrate()` skips every schedule row (`training/eval.py:653-655`). The gating
+  was deliberate (journal 2026-08-12, BSS -0.00 to -1.30) but the page still drew
+  two blank calibration plots, which read as "no skill" rather than "withheld".
+  The panel now says which it is; whether the horizons should exist at all is open.
+- Recovery interval coverage is 1.8% against a nominal 50%, and both arms lose to
+  per-route climatology. Neither is a reporting artifact. The 99.1% normal base
+  rate makes "always say normal" a genuinely hard bar, and with 608 not-normal
+  samples on the shadow arm and 4 on the movement arm, this window cannot
+  distinguish a good model from a bad one on the cases that matter. That is a
+  collection problem, not a charting one.
+## 2026-08-23 — one "Recovery forecast" heading was answering four different questions, and three of them wrongly
+
+origin: self
+
+Correction to the entry above, which called the regime-probabilities filter an
+"alert-HMM" and its one-hot posterior "saturated, not confident". Both are wrong
+framings. `logEmission` (hmm.ts:134-157) folds in the binomial movement and
+Gaussian service channels whenever they are available, one tick lagged
+(index.ts:361-378), so the filter is alert-PRIMARY, not alert-only. And one-hot
+IS its confidence — the problem is that the confidence is miscalibrated and
+cannot hedge, not that it is missing.
+
+The drawer fix: the published numbers under one "Recovery forecast" heading mean
+four different things, and the reader had no way to tell which. Mapping the live
+snapshot's 29 inference-carrying routes onto the branches:
+
+| what the numbers actually mean | routes |
+| --- | --- |
+| published normal — median 0/0/0 by construction, horizon is P(*stays* normal) | 19 |
+| published unknown — we declined to judge, so every number is withheld | 7 |
+| `not_scheduled`, `recovery_source: 'hmm'` — no announced resume to count down to | 3 |
+| real time-to-normal estimate off the dwell curve | 0 |
+
+The 19 normal routes were rendering "Median —" (that's `fmtMinutes(0)`) directly
+above "P(normal in 30m) 93%", which reads as a broken forecast rather than "this
+line is fine and 93% likely to stay that way". The 3 not_scheduled routes took the
+withholding path, so a naive "the status came from train movement" message would
+have been a lie about them — their condition comes from the schedule.
+
+Also: `recovery_indeterminate` is two different silences. The movement arm sets it
+when the regime outlived every measured dwell OR when the fitted curve's median
+hits the 24h clamp (snapshot.ts:974), so copy asserting "beyond every one we've
+measured" is wrong for the clamp case; the message now names the ceiling that
+`recovery_minutes` already carries. The hmm arm sets it via the withholding gate
+(snapshot.ts:855), which is not a bounding failure at all.
+
+
+## 2026-08-23 — "collection problem" was wrong: 91 days are archived, eval grades 7, and a 7-day window's real support swings 17.8x
+
+origin: self
+
+An earlier entry today closed by calling the thin disrupted sample "a collection
+problem, not a charting one." That was wrong on both halves, and the numbers say
+so.
+
+**There is no shortage of archive.** `v1/predictions/` holds 24,972 files across
+91 days (2026-05-25..2026-08-23, 705,344 rows). `training/eval.py`'s `--days`
+defaults to 7 with no upper bound, and `training/prune.py:61` retains 90. So the
+published grading reads 7 of 90 available days, and widening it is an argument,
+not a data-collection campaign.
+
+**The per-tick n was never the sample size.** Six consecutive 7-day windows on
+the published arm — tick counts indistinguishable, support wildly not:
+
+| window start | tick-rows | episodes |
+| --- | --- | --- |
+| 2026-08-16 | 58,464 | 26 |
+| 2026-08-09 | 58,551 | **89** |
+| 2026-08-02 | 58,464 | 16 |
+| 2026-07-26 | 58,464 | **5** |
+| 2026-07-19 | 57,868 | 8 |
+| 2026-07-12 | 56,280 | 8 |
+
+A flat advertised n of ~58k hides a **17.8x** swing in independent evidence. Any
+week-over-week metric move on this page was dominated by which week got sampled.
+The current window's 26 incidents sit behind a displayed 52,287 — a ~2,000x
+overstatement of independent samples.
+
+**Negative result, with the number that killed it.** The first cut of
+`episode_support` fed the raw window to `scorecard.model_episodes`, which resolves
+the arm via `published_arm` — and that falls back to the alert-shadow `condition`
+for rows predating 2026-07-11. Over the full archive it scores **1,781** episodes
+against **153** on the published arm alone: a 12x inflation, entirely the shadow
+arm's flapping, reported under a movement-arm label. Fixed by filtering to rows
+carrying `published_condition`, counting the excluded legacy rows, and publishing
+the span actually covered — so `--days 91` now reports 153 episodes over 43d
+covered with 348,516 rows excluded, rather than a number that looks 12x better.
+
+Also: the machinery already existed. `training/episodes.py` and
+`training/scorecard.py` have segmented and graded episodes on the right arm for a
+while; the counts just went to `docs/review/<date>-shadow-hmm/summary.json` and
+never to `v1/eval.json` or `v1/calibration.json`. The page was tick-only because
+nothing carried the episode count to it, not because it was hard to compute.
+
+Standing constraint the fix cannot lift: `published_condition` is 43 days old, so
+the movement arm's support grows with the calendar and caps at the 90-day
+retention. 28d is the conservative widening (fully inside the published era);
+beyond ~43d there is nothing yet to read.

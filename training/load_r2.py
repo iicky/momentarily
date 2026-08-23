@@ -527,6 +527,60 @@ def service_baseline_to_json[BinKey: (int, str)](
     return out
 
 
+@dataclass(frozen=True)
+class ServiceQuantiles:
+    """A (route, time bucket) cell's own spread of assigned_n, read against by
+    the Worker instead of one global supply-notable multiple — a cell's high
+    mark is its own p90, not baseline * 1.25."""
+
+    p10: float
+    p90: float
+
+
+def compute_service_quantiles[BinKey: (int, str)](
+    series: dict[tuple[str, int], int],
+    *,
+    bin_fn: Callable[[int], BinKey] = tod_bin,
+    min_samples: int = 20,
+) -> dict[tuple[str, BinKey], ServiceQuantiles]:
+    """Per (route, time bucket) p10/p90 of assigned_n — the cell's own spread,
+    the denominator-relative bounds the Worker draws as ticks on the existing
+    supply meter. Same bucketing and `min_samples` gate as compute_baseline: a
+    cell present in one is present in the other, so a caller can always pair a
+    quantile with its median.
+
+    Nearest-rank on the cell's own sorted assigned_n samples: p10 is
+    sorted[n // 10], p90 is sorted[int(n * 0.9)] (0-indexed) — both are always
+    an OBSERVED assigned_n value, never interpolated between two samples."""
+    buckets: dict[tuple[str, BinKey], list[int]] = {}
+    for (route, tick), assigned in series.items():
+        buckets.setdefault((route, bin_fn(tick)), []).append(assigned)
+    out: dict[tuple[str, BinKey], ServiceQuantiles] = {}
+    for key, vals in buckets.items():
+        if len(vals) < min_samples:
+            continue
+        ordered = sorted(vals)
+        n = len(ordered)
+        out[key] = ServiceQuantiles(
+            p10=float(ordered[n // 10]), p90=float(ordered[int(n * 0.9)])
+        )
+    return out
+
+
+def service_quantiles_to_json[BinKey: (int, str)](
+    quantiles: dict[tuple[str, BinKey], ServiceQuantiles],
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Serialize per-cell assigned_n quantiles for the sidecar's `quantiles`
+    key, nested route -> bin (stringified) -> {p10, p90} — sibling shape to
+    service_baseline_to_json's route -> bin -> median. The Worker divides both
+    by that cell's own median baseline to get service_low_ratio/
+    service_high_ratio, on the same scale as service_ratio."""
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    for (route, bin_key), q in quantiles.items():
+        out.setdefault(route, {})[str(bin_key)] = {"p10": q.p10, "p90": q.p90}
+    return out
+
+
 # Min usable ticks in a schedule bin before its in-service rate is trusted.
 MIN_SCHEDULE_TICKS = 20
 

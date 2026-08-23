@@ -237,9 +237,62 @@ describe('buildSnapshot: service_condition (supply axis)', () => {
       rolls: { A: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      // Old-shaped doc: no service_regimes, no service_ratios, no
+      // service_quantile_ratios — exactly what a sidecar with no quantiles
+      // produces. The whole axis, including the two new fields, must behave
+      // exactly as before this change: unknown/null, never a thrown parse or a
+      // fabricated ratio.
       movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'normal' }) },
     });
     expect(snap.route_status.A!.service_condition).toBe('unknown');
     expect(snap.route_status.A!.service_ratio).toBeNull();
+    expect(snap.route_status.A!.service_low_ratio).toBeNull();
+    expect(snap.route_status.A!.service_high_ratio).toBeNull();
+  });
+
+  test('publishes service_low_ratio/service_high_ratio from service_quantile_ratios', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'd', alertType: 'Delays', route: 'A' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: snaps,
+      rolls: { A: roll('normal') },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      movementStates: {
+        observed_at: NOW - 300,
+        regimes: settled({ A: 'normal' }),
+        service_regimes: settled({ A: 'normal' }),
+        service_ratios: { A: 0.9 },
+        service_quantile_ratios: { A: { low: 0.8, high: 1.3 } },
+      },
+    });
+    const a = snap.route_status.A!;
+    expect(a.service_low_ratio).toBe(0.8);
+    expect(a.service_high_ratio).toBe(1.3);
+  });
+
+  test('a route with service_ratio but no quantile cell reads null for both new fields', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'e', alertType: 'Delays', route: 'A' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: snaps,
+      rolls: { A: roll('normal') },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      movementStates: {
+        observed_at: NOW - 300,
+        regimes: settled({ A: 'normal' }),
+        service_regimes: settled({ A: 'normal' }),
+        service_ratios: { A: 0.9 },
+        // No quantile cell for A, even though service_quantile_ratios is present.
+        service_quantile_ratios: {},
+      },
+    });
+    const a = snap.route_status.A!;
+    expect(a.service_ratio).toBe(0.9);
+    expect(a.service_low_ratio).toBeNull();
+    expect(a.service_high_ratio).toBeNull();
   });
 });

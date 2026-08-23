@@ -29,7 +29,7 @@ import type { Observation } from './hmm';
 import { advanceBaselineFor, scheduleRateFor, serviceBaselineFor } from './params';
 import type { AdvanceBaselineCell, ServiceBaseline, TrainedParams } from './params';
 import type { RegimeEntry } from './regime';
-import type { MovementMetricDoc, ServiceMetricDoc } from './state';
+import type { MovementMetricDoc, ServiceMetricDoc, ServiceQuantiles } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
 
@@ -276,6 +276,56 @@ export function deriveServiceRatios(
   for (const [route, svc] of svcRows) {
     const ratio = serviceRatioFor(route, svc, baseline, observedAt);
     if (ratio !== null) out[route] = ratio;
+  }
+  return out;
+}
+
+// A cell's own {p10, p90} spread of assigned_n, or null when the trainer
+// hasn't published quantiles for it (old sidecar, or a cell below its
+// min_samples floor). Same schedule_bin keying as serviceRatioFor's baseline
+// lookup.
+export function serviceQuantileFor(
+  routeId: string,
+  quantiles: ServiceQuantiles | null,
+  observedAt: number,
+): { p10: number; p90: number } | null {
+  return quantiles?.[routeId]?.[schedule_bin(observedAt)] ?? null;
+}
+
+// A cell's spread normalised onto the SAME scale as serviceRatioFor's output
+// (p10/median, p90/median), so it can be drawn as ticks on the same meter. null
+// when the cell has no published quantiles, or its baseline median is <= 0 —
+// mirrors serviceRatioFor's own null gate on the median.
+export function serviceQuantileRatiosFor(
+  routeId: string,
+  baseline: ServiceBaseline | null,
+  quantiles: ServiceQuantiles | null,
+  observedAt: number,
+): { low: number; high: number } | null {
+  const median = baseline?.[routeId]?.[schedule_bin(observedAt)] ?? null;
+  if (median === null || median <= 0) return null;
+  const cell = serviceQuantileFor(routeId, quantiles, observedAt);
+  if (cell === null) return null;
+  return { low: cell.p10 / median, high: cell.p90 / median };
+}
+
+/**
+ * Per-route quantile-derived low/high ratios for this tick, mirroring
+ * deriveServiceRatios: only routes with both a reading and a quantile cell are
+ * returned, so a route absent here publishes service_low_ratio/
+ * service_high_ratio null. Persist alongside service_ratios so the snapshot
+ * can render the "notably high" mark without a global constant.
+ */
+export function deriveServiceQuantileRatios(
+  svcRows: Map<string, ServiceRow>,
+  baseline: ServiceBaseline | null,
+  quantiles: ServiceQuantiles | null,
+  observedAt: number,
+): Record<string, { low: number; high: number }> {
+  const out: Record<string, { low: number; high: number }> = {};
+  for (const [route] of svcRows) {
+    const ratios = serviceQuantileRatiosFor(route, baseline, quantiles, observedAt);
+    if (ratios !== null) out[route] = ratios;
   }
   return out;
 }

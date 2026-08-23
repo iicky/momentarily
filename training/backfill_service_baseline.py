@@ -84,8 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     client = make_client(cfg)
 
-    (_tod, _n_tod, _sched, _n_sched, hourly, n_hourly) = _service_baseline(
-        cfg, client, start, end
+    (_tod, _n_tod, _sched, _n_sched, hourly, n_hourly, quantiles, n_quantile_cells) = (
+        _service_baseline(cfg, client, start, end)
     )
     if not hourly:
         print(
@@ -100,8 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     sample = {r: hourly[r] for r in routes[:3]}
     print(
         f"service baseline {start}..{end}: {len(routes)} routes, "
-        f"{n_hourly} (route,bin) cells; generated_at={generated_at}, "
-        f"params_trained_at={params_trained_at}"
+        f"{n_hourly} (route,bin) cells, {n_quantile_cells} quantile cells; "
+        f"generated_at={generated_at}, params_trained_at={params_trained_at}"
     )
     print(f"sample: {json.dumps(sample)[:400]}")
 
@@ -113,7 +113,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     n = write_service_baseline(
-        client, cfg.bucket, hourly, generated_at, params_trained_at=params_trained_at
+        client,
+        cfg.bucket,
+        hourly,
+        generated_at,
+        params_trained_at=params_trained_at,
+        quantiles=quantiles,
     )
     print(f"wrote {SERVICE_BASELINE_KEY} + versioned v{generated_at}: {n} routes")
     return 0

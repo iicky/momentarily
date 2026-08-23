@@ -42,6 +42,7 @@ import {
   MOVEMENT_STATE_PUBLISH,
   deriveMovementStates,
   SERVICE_DEBOUNCE_TICKS,
+  deriveServiceQuantileRatios,
   deriveServiceRatios,
   deriveServiceStates,
   seedNormalServiceRegimes,
@@ -664,6 +665,9 @@ export default {
             const serviceBaselineDoc = await readServiceBaseline(env.MOMENTARILY);
             const serviceBaseline =
               serviceBaselineDoc?.baseline ?? trainedParams?.serviceBaselineHourly ?? null;
+            // Per-cell p10/p90 spread. Sidecar-only — no params.json fallback,
+            // since the legacy field never carried a spread.
+            const serviceQuantiles = serviceBaselineDoc?.quantiles ?? null;
             const { entries, changes } = advanceRegimes(
               prevMovement?.regimes,
               deriveMovementStates(moveRows, rows, trainedParams, observedAt),
@@ -705,6 +709,12 @@ export default {
               regimes: entries,
               service_regimes: service.entries,
               service_ratios: deriveServiceRatios(rows, serviceBaseline, observedAt),
+              service_quantile_ratios: deriveServiceQuantileRatios(
+                rows,
+                serviceBaseline,
+                serviceQuantiles,
+                observedAt,
+              ),
             });
             try {
               await writeMovementTransitions(

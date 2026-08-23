@@ -178,8 +178,12 @@ a:hover {
 .card-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   margin-bottom: 8px;
+  /* The train glyph is the last child and the first thing to run out of room in
+     a narrow column; wrapping drops it to its own line instead of clipping. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 .bullet {
   width: 26px;
@@ -193,12 +197,15 @@ a:hover {
   color: #fff;
   flex: 0 0 auto;
 }
+/* Condition badge. Kept compact: the train glyph now rides every card head, so
+   the badge has to give back the room it used to spend on padding. */
 .cond {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 1px 8px;
+  padding: 0 5px;
   border-radius: 999px;
   text-transform: capitalize;
+  white-space: nowrap;
 }
 .cond.normal {
   color: var(--normal);
@@ -216,19 +223,191 @@ a:hover {
   color: var(--muted);
   background: color-mix(in srgb, var(--unknown) 20%, transparent);
 }
-/* Supply axis chip — a dashed outline so it reads as a SEPARATE axis from the
-   solid-filled `.cond` (flow) badge next to it, never mistaken for it. */
-.svc {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 7px;
-  border-radius: 999px;
-  text-transform: lowercase;
+
+/* Train icon + level bars: the "how many trains are running" axis, on every card
+   with no pill or wording around it. The wrapper owns the band colour and both
+   glyphs inherit it through currentColor, so the pair always reads as one
+   indicator. */
+.card-trains {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
 }
-.svc.degraded {
+/* Running notably high, the reading itself rides beside the glyph. The
+   colour+halo treatment alone tested too subtle to notice at 13px, and the
+   number is the one marker that needs no decoding and also says HOW far over —
+   which matters because the same ratio means very different things on a 3-train
+   shuttle and a 38-train rush line. */
+.trains-pct {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.supply-glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  color: var(--unknown);
+}
+.supply-glyph.low {
+  color: var(--suspended);
+}
+.supply-glyph.thin {
   color: var(--disrupted);
-  background: color-mix(in srgb, var(--disrupted) 8%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--disrupted) 45%, transparent);
+}
+.supply-glyph.normal {
+  color: var(--normal);
+}
+/* Notably above this cell's own p90 — see isRunningHigh in viz/lib/feed.ts. */
+.supply-glyph.high {
+  color: var(--accent);
+}
+.tmark {
+  display: block;
+  flex: none;
+  opacity: 0.85;
+}
+
+/* Level bars. Lit bars inherit the wrapper's band colour; unlit bars stay a faint
+   track so the meter reads as "1 of 3", not "one bar". */
+.smark {
+  display: block;
+  flex: none;
+}
+.smark .dim {
+  fill: var(--border);
+}
+.smark .lit {
+  fill: currentColor;
+}
+.smark.high {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 70%, transparent));
+}
+
+/* Proportional supply meter (drawer). Fixed 0–200% scale with ticks at the two
+   thresholds that actually flip the axis (50% degrade / 80% recover) plus the
+   hourly norm at 100%, so the ticks stay put from route to route. */
+.supply {
+  margin: 8px 0 4px;
+}
+/* The one line that answers "how much service is out": magnitude, then the
+   published axis state beside it, so a 0%-but-not-flagged reading (the debounce
+   holding) is legible instead of looking like a contradiction. */
+.supply-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.supply-head .smark {
+  align-self: center;
+}
+.supply-pct {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.supply-pct.low {
+  color: var(--suspended);
+}
+.supply-pct.thin {
+  color: var(--disrupted);
+}
+.supply-pct.normal {
+  color: var(--normal);
+}
+.supply-pct.unknown {
+  color: var(--unknown);
+}
+.supply-pct.high {
+  color: var(--accent);
+}
+.supply-of {
+  font-size: 12px;
+  color: var(--muted);
+}
+.supply-track {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.supply-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+.supply-fill.low {
+  background: var(--suspended);
+}
+.supply-fill.thin {
+  background: var(--disrupted);
+}
+.supply-fill.normal {
+  background: var(--normal);
+}
+.supply-fill.unknown {
+  background: var(--unknown);
+}
+.supply-fill.high {
+  background: var(--accent);
+}
+.supply-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.supply-tick.norm {
+  background: var(--text);
+  opacity: 0.55;
+}
+/* Per-route p10/p90 tick — the cell's own spread, not a fixed threshold.
+   Half-height and dashed so it never reads as another cutoff line like the
+   50/80/100 ticks it shares the track with. */
+.supply-tick.range {
+  top: 50%;
+  height: 50%;
+  width: 0;
+  background: none;
+  border-left: 1px dashed color-mix(in srgb, var(--text) 55%, transparent);
+}
+.supply-over {
+  position: absolute;
+  right: 2px;
+  top: -5px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--bg);
+  font-weight: 700;
+}
+.supply-scale {
+  position: relative;
+  height: 12px;
+  font-size: 9px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.supply-scale span {
+  position: absolute;
+  top: 1px;
+  transform: translateX(-50%);
+}
+.supply-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.supply-note b {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .pbar {
@@ -253,11 +432,28 @@ a:hover {
   background: var(--suspended);
 }
 
+/* Alert label on the left, recovery ETA + train glyph on the right. The glyph
+   lives here rather than in the card head because the head's condition badge can
+   run long ("Not scheduled") and pushed the glyph onto a second row anyway. */
 .meta {
   color: var(--muted);
   font-size: 12px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.meta-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
 
 .drawer {

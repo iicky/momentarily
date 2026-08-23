@@ -4,15 +4,18 @@ import type { MovementRow } from '../src/vehicles';
 import type { ServiceRow } from '../src/trip_updates';
 import type { AdvanceBaselineCell, MovementBaseline, ServiceBaseline, TrainedParams } from '../src/params';
 import { scheduleRateFor } from '../src/params';
-import type { MovementMetricDoc, ServiceMetricDoc } from '../src/state';
+import type { MovementMetricDoc, ServiceMetricDoc, ServiceQuantiles } from '../src/state';
 import { schedule_bin, tod_bin } from '../src/hmm';
 import {
   deriveMovementState,
   deriveMovementStates,
+  deriveServiceQuantileRatios,
   deriveServiceRatios,
   deriveServiceState,
   deriveServiceStates,
   seedNormalServiceRegimes,
+  serviceQuantileFor,
+  serviceQuantileRatiosFor,
   serviceRatioFor,
   SERVICE_DEGRADE_RATIO,
   SERVICE_DEBOUNCE_TICKS,
@@ -847,5 +850,54 @@ describe('deriveServiceState / deriveServiceStates (supply axis)', () => {
       { debounceTicks: SERVICE_DEBOUNCE_TICKS },
     );
     expect(entries[ROUTE]?.state).toBe('normal');
+  });
+});
+
+describe('serviceQuantileFor / serviceQuantileRatiosFor / deriveServiceQuantileRatios (supply axis spread)', () => {
+  const T0 = Date.parse('2026-06-15T16:00:00Z') / 1000; // 12:00 ET
+  const ROUTE = 'Q';
+  const BIN = schedule_bin(T0);
+
+  const baseline: ServiceBaseline = { [ROUTE]: { [BIN]: 10 } };
+  const quantiles: ServiceQuantiles = { [ROUTE]: { [BIN]: { p10: 8, p90: 13 } } };
+
+  test('serviceQuantileFor returns the cell for the current schedule bin', () => {
+    expect(serviceQuantileFor(ROUTE, quantiles, T0)).toEqual({ p10: 8, p90: 13 });
+  });
+
+  test('serviceQuantileFor is null when the route has no published quantiles', () => {
+    expect(serviceQuantileFor(ROUTE, quantiles, T0)).not.toBeNull();
+    expect(serviceQuantileFor('1', quantiles, T0)).toBeNull();
+    expect(serviceQuantileFor(ROUTE, null, T0)).toBeNull();
+  });
+
+  test('serviceQuantileRatiosFor normalises the cell onto the median scale', () => {
+    expect(serviceQuantileRatiosFor(ROUTE, baseline, quantiles, T0)).toEqual({ low: 0.8, high: 1.3 });
+  });
+
+  test('serviceQuantileRatiosFor is null on a missing quantile cell', () => {
+    expect(serviceQuantileRatiosFor(ROUTE, baseline, {}, T0)).toBeNull();
+    expect(serviceQuantileRatiosFor(ROUTE, baseline, null, T0)).toBeNull();
+  });
+
+  test('serviceQuantileRatiosFor is null on a zero or absent median', () => {
+    expect(serviceQuantileRatiosFor(ROUTE, { [ROUTE]: { [BIN]: 0 } }, quantiles, T0)).toBeNull();
+    expect(serviceQuantileRatiosFor(ROUTE, {}, quantiles, T0)).toBeNull();
+    expect(serviceQuantileRatiosFor(ROUTE, null, quantiles, T0)).toBeNull();
+  });
+
+  test('deriveServiceQuantileRatios returns ratios for judgeable routes with a quantile cell, omits the rest', () => {
+    const rows = new Map<string, ServiceRow>([
+      [ROUTE, svc({ assigned_n: 9 })], // has both baseline and quantiles
+      ['1', svc({ assigned_n: 12 })], // no baseline, no quantiles -> omitted
+    ]);
+    expect(deriveServiceQuantileRatios(rows, baseline, quantiles, T0)).toEqual({
+      [ROUTE]: { low: 0.8, high: 1.3 },
+    });
+  });
+
+  test('deriveServiceQuantileRatios omits a route with a baseline but no quantile cell', () => {
+    const rows = new Map<string, ServiceRow>([[ROUTE, svc({ assigned_n: 9 })]]);
+    expect(deriveServiceQuantileRatios(rows, baseline, {}, T0)).toEqual({});
   });
 });

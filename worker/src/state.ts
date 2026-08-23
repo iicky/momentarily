@@ -204,6 +204,11 @@ const MovementStateSchema = z.object({
   // magnitude the service_condition axis debounces. Optional, same lifecycle as
   // service_regimes.
   service_ratios: z.record(z.string(), z.number()).optional(),
+  // Per-route quantile-derived low/high ratios (cell p10/median, p90/median)
+  // this tick — the same-scale spread service_high_ratio/service_low_ratio
+  // publish. Optional, same lifecycle as service_ratios, plus one more gate:
+  // absent when the trainer hasn't published per-cell quantiles at all.
+  service_quantile_ratios: z.record(z.string(), z.object({ low: z.number(), high: z.number() })).optional(),
 });
 export type MovementRegime = z.infer<typeof MovementRegimeSchema>;
 export type MovementStateDoc = z.infer<typeof MovementStateSchema>;
@@ -399,6 +404,16 @@ export async function readSegmentParams(
 // to params.json's legacy service_baseline_hourly when it's absent.
 export const SERVICE_BASELINE_KEY = 'state/service_baseline.json';
 
+// route -> schedule_bin -> {p10, p90} of assigned_n at that cell, same units
+// and the same min_samples gate as `baseline` — a cell present in `baseline`
+// should be present here and vice versa. Sibling to `baseline`, not derived
+// from it: the median stays the one baseline value, this is only its spread.
+const ServiceQuantilesSchema = z.record(
+  z.string(),
+  z.record(z.string(), z.object({ p10: z.number().nonnegative(), p90: z.number().nonnegative() })),
+);
+export type ServiceQuantiles = z.infer<typeof ServiceQuantilesSchema>;
+
 const ServiceBaselineDocSchema = z.object({
   schema_version: z.literal('1'),
   // The sidecar's OWN publication stamp, and its versioned-snapshot key. Kept
@@ -410,6 +425,10 @@ const ServiceBaselineDocSchema = z.object({
   params_trained_at: z.number().optional(),
   // route -> schedule_bin (stringified) -> median assigned_n.
   baseline: z.record(z.string(), z.record(z.string(), z.number().nonnegative())),
+  // Optional: absent on sidecars written before the per-cell spread existed.
+  // Old documents still parse; the supply axis's low/high ratios then read
+  // null instead of falling back to a global multiple.
+  quantiles: ServiceQuantilesSchema.optional(),
 });
 export type ServiceBaselineDoc = z.infer<typeof ServiceBaselineDocSchema>;
 

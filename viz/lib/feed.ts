@@ -1,4 +1,4 @@
-import type { Snapshot } from "./types";
+import type { RouteStatus, Snapshot } from "./types";
 
 // The public snapshot. Override with NEXT_PUBLIC_FEED_BASE to point at a local
 // Worker or a staging feed.
@@ -69,7 +69,66 @@ export function fmtAgo(epochSec: number | null | undefined, nowSec: number): str
 export function fmtMinutes(min: number): string {
   if (min <= 0) return "—";
   if (min < 60) return `${Math.round(min)}m`;
-  const h = Math.floor(min / 60);
-  const m = Math.round(min % 60);
+  // Round to whole minutes BEFORE splitting: rounding the remainder on its own
+  // lets 22h 59.7m print as "22h 60m".
+  const total = Math.round(min);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// Supply-axis thresholds, mirroring worker/src/movement_state.ts: a route
+// degrades below DEGRADE and only recovers back above the higher RECOVER, each
+// confirmed for two ticks. Both are marked on the drawer meter so a reader can
+// see where a route sits relative to what actually flips the axis, rather than
+// guessing from a bare percentage.
+export const SUPPLY_DEGRADE_RATIO = 0.5;
+export const SUPPLY_RECOVER_RATIO = 0.8;
+
+// Whether a route is running notably more trains than usual, compared against
+// that (route, hour) cell's OWN spread rather than one global multiple: across
+// 1,129 cells, measured p90/median spans 1.09x to 12.0x, and single cells are
+// bimodal (an ordinary second mode can sit at a cell's 88th percentile while a
+// genuinely rare spike in another cell sits at its 96th) — no single cutoff
+// separates noise from a real high mark on both. Exported so the card glyph,
+// meter, and drawer never disagree about what counts as notable.
+export function isRunningHigh(r: RouteStatus): boolean {
+  return (
+    r.service_ratio != null &&
+    r.service_high_ratio != null &&
+    r.service_ratio > r.service_high_ratio
+  );
+}
+
+// How full the level glyph reads. "low" is either the published degraded regime
+// or a raw reading under the degrade floor; "thin" is the 50-80% band, which is
+// noticeably below usual but is NOT a suppressed flag — the 80% recover line
+// only governs a route that is already degraded. Running high is deliberately
+// NOT a band: it is the isRunningHigh predicate above, called once at each
+// render site, so there is exactly one notion of "notably more trains than
+// usual" rather than a band and a marker that can drift apart.
+export type SupplyBand = "low" | "thin" | "normal" | "unknown";
+
+export function supplyBand(r: RouteStatus): SupplyBand {
+  if (r.service_condition === "degraded") return "low";
+  if (r.service_condition !== "normal" || r.service_ratio == null) return "unknown";
+  // The ratio is this tick's raw reading; the regime behind service_condition is
+  // debounced, so a route can read below the floor while still published normal.
+  if (r.service_ratio < SUPPLY_DEGRADE_RATIO) return "low";
+  if (r.service_ratio < SUPPLY_RECOVER_RATIO) return "thin";
+  return "normal";
+}
+
+// Bars lit on the 3-bar level glyph. Unknown lights none.
+export function supplyBars(band: SupplyBand): number {
+  switch (band) {
+    case "low":
+      return 1;
+    case "thin":
+      return 2;
+    case "normal":
+      return 3;
+    default:
+      return 0;
+  }
 }

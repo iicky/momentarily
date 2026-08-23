@@ -26,7 +26,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      {/* Browser extensions (ColorZilla, Grammarly, etc.) mutate <body>
+          attributes before hydration; suppress that one-level diff. */}
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }

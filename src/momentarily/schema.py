@@ -220,6 +220,13 @@ class RouteStatus(BaseModel):
     # tick, or None when unjudgeable. Raw (not debounced); service_condition is
     # the debounced regime over it. The alert-only Python path leaves it None.
     service_ratio: float | None = None
+    # Per-cell empirical spread ticks for the same meter, normalised onto the
+    # same scale as service_ratio (cell p10/median, cell p90/median). None
+    # whenever service_ratio would be None, plus whenever this cell has no
+    # published quantiles (older or thin sidecar). The alert-only Python path
+    # leaves both None, exactly like service_ratio.
+    service_low_ratio: float | None = None
+    service_high_ratio: float | None = None
     # Cause axis — our stable vocabulary, derived from the MTA alert_type.
     #   "none" | "planned_work" | "delays" | "service_change" |
     #   "service_suspension" | "slow_speeds" | "information" | "other"

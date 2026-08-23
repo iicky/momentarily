@@ -63,6 +63,7 @@ from training.load_r2 import (
     compute_advance_baseline_by_route,
     compute_baseline,
     compute_schedule_rate,
+    compute_service_quantiles,
     fetch_objects,
     fetch_trip_update_metrics,
     fetch_vehicle_metrics,
@@ -71,6 +72,7 @@ from training.load_r2 import (
     presence_mask_from_predictions,
     schedule_rate_to_json,
     service_baseline_to_json,
+    service_quantiles_to_json,
 )
 from training.pooled_dwell import MIN_VOTER_EVENTS, pooled_dwell_cells
 from training.provenance import code_provenance
@@ -578,6 +580,7 @@ def write_service_baseline(
     hourly: dict[str, Any],
     generated_at: int,
     params_trained_at: int | None = None,
+    quantiles: dict[str, Any] | None = None,
 ) -> int:
     """Write the per-(route, schedule_bin) assigned_n baseline -- the supply
     axis's denominator -- as its OWN versioned R2 object, decoupled from
@@ -585,7 +588,11 @@ def write_service_baseline(
     cannot reseed the Worker's filter or split the grader's params-version
     window. Versioned by its OWN `generated_at` (not the model's trained_at) so a
     later refresh can't overwrite a prior immutable snapshot; `params_trained_at`
-    records which frozen model it was computed to accompany. Mirrors
+    records which frozen model it was computed to accompany. `quantiles` is the
+    sibling per-(route, schedule_bin) p10/p90 spread (training.load_r2.
+    compute_service_quantiles / service_quantiles_to_json), same keying as
+    `hourly`; omitted from the doc when absent (None or empty), so a caller with
+    no quantile data round-trips a sidecar exactly like today's. Mirrors
     write_segment_params: live pointer + immutable versioned snapshot, skipped
     when empty. Returns the route count."""
     if not hourly:
@@ -597,6 +604,8 @@ def write_service_baseline(
     }
     if params_trained_at is not None:
         doc["params_trained_at"] = params_trained_at
+    if quantiles:
+        doc["quantiles"] = quantiles
     body = json.dumps(doc).encode()
     versioned = f"{VERSIONED_SERVICE_PREFIX}v{generated_at}.json"
     for key in (SERVICE_BASELINE_KEY, versioned):
@@ -736,18 +745,25 @@ def _service_baseline(
     client: S3Client,
     start_date: date,
     end_date: date,
-) -> tuple[dict[str, Any], int, dict[str, Any], int, dict[str, Any], int]:
+) -> tuple[
+    dict[str, Any], int, dict[str, Any], int, dict[str, Any], int, dict[str, Any], int
+]:
     """Per-(route, tod) assigned_n baseline, per-(route, schedule_bin) assigned_n
-    baseline, AND per-(route, schedule_bin) scheduled-presence rate over the
-    training window, from one trip-updates fetch, serialized for params.json.
+    baseline, per-(route, schedule_bin) assigned_n p10/p90 quantiles, AND
+    per-(route, schedule_bin) scheduled-presence rate over the training window,
+    from one trip-updates fetch, serialized for params.json / the sidecar.
 
     The tod_bin baseline is the service emission's live-ratio denominator; the
     schedule_bin baseline is the published service-degradation axis's denominator
     (finer, so the quiet edge of a wide tod block doesn't read as a supply cut —
-    see degradation_label's BIN_FN note). The schedule rate splits a no-service
-    reading into suspended vs not_scheduled. Fail-soft: a trip-updates archive
-    error returns empty sidecars (all optional and back-compat). Returns
-    (baseline, n_cells, schedule, n_schedule, hourly_baseline, n_hourly_cells)."""
+    see degradation_label's BIN_FN note). The quantiles are computed off the
+    SAME schedule_bin series as the schedule_bin baseline (same fetch, same
+    bucketing, same min_samples gate), so a cell has a quantile iff it has a
+    baseline. The schedule rate splits a no-service reading into suspended vs
+    not_scheduled. Fail-soft: a trip-updates archive error returns empty
+    sidecars (all optional and back-compat). Returns (baseline, n_cells,
+    schedule, n_schedule, hourly_baseline, n_hourly_cells, hourly_quantiles,
+    n_hourly_quantile_cells)."""
     try:
         bodies = fetch_trip_update_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
@@ -755,6 +771,7 @@ def _service_baseline(
         series = build_service_series(bodies)
         baseline = compute_baseline(series)
         hourly = compute_baseline(series, bin_fn=schedule_bin)
+        hourly_quantiles = compute_service_quantiles(series, bin_fn=schedule_bin)
         rate = compute_schedule_rate(bodies)
         return (
             service_baseline_to_json(baseline),
@@ -763,10 +780,12 @@ def _service_baseline(
             len(rate),
             service_baseline_to_json(hourly),
             len(hourly),
+            service_quantiles_to_json(hourly_quantiles),
+            len(hourly_quantiles),
         )
     except Exception as exc:
         print(f"service baseline skipped ({exc})", file=sys.stderr)
-        return {}, 0, {}, 0, {}, 0
+        return {}, 0, {}, 0, {}, 0, {}, 0
 
 
 def _movement_dwell(
@@ -975,6 +994,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         n_schedule_cells,
         service_baseline_hourly,
         n_service_hourly_cells,
+        service_baseline_hourly_quantiles,
+        n_service_hourly_quantile_cells,
     ) = _service_baseline(cfg, client, start_date, end_date)
 
     global_prior, per_route = train(
@@ -1129,6 +1150,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         service_baseline_hourly,
         trained_at,
         params_trained_at=trained_at,
+        quantiles=service_baseline_hourly_quantiles,
     )
     n_segment_cells = write_segment_params(
         cfg,
@@ -1155,7 +1177,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"atom={movement_dwell_stats['n_atom']}, "
         f"source={movement_dwell_stats['source']}], "
         f"baseline_cells={n_baseline_cells}, "
-        f"service_cells={n_service_cells} (hourly sidecar {n_service_hourly_cells}), "
+        f"service_cells={n_service_cells} (hourly sidecar {n_service_hourly_cells}, "
+        f"quantiles {n_service_hourly_quantile_cells}), "
         f"schedule_cells={n_schedule_cells}, "
         f"segment_cells={n_segment_cells}, segment_dwell_cells={n_segment_dwell_cells} "
         f"[own={segment_dwell_stats.n_cells_own}, "

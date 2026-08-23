@@ -10,8 +10,14 @@ import {
   alertHeadline,
   fmtAgo,
   fmtMinutes,
+  supplyBand,
+  supplyBars,
+  SUPPLY_DEGRADE_RATIO,
+  SUPPLY_RECOVER_RATIO,
+  isRunningHigh,
 } from "@/lib/feed";
-import type { Snapshot, RouteStatus } from "@/lib/types";
+import type { SupplyBand } from "@/lib/feed";
+import type { Snapshot, RouteStatus, Inference } from "@/lib/types";
 
 const POLL_MS = 60_000;
 
@@ -165,6 +171,8 @@ function condClass(r: RouteStatus): string {
 
 // Human-readable badge text for a route's published condition. Raw codes like
 // "not_scheduled" would render with an underscore under the capitalize style.
+// Kept short: the badge shares one card-head row with the train glyph, and
+// "No live signal" was long enough to push the glyph onto a second line.
 function condLabel(r: RouteStatus): string {
   switch (r.condition) {
     case "normal":
@@ -176,7 +184,7 @@ function condLabel(r: RouteStatus): string {
     case "not_scheduled":
       return "Not scheduled";
     default:
-      return "No live signal";
+      return "No signal";
   }
 }
 
@@ -234,6 +242,174 @@ function sourceTag(r: RouteStatus): string {
   }
 }
 
+// Standard subway-car silhouette, drawn on the same 24 grid and currentColor as
+// the flow mark so the two sit together without a font or emoji dependency. One
+// even-odd path: rounded car body, windshield knocked out of it, two headlights
+// knocked out below, then a pair of feet.
+function TrainIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      className="tmark"
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        d="M8.5 1.5h7A4.5 4.5 0 0 1 20 6v10a4.5 4.5 0 0 1-4.5 4.5h-7A4.5 4.5 0 0 1 4 16V6a4.5 4.5 0 0 1 4.5-4.5Zm.5 4h6a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1-1.5 1.5H9a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 9 5.5Zm.6 9.4a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Zm4.8 0a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z"
+      />
+      <rect x={6.5} y={21} width={3} height={1.8} rx={0.9} />
+      <rect x={14.5} y={21} width={3} height={1.8} rx={0.9} />
+    </svg>
+  );
+}
+
+// Three-bar level glyph — how many trains are out, at a glance, deliberately a
+// different shape from the two-car flow mark so the two axes are never read as
+// one. Bars light 1/2/3 by band; heights rise left to right so a single lit bar
+// reads as "few trains" without needing colour. Over the norm, all three light
+// and the tallest overshoots its slot, so the meter reads as driven past full
+// rather than merely full — the one thing "3 of 3" could not say on its own. A
+// capping spike was tried first and is invisible at a 13px card glyph.
+const SUPPLY_BAR_GEOM: [number, number][] = [
+  // [y, height] on a 24 grid; x is 2 + i * 8, width 4.
+  [15, 7],
+  [10, 12],
+  [5, 17],
+];
+const SUPPLY_BAR_HIGH: [number, number] = [0, 22];
+
+function SupplyMark({
+  band,
+  runningHigh,
+  size = 14,
+}: {
+  band: SupplyBand;
+  runningHigh: boolean;
+  size?: number;
+}) {
+  const lit = runningHigh ? 3 : supplyBars(band);
+  return (
+    <svg
+      className={`smark ${band}${runningHigh ? " high" : ""}`}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      aria-hidden="true"
+    >
+      {SUPPLY_BAR_GEOM.map((slot, i) => {
+        const [y, h] =
+          runningHigh && i === SUPPLY_BAR_GEOM.length - 1
+            ? SUPPLY_BAR_HIGH
+            : slot;
+        return (
+          <rect
+            key={i}
+            className={i < lit ? "lit" : "dim"}
+            x={2 + i * 8}
+            y={y}
+            width={4}
+            height={h}
+            rx={2}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+// Train icon beside the bars. This pair is the axis's whole identity on a card —
+// no pill, no wording — which is what lets it ride every card without competing
+// with the condition badge, and lets the word "supply" leave the copy entirely.
+function SupplyGlyph({
+  band,
+  runningHigh,
+  size = 14,
+}: {
+  band: SupplyBand;
+  runningHigh: boolean;
+  size?: number;
+}) {
+  return (
+    <span className={`supply-glyph ${runningHigh ? "high" : band}`}>
+      <TrainIcon size={size - 1} />
+      <SupplyMark band={band} runningHigh={runningHigh} size={size} />
+    </span>
+  );
+}
+
+// What the glyph means, spelled out on hover — the only place the numbers appear
+// on a card now that the pill is gone.
+function supplyTitle(ratio: number | null): string {
+  if (ratio == null) return "No reading for how many trains are running";
+  return `${(ratio * 100).toFixed(0)}% of the trains this line usually runs at this hour`;
+}
+
+// Fixed 0–200% scale. The ratio routinely lands well above 100% (a route can be
+// assigned twice its hourly median), and a scale that stretched to fit would
+// move the threshold ticks from route to route — the one thing the ticks exist
+// to hold still. Anything past the ceiling shows an overflow arrow instead.
+const SUPPLY_SCALE_MAX = 2;
+
+// The whole axis in one block: the magnitude, where it sits against the two
+// thresholds that actually flip it, and what "usual" is. Everything a reader
+// needs is stated exactly once — the earlier version said "fewer trains than
+// usual" in four places and still never said where the denominator came from.
+function SupplyMeter({
+  ratio,
+  band,
+  runningHigh,
+  lowRatio,
+  highRatio,
+}: {
+  ratio: number;
+  band: SupplyBand;
+  runningHigh: boolean;
+  lowRatio: number | null;
+  highRatio: number | null;
+}) {
+  const pos = (v: number): string =>
+    `${Math.min(v / SUPPLY_SCALE_MAX, 1) * 100}%`;
+  // Running notably high, the whole block — glyph, number, fill — takes the
+  // accent, so the three never disagree about what the reading means.
+  const tone = runningHigh ? "high" : band;
+  return (
+    <div className="supply">
+      <div className="supply-head">
+        <SupplyGlyph band={band} runningHigh={runningHigh} size={17} />
+        <b className={`supply-pct ${tone}`}>{(ratio * 100).toFixed(0)}%</b>
+        <span className="supply-of">of usual</span>
+      </div>
+      <div className="supply-track">
+        <span className={`supply-fill ${tone}`} style={{ width: pos(ratio) }} />
+        <i className="supply-tick" style={{ left: pos(SUPPLY_DEGRADE_RATIO) }} />
+        <i className="supply-tick" style={{ left: pos(SUPPLY_RECOVER_RATIO) }} />
+        <i className="supply-tick norm" style={{ left: pos(1) }} />
+        {lowRatio != null && (
+          <i className="supply-tick range" style={{ left: pos(lowRatio) }} />
+        )}
+        {highRatio != null && (
+          <i className="supply-tick range" style={{ left: pos(highRatio) }} />
+        )}
+        {ratio > SUPPLY_SCALE_MAX && <span className="supply-over">›</span>}
+      </div>
+      <div className="supply-scale">
+        <span style={{ left: pos(SUPPLY_DEGRADE_RATIO) }}>50%</span>
+        <span style={{ left: pos(SUPPLY_RECOVER_RATIO) }}>80%</span>
+        <span style={{ left: pos(1) }}>100%</span>
+      </div>
+      <div className="supply-note">
+        <b>Usual</b> is the median number of trains this line runs in this hour,
+        taken from our archive of the MTA feed. Weekdays and weekends count
+        separately. The marked band is where this hour normally sits. Two
+        readings under 50% flag the line, and two over 80% clear it.
+      </div>
+    </div>
+  );
+}
+
 // One plain-English line: lead with the observed movement status; the MTA alert
 // is a second, separate clause, never a competing headline.
 function headline(r: RouteStatus): { lead: string; alt?: string } {
@@ -252,7 +428,7 @@ function headline(r: RouteStatus): { lead: string; alt?: string } {
       return { lead: "Not scheduled to run right now." };
     default:
       return {
-        lead: "No live movement signal to confirm status.",
+        lead: "No live signal from this line's trains.",
         alt: alert,
       };
   }
@@ -270,6 +446,8 @@ function RouteCard({
   onClick: () => void;
 }) {
   const inf = r.inference;
+  const band = supplyBand(r);
+  const runningHigh = isRunningHigh(r);
   return (
     <div className={`card${selected ? " sel" : ""}`} onClick={onClick}>
       <div className="card-head">
@@ -280,23 +458,7 @@ function RouteCard({
           {routeLabel(snap, r.route_id)}
         </span>
         <StateMark kind={markKind(r)} />
-        <span className={`cond ${condClass(r)}`}>
-          {condLabel(r)}
-        </span>
-        {r.service_condition === "degraded" && (
-          <span
-            className="svc degraded"
-            title={
-              r.service_ratio != null
-                ? `Assigned trains ${(r.service_ratio * 100).toFixed(
-                    0,
-                  )}% of the normal level for this hour`
-                : "Fewer trains assigned than normal"
-            }
-          >
-            supply low
-          </span>
-        )}
+        <span className={`cond ${condClass(r)}`}>{condLabel(r)}</span>
       </div>
 
       {inf && (
@@ -313,18 +475,179 @@ function RouteCard({
       )}
 
       <div className="meta">
-        <span>
+        <span className="meta-label">
           {r.primary_alert_type ?? (r.alerts.length ? "alert" : "good service")}
         </span>
-        <span>
+        <span className="meta-right">
           {inf && inf.is_disrupted
             ? inf.recovery_indeterminate
               ? "recovery: indeterminate"
               : `~${fmtMinutes(inf.recovery_minutes)}`
             : ""}
+          <span className="card-trains" title={supplyTitle(r.service_ratio)}>
+            <SupplyGlyph band={band} runningHigh={runningHigh} size={13} />
+            {runningHigh && r.service_ratio != null && (
+              <b className="trains-pct">
+                {(r.service_ratio * 100).toFixed(0)}%
+              </b>
+            )}
+          </span>
         </span>
       </div>
     </div>
+  );
+}
+
+// The recovery numbers mean four different things depending on which arm set the
+// published condition, and one heading asked the wrong question for three of
+// them:
+//   - published normal: movementRecovery's normal branch returns 0/0/0 for the
+//     median/IQR and p_normal_in_30 is P(STAYS normal). "Median —" beside
+//     "P(normal in 30m) 93%" read as a broken forecast; it's a hold-time.
+//   - published unknown: we declined to judge the condition, so the worker
+//     withholds every number. Dashes read as failure, not as abstention.
+//   - schedule arm: a deterministic countdown to the MTA's announced window
+//     end, so median == q25 == q75 by construction. Printing it as an IQR
+//     implied a distribution that doesn't exist.
+//   - otherwise: a real time-to-normal estimate off the dwell curve.
+function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
+  if (r.condition === "unknown") {
+    return (
+      <>
+        <div className="section-title">Outlook</div>
+        <div className="section-note">
+          No forecast. We have no live read on this line right now, so we do not
+          call its status or its return.
+        </div>
+      </>
+    );
+  }
+
+  if (r.condition === "normal") {
+    return (
+      <>
+        <div className="section-title">Stability outlook</div>
+        <div className="section-note">
+          Nothing to recover from. This is the chance the line keeps moving
+          normally.
+        </div>
+        {inf.p_normal_in_30min == null ? (
+          <div className="section-note">
+            No reading yet for how long this line normally holds up.
+          </div>
+        ) : (
+          <div className="kv">
+            <span className="k">P(stays normal in 30m)</span>
+            <span className="v">
+              {(inf.p_normal_in_30min * 100).toFixed(0)}%
+            </span>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  // The schedule arm answers "when does the announced window end" — for planned
+  // work mid-service and for a line that simply isn't running right now. Its
+  // median/q25/q75 are the same number by construction, so it's a countdown.
+  if (r.condition === "not_scheduled" || inf.recovery_source === "schedule") {
+    const announced = inf.recovery_source === "schedule";
+    return (
+      <>
+        <div className="section-title">Scheduled return</div>
+        <div className="section-note">
+          {announced
+            ? "The MTA announced when this work ends. This is a countdown, not an estimate."
+            : "The alert does not say when this line starts running again."}
+        </div>
+        {announced && (
+          <div className="kv">
+            <span className="k">
+              {inf.overdue ? "Announced end" : "Resumes in"}
+            </span>
+            <span className="v">
+              {inf.overdue
+                ? "passed, alert still up"
+                : fmtMinutes(inf.recovery_minutes)}
+            </span>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  // Two different silences, and one message claimed both. The movement arm sets
+  // indeterminate when the regime outlived every dwell it measured OR when the
+  // fitted curve's median hits the clamp (snapshot.ts:974), so the copy names
+  // the ceiling that recovery_minutes carries instead of asserting which one
+  // fired. The hmm arm is not a bounding failure at all: the forecast is
+  // withheld because it describes a different regime than the published one
+  // (snapshot.ts:855). Three separate things send us here — no movement clock,
+  // a state the movement split was never measured for (suspended), or no
+  // trained curve for the cell — so the copy names none of them.
+  if (inf.recovery_indeterminate) {
+    return (
+      <>
+        <div className="section-title">Recovery forecast</div>
+        <div className="warnbox">
+          {inf.recovery_source === "movement"
+            ? `No estimate. Recovery runs past the ${fmtMinutes(
+                inf.recovery_minutes,
+              )} we forecast ahead.`
+            : "No estimate. The model has no forecast that matches the status above."}
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="section-title">Recovery forecast</div>
+      <div className="kv">
+        <span className="k">Median</span>
+        <span className="v">{fmtMinutes(inf.recovery_minutes)}</span>
+        <span className="k">IQR (25–75%)</span>
+        <span className="v">
+          {fmtMinutes(inf.recovery_minutes_low)} –{" "}
+          {fmtMinutes(inf.recovery_minutes_high)}
+        </span>
+        <span className="k">P(normal in 30m)</span>
+        {inf.p_normal_in_30min == null ? (
+          <span
+            className="v muted"
+            title="Not shown. This number came from a different part of the model than the status above, so the two are not on the same scale."
+          >
+            not forecast
+          </span>
+        ) : (
+          <span className="v">{(inf.p_normal_in_30min * 100).toFixed(0)}%</span>
+        )}
+        <span className="k">P(normal in 60m)</span>
+        {inf.p_normal_in_60min == null ? (
+          <span
+            className="v muted"
+            title="Not shown. This far out the model scored worse than simply assuming nothing changes."
+          >
+            not forecast
+          </span>
+        ) : (
+          <span className="v">{(inf.p_normal_in_60min * 100).toFixed(0)}%</span>
+        )}
+        <span className="k">P(normal in 120m)</span>
+        {inf.p_normal_in_120min == null ? (
+          <span
+            className="v muted"
+            title="Not shown. This far out the model scored worse than simply assuming nothing changes."
+          >
+            not forecast
+          </span>
+        ) : (
+          <span className="v">
+            {(inf.p_normal_in_120min * 100).toFixed(0)}%
+          </span>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -338,6 +661,7 @@ function RouteDrawer({
   onClose: () => void;
 }) {
   const inf = r.inference;
+  const band = supplyBand(r);
   return (
     <aside className="drawer">
       <button className="close" onClick={onClose} aria-label="close">
@@ -377,37 +701,31 @@ function RouteDrawer({
         <span className="v">{r.primary_alert_type ?? "—"}</span>
       </div>
 
-      <div className="section-title">Service (supply)</div>
-      <div className="kv">
-        <span className="k">Level</span>
-        <span className="v">
-          {r.service_condition === "degraded"
-            ? "Degraded — fewer trains than normal"
-            : r.service_condition === "normal"
-              ? "Normal"
-              : "Unknown"}
-        </span>
-        <span className="k">Assigned vs normal</span>
-        <span className="v">
-          {r.service_ratio != null
-            ? `${(r.service_ratio * 100).toFixed(0)}%`
-            : "—"}
-        </span>
+      <div className="section-title">Trains running</div>
+      <div className="section-note">
+        How many trains are out, not how well they move. A line can run few
+        trains that all move fine, or a full set that crawls.
       </div>
-      {r.service_condition === "degraded" && (
-        <div className="note">
-          Supply is a different axis from the status above: it counts how many
-          trains are <b>assigned</b> vs normal for this hour. A line can run
-          fewer trains (supply low) while the ones running still move fine, and
-          the reverse.
+      {r.service_ratio != null ? (
+        <SupplyMeter
+          ratio={r.service_ratio}
+          band={band}
+          runningHigh={isRunningHigh(r)}
+          lowRatio={r.service_low_ratio}
+          highRatio={r.service_high_ratio}
+        />
+      ) : (
+        <div className="section-note">
+          No reading. We have no recent train count for this line, or nothing to
+          compare it against for this hour.
         </div>
       )}
 
       {inf &&
         r.primary_alert_type === "No Scheduled Service" && (
           <div className="note">
-            “No Scheduled Service” means this line just isn&apos;t scheduled to
-            run right now (it doesn&apos;t run 24/7) — nothing&apos;s broken.
+            “No Scheduled Service” means this line does not run at this hour.
+            Nothing is broken.
           </div>
         )}
 
@@ -415,9 +733,9 @@ function RouteDrawer({
         <>
           <div className="section-title">Regime probabilities</div>
           <div className="section-note">
-            The model&apos;s alert-aware read. The status above follows train
-            movement, so when an advisory is up but trains keep moving, the two
-            differ.
+            The model&apos;s own read. It weighs alerts, train movement and train
+            counts together. The status above follows train movement alone, so
+            the two can differ.
           </div>
           <div
             className="pbar"
@@ -441,57 +759,7 @@ function RouteDrawer({
             </span>
           </div>
 
-          <div className="section-title">Recovery forecast</div>
-          {inf.recovery_indeterminate ? (
-            <div className="warnbox">
-              Indeterminate — regime too persistent to bound recovery.
-            </div>
-          ) : (
-            <div className="kv">
-              <span className="k">Median</span>
-              <span className="v">{fmtMinutes(inf.recovery_minutes)}</span>
-              <span className="k">IQR (25–75%)</span>
-              <span className="v">
-                {fmtMinutes(inf.recovery_minutes_low)} –{" "}
-                {fmtMinutes(inf.recovery_minutes_high)}
-              </span>
-              <span className="k">P(normal in 30m)</span>
-              {inf.p_normal_in_30min == null ? (
-                <span
-                  className="v muted"
-                  title="Withheld — this forecast came from a different arm than the one that set the published condition, so it's deliberately not shown rather than plotted on a mismatched scale."
-                >
-                  not forecast
-                </span>
-              ) : (
-                <span className="v">{(inf.p_normal_in_30min * 100).toFixed(0)}%</span>
-              )}
-              <span className="k">P(normal in 60m)</span>
-              {inf.p_normal_in_60min == null ? (
-                <span
-                  className="v muted"
-                  title="Withheld — this horizon measured worse than naive persistence, so it's deliberately not forecast rather than shown as a number we know is wrong."
-                >
-                  not forecast
-                </span>
-              ) : (
-                <span className="v">{(inf.p_normal_in_60min * 100).toFixed(0)}%</span>
-              )}
-              <span className="k">P(normal in 120m)</span>
-              {inf.p_normal_in_120min == null ? (
-                <span
-                  className="v muted"
-                  title="Withheld — this horizon measured worse than naive persistence, so it's deliberately not forecast rather than shown as a number we know is wrong."
-                >
-                  not forecast
-                </span>
-              ) : (
-                <span className="v">
-                  {(inf.p_normal_in_120min * 100).toFixed(0)}%
-                </span>
-              )}
-            </div>
-          )}
+          <RecoveryBlock r={r} inf={inf} />
         </>
       )}
 

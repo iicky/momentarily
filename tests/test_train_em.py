@@ -21,6 +21,7 @@ from training.load_r2 import (
     MIN_MATCHED_TRIPS,
     MIN_SCHEDULE_TICKS,
     P0_FLOOR,
+    ServiceQuantiles,
     compute_schedule_rate,
     schedule_rate_to_json,
 )
@@ -603,13 +604,16 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     """_service_baseline must fetch the *explicit* training window (not
     fetch_trip_update_metrics' yesterday..today default) and thread the
     build/compute/serialize chain's output straight through — including the
-    schedule-rate chain, from that same single trip-updates fetch."""
+    schedule-rate chain and the schedule_bin quantile chain, from that same
+    single trip-updates fetch."""
     fetch_calls: list[dict[str, Any]] = []
     bodies_seen: list[list[dict[str, Any]]] = []
     series_seen: list[dict[tuple[str, int], int]] = []
     baseline_seen: list[dict[tuple[str, int], float]] = []
     schedule_bodies_seen: list[list[dict[str, Any]]] = []
     schedule_rate_seen: list[dict[tuple[str, str], float]] = []
+    quantile_series_seen: list[dict[tuple[str, int], int]] = []
+    quantiles_seen: list[dict[tuple[str, str], Any]] = []
 
     sentinel_bodies: list[dict[str, Any]] = [{"marker": "body"}]
     sentinel_series: dict[tuple[str, int], int] = {("A", 0): 6}
@@ -622,6 +626,10 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     sentinel_schedule_json: dict[str, Any] = {"A": {"wd06": 0.5}}
     sentinel_hourly_baseline: dict[tuple[str, str], float] = {("A", "wd06"): 6.0}
     sentinel_hourly_json: dict[str, Any] = {"A": {"wd06": 6.0}}
+    sentinel_hourly_quantiles: dict[tuple[str, str], Any] = {
+        ("A", "wd06"): ServiceQuantiles(p10=4.0, p90=8.0)
+    }
+    sentinel_quantiles_json: dict[str, Any] = {"A": {"wd06": {"p10": 4.0, "p90": 8.0}}}
 
     def _fake_fetch(
         cfg: R2Config,
@@ -672,6 +680,20 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
         schedule_rate_seen.append(rate)
         return sentinel_schedule_json
 
+    def _fake_compute_service_quantiles(
+        series: dict[tuple[str, int], int],
+        *,
+        bin_fn: Any = None,
+    ) -> dict[tuple[str, str], Any]:
+        quantile_series_seen.append(series)
+        return sentinel_hourly_quantiles
+
+    def _fake_quantiles_to_json(
+        quantiles: dict[tuple[str, str], Any],
+    ) -> dict[str, Any]:
+        quantiles_seen.append(quantiles)
+        return sentinel_quantiles_json
+
     monkeypatch.setattr("training.train_em.fetch_trip_update_metrics", _fake_fetch)
     monkeypatch.setattr("training.train_em.build_service_series", _fake_build_series)
     monkeypatch.setattr("training.train_em.compute_baseline", _fake_compute_baseline)
@@ -681,6 +703,13 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     )
     monkeypatch.setattr(
         "training.train_em.schedule_rate_to_json", _fake_schedule_rate_to_json
+    )
+    monkeypatch.setattr(
+        "training.train_em.compute_service_quantiles",
+        _fake_compute_service_quantiles,
+    )
+    monkeypatch.setattr(
+        "training.train_em.service_quantiles_to_json", _fake_quantiles_to_json
     )
 
     cfg = _r2_config()
@@ -695,6 +724,8 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
         n_schedule_cells,
         hourly_result,
         n_hourly_cells,
+        hourly_quantiles_result,
+        n_hourly_quantile_cells,
     ) = _service_baseline(cfg, client, start, end)
 
     assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
@@ -711,6 +742,12 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     assert schedule_rate_seen == [sentinel_schedule_rate]
     assert schedule_result == sentinel_schedule_json
     assert n_schedule_cells == 1
+    # Quantile chain reuses the SAME series as the hourly baseline — not a
+    # second fetch or a second build_service_series call.
+    assert quantile_series_seen == [sentinel_series]
+    assert quantiles_seen == [sentinel_hourly_quantiles]
+    assert hourly_quantiles_result == sentinel_quantiles_json
+    assert n_hourly_quantile_cells == 1
 
 
 def test_service_baseline_fails_soft_on_archive_error(
@@ -731,13 +768,20 @@ def test_service_baseline_fails_soft_on_archive_error(
 
     monkeypatch.setattr("training.train_em.fetch_trip_update_metrics", _raise_fetch)
 
-    result, n_cells, schedule_result, n_schedule_cells, hourly_result, n_hourly = (
-        _service_baseline(
-            _r2_config(),
-            cast("S3Client", _FakeS3()),
-            date(2026, 6, 1),
-            date(2026, 6, 14),
-        )
+    (
+        result,
+        n_cells,
+        schedule_result,
+        n_schedule_cells,
+        hourly_result,
+        n_hourly,
+        hourly_quantiles_result,
+        n_hourly_quantile_cells,
+    ) = _service_baseline(
+        _r2_config(),
+        cast("S3Client", _FakeS3()),
+        date(2026, 6, 1),
+        date(2026, 6, 14),
     )
 
     assert result == {}
@@ -746,6 +790,8 @@ def test_service_baseline_fails_soft_on_archive_error(
     assert n_schedule_cells == 0
     assert hourly_result == {}
     assert n_hourly == 0
+    assert hourly_quantiles_result == {}
+    assert n_hourly_quantile_cells == 0
     assert "service baseline skipped" in capsys.readouterr().err
 
 
@@ -955,8 +1001,8 @@ def test_main_threads_service_baselines_to_their_writers(
 ) -> None:
     """Regression guard for compute-but-forget-to-pass: main() must thread the
     service baseline and schedule rate into write_params, and the finer hourly
-    baseline into write_service_baseline (its own decoupled sidecar object),
-    not just log them."""
+    baseline AND its quantiles into write_service_baseline (its own decoupled
+    sidecar object), not just log them."""
     cfg = _r2_config()
     fake_client = cast("S3Client", _FakeS3())
     series = {"R1": _quiet(10)}
@@ -968,6 +1014,9 @@ def test_main_threads_service_baselines_to_their_writers(
     sentinel_baseline: dict[str, Any] = {"SENTINEL_ROUTE": {"0": 6.0}}
     sentinel_schedule_rate: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 0.5}}
     sentinel_hourly: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 6.0}}
+    sentinel_hourly_quantiles: dict[str, Any] = {
+        "SENTINEL_ROUTE": {"wd06": {"p10": 4.0, "p90": 8.0}}
+    }
     captured_kwargs: dict[str, Any] = {}
     captured_service: dict[str, Any] = {}
 
@@ -994,8 +1043,26 @@ def test_main_threads_service_baselines_to_their_writers(
 
     def _fake_service_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
-    ) -> tuple[dict[str, Any], int, dict[str, Any], int, dict[str, Any], int]:
-        return sentinel_baseline, 4, sentinel_schedule_rate, 6, sentinel_hourly, 3
+    ) -> tuple[
+        dict[str, Any],
+        int,
+        dict[str, Any],
+        int,
+        dict[str, Any],
+        int,
+        dict[str, Any],
+        int,
+    ]:
+        return (
+            sentinel_baseline,
+            4,
+            sentinel_schedule_rate,
+            6,
+            sentinel_hourly,
+            3,
+            sentinel_hourly_quantiles,
+            2,
+        )
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         captured_kwargs.update(kwargs)
@@ -1007,8 +1074,10 @@ def test_main_threads_service_baselines_to_their_writers(
         hourly: dict[str, Any],
         generated_at: int,
         params_trained_at: int | None = None,
+        quantiles: dict[str, Any] | None = None,
     ) -> int:
         captured_service["hourly"] = hourly
+        captured_service["quantiles"] = quantiles
         return len(hourly)
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
@@ -1036,6 +1105,7 @@ def test_main_threads_service_baselines_to_their_writers(
     assert captured_kwargs["service_baseline"] == sentinel_baseline
     assert "service_baseline_hourly" not in captured_kwargs
     assert captured_service["hourly"] == sentinel_hourly
+    assert captured_service["quantiles"] == sentinel_hourly_quantiles
     assert captured_kwargs["schedule_rate"] == sentinel_schedule_rate
 
 

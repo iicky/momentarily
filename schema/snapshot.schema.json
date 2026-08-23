@@ -1060,6 +1060,30 @@
           "title": "Service Condition",
           "type": "string"
         },
+        "service_high_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service High Ratio"
+        },
+        "service_low_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Low Ratio"
+        },
         "service_ratio": {
           "anyOf": [
             {

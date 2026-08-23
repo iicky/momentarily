@@ -31,6 +31,15 @@ export interface Inference {
   p_normal_in_60min: number | null;
   p_normal_in_120min: number | null;
   model_warming_up: boolean;
+  // Which arm produced the recovery numbers. "movement" and "schedule" forecast
+  // the PUBLISHED condition; "hmm" is the alert filter's own regime, which is
+  // exactly when every horizon above is withheld — so this is also how a reader
+  // (and the drawer) tells a bounded-out forecast from a withheld one.
+  recovery_source: "hmm" | "schedule" | "movement";
+  // Announced end of a planned-work window, set only by the schedule arm.
+  resumes_at: number | null;
+  // now has passed resumes_at but the alert is still up.
+  overdue: boolean;
 }
 
 export interface DirectionAlerts {
@@ -50,6 +59,13 @@ export interface RouteStatus {
   // Magnitude behind service_condition (assigned_n / hourly baseline), or null
   // when unjudgeable.
   service_ratio: number | null;
+  // Cell's own p10/median at this hour — this route's usual low end. Null
+  // whenever the cell has no quantiles, its median is <= 0, or the route is
+  // unjudgeable this tick (same conditions as service_ratio, plus no quantiles).
+  service_low_ratio: number | null;
+  // Cell's own p90/median at this hour — this route's usual high end. Null
+  // under the same conditions as service_low_ratio.
+  service_high_ratio: number | null;
   category: string;
   primary_alert_type: string | null;
   label: string;
@@ -146,8 +162,9 @@ export interface PredictionRecord {
   params_version: number;
   // Optional: present only on records written after schedule-based recovery
   // shipped. "schedule" rows are deterministic resume lookups, excluded from
-  // HMM calibration and graded for adherence instead.
-  recovery_source?: "hmm" | "schedule";
+  // HMM calibration and graded for adherence instead. "movement" rows come from
+  // the movement dwell curve (worker/src/grading.ts:57 writes all three).
+  recovery_source?: "hmm" | "schedule" | "movement";
   resumes_at?: number | null;
 }
 

@@ -128,6 +128,11 @@ interface RouteStatusOut {
   // tick. null when unjudgeable (service_condition then 'unknown'). Raw, not
   // debounced — service_condition is the debounced regime over this.
   service_ratio: number | null;
+  // Cell p10/median and p90/median — service_ratio's own spread, on the same
+  // scale so both can render as ticks on one meter. null whenever service_ratio
+  // would be null, plus one more case: the cell has no published quantiles.
+  service_low_ratio: number | null;
+  service_high_ratio: number | null;
   // Cause axis — our vocabulary, derived from the MTA alert_type.
   category: string;
   primary_alert_type: string | null;
@@ -311,6 +316,10 @@ export function buildSnapshot(args: {
     // Per-route raw service ratio behind service_condition. Same lifecycle as
     // service_regimes; absent -> service_ratio null.
     service_ratios?: Record<string, number> | undefined;
+    // Per-route quantile-derived low/high ratios behind service_low_ratio/
+    // service_high_ratio. Same lifecycle as service_ratios, plus absence when
+    // the trainer hasn't published per-cell quantiles at all.
+    service_quantile_ratios?: Record<string, { low: number; high: number }> | undefined;
   } | null;
   /** Last tick's per-station service flow, one-tick lagged like movementStates.
    * Null/undefined before the first vehicle tick after deploy. */
@@ -408,6 +417,8 @@ export function buildSnapshot(args: {
       condition_source,
       service_condition: serviceRegime?.state ?? 'unknown',
       service_ratio: movementStates?.service_ratios?.[routeId] ?? null,
+      service_low_ratio: movementStates?.service_quantile_ratios?.[routeId]?.low ?? null,
+      service_high_ratio: movementStates?.service_quantile_ratios?.[routeId]?.high ?? null,
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,

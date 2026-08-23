@@ -270,6 +270,21 @@ describe('service-baseline sidecar', () => {
     expect(await readServiceBaseline(bucket)).toEqual(doc);
   });
 
+  test('round-trips a sidecar with quantiles', async () => {
+    const { bucket, store } = fakeBucket();
+    const withQuantiles = { ...doc, quantiles: { Q: { '48': { p10: 8, p90: 13 } } } };
+    store.set('state/service_baseline.json', JSON.stringify(withQuantiles));
+    expect(await readServiceBaseline(bucket)).toEqual(withQuantiles);
+  });
+
+  test('an old sidecar with no quantiles field still parses (back-compat)', async () => {
+    const { bucket, store } = fakeBucket();
+    store.set('state/service_baseline.json', JSON.stringify(doc));
+    const parsed = await readServiceBaseline(bucket);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.quantiles).toBeUndefined();
+  });
+
   test('returns null when the object is absent', async () => {
     const { bucket } = fakeBucket();
     expect(await readServiceBaseline(bucket)).toBeNull();

@@ -1079,6 +1079,7 @@ def build_by_line(
     transitions: list[TransitionRecord],
     *,
     movement_truth: dict[tuple[str, int], str] | None = None,
+    window: tuple[int, int] | None = None,
     min_predictions: int = 50,
 ) -> dict[str, dict[str, Any]]:
     """Per-route reliability + recovery summary, so the Models tab can filter by
@@ -1092,7 +1093,14 @@ def build_by_line(
     `movement_truth` grades the same forecast against the published
     movement-primary arm, mirroring the window-aggregate pair. Passed in rather
     than derived per route so the truth map is identical to the aggregate's:
-    built once over the whole stream, then sliced by the (route, tick) key."""
+    built once over the whole stream, then sliced by the (route, tick) key.
+
+    `window` (start, end) enables per-route effective support. Required for it,
+    not optional-with-a-guess: the incident count is meaningless without the span
+    it covers, and the aggregate count is NOT a substitute — the line filter
+    swaps the adjacent prediction count to this route's, so showing the
+    system-wide incident count beside it would claim those incidents support this
+    line."""
     preds_by_route: dict[str, list[PredictionRecord]] = defaultdict(list)
     for p in predictions:
         preds_by_route[p.route].append(p)
@@ -1141,6 +1149,17 @@ def build_by_line(
                     "movement_coverage": published_condition_coverage(preds),
                 }
                 if movement_truth is not None
+                else {}
+            ),
+            # This route's own incident count, so the line filter never shows the
+            # system-wide figure beside a route-scoped prediction count.
+            **(
+                {
+                    "episode_support": episode_support(
+                        preds, window_start=window[0], window_end=window[1]
+                    )
+                }
+                if window is not None
                 else {}
             ),
             "recovery": recovery_as_dict(rec, graded_arm=SHADOW_ARM_LABEL),
@@ -1285,7 +1304,10 @@ def build_eval(
         # the static feed (see build_by_line); the compact subset lands in
         # calibration.json too.
         "by_line": build_by_line(
-            predictions, transitions, movement_truth=movement_truth
+            predictions,
+            transitions,
+            movement_truth=movement_truth,
+            window=(window_start, window_end),
         ),
     }
 
@@ -1402,6 +1424,7 @@ def build_calibration(
                 # This route's own movement coverage, so the line view never
                 # renders the window-aggregate rate as a route-specific one.
                 "movement_coverage": v.get("movement_coverage"),
+                "episode_support": v.get("episode_support"),
                 "recovery": {
                     "overall": v["recovery"]["overall"],
                     "per_regime": v["recovery"]["per_regime"],

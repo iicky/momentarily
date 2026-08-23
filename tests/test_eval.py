@@ -821,6 +821,59 @@ def test_episode_support_with_no_published_arm_reports_zero_not_shadow() -> None
     assert s["covered"] is None
 
 
+def test_build_by_line_support_is_route_scoped() -> None:
+    """Each route's incident count must come from its own rows.
+
+    The line filter swaps the adjacent prediction count to this route's, so an
+    aggregate incident count beside it would claim the whole system's incidents
+    support one line. Same failure the movement-coverage chip had.
+    """
+    t0 = 1_700_000_000
+    # Route "1": one incident. Route "2": three separate incidents.
+    r1 = [
+        replace(
+            _pred(ts=t0 + i * 300, route="1", condition="normal"),
+            published_condition="disrupted" if i < 5 else "normal",
+        )
+        for i in range(60)
+    ]
+    r2 = [
+        replace(
+            _pred(ts=t0 + i * 300, route="2", condition="normal"),
+            published_condition="disrupted" if i % 10 < 2 and i < 30 else "normal",
+        )
+        for i in range(60)
+    ]
+    end = t0 + 60 * 300
+    out = build_by_line(r1 + r2, [], window=(t0, end))
+    assert out["1"]["episode_support"]["n_episodes"] == 1
+    assert out["2"]["episode_support"]["n_episodes"] == 3
+    # Each route's tick_rows is its own, never the pooled stream.
+    assert out["1"]["episode_support"]["tick_rows"] == len(r1)
+    assert out["2"]["episode_support"]["tick_rows"] == len(r2)
+    # The aggregate is the sum, which is exactly why it cannot stand in per route.
+    agg = episode_support(r1 + r2, window_start=t0, window_end=end)
+    assert agg["n_episodes"] == 4
+
+
+def test_build_by_line_omits_support_without_a_window() -> None:
+    """No window means no incident count — omitted, never guessed.
+
+    An incident count without the span it covers is uninterpretable, so a caller
+    that supplies no window gets no support block rather than one built from an
+    assumed span.
+    """
+    t0 = 1_700_000_000
+    preds = [
+        replace(
+            _pred(ts=t0 + i * 300, route="1", condition="normal"),
+            published_condition="normal",
+        )
+        for i in range(60)
+    ]
+    assert "episode_support" not in build_by_line(preds, [])["1"]
+
+
 def test_load_transition_matrices_publishes_the_self_loop_ceiling() -> None:
     """The heatmap needs the ceiling to tell a clamp from a learned rate.
 

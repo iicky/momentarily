@@ -259,6 +259,35 @@ test("the line view reports THIS route's coverage, not the window aggregate", ()
   assert.equal(agg.unknownShare, 0.25);
 });
 
+test("the line view reports THIS route's incident support, not the aggregate", () => {
+  // The caller swaps the whole counts line to the selected route, so leaking the
+  // system-wide incident count through here claims those incidents back one line.
+  const d = doc();
+  d.episode_support = {
+    graded_arm: "published_condition (movement-primary)",
+    n_episodes: 26,
+    n_left_censored: 0,
+    n_right_censored: 0,
+    n_standing: 0,
+    standing_tick_share: 0,
+    tick_rows: 58493,
+  };
+  d.by_line = {
+    "1": {
+      n_predictions: 1200,
+      calibration: d.calibration,
+      recovery: d.recovery,
+      episode_support: { ...d.episode_support, n_episodes: 2, tick_rows: 1200 },
+    },
+    // No per-route support published: must report nothing, not the aggregate's 26.
+    "7": { n_predictions: 900, calibration: d.calibration, recovery: d.recovery },
+  };
+  assert.equal(calibrationForLine(d, "1")!.episodeSupport?.n_episodes, 2);
+  assert.equal(calibrationForLine(d, "7")!.episodeSupport, undefined);
+  // The aggregate block is untouched by any of this.
+  assert.equal(d.episode_support.n_episodes, 26);
+});
+
 test("a route with no per-route coverage shows no coverage claim at all", () => {
   const d = doc();
   d.calibration_movement = movementBlock(0.25);

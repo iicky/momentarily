@@ -181,7 +181,10 @@ export async function GET(req: NextRequest) {
         heatmap: calibrationHeatmap(doc),
         paramsTrainedAt: doc.transition_matrices.trained_at ?? null,
         paramsSelfLoopCap: doc.transition_matrices.self_loop_cap ?? null,
-        episodeSupport: doc.episode_support,
+        // Route-scoped when a line is selected: the prediction count above is
+        // already this route's, so the aggregate incident count would claim the
+        // whole system's incidents support one line.
+        episodeSupport: line ? line.episodeSupport : doc.episode_support,
         generatedAt: doc.generated_at ?? null,
         drift: doc.drift,
       };

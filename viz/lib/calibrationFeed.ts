@@ -163,6 +163,10 @@ export interface CalibrationDoc {
       // rate here: the chip renders as the selected route's own coverage, and
       // the aggregate can be true of no individual route.
       movement_coverage?: MovementCoverage | null;
+      // THIS route's incident count, for the same reason: the line filter also
+      // swaps the adjacent prediction count to this route's, so the aggregate
+      // would claim the whole system's incidents support one line.
+      episode_support?: EpisodeSupport | null;
       recovery: {
         overall: CalibrationRecoveryStats;
         per_regime: CalibrationRecoveryStats;
@@ -298,12 +302,19 @@ export function calibrationRoutes(doc: CalibrationDoc): string[] {
   );
 }
 
-/** Per-line reliability + recovery from the static feed, or null when the feed
- * has no breakdown for this route (thin line, or a pre-per-line feed). */
+/** Per-line reliability, recovery, and effective support from the static feed, or
+ * null when the feed has no breakdown for this route (thin line, or a
+ * pre-per-line feed). Every field is route-scoped: the caller swaps the whole
+ * counts line to this route, so an aggregate leaking through here reads as a
+ * claim about the selected line. */
 export function calibrationForLine(
   doc: CalibrationDoc,
   route: string,
-): { reliability: AggregateReliability[]; recovery: CalibrationDoc["recovery"] } | null {
+): {
+  reliability: AggregateReliability[];
+  recovery: CalibrationDoc["recovery"];
+  episodeSupport: EpisodeSupport | undefined;
+} | null {
   const bl = doc.by_line?.[route];
   if (!bl) return null;
   return {
@@ -318,6 +329,9 @@ export function calibrationForLine(
       bl.movement_coverage?.unknown_share,
     ),
     recovery: bl.recovery,
+    // Undefined, never the aggregate: a route with no published support must show
+    // no incident count rather than the system's.
+    episodeSupport: bl.episode_support ?? undefined,
   };
 }
 

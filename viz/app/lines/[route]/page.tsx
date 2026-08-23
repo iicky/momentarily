@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected, orderTrip } from "@/lib/stations";
@@ -12,11 +12,24 @@ import type { Snapshot } from "@/lib/types";
 type Dir = "north" | "south";
 
 export default function LinePage() {
+  return (
+    <Suspense fallback={<div className="wrap"><div className="sub">loading…</div></div>}>
+      <LineView />
+    </Suspense>
+  );
+}
+
+function LineView() {
   const params = useParams<{ route: string }>();
   const route = decodeURIComponent(params.route);
+  const router = useRouter();
+  const qp = useSearchParams();
   const { data: snap } = useSnapshot();
   const { data: topo } = useTopology();
-  const [dir, setDir] = useState<Dir>("north");
+  // Direction lives in the URL, so a bookmark, refresh, or the "view on map"
+  // link all agree on it.
+  const dir: Dir = qp.get("dir") === "south" ? "south" : "north";
+  const setDir = (d: Dir) => router.replace(`/lines/${encodeURIComponent(route)}?dir=${d}`);
 
   // Canonical order from the trainer's published patterns (falling back to an
   // adjacency walk) when topology is loaded; otherwise every station that names

@@ -13,13 +13,17 @@ import pytest
 
 from training.gtfs_static import (
     Chain,
+    RoutePattern,
     Span,
     base_route,
     chains,
     direction_of,
     dominant_successor,
     load_successors,
+    load_topology,
     origin_seconds,
+    patterns_to_json,
+    route_patterns,
     service_dates,
     stops_to_json,
     successors,
@@ -216,6 +220,54 @@ def test_load_successors_composes_fetch_and_parse(
     assert result == {
         ("F", "south", "A0S"): [("B0S", 1)],
         ("F", "south", "B0S"): [("C0S", 1)],
+    }
+
+
+# --- route_patterns: whole ordered runs, not consecutive-pair reduction --------
+
+
+def test_route_patterns_keeps_whole_ordered_runs_most_run_first():
+    pats = route_patterns(_branching_zip())
+    # F south runs three distinct patterns: the local trunk (t1, t2), the D0S
+    # branch (t3), and the express skip (t4/FX) — each a full ordered run, the
+    # 2-trip trunk first. `successors` only ever sees consecutive pairs; this
+    # keeps the end-to-end sequence a line order is read off.
+    assert [(p.stops, p.n_trips) for p in pats[("F", "south")]] == [
+        (("A0S", "B0S", "C0S"), 2),
+        (("A0S", "B0S", "D0S"), 1),
+        (("A0S", "C0S"), 1),
+    ]
+    assert pats[("Q", "north")] == [RoutePattern(stops=("X0N", "Y0N"), n_trips=1)]
+
+
+def test_patterns_to_json_keys_route_direction_and_lists_stops():
+    doc = patterns_to_json(route_patterns(_branching_zip()))
+    assert doc["F|south"] == [
+        {"stops": ["A0S", "B0S", "C0S"], "n_trips": 2},
+        {"stops": ["A0S", "B0S", "D0S"], "n_trips": 1},
+        {"stops": ["A0S", "C0S"], "n_trips": 1},
+    ]
+    assert doc["Q|north"] == [{"stops": ["X0N", "Y0N"], "n_trips": 1}]
+
+
+def test_load_topology_returns_successors_and_patterns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zip_bytes = make_gtfs_bytes(["F,t1,Weekday,X,0,s1"], _STOP_TIMES[:3])
+
+    def fake_fetch(url: str = "") -> bytes:
+        return zip_bytes
+
+    import training.gtfs_static as gtfs_static
+
+    monkeypatch.setattr(gtfs_static, "fetch_gtfs_zip", fake_fetch)
+    succ, pats = load_topology()
+    assert succ == {
+        ("F", "south", "A0S"): [("B0S", 1)],
+        ("F", "south", "B0S"): [("C0S", 1)],
+    }
+    assert pats == {
+        ("F", "south"): [RoutePattern(stops=("A0S", "B0S", "C0S"), n_trips=1)]
     }
 
 

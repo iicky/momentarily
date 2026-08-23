@@ -851,3 +851,231 @@ code {
   font-size: 12.5px;
   margin: 8px 0;
 }
+
+.prov-note {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-top: 14px;
+}
+
+/* --- Lines / Station / Map surfaces -------------------------------------- */
+
+.line-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.line-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 12px;
+}
+.line-head h2 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.dir-toggle {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+.dir-toggle button,
+.trip-select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.dir-toggle button.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.dir-toggle button:not(.active) {
+  color: var(--muted);
+}
+
+/* Vertical stop rail: a node per station, a connector to the next colored by
+   the segment leaving it. */
+.stoplist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.stop {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  min-height: 34px;
+}
+.stop-node {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  z-index: 1;
+  background: var(--unknown);
+}
+.stop-node.normal {
+  background: var(--normal);
+}
+.stop-node.disrupted {
+  background: var(--disrupted);
+}
+.stop-conn {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  width: 2px;
+  height: 100%;
+  background: var(--border);
+}
+.stop-conn.normal {
+  background: var(--normal);
+}
+.stop-conn.disrupted {
+  background: var(--disrupted);
+}
+.stop-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text);
+}
+.stop-body:hover {
+  text-decoration: none;
+}
+.stop-body:hover .stop-name {
+  color: var(--accent);
+}
+.stop-name {
+  font-size: 14px;
+}
+.stop-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ada-badge {
+  font-size: 10.5px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.station-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin: 8px 0 12px;
+}
+.station-lines {
+  display: inline-flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.kv-block {
+  margin-bottom: 8px;
+}
+
+.seglist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.seglist li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.seg-dir {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+.seg-path {
+  flex: 1;
+  color: var(--text);
+}
+
+.map-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+.map-canvas {
+  position: relative;
+}
+.map-svg {
+  width: 100%;
+  height: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.map-node {
+  fill: var(--text);
+  cursor: pointer;
+  transition: r 0.1s;
+}
+.map-node.degraded {
+  fill: var(--disrupted);
+}
+.map-label {
+  fill: var(--text);
+  font-size: 13px;
+  font-family: var(--mono);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+}
+.map-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.map-legend i {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 5px;
+}
+.seg-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  max-height: 900px;
+  overflow: auto;
+}
+
+@media (max-width: 760px) {
+  .map-layout {
+    grid-template-columns: 1fr;
+  }
+  .station-cols {
+    grid-template-columns: 1fr;
+  }
+}

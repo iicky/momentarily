@@ -45,9 +45,11 @@ from training.dwell import (
     compute_dwell_quantiles_by_cause,
 )
 from training.gtfs_static import (
+    RoutePattern,
     SegmentKey,
     dominant_successor,
-    load_successors,
+    load_topology,
+    patterns_to_json,
     stops_to_json,
     through_stops,
 )
@@ -434,9 +436,13 @@ SEGMENT_PARAMS_KEY = "state/segment_params.json"
 VERSIONED_SEGMENT_PREFIX = "state/segment_params/"
 
 
-def _static_topology() -> tuple[dict[SegmentKey, list[tuple[str, int]]] | None, str]:
-    """The static successor skeleton for this run, or (None, "observed") with the
-    reason printed.
+def _static_topology() -> tuple[
+    dict[SegmentKey, list[tuple[str, int]]] | None,
+    dict[tuple[str, str], list[RoutePattern]] | None,
+    str,
+]:
+    """The static successor skeleton and stopping patterns for this run, or
+    (None, None, "observed") with the reason printed.
 
     Fetched once and shared: the advance baseline, the through-stop set it is
     fitted against and the published segment topology all have to describe the
@@ -444,13 +450,14 @@ def _static_topology() -> tuple[dict[SegmentKey, list[tuple[str, int]]] | None, 
     fitted with would judge layovers against a through-stop normal.
     """
     try:
-        return load_successors(), "gtfs_static"
+        successors, patterns = load_topology()
+        return successors, patterns, "gtfs_static"
     except Exception as exc:
         print(
             f"gtfs static topology unavailable, using observed adjacency ({exc})",
             file=sys.stderr,
         )
-        return None, "observed"
+        return None, None, "observed"
 
 
 def _stop_filter(
@@ -476,6 +483,7 @@ def write_segment_params(
     end_date: date,
     trained_at: int,
     static_successors: dict[SegmentKey, list[tuple[str, int]]] | None,
+    static_patterns: dict[tuple[str, str], list[RoutePattern]] | None,
     topology_source: str,
     through: frozenset[tuple[str, str, str]] | None,
 ) -> int:
@@ -549,10 +557,22 @@ def write_segment_params(
         doc = {
             "schema_version": SCHEMA_VERSION,
             "trained_at": trained_at,
+            # Which code produced this doc, matching params.json/eval.json — the
+            # off-Worker consumers (viz) read the topology and its ordering, so
+            # they can name the tree that built it. See training/provenance.py.
+            "provenance": code_provenance(),
             "min_share": MIN_SHARE,
             "topology_source": topology_source,
             "cells": cells,
             "adjacency": adj_doc,
+            # Canonical per-(route, direction) stop order: the actual scheduled
+            # trip patterns, most-run first. A consumer reads line order off
+            # these instead of relinearizing the single-successor adjacency
+            # graph, which mangles express/local and branch splits. Empty on the
+            # observed-adjacency fallback (no static feed to read patterns from).
+            "route_stops": (
+                patterns_to_json(static_patterns) if static_patterns is not None else {}
+            ),
         }
         body = json.dumps(doc).encode()
         versioned = f"{VERSIONED_SEGMENT_PREFIX}v{trained_at}.json"
@@ -961,7 +981,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     # One static-timetable fetch for the whole run: it decides which stops the
     # advance baseline is fitted on, which set ships to the Worker, and the
     # published segment topology.
-    static_successors, topology_source = _static_topology()
+    static_successors, static_patterns, topology_source = _static_topology()
     through = None if static_successors is None else through_stops(static_successors)
     # Movement advance-rate baseline over the training window: the per-cell form
     # ships to the Worker in params.json; the per-route rates seed each route's
@@ -1160,6 +1180,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         end_date,
         trained_at,
         static_successors,
+        static_patterns,
         topology_source,
         through,
     )

@@ -197,6 +197,11 @@ export async function GET(req: NextRequest) {
         // already this route's, so the aggregate incident count would claim the
         // whole system's incidents support one line.
         episodeSupport: line ? line.episodeSupport : doc.episode_support,
+        // Aggregate-only, and null the moment a line is selected. The feed
+        // carries no per-route params-version segment, and the system-wide
+        // current-model grade beside a route-scoped prediction count would
+        // read as that route's — the same trap as episodeSupport above.
+        currentParams: routeFilter ? null : (doc.current_params ?? null),
         generatedAt: doc.generated_at ?? null,
         drift: doc.drift,
       };

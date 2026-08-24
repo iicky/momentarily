@@ -22,6 +22,7 @@ import {
   type ReliabilityResult,
   type RecoveryResult,
   type AggregateRecovery,
+  type CurrentParamsRecovery,
   type ResumeChurnResult,
   type AdherenceResult,
   type DetectionLatencyResult,
@@ -117,6 +118,7 @@ export default function ModelsPage() {
   const heatmap = (data?.heatmap ?? []) as HeatmapEntry[];
   const states = data?.states ?? ["normal", "disrupted", "suspended"];
   const support = data?.episodeSupport as EpisodeSupport | undefined;
+  const currentParams = data?.currentParams as CurrentParamsRecovery | undefined;
 
   return (
     <div className="wrap">
@@ -312,7 +314,14 @@ export default function ModelsPage() {
             recAgg && (
               <>
                 <h3 className="grp">Recovery accuracy</h3>
-                <RecoverySummary result={recAgg} />
+                <p className="grp-note">
+                  Retrains land weekly and this window is four weeks wide, so the
+                  pooled row averages three or four different models — a change in
+                  it can be which models were in the mix rather than anything one
+                  of them learned. The second row is the model running right now,
+                  on its own predictions.
+                </p>
+                <RecoverySummary result={recAgg} currentParams={currentParams} />
               </>
             )
           ) : (

@@ -4101,3 +4101,111 @@ by an unbounded trip count. No fix applied. The direction suggested by the
 structure is to score the advance *rate* once per tick rather than once per
 trip, which under bootstrap params would put the channel at 0.192 nats instead
 of 30.73 at n=160; untested, and it would need the EM fit redone.
+
+## 2026-08-24 — the recovery grade was measuring an arm mismatch, not the model: MAE 102 → 29 min, IQR coverage 8.7% → 46.9%
+
+origin: agent
+
+Built the per-retrain segmentation the widened eval window needed
+(`recovery_by_params_version` in `training/eval.py`, published in `v1/eval.json`
+and trimmed into `v1/calibration.json`), and it immediately overturned the
+standing causal story for the two worst numbers on the Models page.
+
+**What the segmentation shows.** 28 days, 2026-07-28..08-24, 226,432 predictions,
+728 transitions. MAE/IQR are per-tick; `incid` is the incident count on the arm
+being graded, which is the number that says how much independent evidence a
+segment carries:
+
+| params trained | ticks | incid | MAE | IQR coverage | span |
+| --- | --- | --- | --- | --- | --- |
+| 2026-07-26 | 60 | 13 | 30.1m | 38.3% | 07-28..08-02 |
+| 2026-08-02 | 14 | 2 | 17.9m | 78.6% | 08-02..08-03 |
+| 2026-08-03 | 0 | 0 | — | — | 08-03..08-03 |
+| 2026-08-03 | 89 | **33** | **32.5m** | **39.3%** | 08-03..08-11 |
+| 2026-08-11 | 16 | 2 | 99.0m | 6.2% | 08-11..08-12 |
+| 2026-08-12 | 12 | 12 | 11.7m | 0.0% | 08-12..08-13 |
+| 2026-08-13 | 884 | **197** | **116.8m** | **2.6%** | 08-13..08-24 |
+| pooled | 1,075 | 259 | 102.3m | 8.7% | whole window |
+
+Two segments clear a 20-incident floor and they disagree by 3.6x on MAE and 15x
+on coverage. The pooled number sits between them and flatters the model now
+running.
+
+**Dead hypothesis — "the 2026-08-13 retrain made the filter flap, and a
+dwell-based estimate cannot hit short regimes."** Regime durations moved the
+wrong way: median non-normal dwell was 5.0 min before 08-13 (n=78) and 10.0 min
+after (n=286), mean 18.3 → 36.9 min. Regimes got *longer*, so flapping is not
+what broke the estimate.
+
+**What is actually true.** The predicted quantity collapsed, not the truth. Over
+the gradeable population (non-normal on the shadow arm, determinate), split by
+the arm that produced `recovery_minutes`:
+
+| recovery_source | n | median predicted | median IQR width | zero-width |
+| --- | --- | --- | --- | --- |
+| `hmm` | 192 | 50.0m | 80.0m | 1% |
+| `movement` | 883 | **0.0m** | **0.0m** | **99%** |
+
+`movement` became the dominant source at the 08-11 retrain and carried 857 of
+884 rows by 08-13. Those rows read zero for a good reason: **870 of the 872
+movement-sourced zeros (100%) sit on routes whose `published_condition` is
+`normal`**, while the shadow condition that selected them says `disrupted` (515)
+or `suspended` (357).
+
+So the movement arm is right. It says "this route is running normally, there is
+nothing to recover from" and emits 0 — `worker/src/snapshot.ts:963-967`,
+`1029-1033`. The grader picks the row because a *different* arm calls the route
+disrupted, then reads that 0 as a forecast of instant recovery against the
+shadow's regime clock. `_grade_recovery` gates ticks on `arm(p)` but grades
+`recovery_minutes`, which comes from whichever arm `recovery_source` names, and
+the two are not the same arm. The guard for exactly this failure is already in
+the code and already describes it (`training/eval.py:861-867`: "A route that is
+already normal isn't recovering — it predicts recovery_minutes=0, and grading
+that against time-until-the-next-disruption swamps MAE and pins IQR coverage
+near zero"); it just tests the shadow stream, which is not the stream the zero
+came from.
+
+Excluding movement-sourced rows the way `schedule` rows are already excluded
+(`training/eval.py:876`):
+
+| | ticks | incidents | MAE | IQR coverage |
+| --- | --- | --- | --- | --- |
+| as published | 1,075 | 259 | 102.3m | 8.7% |
+| movement rows excluded | 192 | 52 | **29.0m** | **46.9%** |
+
+Against a nominal 50%, the recovery forecast is close to calibrated. **Not
+applied.** It changes published grading semantics and makes the headline numbers
+look 3.5x better, which is precisely the kind of change that needs sign-off
+rather than an agent's initiative.
+
+**What this does and does not overturn.** The standing diagnosis held that MAE
+and IQR coverage were severity conflation — a dwell inherited from a population
+94% composed of ordinary `Delays`. That conflation is real and separately
+verified: the training path carries no severity input at all. What is now
+measured is that it does not *explain these two metrics*. Across the 08-13
+boundary the severity mix is flat while the recovery source inverts:
+
+| | tier>=2 share | tier 1 share | `hmm` | `movement` |
+| --- | --- | --- | --- | --- |
+| pre 08-13 (n=182) | 3.3% | 96.7% | 89.6% | 10.4% |
+| post 08-13 (n=893) | 6.3% | 93.7% | 3.2% | 96.8% |
+
+Same conflation on both sides — marginally *more* severe events afterward, which
+under the conflation hypothesis should have improved the numbers rather than
+degrading coverage from 39.3% to 2.6%. The 2026-08-03 params scored MAE 32.5 min
+and 39.3% coverage over 33 incidents under exactly this mix. So the conflation
+stays on the books as a modeling problem worth fixing on its own merits, and is
+struck as the cause of these two numbers. A three-state severity split was
+queued against an acceptance criterion requiring MAE and IQR coverage to move
+materially; on this evidence it could not have moved them, and would have been
+recorded as a failed diagnosis for the wrong reason.
+
+**Instrument note, learned twice on the way.** A segment's `low_sample` flag
+counts incidents, not ticks: the regression test's v200 has more graded ticks
+than v100 (50 vs 44) and one incident against 22, so a tick threshold waves
+through exactly the thin segment the flag exists to catch. And it counts them
+via `per_regime.n` — regimes on the arm being graded — not via `episode_support`,
+whose incident count is computed on the published movement arm and therefore
+sizes a different metric. Reaching for the adjacent number would have rebuilt
+the same arm-mismatch error class one field over, inside the very instrument
+built to find it.

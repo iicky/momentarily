@@ -297,6 +297,13 @@ export interface GradingResponse {
   // autocorrelated, so a flat tick count can hide a 17.8x swing in real support.
   // Typed structurally on the client. Absent on older feeds and on the streams view.
   episodeSupport?: unknown;
+  // The running model's own recovery grade, isolated from the retrains before
+  // it. `recovery` above is pooled across every params version in the window,
+  // so it belongs to no single model and cannot say whether a retrain helped.
+  // Carries its own n_graded and a low_sample flag, because the newest version
+  // holds roughly a quarter of the window by construction. Calibration view
+  // only; typed structurally on the client.
+  currentParams?: unknown;
   // When the underlying feed was generated (public aggregate). null on the
   // credentialed streams view, which reads live up to "now".
   generatedAt?: number | null;

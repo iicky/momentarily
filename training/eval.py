@@ -65,6 +65,17 @@ def _opt_float(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def _opt_int(value: Any) -> int | None:
+    """int(value), or None for an absent field.
+
+    Same reasoning as _opt_float: the movement trip counts are None when the
+    channel did not fire, and 0 means it fired on zero advanced trips — a real
+    observation of frozen trains. Coercing absent to 0 would merge "no evidence"
+    into "strong evidence of a stall".
+    """
+    return None if value is None else int(value)
+
+
 @dataclass(frozen=True)
 class PredictionRecord:
     ts: int
@@ -120,6 +131,15 @@ class PredictionRecord:
     # movement dwell curve is conditioned on, so a grader cannot reconstruct the
     # published forecast without it.
     movement_regime_entered_at: int = 0
+    # Trip counts the binomial movement channel was evaluated at on this tick.
+    # None for JSONL written before they shipped, and None whenever the channel
+    # did not fire — the Worker gates these on the same predicate logEmission
+    # uses, so a non-None pair means the binomial really contributed. Its
+    # log-likelihood ratio is the only one that scales with the tick's trip
+    # count, so this is what makes the saturated posterior attributable rather
+    # than inferred.
+    matched_n: int | None = None
+    advanced_n: int | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> PredictionRecord:
@@ -144,6 +164,8 @@ class PredictionRecord:
             published_condition=raw.get("published_condition"),
             condition_source=raw.get("condition_source"),
             movement_regime_entered_at=int(raw.get("movement_regime_entered_at") or 0),
+            matched_n=_opt_int(raw.get("matched_n")),
+            advanced_n=_opt_int(raw.get("advanced_n")),
         )
 
 
@@ -1233,6 +1255,73 @@ def episode_support(
     }
 
 
+# Independent incidents a params-version segment needs before its recovery
+# numbers stand on their own. Counted in regimes, not ticks: ticks inside one
+# regime are almost perfectly autocorrelated, so a 900-tick segment can rest on
+# a handful of incidents.
+#
+# 20 is the floor at which a segment's MAE stops being a statement about which
+# incidents happened to land in it. The measurement behind that: six
+# consecutive 7-day windows on this archive carried 5, 8, 8, 16, 26 and 89
+# incidents — a 17.8x swing behind an almost flat tick count — so anything in
+# single or low double digits is inside that noise band.
+MIN_RECOVERY_REGIMES = 20
+
+
+def recovery_by_params_version(
+    predictions: list[PredictionRecord],
+    transitions: list[TransitionRecord],
+    *,
+    window_start: int,
+    window_end: int,
+) -> dict[str, Any]:
+    """Recovery metrics segmented by the params version that produced them.
+
+    Mirrors `prequential_calibration`'s segmentation for the same reason: the
+    window spans several weekly retrains, so the pooled recovery block grades a
+    mixture of models and no number in it belongs to the model now running. A
+    week-over-week move in the pooled MAE can be composition alone.
+
+    `transitions` is passed whole to every segment. The outcome a forecast is
+    graded against is external truth, so an outcome landing after the next
+    retrain is still that forecast's outcome — segmenting the truth as well
+    would drop every forecast made near a retrain boundary.
+
+    `low_sample` is advisory, not a filter: a thin segment ships with the flag
+    rather than being dropped, because "the current model has four graded
+    incidents" is itself the finding the pooled block was hiding.
+
+    It is sized on `per_regime.n` — regimes graded on the shadow arm, the same
+    arm these metrics grade. Deliberately not `episode_support.n_episodes`,
+    which is computed on the published movement arm: that count describes a
+    different arm's incidents and cannot establish the sample size for a
+    shadow-arm metric, however tempting the adjacency.
+    """
+    by_version: dict[str, Any] = {}
+    for version in sorted({p.params_version for p in predictions if p.params_version}):
+        seg = [p for p in predictions if p.params_version == version]
+        rec = recovery_metrics(seg, transitions)
+        # The segment's own end, not the window's: an older version's evidence
+        # stops at its last prediction, and reporting the window end would
+        # spread its incidents over a span it never covered.
+        seg_end = min(window_end, max(p.ts for p in seg))
+        by_version[str(version)] = {
+            "n_predictions": len(seg),
+            # Ticks that survived into a graded pair, then the incident count
+            # behind them. Both ship: the tick count is what every other n in
+            # this document means, and the regime count is the one that says how
+            # much independent evidence the segment carries.
+            "n_graded": rec.overall.n,
+            "n_regimes": rec.per_regime.n,
+            "low_sample": rec.per_regime.n < MIN_RECOVERY_REGIMES,
+            "recovery": recovery_as_dict(rec, graded_arm=SHADOW_ARM_LABEL),
+            "episode_support": episode_support(
+                seg, window_start=window_start, window_end=seg_end
+            ),
+        }
+    return by_version
+
+
 def build_eval(
     predictions: list[PredictionRecord],
     transitions: list[TransitionRecord],
@@ -1258,18 +1347,38 @@ def build_eval(
     # trained on data strictly before the prediction — so this is isolation of
     # the current model's performance, not a leakage guard. Empty/None when no
     # prediction carries a version tag (older JSONL).
+    recovery_versions = recovery_by_params_version(
+        predictions, transitions, window_start=window_start, window_end=window_end
+    )
     latest_version = max((p.params_version for p in predictions), default=0)
     current_params: dict[str, Any] | None = None
     if latest_version > 0:
         current = [p for p in predictions if p.params_version == latest_version]
-        current_recovery = recovery_metrics(current, transitions)
+        seg = recovery_versions[str(latest_version)]
         current_params = {
             "trained_at": latest_version,
             "n_predictions": len(current),
+            # How much of that segment survived into a graded pair, the incident
+            # count behind it, and whether that is enough to read. Thin by
+            # construction — weekly retrain, 28-day window — so the verdict
+            # ships with the numbers rather than leaving a reader to infer the
+            # segment's weight from n_predictions.
+            "n_graded": seg["n_graded"],
+            "n_regimes": seg["n_regimes"],
+            "low_sample": seg["low_sample"],
+            "min_regimes": MIN_RECOVERY_REGIMES,
+            # `coverage_predictions` is the whole stream, not the segment: a
+            # forecast made just before a retrain has its T+horizon outcome
+            # written under the next version, and grading it only against
+            # same-version rows would drop every forecast at the boundary.
             "calibration": _calibration_as_dicts(
-                [calibrate(current, h) for h in HORIZONS_MIN]
+                [
+                    calibrate(current, h, coverage_predictions=predictions)
+                    for h in HORIZONS_MIN
+                ]
             ),
-            "recovery": recovery_as_dict(current_recovery, graded_arm=SHADOW_ARM_LABEL),
+            "recovery": seg["recovery"],
+            "episode_support": seg["episode_support"],
         }
 
     return {
@@ -1291,6 +1400,11 @@ def build_eval(
             predictions, window_start=window_start, window_end=window_end
         ),
         "current_params": current_params,
+        # Every version in the window, not just the current one. A single
+        # current-model number still hides that the previous retrain scored
+        # twice as well on three times the support, which is the difference
+        # between a real improvement and a thin sample.
+        "recovery_by_params_version": recovery_versions,
         "calibration": _calibration_as_dicts(calibrations),
         "calibration_arm": SHADOW_ARM_LABEL,
         "calibration_movement": {
@@ -1382,8 +1496,17 @@ def build_calibration(
 
     Keeps the window-aggregate reliability bins, Brier/skill per horizon, and
     overall + per-regime recovery, plus the transition matrices. Drops the heavy
-    breakdowns (current_params, recovery.by_route, recovery.by_alert_type) that
-    multiply by route/alert-type/params-version — those stay in eval.json.
+    breakdowns (recovery.by_route, recovery.by_alert_type, the full per-version
+    index) that multiply by route/alert-type/params-version — those stay in
+    eval.json.
+
+    `current_params` ships trimmed to the same overall/per-regime shape. The
+    window is 28 days and retrains are weekly, so the pooled recovery block is
+    a mixture over three or four models and none of its numbers describe the
+    one now running — a page that reads only the pooled block cannot say
+    whether a retrain helped. The segment carries its own support and a
+    low_sample flag because at a quarter of the window it is often too thin to
+    stand alone, and the surface has to be able to say which it is.
 
     Both graded arms ship, each with its label. Publishing only the shadow block
     is what made the Models page report AUC 0.406 for a forecast that scores
@@ -1407,10 +1530,39 @@ def build_calibration(
         "calibration": eval_doc["calibration"],
         "calibration_arm": eval_doc["calibration_arm"],
         "calibration_movement": eval_doc["calibration_movement"],
+        # `graded_arm` rides along: trimming it off left the page showing a
+        # shadow-arm MAE with nothing to say so, next to a movement-arm
+        # reliability chart. Both blocks below grade the shadow — the exit
+        # lookup in recovery_metrics is keyed on the filter's own regime clock,
+        # so it cannot grade another arm — and the label is what keeps that
+        # readable instead of implied.
         "recovery": {
+            "graded_arm": eval_doc["recovery"]["graded_arm"],
             "overall": eval_doc["recovery"]["overall"],
             "per_regime": eval_doc["recovery"]["per_regime"],
         },
+        # The running model's own grade, trimmed to the pooled block's shape so
+        # the surface can show them side by side. `low_sample` is the whole
+        # point: without it a thin segment reads as an improvement.
+        "current_params": (
+            {
+                "trained_at": cp["trained_at"],
+                "n_predictions": cp["n_predictions"],
+                "n_graded": cp["n_graded"],
+                "low_sample": cp["low_sample"],
+                "n_regimes": cp["n_regimes"],
+                "min_regimes": cp["min_regimes"],
+                "calibration": cp["calibration"],
+                "episode_support": cp["episode_support"],
+                "recovery": {
+                    "graded_arm": cp["recovery"]["graded_arm"],
+                    "overall": cp["recovery"]["overall"],
+                    "per_regime": cp["recovery"]["per_regime"],
+                },
+            }
+            if (cp := eval_doc.get("current_params"))
+            else None
+        ),
         "drift": eval_doc["drift"],
         "transition_matrices": transition_matrices,
         # Per-route reliability + recovery for the line filter, trimmed to what

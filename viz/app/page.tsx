@@ -691,14 +691,28 @@ function RouteDrawer({
         );
       })()}
 
-      <div className="section-title">Alert (MTA)</div>
+      <div className="section-title">MTA alerts</div>
       <div className="kv">
         <span className="k">Status</span>
         <span className="v">{r.label}</span>
-        <span className="k">Category</span>
-        <span className="v">{r.category}</span>
         <span className="k">Primary alert</span>
         <span className="v">{r.primary_alert_type ?? "—"}</span>
+        {/* Alert feed only. These rows never see train movement, so a
+            direction with nothing posted reads "no alerts" rather than "good"
+            — the badge above can say disrupted on movement while the MTA has
+            posted nothing. A real per-direction movement read needs
+            segment_flow coverage, which currently publishes only a handful of
+            cells system-wide. */}
+        <span className="k">Northbound</span>
+        <span className="v">
+          {r.by_direction.northbound.primary_alert_type ??
+            (r.by_direction.northbound.alerts.length ? "alert" : "no alerts")}
+        </span>
+        <span className="k">Southbound</span>
+        <span className="v">
+          {r.by_direction.southbound.primary_alert_type ??
+            (r.by_direction.southbound.alerts.length ? "alert" : "no alerts")}
+        </span>
       </div>
 
       <div className="section-title">Trains running</div>
@@ -731,11 +745,11 @@ function RouteDrawer({
 
       {inf && (
         <>
-          <div className="section-title">Regime probabilities</div>
+          <div className="section-title">Predicted status</div>
           <div className="section-note">
-            The model&apos;s own read. It weighs alerts, train movement and train
-            counts together. The status above follows train movement alone, so
-            the two can differ.
+            What the model infers is happening right now. It weighs alerts,
+            train movement and train counts together, so it can differ from the
+            status above, which follows train movement alone.
           </div>
           <div
             className="pbar"
@@ -767,25 +781,6 @@ function RouteDrawer({
           <RecoveryBlock r={r} inf={inf} />
         </>
       )}
-
-      {/* Alert feed only. These rows never see train movement, so a direction
-          with nothing posted reads "no alerts" rather than "good" — the badge
-          above can say disrupted on movement while the MTA has posted nothing.
-          A real per-direction movement read needs segment_flow coverage, which
-          currently publishes only a handful of cells system-wide. */}
-      <div className="section-title">Alerts by direction</div>
-      <div className="kv">
-        <span className="k">Northbound</span>
-        <span className="v">
-          {r.by_direction.northbound.primary_alert_type ??
-            (r.by_direction.northbound.alerts.length ? "alert" : "no alerts")}
-        </span>
-        <span className="k">Southbound</span>
-        <span className="v">
-          {r.by_direction.southbound.primary_alert_type ??
-            (r.by_direction.southbound.alerts.length ? "alert" : "no alerts")}
-        </span>
-      </div>
 
       {r.alerts.length > 0 && (
         <>

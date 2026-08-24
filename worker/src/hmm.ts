@@ -120,10 +120,20 @@ export interface FilterState {
 // Forward filter
 // ---------------------------------------------------------------------------
 
-function emissionsFor(params: HMMParams, obs: Observation): EmissionParams {
+export function emissionsFor(params: HMMParams, obs: Observation): EmissionParams {
   if (!params.emissions_by_bin) return params.emissions;
   const idx = Math.max(0, Math.min(N_TOD_BINS - 1, obs.tod_bin));
   return params.emissions_by_bin[idx] ?? params.emissions;
+}
+
+// Whether the binomial movement channel contributes to this tick's likelihood.
+// Exported, and the only definition of the predicate: the grading stream records
+// the trip count this channel was evaluated at, and a row carrying matched_n
+// while the channel actually contributed 0 would attribute nats to a channel
+// that never fired. Params without advance_rate (pre-movement params.json) are
+// the case a has_movement-only check gets wrong.
+export function movementChannelActive(obs: Observation, em: EmissionParams): boolean {
+  return !!obs.has_movement && (obs.matched_n ?? 0) > 0 && em.advance_rate !== undefined;
 }
 
 // severity_sum is NOT a likelihood channel: it's a near-deterministic function
@@ -132,10 +142,7 @@ function emissionsFor(params: HMMParams, obs: Observation): EmissionParams {
 // gamma_beta stay in the params schema but are vestigial. Mirrors
 // src/momentarily/hmm.py.
 function logEmission(obs: Observation, em: EmissionParams): Vec3 {
-  // Movement channel drops out unless has_movement, trips matched, and the
-  // params actually carry an advance rate (absent in pre-movement params.json).
-  const matched = obs.matched_n ?? 0;
-  const hasMovement = !!obs.has_movement && matched > 0 && em.advance_rate !== undefined;
+  const hasMovement = movementChannelActive(obs, em);
   // Service channel drops out unless has_service, a ratio is present, and the
   // params carry the Gaussian (absent in pre-service params.json).
   const hasService =
@@ -150,7 +157,9 @@ function logEmission(obs: Observation, em: EmissionParams): Vec3 {
       + logBernoulli(obs.has_delays, em.bernoulli_p_delays[s]!)
       + logBernoulli(obs.has_service_change, em.bernoulli_p_service_change[s]!)
       + logBernoulli(obs.has_planned, em.bernoulli_p_planned[s]!)
-      + (hasMovement ? logBinomial(obs.advanced_n ?? 0, matched, em.advance_rate![s]!) : 0)
+      + (hasMovement
+        ? logBinomial(obs.advanced_n ?? 0, obs.matched_n ?? 0, em.advance_rate![s]!)
+        : 0)
       + (hasService
         ? logGauss(obs.service_ratio!, em.service_mu![s]!, em.service_sigma![s]!)
         : 0),

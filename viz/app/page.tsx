@@ -703,11 +703,6 @@ function RouteDrawer({
 
       <div className="section-title">MTA alerts</div>
       {r.alerts.length === 0 ? (
-        // No "Status" row here. It was `label`, which is coarseStatus() of the
-        // alert type below it, and its no-alert value is the string "Good
-        // Service" — a claim about service that the alert feed has no standing
-        // to make. The badge above speaks for movement; this section speaks
-        // only for what the MTA posted.
         <div className="section-note">
           The MTA has posted nothing for this line.
         </div>

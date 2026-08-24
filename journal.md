@@ -4004,3 +4004,100 @@ That single mismatch is the best available explanation for the two worst numbers
 on the page — recovery MAE 74 min and IQR coverage 1.8% against a nominal 50% —
 since both are "how long will this last" inheriting a dwell learned from a
 population 94% composed of the wrong events.
+
+## 2026-08-23 — the movement binomial is the only emission channel that scales with fleet size: 0.192 nats per matched trip under bootstrap params, while 99.83% of 35,492 graded forecasts sit in a single bin
+
+origin: agent
+
+The 2026-08-22 entry above established that the posterior is one-hot on 24 of 29
+routes and named the cause as "six independent likelihood channels multiply per
+tick, driving log-odds to hundreds". It did not say which channel. Two separable
+things below: a structural fact about the channels, and a measurement of the
+output. The bridge between them is NOT established — see the limits at the end.
+
+**Structural.** In `_log_emission` (`src/momentarily/hmm.py:366-400`, mirrored in
+`worker/src/hmm.ts:134-158`), six of the seven channels evaluate one scalar or
+one flag per tick, so their log-likelihood ratio between states is a constant
+that does not depend on how much data the tick contained. The binomial movement
+channel is the exception: `_log_binomial(advanced_n, matched_n, rate)` treats the
+cross-matched trips as `matched_n` independent Bernoulli trials of the route's
+hidden state, so its LLR is `matched_n * KL(rate_normal || rate_disrupted)` —
+linear in the trip count. This holds for any parameter values; only the
+coefficient changes. `matched_n` is `advanced_n + stalled_n` over both directions
+(`worker/src/movement_state.ts:380-402`, `worker/src/vehicles.ts:116-190`), with
+`MIN_MATCHED_TRIPS = 3` as a floor and **no cap**.
+
+**Sized with the checked-in bootstrap emissions only**
+(`training/run_filter.py:34-52` plus the `EmissionParams` defaults at
+`src/momentarily/hmm.py:131-136`), on an observation with no alerts,
+`service_ratio` 1.0, and `advanced_n` at exactly `0.6 * matched_n` — the normal
+state's own advance rate, so there is no anomaly anywhere in the input. LLR
+normal vs disrupted, nats:
+
+| channel | n=3 | n=20 | n=40 | n=80 | n=160 |
+| --- | --- | --- | --- | --- | --- |
+| Poisson `alert_count` | 3.70 | 3.70 | 3.70 | 3.70 | 3.70 |
+| Bernoulli `has_delays` | 0.90 | 0.90 | 0.90 | 0.90 | 0.90 |
+| Bernoulli `has_service_change` | 0.90 | 0.90 | 0.90 | 0.90 | 0.90 |
+| Bernoulli `has_planned` | 0.86 | 0.86 | 0.86 | 0.86 | 0.86 |
+| Bernoulli `has_suspended_alert` | 0.05 | 0.05 | 0.05 | 0.05 | 0.05 |
+| Gaussian `service_ratio` | 0.89 | 0.89 | 0.89 | 0.89 | 0.89 |
+| **Binomial movement** | **0.83** | **3.84** | **7.68** | **15.36** | **30.73** |
+| total | 8.12 | 11.14 | 14.98 | 22.66 | 38.02 |
+| movement share of positive LLR | 10% | 35% | 51% | 68% | 81% |
+
+Per-trip discrimination here is `KL(0.6 || 0.3) = 0.192` nats, contributed
+whether or not anything is wrong, and the crossover where movement carries the
+majority of the evidence is around `matched_n = 40`. For contrast the same
+observation with trips advancing at the disrupted rate (`0.3 * matched_n`,
+n=160) gives **-22.11** nats: under these params the channel is a hard
+classifier, not a nudge. A settled prior mixed through the bootstrap transition
+matrix predicts `(0.95, 0.04, 0.01)`, worth `ln(0.95/0.04) = 3.17` nats of pull
+toward staying put, which 38 nats of emission would beat 12:1 — the shape that
+would produce one-hot posteriors and single-tick argmax flips together rather
+than as two symptoms.
+
+**Measured, independent of the above.** Over the 35,492 graded 30-minute
+forecasts in the public `v1/eval.json` (window ending 2026-08-23):
+
+| | alert-shadow arm | movement arm |
+| --- | --- | --- |
+| forecasts in the 0.9–1.0 bin | 35,432 / 35,492 (**99.83%**) | 35,097 / 35,157 |
+| forecasts in 0.8–0.9 | 60 | 60 |
+| forecasts below 0.8 | **0** | **0** |
+| AUC | 0.375 | 0.361 |
+| BSS vs climatology | -0.033 | -0.534 |
+
+And the one subset where the answer should not be "fine", the 552 ticks whose
+line is not normal *now*: mean forecast **0.9963**, mean outcome **0.5272**. The
+model says 99.6% where the truth is 53%.
+
+Both arms saturate identically, on the same 60 mid-bin predictions, so this is
+not the grading mismatch recorded on 2026-08-23 above. Checked deliberately,
+because that entry's lesson was that a panel can grade the wrong arm and
+manufacture an AUC.
+
+**Limits — what this does not establish.** The live fitted emissions were never
+read: `PARAMS_KEY = 'state/params.json'` (`worker/src/params.ts:15`) sits outside
+the public `v1/` prefix (`worker/src/index.ts:96`), and no fitted params are
+checked into the repo. Raw per-tick `Observation` values are not persisted either
+— `PredictionRecord` keeps `p_normal` and friends but drops `alert_count`,
+`matched_n`, `advanced_n` and `service_ratio` (`worker/src/grading.ts:28-90`). So
+the 0.192 nats/trip, the 81% share, and the `matched_n = 40` crossover are
+properties of the bootstrap parameters, not measurements of production, and EM
+refits `advance_rate` per route and tod_bin (`src/momentarily/hmm.py:658-832`).
+The live runner-up masses are in the right family — route 1 publishes
+`p_disrupted = 2.6864e-17`, and `-ln` of that is 38.16 nats — but attributing
+those nats across channels needs the fitted params and a real `matched_n`, and
+inverting one number into the other assumes exactly the equality that is
+untested. Two things would settle it: log the per-channel log-likelihood terms
+for one tick from inside the Worker, or persist `matched_n` and `advanced_n` on
+`PredictionRecord`.
+
+Same error class as the `severity_sum` Gamma channel removed earlier
+(`hmm.py:128-133`, "double-counted the count evidence and saturated the
+posterior") — but where that double-counted a bounded quantity, this multiplies
+by an unbounded trip count. No fix applied. The direction suggested by the
+structure is to score the advance *rate* once per tick rather than once per
+trip, which under bootstrap params would put the channel at 0.192 nats instead
+of 30.73 at n=160; untested, and it would need the EM fit redone.

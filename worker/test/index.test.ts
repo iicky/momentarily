@@ -30,6 +30,7 @@ vi.mock('../src/fetch', async (importOriginal) => {
 });
 
 import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS } from '../src/fetch';
+import { tod_bin } from '../src/hmm';
 import worker, { tickMinute } from '../src/index';
 import type { Env } from '../src/index';
 
@@ -443,5 +444,142 @@ describe('step 8b: movement_through_stops from params.json', () => {
     // Unfiltered: the terminal stall counts, unlike the filtered test above.
     expect(tick2.rows['A']!.stalled_n).toBe(1);
     expect(tick2.rows['A']!.advanced_n).toBe(0);
+  });
+});
+
+describe('step 7: the movement channel inputs land on the prediction stream', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+  const TOD = String(tod_bin(BOUNDARY_AT));
+
+  interface PredRow {
+    route: string;
+    matched_n: number | null;
+    advanced_n: number | null;
+  }
+
+  /** The v1/predictions JSONL from the most recent tick, parsed. */
+  function predictionRows(store: Map<string, StoredObject>): PredRow[] {
+    const keys = keysWithPrefix(store, 'v1/predictions/').sort();
+    const body = store.get(keys[keys.length - 1]!)!.body;
+    return body
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as PredRow);
+  }
+
+  /** Three trips on route A, each advancing one stop per tick — over
+   *  MIN_MATCHED_TRIPS, so the channel is judgeable.
+   *
+   *  Three ticks, not two. The movement channel is one tick lagged: the metric
+   *  comparing tick 1 to tick 2 is only WRITTEN at tick 2, so the first tick
+   *  whose observation can fold it in is tick 3. Asserting on tick 2 would
+   *  read null no matter how the gate behaved. */
+  async function driveThreeTicks(env: Env) {
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    const at = (stop: string) =>
+      vehicleFeed(
+        { tripId: 'a', routeId: 'A', stopId: stop },
+        { tripId: 'b', routeId: 'A', stopId: stop },
+        { tripId: 'c', routeId: 'A', stopId: stop },
+      );
+    const stops = ['A09N', 'A10N', 'A11N'];
+    for (let i = 0; i < stops.length; i += 1) {
+      fetchState.protobufByUrl.set(TRIP_UPDATE_FEEDS[0]![1], at(stops[i]!));
+      const tickAt = BOUNDARY_AT + i * 300;
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(tickAt * 1000);
+      try {
+        await worker.scheduled(scheduledAt(tickAt), env, execCtx);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    }
+  }
+
+  // A trained route whose emissions carry the fitted advance rate — without it
+  // logEmission drops the channel however many trips matched.
+  const ROUTE_A_PARAMS = {
+    transition: [
+      [0.95, 0.04, 0.01],
+      [0.08, 0.9, 0.02],
+      [0.02, 0.1, 0.88],
+    ],
+    initial: [0.9, 0.08, 0.02],
+    emissions: {
+      poisson_lambda: [0.3, 4.0, 12.0],
+      gamma_alpha: [1.0, 3.0, 6.0],
+      gamma_beta: [2.0, 0.4, 0.2],
+      bernoulli_p: [0.001, 0.05, 0.95],
+      bernoulli_p_delays: [0.02, 0.6, 0.35],
+      bernoulli_p_service_change: [0.02, 0.6, 0.4],
+      bernoulli_p_planned: [0.05, 0.6, 0.35],
+      advance_rate: [0.6, 0.3, 0.02],
+    },
+    dwell_quantiles: {},
+    dwell_quantiles_by_alert: {},
+  };
+  const BASELINE = { A: { north: { [TOD]: { p0: 0.6, alpha: 6, beta: 4, n: 50 } } } };
+
+  test('records the counts the binomial was evaluated at when the channel fires', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({
+        schema_version: '1',
+        trained_at: 1,
+        routes: { A: ROUTE_A_PARAMS },
+        movement_baseline: BASELINE,
+      }),
+    );
+    await driveThreeTicks(env);
+
+    const rowA = predictionRows(store).find((r) => r.route === 'A');
+    expect(rowA).toBeDefined();
+    expect(rowA!.matched_n).toBe(3);
+    expect(rowA!.advanced_n).toBe(3);
+  });
+
+  test('leaves the counts null when the params carry no fitted advance_rate, however many trips matched', async () => {
+    // The exact divergence a has_movement-only check gets wrong: the baseline
+    // gates has_movement on, three trips matched, and the channel STILL
+    // contributes 0 because logEmission needs the rate to score against. A
+    // count here would attribute nats to a channel that never fired.
+    const { advance_rate: _dropped, ...noRate } = ROUTE_A_PARAMS.emissions;
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({
+        schema_version: '1',
+        trained_at: 1,
+        routes: { A: { ...ROUTE_A_PARAMS, emissions: noRate } },
+        movement_baseline: BASELINE,
+      }),
+    );
+    await driveThreeTicks(env);
+
+    const rowA = predictionRows(store).find((r) => r.route === 'A');
+    expect(rowA).toBeDefined();
+    expect(rowA!.matched_n).toBeNull();
+    expect(rowA!.advanced_n).toBeNull();
+  });
+
+  test('leaves the counts null when no movement baseline gates the channel in', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({ schema_version: '1', trained_at: 1, routes: {} }), // no movement_baseline
+    );
+    await driveThreeTicks(env);
+
+    // The trips still moved and the vehicle archive still counts them — what
+    // changes is that the channel contributed nothing to this posterior, so
+    // there is no count to attribute to it.
+    const rowA = predictionRows(store).find((r) => r.route === 'A');
+    expect(rowA).toBeDefined();
+    expect(rowA!.matched_n).toBeNull();
+    expect(rowA!.advanced_n).toBeNull();
   });
 });

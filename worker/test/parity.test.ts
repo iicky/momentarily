@@ -13,6 +13,7 @@ import type { EmissionParams, FilterState, HMMParams, Observation } from '../src
 import {
   expectedDwellTicks,
   forwardUpdate,
+  movementChannelActive,
   projectForward,
   stationaryDistribution,
   tod_bin,
@@ -67,6 +68,45 @@ function suspendedObs(): Observation {
     tod_bin: 0,
   };
 }
+
+// The grading stream records matched_n/advanced_n only when this returns true,
+// so a row carrying a count means the binomial really contributed. Divergence
+// between this predicate and logEmission's own gate would publish nats against
+// a channel that never fired.
+describe('movementChannelActive is the gate the grading stream records on', () => {
+  const withMovement: EmissionParams = { ...DEFAULT_EMISSIONS, advance_rate: [0.6, 0.3, 0.02] };
+  const moving: Observation = { ...quietObs(), has_movement: true, matched_n: 40, advanced_n: 24 };
+
+  test('fires when the flag, the trips and the fitted rate are all present', () => {
+    expect(movementChannelActive(moving, withMovement)).toBe(true);
+  });
+
+  test('params without advance_rate do not fire — the case a has_movement-only check gets wrong', () => {
+    expect(movementChannelActive(moving, DEFAULT_EMISSIONS)).toBe(false);
+  });
+
+  test('zero matched trips do not fire, even with the flag set', () => {
+    expect(
+      movementChannelActive({ ...moving, matched_n: 0, advanced_n: 0 }, withMovement),
+    ).toBe(false);
+  });
+
+  test('has_movement false does not fire, even with trips present', () => {
+    expect(movementChannelActive({ ...moving, has_movement: false }, withMovement)).toBe(false);
+  });
+
+  test('agrees with logEmission: the channel moves the posterior iff the gate is true', () => {
+    // Gate true → the binomial shifts the posterior away from the alert-only read.
+    const gated = forwardUpdate(FLAT, moving, { ...DEFAULT_PARAMS, emissions: withMovement }, 100);
+    const alertOnly = forwardUpdate(FLAT, quietObs(), { ...DEFAULT_PARAMS, emissions: withMovement }, 100);
+    expect(gated.probabilities[0]).not.toBeCloseTo(alertOnly.probabilities[0]!, 9);
+    // Gate false (no fitted rate) → identical to the alert-only read, so a
+    // recorded count here would attribute nats to a channel contributing zero.
+    const ungated = forwardUpdate(FLAT, moving, DEFAULT_PARAMS, 100);
+    const ungatedQuiet = forwardUpdate(FLAT, quietObs(), DEFAULT_PARAMS, 100);
+    expect(ungated.probabilities[0]).toBeCloseTo(ungatedQuiet.probabilities[0]!, 12);
+  });
+});
 
 describe('forwardUpdate matches Python', () => {
   test('posterior sums to one', () => {

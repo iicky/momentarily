@@ -58,7 +58,13 @@ import {
   writeTransitions,
 } from './grading';
 import type { FilterState, Observation, PublishedState } from './hmm';
-import { forwardStep, initialPublishedState, stationaryDistribution } from './hmm';
+import {
+  emissionsFor,
+  forwardStep,
+  initialPublishedState,
+  movementChannelActive,
+  stationaryDistribution,
+} from './hmm';
 import { loadParams, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
@@ -337,6 +343,14 @@ export default {
     ]);
     const quietObs: Observation | null =
       alertsPayload !== null ? quietObservation(observedAt) : null;
+    // The trip counts the binomial movement channel was actually evaluated at
+    // this tick, for the grading stream. The posterior saturates (journal
+    // 2026-08-23) and this is the only channel whose log-likelihood scales with
+    // the tick's trip count, so attributing that saturation needs the count,
+    // not just the posterior it produced. Populated only when the channel
+    // really fired, per movementChannelActive — the one definition of the gate.
+    // Tick-local: never folded into AlphaState, which is persisted.
+    const movementCounts = new Map<string, { matched_n: number; advanced_n: number }>();
 
     for (const routeId of allRoutes) {
       const prevRoll: RouteRoll | undefined = carriedRoutes[routeId];
@@ -376,6 +390,12 @@ export default {
           observedAt,
         );
         if (sv) obs = { ...obs, ...sv };
+      }
+      if (obs && movementChannelActive(obs, emissionsFor(params, obs))) {
+        movementCounts.set(routeId, {
+          matched_n: obs.matched_n ?? 0,
+          advanced_n: obs.advanced_n ?? 0,
+        });
       }
       const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
@@ -504,6 +524,7 @@ export default {
       for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
         const inf = rs.inference;
         if (!inf) continue;
+        const mv = movementCounts.get(routeId);
         predictions.push({
           ts: observedAt,
           route: routeId,
@@ -528,6 +549,11 @@ export default {
           // From the same one-tick-lagged doc the snapshot published the
           // condition from, so the row describes the regime consumers saw.
           movement_regime_entered_at: movementStates?.regimes[routeId]?.entered_at ?? 0,
+          // Null when the movement channel did not fire this tick — there is no
+          // count to attribute, and a number here would imply the binomial
+          // contributed when it contributed 0.
+          matched_n: mv?.matched_n ?? null,
+          advanced_n: mv?.advanced_n ?? null,
         });
       }
       try {

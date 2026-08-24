@@ -76,6 +76,19 @@ export interface PredictionRecord {
   // regime is what the movement dwell curve is conditioned on, so a grader
   // cannot reconstruct the forecast without it.
   movement_regime_entered_at: number;
+  // The movement channel's inputs, as this tick's posterior was actually
+  // computed from them. Null when the channel was gated off (logEmission
+  // contributes 0 for it) or the tick had no observation at all.
+  //
+  // Present because the posterior saturates and the grader cannot tell from the
+  // posterior alone which channel did it: of the seven channels in
+  // logEmission, six evaluate one scalar or flag per tick, while this one's
+  // log-likelihood ratio grows as matched_n * KL(rate_normal || rate_disrupted)
+  // — linear in the tick's trip count, which has a floor of MIN_MATCHED_TRIPS
+  // and no cap. With these two and the params, that term is computable in nats
+  // per tick instead of inferred. See journal.md 2026-08-23.
+  matched_n: number | null;
+  advanced_n: number | null;
 }
 
 export interface TransitionRecord {

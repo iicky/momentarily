@@ -14,6 +14,80 @@
  * hot per-tick params parse. NOTE: with overlapping decayed samples the binomial
  * tail is a tuned score, not a calibrated p-value — DECAY and CLASSIFY_ALPHA are
  * empirical knobs, and a minimum effective matched count guards the thinnest cells.
+ *
+ * SEGMENT_DECAY RETUNED 2026-08-23 (0.80 -> 0.94), off training/segment_coverage.py
+ * — a grid sweep (decay x floor, plus a corridor-pooling variant, plus an `expand`
+ * variant) replaying the archived vehicle stream against the PUBLISHED baseline.
+ * The sweep's pre-committed rule (maximise judged_share subject to
+ * quiet_disrupted_rate <= status quo + 1pp, alongside a recall floor added after a
+ * false-alarm-only criterion turned out unable to distinguish "cleaner" from
+ * "detects less of everything") picked decay=0.98 (~250-min window): coverage
+ * 72.30% of the 1658 baselined cells/tick (vs the 1.26% status quo),
+ * alert_disrupted_rate (recall, relative only — see caveat below) 0.22% vs the
+ * status quo's 0.05%, n_alert=944808 route-ticks (same sample every row, so the
+ * comparison is equally powered throughout).
+ *
+ * THAT PICK WAS REJECTED, not shipped, on a criterion the mechanical rule can't
+ * see: at a 250-minute window `entered_at` (the regime clock) can start up to
+ * four hours after a disruption's true onset, and `recovery` is a forecast
+ * CONDITIONED on that same clock — both go from measuring an event to
+ * describing a smear. training/episodes.py's own 21-day sample puts the MEDIAN
+ * alert episode (the truth this is graded against) at 45 MINUTES; a 250-minute
+ * accumulator is 5.6x that, structurally too slow to ever catch a typical
+ * incident while it's still happening, whatever the recall proxy says.
+ *
+ * CHOSEN INSTEAD: decay=0.94 (~83-min window, ~1.8x the median episode) —
+ * captures 77% of 0.98's own recall (alert_disrupted_rate 0.17% vs 0.98's
+ * 0.22%, both far above the status quo's 0.05% floor) at 42.28% coverage
+ * (701/1658 baselined cells/tick), quiet_disrupted_rate 0.49% (ceiling was
+ * status-quo's 5.12% + 1pp = 6.12%, comfortably cleared). This is a JUDGEMENT
+ * CALL against incident duration, not the mechanical rule's own answer —
+ * flagged here explicitly because a post-hoc criterion presented as
+ * pre-committed is the failure mode to avoid; a post-hoc criterion labelled as
+ * one, on the record, is not.
+ *
+ * CAVEAT: alert_disrupted_rate and quiet_disrupted_rate are tiny in absolute
+ * terms because the truth column is ROUTE-level severity (a whole route's
+ * alert state) while the judged column is PER-SEGMENT (one cell of dozens on
+ * that route) — only the RELATIVE ordering across policies is meaningful
+ * here; none of these percentages is an accuracy claim on its own.
+ *
+ * TWO OTHER VARIANTS WERE MEASURED AND REJECTED, on the record because both
+ * are real negative results, not omissions:
+ *   - CORRIDOR POOLING (spatial resolution traded for coverage, instead of
+ *     temporal): a cell under the floor pooled forward along its static
+ *     successor chain until the pooled count cleared it, then the whole
+ *     stretch was judged as one measurement. At decay=0.80's native 25-min
+ *     window this reached 45.61% coverage but only 0.06% recall — barely
+ *     above the FLAT classifier's own 0.05% at the same window, and under a
+ *     third of decay=0.94's 0.17% at similar coverage. Space was never where
+ *     the leverage was: a spatially pooled measurement dilutes a spatially
+ *     sharp signal the same way a wide time window dilutes a temporally sharp
+ *     one, and the temporal knob had far more headroom. Shipped once
+ *     (2026-08-23), then reverted the same day once the wider-window
+ *     comparison above landed — kept alive in training/segment_coverage.py
+ *     (`--max-corridor`) as a documented, measured, rejected option, not
+ *     re-implemented here.
+ *   - EXPAND (crediting every hop a multi-station jump provably crossed via
+ *     unanimous scheduled stopping patterns): costs recall at every decay
+ *     tested (0.80: 0.05% -> 0.03%; 0.94: 0.17% -> 0.10%; 0.98: 0.22% ->
+ *     0.13%) in exchange for coverage — the opposite of what this retune was
+ *     for. Not shipped for that reason, not for the ~685KB trainer-side hop
+ *     map it would additionally need.
+ *
+ * FOLLOW-UP (not done here): the metric that should govern this knob is
+ * detection LATENCY against the movement truth — how long after a real onset
+ * the surface flips — not a route-level recall proxy with a ceiling far below
+ * 1.0. training/scorecard.py's onset_latency and training/review.py's
+ * changepoint_alignment already do this for the route-level HMM; extending
+ * either to segment-level regimes would let this knob be picked directly
+ * against latency instead of against incident duration as a stand-in, which
+ * is what the 2026-08-23 choice actually is.
+ *
+ * entered_at / recovery staleness: the regime clock can now start up to
+ * ~83 minutes after a disruption's true onset (was ~25 min before this
+ * retune) — SegmentStatus.entered_at and .recovery should be read with that
+ * worst-case lag in mind.
  */
 
 import { classifyAdvance } from './movement_state';
@@ -21,10 +95,19 @@ import type { RegimeEntry } from './regime';
 import type { MovementRow } from './vehicles';
 import type { SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
 
-// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 5-tick (~25 min) effective window.
-export const SEGMENT_DECAY = 0.8;
+// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 17-tick (~83 min) effective
+// window. Retuned 2026-08-23 (was 0.8, ~25 min) — see the module docstring for
+// the sweep, the mechanical rule's own pick (0.98, rejected), and why 0.94 was
+// chosen against incident duration instead.
+export const SEGMENT_DECAY = 0.94;
 // Effective (decayed) matched trips a segment needs before it's judged at all.
-export const MIN_EFF_MATCHED = 5;
+// Held at 3 through the 2026-08-23 retune (was 5): floor 1, 2, and 3 tie
+// EXACTLY at every decay tested (701.0 judged/tick at decay=0.94, all three
+// identical) — movement_state.classifyAdvance's own MIN_MATCHED_TRIPS=3
+// already rejects any call under 3 matched, so a floor below 3 would be
+// strictly cosmetic, never looser in practice. 3 is the honest floor: as low
+// as this can go without publishing a value that can never bind.
+export const MIN_EFF_MATCHED = 3;
 // Drop a segment from the carried state once its decayed matched falls below this
 // (gone quiet) so the state object stays bounded.
 const PRUNE_MATCHED = 0.3;
@@ -32,7 +115,7 @@ const PRUNE_MATCHED = 0.3;
 /** Collapse a directional stop id to its station: strip a trailing N/S. */
 export function stationId(stop: string): string {
   const last = stop.at(-1);
-  return last === 'N' || last === 'S' ? stop.slice(0, -1) : stop;
+  return last === "N" || last === "S" ? stop.slice(0, -1) : stop;
 }
 
 /** This tick's advanced/matched per (route|dir|from) from the raw transitions. */
@@ -41,11 +124,11 @@ function tickCounts(
 ): Map<string, { adv: number; matched: number }> {
   const out = new Map<string, { adv: number; matched: number }>();
   for (const [routeId, row] of moveRows) {
-    for (const dir of ['north', 'south'] as const) {
+    for (const dir of ["north", "south"] as const) {
       const trans = row.by_direction[dir]?.transitions;
       if (!trans) continue;
       for (const [pair, n] of Object.entries(trans)) {
-        const gt = pair.indexOf('>');
+        const gt = pair.indexOf(">");
         if (gt < 0 || n <= 0) continue;
         const frm = pair.slice(0, gt);
         const to = pair.slice(gt + 1);
@@ -95,7 +178,7 @@ function deficitOf(p0: number, rate: number): number {
 
 interface SegmentCall {
   key: string;
-  call: 'normal' | 'disrupted';
+  call: "normal" | "disrupted";
   route: string;
   seg: [string, string];
   deficit: number;
@@ -108,7 +191,10 @@ interface SegmentCall {
  * from a low-p0 fluctuation — is simply absent: the shared basis for both
  * deriveStationFlow's incident roll-up and deriveSegmentStates' regime-clock
  * feed, so the two never disagree about which cells were judged. */
-function classifySegments(state: SegmentFlowDoc, params: SegmentParamsDoc): SegmentCall[] {
+function classifySegments(
+  state: SegmentFlowDoc,
+  params: SegmentParamsDoc,
+): SegmentCall[] {
   const out: SegmentCall[] = [];
   for (const [key, { a, m }] of Object.entries(state.cells)) {
     const cell = params.cells[key];
@@ -119,9 +205,9 @@ function classifySegments(state: SegmentFlowDoc, params: SegmentParamsDoc): Segm
     const advanced = Math.min(Math.round(a), matched);
     const call = classifyAdvance(advanced, matched - advanced, cell.p0);
     if (call === null) continue;
-    const parts = key.split('|');
-    const route = parts[0] ?? '';
-    const frm = parts[2] ?? '';
+    const parts = key.split("|");
+    const route = parts[0] ?? "";
+    const frm = parts[2] ?? "";
     out.push({
       key,
       call,
@@ -149,7 +235,7 @@ export function deriveStationFlow(
   for (const c of classifySegments(state, params)) {
     const incident: Incident = {
       deficit: c.deficit,
-      disrupted: c.call === 'disrupted',
+      disrupted: c.call === "disrupted",
       route: c.route,
       seg: c.seg,
     };
@@ -160,14 +246,14 @@ export function deriveStationFlow(
     }
   }
 
-  const stations: StationFlowDoc['stations'] = {};
+  const stations: StationFlowDoc["stations"] = {};
   for (const [sid, incs] of byStation) {
     const worst = incs.reduce((w, c) => (c.deficit > w.deficit ? c : w));
     // Status follows the shared classifier only, so the station surface never
     // contradicts the segment call; worst_deficit rides along as magnitude.
     const degraded = incs.some((c) => c.disrupted);
     stations[sid] = {
-      status: degraded ? 'degraded' : 'flowing',
+      status: degraded ? "degraded" : "flowing",
       worst_deficit: worst.deficit,
       worst_segment: worst.seg,
       routes: [...new Set(incs.map((c) => c.route))].sort(),
@@ -186,8 +272,8 @@ export function deriveStationFlow(
 export function deriveSegmentStates(
   state: SegmentFlowDoc,
   params: SegmentParamsDoc,
-): Record<string, 'normal' | 'disrupted'> {
-  const out: Record<string, 'normal' | 'disrupted'> = {};
+): Record<string, "normal" | "disrupted"> {
+  const out: Record<string, "normal" | "disrupted"> = {};
   for (const c of classifySegments(state, params)) out[c.key] = c.call;
   return out;
 }
@@ -201,7 +287,7 @@ export function deriveSegmentStates(
  * tick. */
 export function pruneSegmentRegimes<C extends string>(
   entries: Record<string, RegimeEntry<C>>,
-  liveCells: SegmentFlowDoc['cells'],
+  liveCells: SegmentFlowDoc["cells"],
 ): Record<string, RegimeEntry<C>> {
   const out: Record<string, RegimeEntry<C>> = {};
   for (const key of Object.keys(liveCells)) {

@@ -37,6 +37,12 @@ export const TRIP_UPDATE_FEEDS: ReadonlyArray<readonly [string, string]> = [
   ['si', `${MTA_GATEWAY}/nyct%2Fgtfs-si`],
 ] as const;
 
+// Full expected set, same order as above — published as trains.json's
+// `expected_feeds` so a consumer can tell a real-empty read from a partial
+// one (fresh_feeds shorter than this) without hardcoding NYCT's feed
+// grouping itself.
+export const TRIP_UPDATE_FEED_NAMES: readonly string[] = TRIP_UPDATE_FEEDS.map(([name]) => name);
+
 // Bound each upstream fetch so a hung feed can't stretch the tick toward the
 // cron CPU limit — on timeout the caller's try/catch treats it as a feed gap
 // and the next tick retries.

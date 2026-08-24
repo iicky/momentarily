@@ -157,9 +157,27 @@ export interface SegmentStatus {
   to: string | null;
   status: "normal" | "disrupted";
   entered_at: number;
+  // Null on a NORMAL cell -- a healthy segment has nothing to forecast, so
+  // this is never fabricated for one. Populated on a DISRUPTED cell only
+  // once a trained dwell curve exists and its regime clock has started.
   recovery: SegmentRecovery | null;
 }
 
+// `segments` carries EVERY judged cell, normal and disrupted alike -- a key
+// absent from it was never judged this tick, never a healthy read by
+// omission. The whole surface is null when the Worker couldn't read its
+// segment state.
+//
+// SIZING (why this is one dict, not the normal/disrupted split shipped and
+// reverted the same day, 2026-08-23): measured on the live feed that day --
+// base snapshot minus segment_flow 179.9 KB, a bare segment record (incl.
+// its key) 151 B, a record carrying a recovery block 382 B. A normal cell
+// is always bare (SegmentStatus.recovery is null on healthy track), so the
+// shipped policy's ~701 judged cells/tick (~3 typically disrupted) totals
+// ~284.0 KB, under the 300 KB line with ~120 KB (~814 bare records) of
+// headroom before that line is even in question -- ~16% above today's
+// population. Revisit only if judged volume climbs toward that ceiling or
+// the disrupted share grows well past today's ~0.4%; not before.
 export interface SegmentFlow {
   observed_at: number;
   segments: Record<string, SegmentStatus>;

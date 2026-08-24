@@ -16,6 +16,24 @@ https://feed.momentarily.nyc/v1/snapshot.json
 
 Path-versioned. Breaking schema changes will publish to `/v2/`, `/v3/`, etc.
 
+## Trains URL
+
+Aggregated live train positions, for map overlays — published separately
+from the snapshot so lightweight consumers never pay for it:
+
+```
+https://feed.momentarily.nyc/v1/trains.json
+```
+
+At ~700 concurrent trips this would add tens of kilobytes to every snapshot
+fetch, and the canonical snapshot consumer (homeassistant-mta-subway) never
+reads it. `positions` is one entry per (route, direction, stop, stopped)
+tuple actually observed; `fresh_feeds`/`expected_feeds` say whether that set
+is complete — a NYCT line-group feed can fail independently of the others,
+and a consumer needs to tell "zero trains on that line" from "that line's
+feed didn't decode this tick" apart. When every feed fails, the object is
+left un-rewritten rather than published as a false empty read.
+
 ## What's in the snapshot
 
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata

@@ -77,6 +77,25 @@ export function fmtMinutes(min: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+// Probabilities, clamped to the resolution they can actually support.
+//
+// The filter saturates hard: a settled route publishes p_normal exactly 1.0
+// with p_disrupted around 1e-17, and the 30-minute horizon lands at 0.9989.
+// Printed naively those read "100.00%" and "100%" — certainty no filter earns,
+// and the saturation itself is a known open problem with the posterior. One
+// decimal everywhere, with both ends clamped, so no surface ever claims a
+// probability of 1 or 0.
+//
+// The bounds are strict: an exact 0.999 is 99.9% and prints as such, because
+// ">99.9%" has to mean strictly more. That leaves the clamps covering exactly
+// the values one decimal cannot render honestly — above 0.999 would round up
+// to "100.0%", below 0.001 down to "0.0%" — and nothing else.
+export function fmtProb(p: number): string {
+  if (p > 0.999) return ">99.9%";
+  if (p < 0.001) return "<0.1%";
+  return `${(p * 100).toFixed(1)}%`;
+}
+
 // Supply-axis thresholds, mirroring worker/src/movement_state.ts: a route
 // degrades below DEGRADE and only recovers back above the higher RECOVER, each
 // confirmed for two ticks. Both are marked on the drawer meter so a reader can

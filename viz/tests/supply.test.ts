@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   fmtMinutes,
+  fmtProb,
   isRunningHigh,
   supplyBand,
   supplyBars,
@@ -77,6 +78,22 @@ test("fmtMinutes never prints a 60-minute remainder", () => {
   assert.equal(fmtMinutes(1380), "23h");
   assert.equal(fmtMinutes(1381), "23h 1m");
   assert.equal(fmtMinutes(0), "—");
+});
+
+test("fmtProb never prints a certainty, and never fakes one either", () => {
+  // The saturated posterior: exactly 1.0 with the other states at ~1e-17.
+  assert.equal(fmtProb(1), ">99.9%");
+  assert.equal(fmtProb(2.7e-17), "<0.1%");
+  // The bounds are strict — these values ARE 99.9% and 0.1%, so claiming
+  // "more than" or "less than" would misreport a number we can render exactly.
+  assert.equal(fmtProb(0.999), "99.9%");
+  assert.equal(fmtProb(0.001), "0.1%");
+  // Just past the bounds, where one decimal would round to a certainty.
+  assert.equal(fmtProb(0.9991), ">99.9%");
+  assert.equal(fmtProb(0.0009), "<0.1%");
+  // The horizon forecast that used to round up to a flat "100%".
+  assert.equal(fmtProb(0.9953), "99.5%");
+  assert.equal(fmtProb(0.5), "50.0%");
 });
 
 test("isRunningHigh compares against the route's own cell, never a global cutoff", () => {

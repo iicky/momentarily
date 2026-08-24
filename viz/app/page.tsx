@@ -10,6 +10,7 @@ import {
   alertHeadline,
   fmtAgo,
   fmtMinutes,
+  fmtProb,
   supplyBand,
   supplyBars,
   SUPPLY_DEGRADE_RATIO,
@@ -464,9 +465,9 @@ function RouteCard({
       {inf && (
         <div
           className="pbar"
-          title={`normal ${(inf.p_normal * 100).toFixed(1)}% · disrupted ${(
-            inf.p_disrupted * 100
-          ).toFixed(1)}% · suspended ${(inf.p_suspended * 100).toFixed(1)}%`}
+          title={`normal ${fmtProb(inf.p_normal)} · disrupted ${fmtProb(
+            inf.p_disrupted
+          )} · suspended ${fmtProb(inf.p_suspended)}`}
         >
           <span className="pn" style={{ width: `${inf.p_normal * 100}%` }} />
           <span className="pd" style={{ width: `${inf.p_disrupted * 100}%` }} />
@@ -538,9 +539,7 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
         ) : (
           <div className="kv">
             <span className="k">P(stays normal in 30m)</span>
-            <span className="v">
-              {(inf.p_normal_in_30min * 100).toFixed(0)}%
-            </span>
+            <span className="v">{fmtProb(inf.p_normal_in_30min)}</span>
           </div>
         )}
       </>
@@ -620,7 +619,7 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
             not forecast
           </span>
         ) : (
-          <span className="v">{(inf.p_normal_in_30min * 100).toFixed(0)}%</span>
+          <span className="v">{fmtProb(inf.p_normal_in_30min)}</span>
         )}
         <span className="k">P(normal in 60m)</span>
         {inf.p_normal_in_60min == null ? (
@@ -631,7 +630,7 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
             not forecast
           </span>
         ) : (
-          <span className="v">{(inf.p_normal_in_60min * 100).toFixed(0)}%</span>
+          <span className="v">{fmtProb(inf.p_normal_in_60min)}</span>
         )}
         <span className="k">P(normal in 120m)</span>
         {inf.p_normal_in_120min == null ? (
@@ -642,9 +641,7 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
             not forecast
           </span>
         ) : (
-          <span className="v">
-            {(inf.p_normal_in_120min * 100).toFixed(0)}%
-          </span>
+          <span className="v">{fmtProb(inf.p_normal_in_120min)}</span>
         )}
       </div>
     </>
@@ -662,6 +659,19 @@ function RouteDrawer({
 }) {
   const inf = r.inference;
   const band = supplyBand(r);
+  // The alert feed's per-direction split, as the rows would render it, next to
+  // the route-level value they are compared against. Compared as displayed, so
+  // a row survives only when it puts something new on screen. "no alerts"
+  // rather than "good" deliberately: these read the alert feed, which cannot
+  // see whether trains are moving on that side.
+  const { northbound, southbound } = r.by_direction;
+  const primary = r.primary_alert_type ?? "—";
+  const nb =
+    northbound.primary_alert_type ??
+    (northbound.alerts.length ? "alert" : "no alerts");
+  const sb =
+    southbound.primary_alert_type ??
+    (southbound.alerts.length ? "alert" : "no alerts");
   return (
     <aside className="drawer">
       <button className="close" onClick={onClose} aria-label="close">
@@ -692,28 +702,41 @@ function RouteDrawer({
       })()}
 
       <div className="section-title">MTA alerts</div>
-      <div className="kv">
-        <span className="k">Status</span>
-        <span className="v">{r.label}</span>
-        <span className="k">Primary alert</span>
-        <span className="v">{r.primary_alert_type ?? "—"}</span>
-        {/* Alert feed only. These rows never see train movement, so a
-            direction with nothing posted reads "no alerts" rather than "good"
-            — the badge above can say disrupted on movement while the MTA has
-            posted nothing. A real per-direction movement read needs
-            segment_flow coverage, which currently publishes only a handful of
-            cells system-wide. */}
-        <span className="k">Northbound</span>
-        <span className="v">
-          {r.by_direction.northbound.primary_alert_type ??
-            (r.by_direction.northbound.alerts.length ? "alert" : "no alerts")}
-        </span>
-        <span className="k">Southbound</span>
-        <span className="v">
-          {r.by_direction.southbound.primary_alert_type ??
-            (r.by_direction.southbound.alerts.length ? "alert" : "no alerts")}
-        </span>
-      </div>
+      {r.alerts.length === 0 ? (
+        // No "Status" row here. It was `label`, which is coarseStatus() of the
+        // alert type below it, and its no-alert value is the string "Good
+        // Service" — a claim about service that the alert feed has no standing
+        // to make. The badge above speaks for movement; this section speaks
+        // only for what the MTA posted.
+        <div className="section-note">
+          The MTA has posted nothing for this line.
+        </div>
+      ) : (
+        <div className="kv">
+          <span className="k">Primary alert</span>
+          <span className="v">{primary}</span>
+          {/* Alert feed only. A direction shows up only when it differs from
+              the route-level value above — a side that just repeats the primary
+              alert adds nothing, so what survives here is the news: which
+              direction is clear, or carrying something else. These rows never
+              see train movement, so the badge can say disrupted while the MTA
+              has posted nothing on that side. A real per-direction movement
+              read needs segment_flow coverage, which currently publishes only a
+              handful of cells system-wide. */}
+          {nb !== primary && (
+            <>
+              <span className="k">Northbound</span>
+              <span className="v">{nb}</span>
+            </>
+          )}
+          {sb !== primary && (
+            <>
+              <span className="k">Southbound</span>
+              <span className="v">{sb}</span>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="section-title">Trains running</div>
       <div className="section-note">
@@ -762,11 +785,11 @@ function RouteDrawer({
           </div>
           <div className="kv">
             <span className="k">P(normal)</span>
-            <span className="v">{(inf.p_normal * 100).toFixed(2)}%</span>
+            <span className="v">{fmtProb(inf.p_normal)}</span>
             <span className="k">P(disrupted)</span>
-            <span className="v">{(inf.p_disrupted * 100).toFixed(2)}%</span>
+            <span className="v">{fmtProb(inf.p_disrupted)}</span>
             <span className="k">P(suspended)</span>
-            <span className="v">{(inf.p_suspended * 100).toFixed(2)}%</span>
+            <span className="v">{fmtProb(inf.p_suspended)}</span>
             {/* This clock belongs to the model above: it restarts whenever the
                 model's top state changes, which is often. The badge runs on the
                 movement arm's own clock, so the label has to say whose age this

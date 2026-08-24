@@ -53,7 +53,7 @@ function LineView() {
         subtitle={
           <>
             <Link href="/lines">Lines</Link> · {stops.length} stations ·{" "}
-            <Link href={`/map?route=${route}&dir=${dir}`}>view on map</Link>
+            <Link href={`/map/trip?route=${route}&dir=${dir}`}>view on map</Link>
           </>
         }
       />

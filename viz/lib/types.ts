@@ -150,6 +150,10 @@ export interface SegmentStatus {
   route: string;
   direction: string;
   from_stop: string;
+  // Successor stop from the trainer's adjacency, null when the topology doc
+  // wasn't available that tick. Load-bearing for attribution: a cell key names
+  // only its from_stop, so at a branch or express split several drawn edges
+  // claim it, and `to` is what says which hop the reading is actually about.
   to: string | null;
   status: "normal" | "disrupted";
   entered_at: number;
@@ -185,6 +189,65 @@ export interface Alert {
   active_period: Array<{ start?: number; end?: number }>;
   header_text: { translation: Array<{ text: string; language: string }> } | null;
   informed_entities: Array<{ route_id: string; direction_id?: number }>;
+}
+
+// --- Train position surface ---
+// Published as its OWN object at v1/trains.json, a sibling of the snapshot
+// rather than a field on it: measured at 36.2KB against a 185.8KB snapshot
+// whose canonical consumer (a Home Assistant integration) can't use train
+// positions, so it doesn't belong in the shared payload.
+//
+// Mirrors worker/src/snapshot.ts TrainsOut / TrainPositionOut. Aggregated: one
+// entry per distinct (route, direction, stop, stopped) tuple, with `n`
+// counting the trains that match it.
+
+export interface TrainPosition {
+  // Base route; the 6X/7X/FX express variants are folded into 6/7/F.
+  route: string;
+  // null when the feed's trip descriptor doesn't determine a direction.
+  direction: "north" | "south" | null;
+  // The DIRECTIONAL stop id exactly as NYCT reports it. Its meaning depends on
+  // `stopped`: NYCT names the stop a train is HEADING TO while in transit, and
+  // the stop it is AT once STOPPED_AT. There is deliberately no segment here —
+  // which segment a moving train occupies is ambiguous at a branch, so the
+  // surface refuses to guess and a consumer must not either.
+  stop: string;
+  // true = standing at the platform, false = en route toward it.
+  stopped: boolean;
+  // How many trains share this tuple.
+  n: number;
+}
+
+// Build provenance for a published object: the git commit the Worker was
+// deployed from, whether that deploy had uncommitted changes, and which
+// component wrote the object.
+export interface Provenance {
+  code_sha: string;
+  dirty: boolean | null;
+  producer: string;
+}
+
+// Its own clock. On a tick where every vehicle feed fails the Worker skips
+// rewriting the object rather than publishing an empty one, so a served body
+// can be stale — `observed_at` is the only thing that says how stale, and it
+// is NOT the snapshot's generated_at.
+export interface Trains {
+  observed_at: number;
+  provenance: Provenance;
+  // NYCT splits realtime vehicles across line-group feeds. `expected_feeds` is
+  // the constant list the Worker polls every tick (currently 8: ace, bdfm, g,
+  // jz, nqrw, l, numbered, si); `fresh_feeds` is the subset that decoded.
+  //
+  // When they differ, `positions` is a PARTIAL read: the routes behind a failed
+  // feed have no entries, and that is silence rather than an empty platform.
+  // The object deliberately carries no feed-name -> route-id mapping, because
+  // NYCT's grouping has shuttle edge cases nobody here can verify, and a
+  // guessed mapping would turn silence into a wrong per-route claim. So a
+  // consumer may say how many feeds reported and which are missing, and may
+  // NOT say which routes are affected.
+  fresh_feeds: string[];
+  expected_feeds: string[];
+  positions: TrainPosition[];
 }
 
 export interface Snapshot {

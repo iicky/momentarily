@@ -1,4 +1,4 @@
-import type { RouteStatus, Snapshot } from "./types";
+import type { RouteStatus, Snapshot, Trains } from "./types";
 
 // The public snapshot. Override with NEXT_PUBLIC_FEED_BASE to point at a local
 // Worker or a staging feed.
@@ -9,6 +9,44 @@ export async function fetchSnapshot(): Promise<Snapshot> {
   const res = await fetch(`${FEED_BASE}/v1/snapshot.json`, { cache: "no-store" });
   if (!res.ok) throw new Error(`snapshot fetch failed: ${res.status}`);
   return res.json();
+}
+
+/** The train position surface, published beside the snapshot rather than in it.
+ *
+ * Three states, because the three are genuinely different and collapsing them
+ * would put words in the feed's mouth:
+ *   loading      not fetched yet. Only fetched when something asks for it —
+ *                it is the largest object the dashboard reads.
+ *   unavailable  a 404 (the object isn't published yet) or a transport
+ *                failure. NOT an error banner and NOT an empty list: "no
+ *                trains reported" and "no train report" are not the same
+ *                claim.
+ *   ready        a body, with its own observed_at. The Worker skips rewriting
+ *                the object on a tick whose vehicle feed didn't decode, so a
+ *                200 can still be stale and only observed_at says by how much.
+ */
+export type TrainsFeed =
+  | { state: "loading" }
+  | { state: "unavailable"; reason: string }
+  | { state: "ready"; trains: Trains };
+
+export async function fetchTrains(): Promise<TrainsFeed> {
+  try {
+    const res = await fetch(`${FEED_BASE}/v1/trains.json`, { cache: "no-store" });
+    if (res.status === 404) {
+      return { state: "unavailable", reason: "not published at this feed yet" };
+    }
+    if (!res.ok) {
+      return { state: "unavailable", reason: `feed returned ${res.status}` };
+    }
+    return { state: "ready", trains: (await res.json()) as Trains };
+  } catch (e) {
+    // A 404 whose response carries no CORS header — which is what the live feed
+    // serves today for an object that isn't published — rejects the fetch
+    // before the status is readable. So this branch covers "not there yet" and
+    // "couldn't get there" alike, and says only what it knows.
+    return { state: "unavailable", reason: `not reachable (${(e as Error).message})` };
+  }
 }
 
 const CONDITION_RANK: Record<string, number> = {

@@ -6,7 +6,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected, orderTrip } from "@/lib/stations";
-import { fmtMinutes } from "@/lib/feed";
+import { fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 
 type Dir = "north" | "south";
@@ -47,6 +47,12 @@ function LineView() {
     return { stops: alpha, ordered: false };
   }, [topo, snap, route, dir]);
 
+  // One clock for the whole rail. Each row re-derives its crowding estimate
+  // against it rather than printing the published figure, which is already a
+  // poll old by the time it renders and grows by 20-50 riders a minute at a
+  // busy platform.
+  const now = Math.floor(Date.now() / 1000);
+
   return (
     <div className="wrap">
       <PageHeader
@@ -70,6 +76,15 @@ function LineView() {
         </div>
       </div>
 
+      {snap?.platform_crowding && (
+        <div className="section-note crowd-note">
+          Rider counts are <b>estimates</b>, not measurements: each platform&apos;s
+          assumed even share of its complex&apos;s usual entry rate for this hour,
+          times how long it has been since a train cleared it. Transfers and exits
+          are invisible to it. Full method on any station page.
+        </div>
+      )}
+
       {!snap && <div className="sub">loading…</div>}
       {snap && stops.length === 0 && (
         <div className="note">No stations found for this line and direction.</div>
@@ -87,6 +102,7 @@ function LineView() {
               segStatus={snap.segment_flow?.segments[`${route}|${dir}|${stop}`]?.status ?? null}
               last={i === stops.length - 1}
               ordered={!!ordered}
+              now={now}
             />
           ))}
         </ol>
@@ -103,6 +119,7 @@ function StopRow({
   segStatus,
   last,
   ordered,
+  now,
 }: {
   snap: Snapshot;
   route: string;
@@ -111,6 +128,7 @@ function StopRow({
   segStatus: "normal" | "disrupted" | null;
   last: boolean;
   ordered: boolean;
+  now: number;
 }) {
   const id = undirected(stop);
   const meta = snap.stations[id];
@@ -119,6 +137,11 @@ function StopRow({
   const flowClass = flow ? (flow.status === "degraded" ? "disrupted" : "normal") : null;
   const others = (meta?.routes_served ?? []).filter((r) => r !== route);
   const adaLabel = meta?.ada === 1 ? "ADA" : meta?.ada === 2 ? "ADA partial" : null;
+  // Secondary signal, so it rides in front of the flow badge rather than
+  // replacing it, and stays muted unless the platform is in the top decile —
+  // the badge keeps the only colour on the row. The estimate is for the
+  // platform in the direction this page is showing.
+  const crowd = platformCrowding(snap.platform_crowding, stop, now);
 
   return (
     <li className="stop">
@@ -139,6 +162,12 @@ function StopRow({
           ))}
         </span>
       </Link>
+      {snap.platform_crowding &&
+        (crowd.estimated ? (
+          <span className={`stop-crowd ${crowd.band}`}>{fmtRiders(crowd.riders)}</span>
+        ) : (
+          <span className="stop-crowd">no estimate</span>
+        ))}
       {flow && (
         <span className={`cond ${flowClass}`}>
           {flow.status}

@@ -991,6 +991,84 @@ code {
   margin-bottom: 8px;
 }
 
+/* Waiting-rider estimate. The count carries the emphasis, banded on the measured
+   quantiles of the published estimate (p50 = 28 riders, p90 = 86, p99 = 270).
+   The ladder is size and weight, never hue: the state trio means a line's
+   condition and nothing else, and a busy platform is not a disrupted one — an
+   amber count sitting next to an amber "Degraded" badge would read as one axis.
+   A platform with no estimate stays muted and says why on the line underneath. */
+.crowd-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* The method disclosure is a paragraph, not a chip row: hold it to a readable
+   measure instead of letting it run the full page width at 11px. */
+.crowd-note {
+  max-width: 76ch;
+}
+.crowd-row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.crowd-row:last-child {
+  border-bottom: none;
+}
+.crowd-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.crowd-dir {
+  flex: 1;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.crowd-count {
+  font-size: 15px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.crowd-count.light {
+  font-size: 14px;
+  color: var(--muted);
+}
+.crowd-count.heavy {
+  font-size: 17px;
+  font-weight: 600;
+}
+.crowd-count.extreme {
+  font-size: 19px;
+  font-weight: 700;
+}
+.crowd-count.none {
+  font-size: 13px;
+  color: var(--muted);
+}
+.crowd-inputs {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Same estimate on the line rail, deliberately subordinate to the flow verdict
+   beside it: the whole rail stays muted and only the top decile brightens. */
+.stop-crowd {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.stop-crowd.heavy {
+  color: var(--text);
+}
+.stop-crowd.extreme {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .seglist {
   list-style: none;
   margin: 0;

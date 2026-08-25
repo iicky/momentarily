@@ -1,4 +1,4 @@
-import type { RouteStatus, Snapshot } from "./types";
+import type { PlatformCrowding, RouteStatus, Snapshot } from "./types";
 
 // The public snapshot. Override with NEXT_PUBLIC_FEED_BASE to point at a local
 // Worker or a staging feed.
@@ -150,4 +150,95 @@ export function supplyBars(band: SupplyBand): number {
     default:
       return 0;
   }
+}
+
+// --- Platform crowding ----------------------------------------------------
+
+// Emphasis bands for a waiting-rider count, cut at the measured quantiles of
+// the published estimate itself (2026-08-20 07:00-11:00 ET, cap applied):
+// p50 = 28 riders, p90 = 86, p99 = 270, max 1302. Quantiles rather than round
+// numbers because the distribution is long-tailed — any invented cutoff either
+// fires on nearly every platform or on almost none — so "heavy" always means
+// "busier than nine platforms in ten" and "extreme" means the top percentile.
+// The unit is people: at p99 the platform holds a quarter of one train load,
+// and even the maximum is about one, so this is never a count of trains.
+export const CROWD_TYPICAL_RIDERS = 28;
+export const CROWD_HEAVY_RIDERS = 86;
+export const CROWD_EXTREME_RIDERS = 270;
+
+export type CrowdBand = "light" | "typical" | "heavy" | "extreme";
+
+function crowdBand(riders: number): CrowdBand {
+  if (riders >= CROWD_EXTREME_RIDERS) return "extreme";
+  if (riders >= CROWD_HEAVY_RIDERS) return "heavy";
+  if (riders >= CROWD_TYPICAL_RIDERS) return "typical";
+  return "light";
+}
+
+// What a render site gets. Abstention is a value carrying its reason, not a
+// null and never a zero: "we have no estimate" and "the platform is empty" are
+// different facts and the surface refuses to conflate them.
+//
+// `unpublished` covers every reason the worker abstained — no ridership
+// baseline for the complex, no train seen inside the served window, or a stop
+// it doesn't know. Which one is only counted system-wide in `abstained`, so a
+// single platform can never be told which applied to it.
+export type PlatformCrowdingView =
+  | {
+      estimated: true;
+      riders: number;
+      band: CrowdBand;
+      minutesSince: number;
+      entriesPerMin: number;
+    }
+  | {
+      estimated: false;
+      reason: "no_surface" | "unpublished" | "gap_exceeds_cap";
+      minutesSince: number | null;
+    };
+
+// One platform's estimate, re-derived for right now.
+//
+// The published `waiting_riders` is only true as of `observed_at`. The snapshot
+// is polled every 60s and a busy platform gains 20-50 riders a minute, so
+// rendering the published integer as-is is the largest error this surface can
+// make — bigger than anything in the baseline behind it. The publisher ships
+// `last_train_at` and `entries_per_min` for exactly this reason: we redo its
+// arithmetic (entries per minute times minutes since the last train) against
+// the client clock instead.
+//
+// The cap is the publisher's own, read off `method.max_gap_minutes` rather than
+// hardcoded here, and applied to OUR elapsed time. Past it the linear
+// accumulation stops describing a crowd — people give up and leave, and the
+// platform is usually out of service rather than jammed — which is why the
+// worker abstains on 1.04% of gaps. Extrapolating past a line the publisher
+// itself refused to cross would be this page inventing data.
+export function platformCrowding(
+  pc: PlatformCrowding | null | undefined,
+  platformId: string,
+  nowSec: number,
+): PlatformCrowdingView {
+  if (!pc) return { estimated: false, reason: "no_surface", minutesSince: null };
+  const est = pc.platforms[platformId];
+  if (!est) return { estimated: false, reason: "unpublished", minutesSince: null };
+  // Clamped: a client clock running behind the publisher's must not subtract
+  // riders off the front of the crowd.
+  const minutesSince = Math.max(0, (nowSec - est.last_train_at) / 60);
+  if (minutesSince > pc.method.max_gap_minutes)
+    return { estimated: false, reason: "gap_exceeds_cap", minutesSince };
+  const riders = Math.round(est.entries_per_min * minutesSince);
+  return {
+    estimated: true,
+    riders,
+    band: crowdBand(riders),
+    minutesSince,
+    entriesPerMin: est.entries_per_min,
+  };
+}
+
+// Riders, with the tilde that marks the whole figure as modelled. Singular is
+// worth the branch: the count is genuinely 0 or 1 on a platform a train has
+// just cleared, which is most platforms most of the time.
+export function fmtRiders(riders: number): string {
+  return `~${riders} ${riders === 1 ? "rider" : "riders"}`;
 }

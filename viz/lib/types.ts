@@ -175,6 +175,44 @@ export interface StationFlow {
   stations: Record<string, StationServiceFlow>;
 }
 
+// --- Platform crowding (mirrors worker/src/snapshot.ts + schema) ---
+
+// One platform's estimate. The two inputs travel with the answer on purpose:
+// waiting_riders is only correct as of PlatformCrowding.observed_at, and a
+// consumer polling every 60s has to re-derive it against its own clock.
+export interface PlatformCrowdingEstimate {
+  last_train_at: number;
+  // This platform's ASSUMED share of its complex's entry rate for the current
+  // (weekday/weekend, hour) cell — see PlatformCrowdingMethod.split_basis.
+  entries_per_min: number;
+  waiting_riders: number;
+}
+
+// The constants and admitted assumptions behind every estimate in the surface,
+// published rather than documented so a reader can reproduce the arithmetic.
+export interface PlatformCrowdingMethod {
+  formula: string;
+  split_basis: "uniform_over_served_platforms";
+  max_gap_minutes: number;
+  served_window_minutes: number;
+  excludes: string[];
+  baseline_generated_at: number;
+  baseline_window_start: string;
+  baseline_window_end: string;
+}
+
+export interface PlatformCrowding {
+  observed_at: number;
+  method: PlatformCrowdingMethod;
+  // Keyed by DIRECTIONAL GTFS stop id ('127N'). The parent station is the key
+  // with its N/S suffix stripped (undirected(), same rule as the worker), and
+  // its metadata lives in `stations` under that id. Platforms that cannot be
+  // estimated are ABSENT, not zeroed; the reason is counted in `abstained`.
+  platforms: Record<string, PlatformCrowdingEstimate>;
+  n_platforms: number;
+  abstained: Record<string, number>;
+}
+
 // Full alert record from snap.alerts — the resolvable detail behind the ids
 // carried on RouteStatus.alerts. Mirrors worker/src/derive.ts AlertOut.
 export interface Alert {
@@ -200,6 +238,7 @@ export interface Snapshot {
   station_status: Record<string, StationStatus>;
   station_flow: StationFlow | null;
   segment_flow: SegmentFlow | null;
+  platform_crowding: PlatformCrowding | null;
 }
 
 // --- Grading streams (Phase B) ---

@@ -6,8 +6,10 @@ import { useParams } from "next/navigation";
 import { useSnapshot, useCoords, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
-import { fmtAgo, fmtMinutes } from "@/lib/feed";
-import type { SegmentRecovery } from "@/lib/types";
+import { Chip } from "../../models/ChartFrame";
+import { fmtAgo, fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
+import type { PlatformCrowdingView } from "@/lib/feed";
+import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
 
 interface AdjRow {
@@ -191,6 +193,19 @@ export default function StationPage() {
             <div className="note muted">No live movement judged through this station right now.</div>
           )}
 
+          <div className="section-title crowd-title">
+            Waiting riders
+            <Chip title="Modelled from entry counts and train movement. Nothing counts people on a platform.">
+              estimate
+            </Chip>
+          </div>
+          <WaitingRiders
+            pc={snap.platform_crowding}
+            stopId={id}
+            northLabel={coord?.north_label ?? "Northbound"}
+            southLabel={coord?.south_label ?? "Southbound"}
+          />
+
           <div className="section-title">Segments</div>
           {topo && !topo.configured ? (
             <div className="note muted">
@@ -240,6 +255,110 @@ function RecoveryLine({ rec }: { rec: SegmentRecovery }) {
           ? "indeterminate"
           : `~${fmtMinutes(rec.recovery_minutes)} (${fmtMinutes(rec.recovery_minutes_low)}–${fmtMinutes(rec.recovery_minutes_high)})`}
       </span>
+    </div>
+  );
+}
+
+// Estimated riders waiting on this station's two platforms.
+//
+// The whole point of the section is that this is modelled, not counted, so the
+// assumption it rests on is on the page in plain English rather than behind a
+// hover: the ridership feed counts fare swipes per COMPLEX, nothing says which
+// platform a rider walked to, and the even split across served platforms is
+// therefore ours, not the MTA's. A platform we cannot estimate says so and says
+// why — it never renders as an empty platform.
+function WaitingRiders({
+  pc,
+  stopId,
+  northLabel,
+  southLabel,
+}: {
+  pc: PlatformCrowding | null;
+  stopId: string;
+  northLabel: string;
+  southLabel: string;
+}) {
+  if (!pc)
+    return (
+      <div className="note muted">
+        No crowding estimate in this snapshot — the surface is absent for every
+        platform, not just this station. It appears once the feed carries both a
+        ridership baseline and recent train movement.
+      </div>
+    );
+  const now = Math.floor(Date.now() / 1000);
+  const abstained = Object.values(pc.abstained).reduce((a, b) => a + b, 0);
+  return (
+    <>
+      <div className="section-note crowd-note">
+        Riders who have entered this complex since a train last cleared the
+        platform. Nobody counts people on platforms: this is the complex&apos;s usual
+        entry rate for this hour, <b>split evenly across the platforms in service</b>{" "}
+        — an assumption of ours, because the ridership feed counts fare swipes per
+        complex and no feed says which platform a rider walked to. It also cannot
+        see {pc.method.excludes.join(" or ")}: anyone transferring in for free, and
+        everyone who just stepped off an arriving train, are missing from it.
+      </div>
+      <div className="kv-block">
+        <WaitingRow label={northLabel} view={platformCrowding(pc, `${stopId}N`, now)} method={pc.method} />
+        <WaitingRow label={southLabel} view={platformCrowding(pc, `${stopId}S`, now)} method={pc.method} />
+      </div>
+      <div className="chart-meta">
+        <Chip>unit: riders</Chip>
+        <Chip tone="muted" title="Recomputed on this page against your clock; the published figure is only true as of the snapshot.">
+          {pc.method.formula}
+        </Chip>
+        <Chip tone="muted">split: {pc.method.split_basis.replace(/_/g, " ")}</Chip>
+        <Chip tone="muted">excludes: {pc.method.excludes.join(", ")}</Chip>
+        <Chip tone="muted">
+          cap: {pc.method.max_gap_minutes}m gap · {pc.method.served_window_minutes}m service window
+        </Chip>
+        <Chip tone="muted" title={`${pc.method.baseline_window_start} → ${pc.method.baseline_window_end}`}>
+          baseline {pc.method.baseline_window_start.slice(0, 10)} →{" "}
+          {pc.method.baseline_window_end.slice(0, 10)}
+        </Chip>
+        <Chip tone="muted">{pc.n_platforms.toLocaleString()} platforms estimated</Chip>
+        {abstained > 0 && <Chip tone="muted">{abstained.toLocaleString()} abstained</Chip>}
+      </div>
+    </>
+  );
+}
+
+function WaitingRow({
+  label,
+  view,
+  method,
+}: {
+  label: string;
+  view: PlatformCrowdingView;
+  method: PlatformCrowdingMethod;
+}) {
+  // The band is emphasis, so say in words what the emphasis means. Only the top
+  // decile and percentile earn a chip; below that the number speaks for itself.
+  const rank =
+    view.estimated && view.band === "extreme"
+      ? "busier than 99% of platforms"
+      : view.estimated && view.band === "heavy"
+        ? "busier than 90% of platforms"
+        : null;
+  return (
+    <div className="crowd-row">
+      <div className="crowd-head">
+        <span className="crowd-dir">{label}</span>
+        {rank && <Chip title="Against the measured spread of this estimate across the system: p50 = 28 riders, p90 = 86, p99 = 270.">{rank}</Chip>}
+        {view.estimated ? (
+          <span className={`crowd-count ${view.band}`}>{fmtRiders(view.riders)}</span>
+        ) : (
+          <span className="crowd-count none">no estimate</span>
+        )}
+      </div>
+      <div className="crowd-inputs">
+        {view.estimated
+          ? `${Math.round(view.minutesSince)} min since a train cleared · assumed share of usual entries ${view.entriesPerMin.toFixed(1)}/min`
+          : view.reason === "gap_exceeds_cap"
+            ? `last train ${Math.round(view.minutesSince ?? 0)} min ago, past the ${method.max_gap_minutes}-minute cap — beyond it the count stops describing a crowd`
+            : `no ridership baseline for this complex, or no train seen on this platform in the last ${method.served_window_minutes} min`}
+      </div>
     </div>
   );
 }

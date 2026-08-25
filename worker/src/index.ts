@@ -30,6 +30,7 @@ import {
   archiveTripUpdateMetric,
   archiveVehicleMetric,
 } from './archive';
+import { updateStationWait } from './crowding';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
@@ -37,6 +38,7 @@ import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } fro
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
+import type { TraceRow } from './vehicles';
 import { deriveRouteMovementMetric, deriveTrace, stopPositions } from './vehicles';
 import {
   MOVEMENT_STATE_PUBLISH,
@@ -65,7 +67,7 @@ import {
   movementChannelActive,
   stationaryDistribution,
 } from './hmm';
-import { loadParams, paramsForRoute } from './params';
+import { loadParams, loadRidershipBaseline, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
 import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
@@ -81,6 +83,7 @@ import {
   readServiceBaseline,
   readServiceMetric,
   readStationFlow,
+  readStationWait,
   readVehicleStops,
   writeLastSeen,
   writeMovementMetric,
@@ -88,9 +91,10 @@ import {
   writeSegmentFlow,
   writeServiceMetric,
   writeStationFlow,
+  writeStationWait,
   writeVehicleStops,
 } from './state';
-import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
+import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc, StationWaitDoc } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -221,8 +225,9 @@ export default {
         console.error(`trip-updates ${name} failed:`, r.reason);
       }
     }
+    let rows: TraceRow[] = [];
     try {
-      const rows = deriveTrace(vehicles);
+      rows = deriveTrace(vehicles);
       await archiveTraceRows(
         env.MOMENTARILY,
         rows,
@@ -233,6 +238,53 @@ export default {
       console.log(`trace: ${rows.length} rows from ${vehicles.length} vehicles`);
     } catch (err) {
       console.error('trace step failed:', err);
+    }
+
+    // Per-platform train-departure tracking for the live crowding surface
+    // — see crowding.ts's updateStationWait. Runs every minute,
+    // right alongside the trace above, deliberately NOT gated behind the
+    // 5-minute boundary below: the whole point is 1-minute resolution on
+    // when a train cleared a platform, which is exactly the signal a
+    // 5-minute cadence would blur past recognition (see the hazard comment
+    // above — vehicle_stops.json's 5-minute stop_id carry serves a
+    // different, coarser purpose and must stay untouched by this). Reads
+    // and writes ONLY state/station_wait.json, its own R2 object — never
+    // vehicle_stops.json, never archive/vehicles/. A read/write failure
+    // degrades to publishing without the crowding surface this tick, never
+    // a failed tick.
+    //
+    // A tick that produced NO trace rows is skipped entirely rather than
+    // folded in as an empty observation, and that distinction is load-bearing
+    // twice over. updateStationWait prunes trips absent from the rows it is
+    // given, so folding in zero rows would wipe the trip -> stop carry the
+    // departure rule depends on, blinding it for the tick after the feed
+    // returns. And it would stamp a fresh observed_at over frozen platform
+    // timestamps, which is precisely the state buildSnapshot's freshness gate
+    // exists to catch: the surface would keep publishing an ageing crowd as
+    // though it were current. Leaving the prior doc untouched lets the gate
+    // age the surface out on its own. Zero rows means a total vehicle-feed
+    // outage or a throw above, never a real empty system.
+    let stationWaitDoc: StationWaitDoc | null = null;
+    if (rows.length > 0) {
+      try {
+        const prevStationWait = await readStationWait(env.MOMENTARILY);
+        stationWaitDoc = updateStationWait(rows, prevStationWait, observedAt);
+        await writeStationWait(env.MOMENTARILY, stationWaitDoc);
+      } catch (err) {
+        console.error('station wait update failed; publishing without platform crowding:', err);
+      }
+    } else {
+      // Fall back to whatever is already stored, unmodified. A single missed
+      // minute shouldn't blank the surface outright — published with its own
+      // (now older) observed_at, buildSnapshot's freshness gate ages it out
+      // over ~30 min while the cap retires individual platforms as their gaps
+      // grow. Same posture as stationFlow: degrade honestly, don't vanish.
+      console.log('trace produced no rows; station wait carried forward untouched');
+      try {
+        stationWaitDoc = await readStationWait(env.MOMENTARILY);
+      } catch (err) {
+        console.error('station wait read failed; publishing without platform crowding:', err);
+      }
     }
     step('0-trace');
 
@@ -253,12 +305,14 @@ export default {
       trainedParams,
       prevMovementMetric,
       prevServiceMetric,
+      ridershipBaseline,
     ] = await Promise.all([
       readLastSeen(env.MOMENTARILY),
       readAlphaState(env.MOMENTARILY),
       loadParams(env.MOMENTARILY),
       readMovementMetric(env.MOMENTARILY),
       readServiceMetric(env.MOMENTARILY),
+      loadRidershipBaseline(env.MOMENTARILY),
     ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
@@ -507,6 +561,8 @@ export default {
         segmentFlow,
         segmentParams,
         segmentDwell,
+        stationWait: stationWaitDoc,
+        ridershipBaseline,
       });
       step('6a-build-snapshot');
       try {

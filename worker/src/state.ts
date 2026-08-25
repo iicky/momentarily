@@ -612,3 +612,48 @@ export async function writeStationFlow(
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }
+
+// Per-platform train-departure tracking for the live crowding surface: the
+// epoch a train was last seen at or cleared each directional platform, plus
+// the one-minute trip -> stop_id carry the departure-transition rule needs
+// (see crowding.ts updateStationWait). Its own R2 object, updated every
+// minute at step 0 — not gated to the 5-minute boundary, because the whole
+// point is 1-minute resolution on when a platform emptied; see the hazard
+// comment in index.ts. Plain put, no CAS: unlike alpha.json/last_seen.json,
+// `platforms` only ever advances via Math.max against the prior value and
+// `trips` is wholly replaced by this tick's own trace, so a retried cron
+// minute recomputes an identical or still-monotonically-correct doc —
+// there's no update to lose a race over.
+export const STATION_WAIT_KEY = 'state/station_wait.json';
+
+const StationWaitSchema = z.object({
+  observed_at: z.number(),
+  platforms: z.record(z.string(), z.number()),
+  trips: z.record(z.string(), z.string()),
+});
+export type StationWaitDoc = z.infer<typeof StationWaitSchema>;
+
+/** Read last tick's per-platform wait state. Null when absent or corrupt —
+ * updateStationWait then starts from empty platforms/trips, which only
+ * costs the one tick of departure-transition carry, never wrong data. */
+export async function readStationWait(
+  bucket: R2Bucket,
+): Promise<StationWaitDoc | null> {
+  const obj = await bucket.get(STATION_WAIT_KEY);
+  if (!obj) return null;
+  try {
+    return StationWaitSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('station_wait.json corrupt; resetting:', err);
+    return null;
+  }
+}
+
+export async function writeStationWait(
+  bucket: R2Bucket,
+  doc: StationWaitDoc,
+): Promise<void> {
+  await bucket.put(STATION_WAIT_KEY, JSON.stringify(doc), {
+    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  });
+}

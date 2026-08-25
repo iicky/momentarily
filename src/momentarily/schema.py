@@ -513,6 +513,84 @@ class SegmentFlow(BaseModel):
     segments: dict[str, SegmentStatus] = Field(default_factory=dict)
 
 
+class PlatformCrowdingEstimate(BaseModel):
+    """One platform's estimate. Carries the two inputs alongside the answer so a
+    live consumer can re-derive it against its own clock — the crowd grows at
+    `entries_per_min` and `waiting_riders` is only correct as of `observed_at`,
+    which by publish time is already minutes old."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    # Last time a train was seen at, or seen leaving, this platform.
+    last_train_at: int
+    # This platform's ASSUMED share of its complex's entry rate for the current
+    # (weekday/weekend, hour) cell. See PlatformCrowdingMethod.split_basis.
+    entries_per_min: float
+    # The estimate at observed_at, rounded to whole riders.
+    waiting_riders: int
+
+
+class PlatformCrowdingMethod(BaseModel):
+    """The constants and admitted assumptions behind every estimate in this
+    surface. Published rather than documented so a consumer can reproduce the
+    arithmetic and see what it does not know."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    # waiting_riders = entries_per_min * (observed_at - last_train_at) / 60.
+    formula: str = "entries_per_min * minutes_since_last_train"
+    # The ridership feed counts entries per station COMPLEX, not per platform.
+    # Splitting a complex's demand across the platforms currently in service is
+    # an assumption, not a measurement: nothing in any feed says which platform
+    # a rider walked to.
+    split_basis: Literal["uniform_over_served_platforms"] = (
+        "uniform_over_served_platforms"
+    )
+    # Platforms whose last train is older than this get no estimate at all.
+    # Beyond a few headways the linear accumulation stops describing a crowd —
+    # people give up and leave, and the platform is usually out of service
+    # rather than jammed.
+    max_gap_minutes: int
+    # A platform shares its complex's demand only if a train passed it within
+    # this long. Keeps overnight and out-of-service platforms from absorbing
+    # demand that went to the platforms actually running.
+    served_window_minutes: int
+    # What the entry counts structurally cannot see. Free in-system transfers
+    # are never fare-swiped, and the hourly feed has no exits column at all, so
+    # a crowd let out by an arriving train is invisible here.
+    excludes: list[str] = Field(default_factory=list)
+    # Provenance of the baseline these rates came from.
+    baseline_generated_at: int
+    baseline_window_start: str
+    baseline_window_end: str
+
+
+class PlatformCrowding(BaseModel):
+    """Estimated riders waiting on each platform: the platform's assumed share
+    of its complex's usual entry rate for this hour, times how long it has been
+    since a train cleared it.
+
+    This is an ESTIMATE built on an admitted assumption (see `method`), not a
+    measurement — nothing counts people on platforms. Keys are DIRECTIONAL GTFS
+    stop ids ('127N'), so the parent station is the key with its N/S suffix
+    stripped and its metadata is in the `stations` surface under that id.
+
+    Platforms that cannot be estimated are absent, not zeroed, and the reason
+    is counted in `abstained`.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    observed_at: int
+    method: PlatformCrowdingMethod
+    platforms: dict[str, PlatformCrowdingEstimate] = Field(default_factory=dict)
+    # Platforms carrying an estimate, and those that couldn't, by reason. The
+    # honest denominator: a small n_platforms means most of the system is
+    # unestimated, not uncrowded.
+    n_platforms: int
+    abstained: dict[str, int] = Field(default_factory=dict)
+
+
 class Snapshot(BaseModel):
     """The full published snapshot. The contract."""
 
@@ -549,6 +627,9 @@ class Snapshot(BaseModel):
     # Per-segment service flow, the same segment movement model station_flow
     # rolls up. Null before the first vehicle tick after deploy or when stale.
     segment_flow: SegmentFlow | None = None
+    # Estimated riders waiting per platform. Null before the ridership baseline
+    # is published, before the first vehicle tick after deploy, or when stale.
+    platform_crowding: PlatformCrowding | None = None
     system: SystemStatus = Field(default_factory=SystemStatus)
 
     # Legacy compat — preserves zero-breakage upgrade for HA 0.x consumers

@@ -5622,3 +5622,42 @@ first crossing on the DEBOUNCED regime rather than the raw per-tick call, since
 the debounced regime is what the published surface flips on; and find a truth
 whose episodes outlast the window being priced, because a 30-minute median episode
 cannot price an 83-minute accumulator either way.
+
+### The bakeoff on the surface riders actually see: the wide window is safe only with throughput, and the pair still wins
+
+The first bakeoff graded raw classifier calls. `published_states` now runs every
+arm through the regime clock and grades the debounced state the snapshot actually
+shows. This is the staleness test the window needed: an abstaining cell keeps its
+last regime for up to an hour, so a wide accumulator can look precise internally
+while publishing old evidence.
+
+Same causal split; this archive pass held 94 episodes, 176 normal stretches and
+1,735 scored ticks:
+
+| arm | window | call ratio | published ratio | published episode share | published normal share | onset detections | median |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| status quo | 25 min | 3.72 | 3.20 | 0.188 | 0.059 | 1/76 | 20 min |
+| window | 83 min | 1.86 | 1.55 | 0.009 | 0.006 | 2/76 | 30 min |
+| throughput | 25 min | 3.64 | 3.65 | 0.489 | 0.134 | **7/59** | 35 min |
+| **both** | 83 min | **5.32** | **5.30** | 0.341 | **0.064** | 5/49 | **10 min** |
+
+Episode/normal intervals are disjoint for every arm except `window` alone.
+
+**Full coverage removes the staleness mechanism.** Staleness enters through the
+regime clock holding a cell's last state while the classifier abstains. The two
+arms without throughput lose 14-16% of their separation between calls and the
+published surface (3.72 -> 3.20, 1.86 -> 1.55). The throughput arms judge every
+cell every tick, never enter that hold, and their scores are unchanged to the
+second decimal (3.64 -> 3.65, 5.32 -> 5.30). The objection to an 83-minute window
+was real for the old classifier and structurally void for the new one.
+
+**On absence, the wider window is mechanically faster rather than slower.** The
+expected-count accumulator is ~3.3x larger, so an empty route crosses the Poisson
+threshold sooner; `both` median onset latency is 10 minutes against 35 for
+narrow-window throughput. On 5 and 7 detections, a direction rather than a
+measurement, but it agrees with the mechanism and the separation.
+
+That is enough to retune the shipped pair to decay 0.94 / matched floor 3. The
+window-only arm remains rejected: it publishes the weakest, non-significant
+separation and the slowest onset despite judging 41% of the cells. The win comes
+from the cross, not from accepting that branch unchanged.

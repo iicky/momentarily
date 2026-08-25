@@ -76,6 +76,7 @@ from training.r2_client import load_config, make_client
 from training.segment_replay import (
     SHIPPED,
     Policy,
+    published_states,
     replay,
     tick_inputs,
     without_throughput,
@@ -92,20 +93,14 @@ BOOTSTRAP_N = 2000
 # an event.
 MIN_NORMAL_RUN_TICKS = 6
 
-# The competing way to buy coverage: widen the accumulator's window instead of
-# giving it an expectation to test against. These are the values shipped on the
-# feat/segment-status-map branch, measured there at 42.28% of cells judged per
-# tick against a 1.26% status quo, selected against a route-level severity recall
-# proxy whose absolute values are all sub-1%, a caveat that branch's own
-# docstring records. They are
-# replayed here so the two axes can be compared on one statistic, and crossed so
-# the report can say whether they compose.
-#
-# The floor moves with the decay because that branch measured 1/2/3 tying exactly
-# at every decay: movement_state.classifyAdvance's own MIN_MATCHED_TRIPS=3
-# already rejects anything thinner, so a lower floor is cosmetic.
-WIDE_DECAY = 0.94
-WIDE_FLOOR = 3
+# The narrow accumulator window this classifier shipped with before the bakeoff.
+# Retained so the retune stays falsifiable: `status_quo` and `throughput` replay
+# it, `window` and `both` replay whatever segment_replay.SHIPPED currently is, and
+# a future change to the shipped values re-scores itself against the old pair
+# rather than quietly redefining the comparison.
+NARROW_DECAY = 0.8
+NARROW_FLOOR = 5
+NARROW = Policy(decay=NARROW_DECAY, min_eff_matched=NARROW_FLOOR)
 
 
 @dataclass(frozen=True)
@@ -384,23 +379,20 @@ def _coverage(
     }
 
 
-def grade(
+def _score(
     calls: Sequence[tuple[int, Mapping[str, str]]],
     disruptions: Sequence[Disruption],
     runs: Sequence[tuple[str, int, int]],
-    n_baselined: int,
     *,
-    bootstrap: int = BOOTSTRAP_N,
-    seed: int = 0,
+    bootstrap: int,
+    seed: int,
 ) -> dict[str, Any]:
-    """One arm's report: coverage, episode detection, and false alarms on normal
-    stretches. Pure — every R2 read lives in `main`, so this is unit-testable on
-    synthetic calls.
+    """Separation, false alarms and onset latency for one per-tick call stream.
 
-    A unit's alarmed-tick count only counts ticks the replay actually classified:
-    the label's clock and the vehicle archive's clock can disagree about which
-    ticks exist, and charging a unit for a tick that was never scored would
-    depress the tick rate by however much the two archives differ.
+    A unit's tick count only counts ticks the stream actually covers: the label's
+    clock and the vehicle archive's clock can disagree about which ticks exist,
+    and charging a unit for a tick that was never scored would depress every rate
+    by however much the two archives differ.
     """
     shares_at = _route_shares_by_tick(calls)
 
@@ -421,21 +413,56 @@ def grade(
     gradeable_episodes = [u for u in detected if u.ticks > 0]
     gradeable_runs = [u for u in false_alarms if u.ticks > 0]
     return {
-        "coverage": _coverage(calls, n_baselined)
-        | {
-            # How much of the TRUTH the arm can even be scored on. A cell set
-            # nothing testable ever lands in makes an episode unscoreable, and
-            # that is its own kind of coverage failure.
-            "gradeable_episodes": len(gradeable_episodes),
-            "episodes_offered": len(detected),
-            "gradeable_normal_runs": len(gradeable_runs),
-            "normal_runs_offered": len(false_alarms),
-        },
+        # How much of the TRUTH this stream can even be scored on. A route that
+        # nothing testable ever lands on makes its episodes unscoreable, and that
+        # is its own kind of coverage failure.
+        "gradeable_episodes": len(gradeable_episodes),
+        "episodes_offered": len(detected),
+        "gradeable_normal_runs": len(gradeable_runs),
+        "normal_runs_offered": len(false_alarms),
         "episode_detection": _boot_rates(gradeable_episodes, n=bootstrap, seed=seed),
         "normal_run_false_alarms": _boot_rates(
             gradeable_runs, n=bootstrap, seed=seed + 1
         ),
         "onset_latency": _onset_latency(shares_at, disruptions),
+    }
+
+
+def grade(
+    calls: Sequence[tuple[int, Mapping[str, str]]],
+    disruptions: Sequence[Disruption],
+    runs: Sequence[tuple[str, int, int]],
+    n_baselined: int,
+    *,
+    bootstrap: int = BOOTSTRAP_N,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """One arm's report. Pure — every R2 read lives in `main`, so this is
+    unit-testable on synthetic calls.
+
+    Scored twice, on two different things:
+
+      `calls`     — what the classifier decided each tick. The right surface for
+                    asking whether the decision rule discriminates.
+      `published` — those calls run through the regime clock, i.e. what the
+                    snapshot would actually SHOW. A cell the classifier abstains
+                    on holds its previous published state for up to MAX_IDLE_SEC,
+                    so this is where a wider accumulator window's staleness
+                    becomes visible, and it is what a rider sees.
+
+    A policy that looks good on `calls` and bad on `published` is winning
+    arguments about opinions nobody was shown.
+    """
+    return {
+        "coverage": _coverage(calls, n_baselined),
+        "calls": _score(calls, disruptions, runs, bootstrap=bootstrap, seed=seed),
+        "published": _score(
+            published_states(calls),
+            disruptions,
+            runs,
+            bootstrap=bootstrap,
+            seed=seed + 100,
+        ),
     }
 
 
@@ -578,10 +605,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # trainer's per-bin rates. The crossed arm is here because nothing about
     # either says they compose, and the report should say whether they do.
     arms: dict[str, tuple[dict[str, Any], Policy]] = {
-        "status_quo": (bare, SHIPPED),
-        "window": (bare, Policy(decay=WIDE_DECAY, min_eff_matched=WIDE_FLOOR)),
-        "throughput": (params, SHIPPED),
-        "both": (params, Policy(decay=WIDE_DECAY, min_eff_matched=WIDE_FLOOR)),
+        "status_quo": (bare, NARROW),
+        "window": (bare, SHIPPED),
+        "throughput": (params, NARROW),
+        "both": (params, SHIPPED),
     }
     report: dict[str, Any] = {
         "window": {

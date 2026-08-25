@@ -83,22 +83,22 @@ def test_shipped_policy_is_the_worker_constants() -> None:
     assert SHIPPED.min_eff_matched == MIN_EFF_MATCHED
     assert SHIPPED.prune_matched == PRUNE_MATCHED
     assert SHIPPED.eff_count_scale == EFF_COUNT_SCALE
-    # ~25 minutes at a 5-minute tick.
-    assert math.isclose(SHIPPED.window_ticks, 5.0)
+    # ~83 minutes at a 5-minute tick, the retuned window.
+    assert math.isclose(SHIPPED.window_ticks, 1 / (1 - 0.94))
+    assert 80 < SHIPPED.window_ticks * 5 < 85
 
 
-def test_a_wider_window_judges_more_cells_on_the_same_data() -> None:
-    """The competing axis, replayed: a longer accumulator window clears the
-    matched floor on cells the shipped policy leaves unjudged — and costs onset
-    latency to do it, which is why the two are worth comparing rather than
-    assuming."""
+def test_the_narrow_window_judges_fewer_cells_on_the_same_data() -> None:
+    """The axis the bakeoff priced, replayed both ways: the shipped window clears
+    the matched floor on cells the old narrow one left unjudged. Kept as a test
+    because it is the mechanism behind the coverage half of that comparison."""
     params = _params()
     del params["throughput"]  # advance branch only, so the window is the only lever
-    ticks = [TickInput(T0 + i * TICK, {KEY: (1, 1)}, {"F": 20}) for i in range(6)]
+    ticks = [TickInput(T0 + i * TICK, {KEY: (1, 1)}, {"F": 20}) for i in range(4)]
+    narrow = replay(ticks, params, Policy(decay=0.8, min_eff_matched=5))
     shipped = replay(ticks, params, SHIPPED)
-    wide = replay(ticks, params, Policy(decay=0.94, min_eff_matched=3))
-    assert shipped[-1][1] == {}  # 5 matched over the window, never clears 5
-    assert wide[-1][1] == {KEY: "normal"}
+    assert narrow[-1][1] == {}  # under 5 matched in a 25-minute window
+    assert shipped[-1][1] == {KEY: "normal"}
 
 
 def test_pois_lower_tail_endpoints() -> None:
@@ -170,11 +170,13 @@ def test_expectation_carries_across_a_schedule_bin_edge() -> None:
 
 def test_a_params_doc_with_no_fit_never_reaches_the_throughput_branch() -> None:
     """The pre-branch behaviour, and what a Worker sees before the trainer has
-    published a fit: thin cells abstain, exactly as they used to."""
+    published a fit: a cell under the matched floor abstains, exactly as it used
+    to, because there is no expectation to test its silence against."""
     params = _params()
     del params["throughput"]
-    state = update_flow(FlowState(), TickInput(T0, {KEY: (0, 3)}, {"F": 20}), params)
+    state = update_flow(FlowState(), TickInput(T0, {KEY: (0, 2)}, {"F": 20}), params)
     assert state.cells[KEY].e == 0
+    assert js_round(state.cells[KEY].m) < MIN_EFF_MATCHED
     assert classify(state, params) == {}
 
 

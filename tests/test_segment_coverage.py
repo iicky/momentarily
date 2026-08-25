@@ -120,12 +120,12 @@ def test_grade_scores_the_route_share_not_a_single_cell() -> None:
     out = grade(
         calls, [Disruption("A", _t(1), _t(3))], [], n_baselined=2, bootstrap=100
     )
-    det = out["episode_detection"]
+    det = out["calls"]["episode_detection"]
     assert det["n_ticks"] == 2
     assert det["alarmed_ticks"] == 2
     # Half the route at t1, all of it at t2.
     assert det["mean_share"] == 0.75
-    assert out["normal_run_false_alarms"] == {"n_units": 0, "n_ticks": 0}
+    assert out["calls"]["normal_run_false_alarms"] == {"n_units": 0, "n_ticks": 0}
 
 
 def test_grade_charges_a_unit_only_for_ticks_the_replay_scored() -> None:
@@ -136,8 +136,8 @@ def test_grade_charges_a_unit_only_for_ticks_the_replay_scored() -> None:
     out = grade(
         calls, [Disruption("A", _t(0), _t(6))], [], n_baselined=1, bootstrap=100
     )
-    assert out["episode_detection"]["n_ticks"] == 1  # not 6
-    assert out["episode_detection"]["tick_rate"] == 1.0
+    assert out["calls"]["episode_detection"]["n_ticks"] == 1  # not 6
+    assert out["calls"]["episode_detection"]["tick_rate"] == 1.0
 
 
 def test_grade_drops_a_unit_whose_route_was_never_judged() -> None:
@@ -148,7 +148,7 @@ def test_grade_drops_a_unit_whose_route_was_never_judged() -> None:
     out = grade(
         calls, [Disruption("A", _t(0), _t(4))], [], n_baselined=2, bootstrap=100
     )
-    assert out["episode_detection"] == {"n_units": 0, "n_ticks": 0}
+    assert out["calls"]["episode_detection"] == {"n_units": 0, "n_ticks": 0}
 
 
 def test_grade_ignores_a_disrupted_call_outside_the_episode() -> None:
@@ -162,8 +162,8 @@ def test_grade_ignores_a_disrupted_call_outside_the_episode() -> None:
     out = grade(
         calls, [Disruption("A", _t(5), _t(7))], [], n_baselined=1, bootstrap=100
     )
-    assert out["episode_detection"]["n_ticks"] == 2
-    assert out["episode_detection"]["alarmed_ticks"] == 0
+    assert out["calls"]["episode_detection"]["n_ticks"] == 2
+    assert out["calls"]["episode_detection"]["alarmed_ticks"] == 0
 
 
 def test_grade_counts_a_false_alarm_on_a_normal_run() -> None:
@@ -178,7 +178,7 @@ def test_grade_counts_a_false_alarm_on_a_normal_run() -> None:
         n_baselined=2,
         bootstrap=100,
     )
-    fa = out["normal_run_false_alarms"]
+    fa = out["calls"]["normal_run_false_alarms"]
     assert fa["alarmed_units"] == 1
     assert fa["n_units"] == 2
     assert fa["alarmed_ticks"] == 1
@@ -212,7 +212,7 @@ def test_latency_is_measured_from_the_onset_itself() -> None:
             for i in range(12)
         }
     )
-    out = grade(calls, [Disruption("A", onset, _t(11))], [], 1, bootstrap=50)[
+    out = grade(calls, [Disruption("A", onset, _t(11))], [], 1, bootstrap=50)["calls"][
         "onset_latency"
     ]
     assert out["lead_tolerance_min"] == 0
@@ -224,7 +224,7 @@ def test_latency_counts_an_episode_never_alarmed_as_missed_not_as_slow() -> None
     """Folding a miss in as a large latency would let a blind policy report a
     flattering median. Misses are counted, never imputed."""
     calls = _calls({_t(i): {"A|south|A09S": "normal"} for i in range(12)})
-    out = grade(calls, [Disruption("A", _t(6), _t(11))], [], 1, bootstrap=50)[
+    out = grade(calls, [Disruption("A", _t(6), _t(11))], [], 1, bootstrap=50)["calls"][
         "onset_latency"
     ]
     assert out["n_detected"] == 0
@@ -239,7 +239,7 @@ def test_an_episode_already_alarming_at_onset_is_excluded_not_scored_as_zero() -
     always = _calls({_t(i): {"A|south|A09S": "disrupted"} for i in range(30)})
     out = grade(
         always, [Disruption("A", onset, onset + 5 * TICK_SECONDS)], [], 1, bootstrap=50
-    )["onset_latency"]
+    )["calls"]["onset_latency"]
     assert out["n_offered"] == 1
     assert out["n_alarming_at_onset"] == 1
     assert out["n_episodes"] == 0  # nothing left to measure latency on
@@ -257,8 +257,27 @@ def test_fresh_cohort_keeps_an_alarm_that_actually_arrives() -> None:
     )
     out = grade(
         calls, [Disruption("A", onset, onset + 5 * TICK_SECONDS)], [], 1, bootstrap=50
-    )["onset_latency"]
+    )["calls"]["onset_latency"]
     assert out["n_alarming_at_onset"] == 0
     assert out["fresh"]["n_episodes"] == 1
     assert out["fresh"]["n_detected"] == 1
     assert out["fresh"]["median_latency_min"] == 5.0
+
+
+def test_published_surface_holds_a_verdict_the_classifier_stopped_making() -> None:
+    """The reason both surfaces are scored. A cell the classifier abstains on
+    keeps its last published state, so the snapshot can read disrupted long after
+    the evidence stopped — a false alarm a rider sees and the raw calls do not
+    show. This is where a wider accumulator window's staleness lands."""
+    # Disrupted once, then nothing at all: no call, so no raw alarm...
+    calls = _calls(
+        {_t(0): {"A|south|A09S": "disrupted"}, **{_t(i): {} for i in range(1, 8)}}
+    )
+    run = [("A", _t(1), _t(8))]
+    out = grade(calls, [], run, n_baselined=1, bootstrap=50)
+    assert out["calls"]["normal_run_false_alarms"]["n_ticks"] == 0  # nothing judged
+    # ...but the published surface still shows the stale disrupted regime.
+    pub = out["published"]["normal_run_false_alarms"]
+    assert pub["n_ticks"] == 7
+    assert pub["alarmed_ticks"] == 7
+    assert pub["tick_rate"] == 1.0

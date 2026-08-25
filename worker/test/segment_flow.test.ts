@@ -71,15 +71,15 @@ describe('stationId', () => {
 });
 
 describe('classifyThroughput', () => {
-  // mu = expected * (1 + SEGMENT_DECAY); the power floor is -ln(0.05) = 2.996,
-  // so expected = 1.6 cannot be judged and expected = 1.7 can.
+  // mu = expected * (1 + SEGMENT_DECAY); at decay 0.94 the power floor
+  // -ln(0.05) = 2.996 falls between expected = 1.5 and expected = 1.6.
   test('an expectation too small to test reads quiet, not an abstention', () => {
-    expect(classifyThroughput(0, 1.6, true)).toBe('quiet');
+    expect(classifyThroughput(0, 1.5, true)).toBe('quiet');
     expect(classifyThroughput(0, 0, true)).toBe('quiet');
   });
 
   test('just past the power floor, an empty window reads disrupted', () => {
-    expect(classifyThroughput(0, 1.7, true)).toBe('disrupted');
+    expect(classifyThroughput(0, 1.6, true)).toBe('disrupted');
   });
 
   test('silence against a real expectation reads disrupted', () => {
@@ -197,7 +197,7 @@ describe('deriveStationFlow', () => {
   test('with no throughput fit, a thin segment is still skipped entirely', () => {
     const state: SegmentFlowDoc = {
       observed_at: NOW,
-      cells: { 'F|south|A09S': { a: 0, m: 3, e: 0 } }, // matched 3 < MIN_EFF_MATCHED
+      cells: { 'F|south|A09S': { a: 0, m: 2, e: 0 } }, // matched 2 < MIN_EFF_MATCHED
       vehicles: {},
       regimes: {},
     };
@@ -245,7 +245,7 @@ describe('deriveSegmentStates', () => {
   test('with no throughput fit, a cell below the matched floor is absent', () => {
     const state: SegmentFlowDoc = {
       observed_at: NOW,
-      cells: { 'F|south|A09S': { a: 0, m: 3, e: 0 } }, // matched 3 < MIN_EFF_MATCHED
+      cells: { 'F|south|A09S': { a: 0, m: 2, e: 0 } }, // matched 2 < MIN_EFF_MATCHED
       vehicles: {},
       regimes: {},
     };

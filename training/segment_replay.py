@@ -26,7 +26,7 @@ scored against the document the Worker will actually classify against.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -34,13 +34,15 @@ from momentarily.hmm import schedule_bin
 from training.hierarchical import PooledCell
 from training.load import TICK_SECONDS
 from training.load_r2 import ADVANCE_PRIOR_STRENGTH, StopFilter
+from training.regime import DEBOUNCE_TICKS, MAX_IDLE_SEC, RegimeEntry, advance_regimes
 from training.segments import classify_segment, classify_throughput
 
-# Mirrors of worker/src/segment_flow.ts. Kept as module constants rather than
-# imported from anywhere: there is no shared source across the language
-# boundary, and the parity fixture is what proves they agree.
-SEGMENT_DECAY = 0.8
-MIN_EFF_MATCHED = 5
+# Mirrors of worker/src/segment_flow.ts, including its retuned accumulator
+# window. Kept as module constants rather than imported from anywhere: there is
+# no shared source across the language boundary, and the parity fixture is what
+# proves they agree.
+SEGMENT_DECAY = 0.94
+MIN_EFF_MATCHED = 3
 PRUNE_MATCHED = 0.3
 EFF_COUNT_SCALE = 1.0 + SEGMENT_DECAY
 
@@ -290,6 +292,42 @@ def replay(
     for tick in ticks:
         state = update_flow(state, tick, params, policy)
         out.append((tick.observed_at, classify(state, params, policy)))
+    return out
+
+
+def published_states(
+    calls: Sequence[tuple[int, Mapping[str, str]]],
+    *,
+    debounce_ticks: int = DEBOUNCE_TICKS,
+    max_idle_sec: int = MAX_IDLE_SEC,
+) -> list[tuple[int, dict[str, str]]]:
+    """`replay`'s raw per-tick calls run through the regime clock, giving what the
+    snapshot would actually SHOW at each tick rather than what the classifier
+    decided at it.
+
+    The two differ in a way that matters for anything time-sensitive, and the
+    difference grows with the accumulator's window. A cell the classifier abstains
+    on keeps its previous published state for up to `max_idle_sec`, so the surface
+    can read disrupted long after the evidence stopped, and can read normal on a
+    cell that has said nothing for fifty minutes. Grading raw calls credits a
+    policy for opinions no rider ever saw and hides the staleness a wider window
+    buys; grading these does neither.
+
+    Goes through training.regime.advance_regimes, the same function the offline
+    backfill uses and a hand-port pin of the Worker's own clock, rather than
+    reimplementing the debounce.
+    """
+    entries: dict[str, RegimeEntry] = {}
+    out: list[tuple[int, dict[str, str]]] = []
+    for observed_at, tick_calls in sorted(calls, key=lambda t: t[0]):
+        entries, _changes = advance_regimes(
+            entries,
+            tick_calls,
+            observed_at,
+            debounce_ticks=debounce_ticks,
+            max_idle_sec=max_idle_sec,
+        )
+        out.append((observed_at, {k: v.state for k, v in entries.items()}))
     return out
 
 

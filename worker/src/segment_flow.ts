@@ -45,24 +45,41 @@ import type {
   StationFlowDoc,
 } from './state';
 
-// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 5-tick (~25 min) effective window.
+// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 17-tick (~83 min) effective
+// window.
 //
-// A graded bakeoff found a WIDER window (0.94, ~83 min) crossed with the
-// throughput branch below separates real service collapses from healthy service
-// better than this pairing does — 5.2x against 3.7x on the independent
-// assigned_n episode label — and alarms less on healthy routes while doing it.
-// It is deliberately not taken here. Window length is not free: a verdict can be
-// stale by up to the window, and `entered_at` plus the recovery forecast
-// conditioned on it inherit that staleness directly. Onset latency was measured
-// rather than assumed (training/segment_coverage.py `_onset_latency`) and showed
-// no penalty, but on 3-11 detections per policy — which cannot rank policies, so
-// the wider window remains unpriced rather than proven harmless. This value
-// changes when that measurement can carry the claim.
-export const SEGMENT_DECAY = 0.8;
+// 0.94 rather than the original 0.8 (~25 min), on a graded bakeoff of both
+// coverage axes crossed (training/segment_coverage.py). Against the independent
+// assigned_n episode label this pairing separates real service collapses from
+// healthy service by 5.3x, where the throughput branch at 25 min manages 3.6x
+// and a wider window with no throughput fit manages 1.9x and is not significant
+// at all. It also alarms LESS on healthy routes (6.4% of testable cells against
+// 13.4%): the wider window is smoothing noise, not reaching further.
+//
+// The obvious objection to a longer window is staleness — a verdict lagging its
+// evidence, which `entered_at` and the recovery forecast conditioned on it would
+// inherit. That objection is structurally void once the throughput branch runs:
+// staleness enters through the regime clock HOLDING a cell's last state while the
+// cell abstains, and a cell with a published rate never abstains. Graded on the
+// published (debounced) surface rather than the raw calls, the two throughput
+// arms score identically to their own call surface, while the two arms without it
+// lose 14-16% of their separation to held-open verdicts.
+//
+// Latency points the same way, for a mechanical reason worth stating: on the
+// ABSENCE question a longer window is faster, not slower. The expected count it
+// accumulates is ~3.3x larger, so an empty window crosses the Poisson threshold
+// sooner. Measured median onset latency is 10 min here against 35 for the
+// narrow-window throughput arm — on 5 and 7 detections respectively, so a
+// direction rather than a measurement, but a direction that agrees with the
+// mechanism and with the separation.
+export const SEGMENT_DECAY = 0.94;
 // Effective (decayed) matched trips a segment needs before the advance-rate
 // branch judges it. Under it the throughput branch takes over — it used to be
-// the point where the cell dropped out entirely.
-export const MIN_EFF_MATCHED = 5;
+// the point where the cell dropped out entirely. 3 rather than 5 so this floor
+// stops shadowing classifyAdvance's own MIN_MATCHED_TRIPS, which already rejects
+// anything thinner; the sweep behind the bakeoff measured 1, 2 and 3 tying
+// exactly at every window width for that reason.
+export const MIN_EFF_MATCHED = 3;
 // Drop a segment from the carried accumulator once BOTH its decayed matched and
 // its decayed expectation fall below this — nothing observed and nothing
 // expected, so the entry carries no information and the state object stays

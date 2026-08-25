@@ -959,6 +959,123 @@ def build_segment_baseline(
     return partially_pool({k: (adv, stall) for k, (adv, stall) in leaves.items()})
 
 
+# --- Expected throughput per segment cell ---------------------------------
+#
+# The advance-rate baseline above answers "of the trains that were here, what
+# share moved on". It answers nothing when no train was here at all — and that
+# is the common case: the Worker's MIN_EFF_MATCHED=5 over a ~25-minute decayed
+# window needs sub-5-minute headways, so almost every baselined cell abstains
+# almost always. The missing quantity is the denominator the timetable implies:
+# how many traversals a cell should see per tick. With it, an empty window is
+# evidence instead of an abstention.
+
+# Bin the rate by ET (weekday|weekend, hour) — momentarily.hmm.schedule_bin —
+# for the reason training.degradation_label pins the same choice for the
+# assigned_n label: a tod_bin spans 4-6 hours and its centre is set by the
+# busiest core, so the quiet edge of a block reads as a collapse against it.
+# Throughput varies at exactly that scale (a 20-minute overnight headway inside
+# the same tod_bin as a 4-minute rush headway), and the weekday/weekend split
+# rides along for free.
+THROUGHPUT_BIN_FN = schedule_bin
+
+# Observed ticks a bin needs before its rate is published, matching the
+# min_samples floor compute_service_quantiles uses for a per-cell spread. Below
+# it no rate ships and the Worker keeps abstaining — the behaviour that
+# preceded this fit — rather than judging silence against a handful of ticks.
+MIN_THROUGHPUT_TICKS = 20
+
+
+def throughput_exposure[BinKey: (int, str)](
+    bodies: list[dict[str, Any]],
+    *,
+    bin_fn: Callable[[int], BinKey] = THROUGHPUT_BIN_FN,
+) -> dict[BinKey, int]:
+    """Observed ticks per time bin — the exposure a per-tick traversal rate
+    divides by.
+
+    Counted once per SNAPPED tick (a duplicated archive object must not inflate
+    the denominator) and only for ticks the vehicle feed actually reported on: a
+    body with no rows is a feed outage, and counting it would drag every cell's
+    rate toward zero exactly where the archive is blind. Same guard
+    compute_schedule_rate applies to its own denominator.
+    """
+    seen: dict[int, BinKey] = {}
+    for body in bodies:
+        if not cast(dict[str, Any], body.get("rows") or {}):
+            continue
+        tick = _snap_tick(int(body.get("observed_at") or 0))
+        seen[tick] = bin_fn(tick)
+    out: dict[BinKey, int] = {}
+    for bin_key in seen.values():
+        out[bin_key] = out.get(bin_key, 0) + 1
+    return out
+
+
+def build_segment_throughput[BinKey: (int, str)](
+    bodies: list[dict[str, Any]],
+    *,
+    counts_from_stop: StopFilter | None = None,
+    bin_fn: Callable[[int], BinKey] = THROUGHPUT_BIN_FN,
+    min_ticks: int = MIN_THROUGHPUT_TICKS,
+) -> tuple[dict[tuple[str, str, str], dict[BinKey, float]], dict[BinKey, int]]:
+    """Expected matched traversals per tick for each (route, direction,
+    from_stop) cell at each time bin, plus the exposure it was fitted over.
+
+    Numerator: every archived cross-tick transition out of the from_stop,
+    advances and stalls alike, because `matched` is what the Worker's decayed
+    accumulator counts (segment_flow.ts tickCounts) and the rate has to be in
+    the same units as the thing it is compared against. Denominator: the ticks
+    the archive covered in that bin, NOT the ticks this cell was seen in — a
+    cell missing from the transitions saw no train, which is the entire signal.
+
+    Only bins clearing `min_ticks` are fitted; a cell's rate for such a bin is
+    always present, zero included, because zero is the informative value.
+    Returned exposure is the published bin set, so a consumer can tell "fitted
+    at zero" from "never fitted".
+
+    Cadence-defined: the rate is per TICK, so a change to the cron cadence the
+    Worker accumulates on invalidates it and it has to be refitted in lockstep.
+    """
+    exposure = {
+        bin_key: ticks
+        for bin_key, ticks in throughput_exposure(bodies, bin_fn=bin_fn).items()
+        if ticks >= min_ticks
+    }
+    matched: dict[tuple[str, str, str], dict[BinKey, int]] = {}
+    for (route, direction, frm, _to, tick), n in build_segment_series(bodies).items():
+        if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
+            continue
+        bin_key = bin_fn(tick)
+        if bin_key not in exposure:
+            continue
+        counts = matched.setdefault((route, direction, frm), {})
+        counts[bin_key] = counts.get(bin_key, 0) + n
+    return (
+        {
+            leaf: {b: counts.get(b, 0) / exposure[b] for b in exposure}
+            for leaf, counts in matched.items()
+        },
+        exposure,
+    )
+
+
+def throughput_to_json(
+    rates: Mapping[tuple[str, str, str], Mapping[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Serialize the per-cell rates for segment_params.json, keyed the way the
+    Worker keys its cells ('route|direction|from_stop').
+
+    Zero-rate bins are DROPPED: with the published bin set riding along in the
+    doc's own exposure map, an absent bin inside a published one reads as zero
+    unambiguously, and dropping them takes a fitted-everywhere 48-bin table
+    down to the bins where trains actually run.
+    """
+    return {
+        "|".join(leaf): {b: round(lam, 4) for b, lam in sorted(bins.items()) if lam > 0}
+        for leaf, bins in rates.items()
+    }
+
+
 # Movement→state thresholds. MIN_MATCHED_TRIPS gates whether a direction has
 # enough cross-tick matches to judge at all; under it the direction abstains.
 MIN_MATCHED_TRIPS = 3  # advanced_n + stalled_n floor to make a cross-tick call

@@ -57,11 +57,13 @@ from training.gtfs_static import (
 )
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
+    MIN_THROUGHPUT_TICKS,
     StopFilter,
     advance_baseline_to_json,
     build_movement_series,
     build_movement_series_by_direction,
     build_segment_baseline,
+    build_segment_throughput,
     build_service_series,
     build_tick_observations,
     compute_advance_baseline,
@@ -79,6 +81,7 @@ from training.load_r2 import (
     schedule_rate_to_json,
     service_baseline_to_json,
     service_quantiles_to_json,
+    throughput_to_json,
 )
 from training.pooled_dwell import MIN_VOTER_EVENTS, pooled_dwell_cells
 from training.provenance import code_provenance
@@ -584,6 +587,15 @@ def write_segment_params(
     leaves nothing to pair the topology with). `through` restricts those leaves
     to mid-chain from_stops, the same set params.json publishes — a leaf fitted
     over layovers would hand the Worker a normal it never scores against.
+
+    Each cell also carries `lam`: its expected matched traversals per tick by
+    time bin (load_r2.build_segment_throughput), the denominator that lets the
+    Worker read an empty window as evidence instead of abstaining. Fitted over
+    the same bodies and the same `through` filter as p0, so the rate and the
+    normal it complements describe one stop set. Bins where the cell runs
+    nothing are dropped from `lam` and read as zero against the bin set in
+    `throughput.ticks` — see load_r2.throughput_to_json.
+
     Fail-soft: a vehicle-archive hiccup skips the object, leaving the last good
     one; the station-flow surface just goes stale, never blocks the params run.
     """
@@ -591,15 +603,19 @@ def write_segment_params(
         bodies = fetch_vehicle_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
-        baseline = build_segment_baseline(
-            bodies, counts_from_stop=_stop_filter(through)
-        )
+        stop_filter = _stop_filter(through)
+        baseline = build_segment_baseline(bodies, counts_from_stop=stop_filter)
         observed_adjacency = canonical_adjacency(bodies)
+        rates, exposure = build_segment_throughput(bodies, counts_from_stop=stop_filter)
+        lam = throughput_to_json(rates)
 
-        cells: dict[str, dict[str, Any]] = {
-            "|".join(key): {"p0": round(cell.p0, 6), "n": cell.n}
-            for key, cell in baseline.items()
-        }
+        cells: dict[str, dict[str, Any]] = {}
+        for key, cell in baseline.items():
+            entry: dict[str, Any] = {"p0": round(cell.p0, 6), "n": cell.n}
+            cell_lam = lam.get("|".join(key))
+            if cell_lam is not None:
+                entry["lam"] = cell_lam
+            cells["|".join(key)] = entry
         if not cells:
             print("segment params skipped (no through-segments)", file=sys.stderr)
             return 0
@@ -610,16 +626,16 @@ def write_segment_params(
                 if not succs:
                     continue
                 to_stop, _n_trips = dominant_successor(succs)
-                entry: dict[str, Any] = {
+                adj_entry: dict[str, Any] = {
                     "to": to_stop,
                     "source": "gtfs_static",
                     "successors": [{"to": t, "n_trips": n} for t, n in succs],
                 }
                 obs = observed_adjacency.get(key)
                 if obs is not None:
-                    entry["share"] = round(obs.share, 4)
-                    entry["n"] = obs.n
-                adj_doc["|".join(key)] = entry
+                    adj_entry["share"] = round(obs.share, 4)
+                    adj_entry["n"] = obs.n
+                adj_doc["|".join(key)] = adj_entry
         else:
             for key, adj in observed_adjacency.items():
                 adj_doc["|".join(key)] = {
@@ -640,6 +656,16 @@ def write_segment_params(
             "topology_source": topology_source,
             "cells": cells,
             "adjacency": adj_doc,
+            # How the per-cell `lam` rates were fitted: the bin function, the
+            # exposure floor, and the observed ticks per published bin. The bin
+            # set is exactly these keys — a bin missing here was never fitted
+            # (the Worker abstains), a bin here but missing from a cell's `lam`
+            # was fitted at zero (nothing scheduled, silence is normal).
+            "throughput": {
+                "bin": "schedule_bin",
+                "min_ticks": MIN_THROUGHPUT_TICKS,
+                "ticks": dict(sorted(exposure.items())),
+            },
             # Canonical per-(route, direction) stop order: the actual scheduled
             # trip patterns, most-run first. A consumer reads line order off
             # these instead of relinearizing the single-successor adjacency

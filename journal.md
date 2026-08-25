@@ -4872,6 +4872,7 @@ own defect — `compute_advance_baseline` takes `p0` as a median of per-tick
 advance fractions rather than the cell's pooled advanced/matched rate, which
 saturates at 0.9990 where the pooled rate is 0.9443 — is the single number
 setting the movement channel's entire behaviour on 20 of 28 routes.
+
 ## 2026-08-25 — settled: the two `advance_rate` orderings are a canonicalization artifact, because the HMM training observations carry no movement channel at all — `mov_n = 0` on every route and every state
 
 origin: agent
@@ -5439,3 +5440,185 @@ split against, (2) the source is a 43-day-lagged estimate-on-an-estimate, and
 (3) turning a complex-level N/S demand share into a platform correction needs
 line geometry we have not built. The instrument stays as the thing a future
 direction split would be graded against.
+
+## 2026-08-24 — silence made to talk: every baselined cell judged every tick, and the discrimination survives it at 3.3x
+
+origin: agent
+
+`segment_flow` judged 19.8 of 1,658 baselined cells per tick because
+`MIN_EFF_MATCHED=5` over a ~25-minute decayed window needs sub-5-minute headways
+at a single stop, and a cell with no trains simply left the accumulator. Absence
+was treated as abstention. It is now evidence.
+
+**The mechanism.** Each cell carries a third decayed sum beside advanced/matched:
+`e`, the expected traversals over the same window, accumulated from a new
+per-(cell, `schedule_bin`) rate the trainer publishes as `lam` in
+`segment_params.json`. Running the expectation as its own decaying sum rather
+than scaling the current bin's rate by `1/(1-DECAY)` is what keeps an hourly or
+weekday/weekend bin edge honest — for the five ticks after 06:00 the window still
+holds overnight traffic, and comparing that against a rush rate would read as a
+collapse on every cell at every bin edge. With a constant rate the two forms
+agree exactly.
+
+The call is a Poisson lower tail on the effective count. A decayed sum of
+per-tick Poisson counts is not Poisson — mean `Σd^i λ`, variance only
+`Σd^2i λ` — so both sides scale by `(1+DECAY)`, the standard weighted-Poisson
+effective count, which puts mean and variance back on each other.
+
+Two decisions in it are derivations rather than knobs:
+
+- **The quiet floor is where the test loses all power.** Below
+  `-ln(THROUGHPUT_ALPHA) = 2.996` expected traversals, even a completely empty
+  window sits above the tail threshold, so no observation could ever fire. A cell
+  under it publishes a new `quiet` state — normal for now, by timetable — instead
+  of abstaining. 88.6% of cell-ticks land there, which is what an overnight
+  subway looks like.
+- **The effective count floors, it does not round.** It is "how many complete
+  traversals the window can account for", and rounding a fractional decayed
+  remnant up to a whole traversal credits evidence never observed. Flooring also
+  makes the call monotone in the observation; with rounding, a cell whose
+  expectation was fading toward quiet flipped normal/disrupted purely on which
+  side of .5 the remnant landed, once per cell per bin edge.
+
+**Graded causally, 14 days fitted (2026-08-04..08-17) and 7 held out
+(08-18..08-24), 1,765 scored ticks.** Truth is `degradation_label`'s assigned_n
+label — unmodified, and with its `(route, schedule_bin)` baseline also fitted on
+the leading window only, so an episode cannot lower the median it is measured
+against. 96 episodes, 182 normal stretches, 15 routes. Both arms are the same
+classifier over the same archive; the `before` arm is the same params doc with
+the fit stripped.
+
+| | judged/tick | cells ever judged | gradeable episodes |
+| --- | --- | --- | --- |
+| before | 19.8 | 494 / 1,658 (29.8%) | 30 / 96 |
+| after | **1,657.8** | **1,658 / 1,658 (100%)** | **52 / 96** |
+
+Coverage moved as intended, and it bought 22 more episodes that could be scored
+at all rather than only more cell-ticks.
+
+| arm | episode share | normal share | ratio | CIs disjoint |
+| --- | --- | --- | --- | --- |
+| before | 0.401 [0.245, 0.611] | 0.082 [0.051, 0.123] | 4.88 | yes |
+| after | **0.474 [0.398, 0.552]** | **0.142 [0.111, 0.180]** | **3.33** | yes |
+
+Share = disrupted over TESTABLE cells on the route (normal + disrupted), per
+tick, bootstrapped over episodes. The cost is visible and real: the base rate on
+genuinely-normal routes roughly doubles (8.2% → 14.2%) and the discrimination
+ratio drops 32% relative, because the newly-covered cells are thinner and noisier
+than the busy ones the advance branch already handled. The episode CI halves in
+width (0.37 → 0.15) on 52 episodes instead of 30.
+
+### Two statistics that had to be discarded to get there
+
+**Dead metric 1 — "any disrupted cell on the route".** At ~1% of cell-ticks
+disrupted and ~60 cells on a route, an any-cell alarm fires on nothing at all
+~40% of the time. Measured: 78.1% on episodes against 44.5% on normal stretches
+in the after arm. Saturated, and nearly powerless.
+
+**Dead metric 2 — the same share over JUDGED rather than testable cells.** It
+read 0.0246 [0.0043, 0.0663] on episodes against 0.0106 on normal, ratio 2.32
+with overlapping CIs — an apparent collapse of the signal that was entirely a
+denominator artifact. `quiet` is the classifier saying it has no power on that
+cell; counting those in the denominator dilutes the share by however much of the
+network happens to be asleep, so the comparison between arms became a comparison
+between denominators.
+
+And one asymmetry that inverted the answer before it was fixed: episodes have a
+median of 6 ticks, normal stretches 76. Any per-unit "did it ever fire" rate
+hands the longer population twelve times the chances, and the first cut of this
+grade reported detection 45.3% against false alarms 60.1% on exactly that
+artifact.
+
+**Parity, because the grade is only worth its fidelity.**
+`training/segment_replay.py` runs the Worker's actual accumulator — same EWMA,
+same expectation sum, same two branches in the same order, over the same
+baselined cell set — and `tests/fixtures/parity_segment_flow.json` pins the two
+tick for tick, bit for bit. The two pre-existing offline replicas both
+approximate the EWMA as a 6-tick trailing sum, deliberately and for other
+purposes; neither can grade a change to this classifier. Python's `round()` is
+banker's rounding and the Worker's `Math.round` is not, which desyncs on every
+exact .5 — and decayed sums of integers times powers of 0.8 hit those often.
+
+Standing caveat the numbers cannot lift: assigned_n and vehicle positions come
+from the same upstream feed family. Independent in derivation, per
+`degradation_label`'s own argument, not independent in source.
+
+### Bakeoff against the other axis: they compose, and the pair beats either alone
+
+The `feat/segment-status-map` branch bought the same coverage on the TIME axis
+instead — `SEGMENT_DECAY` 0.8 -> 0.94 (25 -> 83 min window) and
+`MIN_EFF_MATCHED` 5 -> 3 — selected against a route-level severity recall proxy
+whose absolute values are all sub-1% and whose weakness that branch documented
+itself. `segment_replay.Policy` makes the accumulator's two
+levers replayable, so both axes and their cross can be scored on one statistic.
+Same causal split, 110 episodes, 196 normal stretches, 1,958 scored ticks:
+
+| arm | decay | window | judged/tick | coverage | gradeable episodes | episode share | normal share | ratio |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| status quo | 0.80 | 25 min | 20.0 | 1.2% | 33/110 | 0.367 [0.224, 0.552] | 0.082 [0.052, 0.121] | 4.49 |
+| window | 0.94 | 83 min | 688.6 | 41.5% | 82/110 | 0.020 [0.009, 0.047] | 0.010 [0.007, 0.014] | 2.00 |
+| throughput | 0.80 | 25 min | 1,657.7 | 100% | 58/110 | 0.486 [0.421, 0.519] | 0.133 [0.106, 0.166] | 3.65 |
+| **both** | 0.94 | 83 min | 1,652.8 | 99.7% | **90/110** | 0.334 [0.196, 0.419] | 0.064 [0.056, 0.073] | **5.21** |
+
+Every arm but `window` has disjoint episode/normal intervals. The 41.5% here
+independently reproduces that branch's own 42.28%, which is the cross-check that
+makes the rest of the column trustworthy.
+
+**The window axis alone does not survive this metric.** It judges 34x more cells
+than the status quo and says `normal` for essentially all of them — 4,875
+disrupted against 1,343,490 normal, a 0.36% disrupted rate — so its episode share
+collapses to 0.020 and the separation stops being significant. Coverage without a
+verdict that moves is not coverage of anything.
+
+**The two axes are not substitutes.** Throughput supplies the discrimination the
+wider window loses; the wider window supplies matched-count depth that makes 90
+of 110 episodes scoreable against throughput-alone's 58. Crossed, the ratio beats
+even the status quo (5.21 vs 4.49) while judging 83x more cells.
+
+Which leaves exactly one open question, the one the decay knob has always
+turned on: `both` spends 83
+minutes of window, so its `entered_at` and its recovery forecast can lag a real
+onset by up to that. Nothing here measures latency. `throughput` alone is the arm
+that buys the coverage for free on that axis, and it is significant on its own.
+
+### Onset latency, measured from the onset and not from a lead window
+
+The open question is detection latency, so `_onset_latency` measures it. The first cut
+used scorecard.onset_latency's 30-minute lead tolerance and returned medians of
+-25, -30, -28, -30 minutes across the four arms — against a floor of exactly -30.
+That is a censored distribution reporting its own boundary: this surface's alarm
+rate is high enough that on most episodes it is already firing when the lead
+window opens, so the search starts inside the alarm and every latency pins to
+`-lead_sec`. The number said nothing about any classifier.
+
+Measured from the onset tick itself, with episodes already alarming AT the onset
+counted separately and excluded rather than scored as a zero:
+
+| arm | window | already alarming | measurable | detected | median | p90 | clean-before | detected |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| status quo | 25 min | 21 | 89 | 4 | 12 min | 30 min | 12 | 2 |
+| window | 83 min | 22 | 88 | 3 | 10 min | 30 min | 53 | 1 |
+| throughput | 25 min | 37 | 73 | **11** | 15 min | 430 min | 14 | **6** |
+| both | 83 min | 50 | 60 | 7 | 10 min | 35 min | 27 | 3 |
+
+**This is much less flattering than the lead-window run, and correctly so.** That
+run credited `both` with 61 detections of 110; 50 of those were the alarm already
+being on. Onset detection is weak for every policy — 3.4% to 15.1% of measurable
+episodes — which is unsurprising when the median episode is 6 ticks long, but it
+is the real number and the earlier one was base rate wearing a detection label.
+
+**Throughput leads onset detection: 11 of 73, against the status quo's 4 of 89 and
+the wider window's 3 of 88.** Roughly a 3x rate improvement, consistent with its
+share separation. On 11 events, so quoted as a direction, not a measurement.
+
+**No arm shows a latency penalty from the wider window.** `both` and `window`
+median 10 minutes, `throughput` 15, status quo 12 — two to three ticks either
+way, well inside the noise of 3-11 detections apiece. The fear that priced 0.94
+against 0.98 does not appear here, but neither is it refuted: these counts cannot
+rank policies on latency.
+
+So the window stays unpriced, and the instrument is the reason. Two fixes it needs: measure
+first crossing on the DEBOUNCED regime rather than the raw per-tick call, since
+the debounced regime is what the published surface flips on; and find a truth
+whose episodes outlast the window being priced, because a 30-minute median episode
+cannot price an 83-minute accumulator either way.

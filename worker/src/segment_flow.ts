@@ -5,117 +5,125 @@
  * A single 5-minute tick sees ~1 tracked train per segment — far too few to judge.
  * So we keep a DECAYING SUM of advanced/matched per segment (decayed = this tick +
  * DECAY * previous), an O(1)-per-segment accumulator whose effective window is
- * ~1/(1-DECAY) ticks. The smoothed counts feed the same Beta-Binomial call the
- * direction classifier uses (movement_state.classifyAdvance) against the segment's
- * own trainer baseline, then incident segments roll up to their endpoint stations.
+ * ~1/(1-DECAY) ticks. Two branches then read that window, and every baselined
+ * cell goes through one of them every tick:
+ *
+ *   advance-rate — MIN_EFF_MATCHED or more matched trips: the same Beta-Binomial
+ *     call the direction classifier uses (movement_state.classifyAdvance) against
+ *     the cell's own trainer baseline p0. "Of the trains that were here, did they
+ *     move on."
+ *   throughput — fewer than that, which is most cells most of the time: a Poisson
+ *     test of the window's matched count against the cell's expected traversal
+ *     rate for this time bin (segment_params.json `lam`). "Did the trains the
+ *     timetable promised actually show up." An empty window is evidence here,
+ *     not an abstention, which is the whole reason this branch exists — sub-5-min
+ *     headways are the only way to clear MIN_EFF_MATCHED, so the advance branch
+ *     alone leaves nearly every cell permanently unjudged.
+ *
+ * The advance branch wins wherever it has an opinion: trains present and moving
+ * on is a statement about flow, and flow is what this surface publishes. The
+ * throughput branch fills in beneath it, and its 'disrupted' means "the trains
+ * are not arriving" — which reaches a rider's station the same way a stall does.
+ *
+ * Incident segments then roll up to their endpoint stations.
  *
  * Everything here runs at step 8b (post-publish, off the time-to-publish path) and
  * reads/writes its own R2 objects, so the ~1.8k segment baseline never touches the
- * hot per-tick params parse. NOTE: with overlapping decayed samples the binomial
- * tail is a tuned score, not a calibrated p-value — DECAY and CLASSIFY_ALPHA are
- * empirical knobs, and a minimum effective matched count guards the thinnest cells.
- *
- * SEGMENT_DECAY RETUNED 2026-08-23 (0.80 -> 0.94), off training/segment_coverage.py
- * — a grid sweep (decay x floor, plus a corridor-pooling variant, plus an `expand`
- * variant) replaying the archived vehicle stream against the PUBLISHED baseline.
- * The sweep's pre-committed rule (maximise judged_share subject to
- * quiet_disrupted_rate <= status quo + 1pp, alongside a recall floor added after a
- * false-alarm-only criterion turned out unable to distinguish "cleaner" from
- * "detects less of everything") picked decay=0.98 (~250-min window): coverage
- * 72.30% of the 1658 baselined cells/tick (vs the 1.26% status quo),
- * alert_disrupted_rate (recall, relative only — see caveat below) 0.22% vs the
- * status quo's 0.05%, n_alert=944808 route-ticks (same sample every row, so the
- * comparison is equally powered throughout).
- *
- * THAT PICK WAS REJECTED, not shipped, on a criterion the mechanical rule can't
- * see: at a 250-minute window `entered_at` (the regime clock) can start up to
- * four hours after a disruption's true onset, and `recovery` is a forecast
- * CONDITIONED on that same clock — both go from measuring an event to
- * describing a smear. training/episodes.py's own 21-day sample puts the MEDIAN
- * alert episode (the truth this is graded against) at 45 MINUTES; a 250-minute
- * accumulator is 5.6x that, structurally too slow to ever catch a typical
- * incident while it's still happening, whatever the recall proxy says.
- *
- * CHOSEN INSTEAD: decay=0.94 (~83-min window, ~1.8x the median episode) —
- * captures 77% of 0.98's own recall (alert_disrupted_rate 0.17% vs 0.98's
- * 0.22%, both far above the status quo's 0.05% floor) at 42.28% coverage
- * (701/1658 baselined cells/tick), quiet_disrupted_rate 0.49% (ceiling was
- * status-quo's 5.12% + 1pp = 6.12%, comfortably cleared). This is a JUDGEMENT
- * CALL against incident duration, not the mechanical rule's own answer —
- * flagged here explicitly because a post-hoc criterion presented as
- * pre-committed is the failure mode to avoid; a post-hoc criterion labelled as
- * one, on the record, is not.
- *
- * CAVEAT: alert_disrupted_rate and quiet_disrupted_rate are tiny in absolute
- * terms because the truth column is ROUTE-level severity (a whole route's
- * alert state) while the judged column is PER-SEGMENT (one cell of dozens on
- * that route) — only the RELATIVE ordering across policies is meaningful
- * here; none of these percentages is an accuracy claim on its own.
- *
- * TWO OTHER VARIANTS WERE MEASURED AND REJECTED, on the record because both
- * are real negative results, not omissions:
- *   - CORRIDOR POOLING (spatial resolution traded for coverage, instead of
- *     temporal): a cell under the floor pooled forward along its static
- *     successor chain until the pooled count cleared it, then the whole
- *     stretch was judged as one measurement. At decay=0.80's native 25-min
- *     window this reached 45.61% coverage but only 0.06% recall — barely
- *     above the FLAT classifier's own 0.05% at the same window, and under a
- *     third of decay=0.94's 0.17% at similar coverage. Space was never where
- *     the leverage was: a spatially pooled measurement dilutes a spatially
- *     sharp signal the same way a wide time window dilutes a temporally sharp
- *     one, and the temporal knob had far more headroom. Shipped once
- *     (2026-08-23), then reverted the same day once the wider-window
- *     comparison above landed — kept alive in training/segment_coverage.py
- *     (`--max-corridor`) as a documented, measured, rejected option, not
- *     re-implemented here.
- *   - EXPAND (crediting every hop a multi-station jump provably crossed via
- *     unanimous scheduled stopping patterns): costs recall at every decay
- *     tested (0.80: 0.05% -> 0.03%; 0.94: 0.17% -> 0.10%; 0.98: 0.22% ->
- *     0.13%) in exchange for coverage — the opposite of what this retune was
- *     for. Not shipped for that reason, not for the ~685KB trainer-side hop
- *     map it would additionally need.
- *
- * FOLLOW-UP (not done here): the metric that should govern this knob is
- * detection LATENCY against the movement truth — how long after a real onset
- * the surface flips — not a route-level recall proxy with a ceiling far below
- * 1.0. training/scorecard.py's onset_latency and training/review.py's
- * changepoint_alignment already do this for the route-level HMM; extending
- * either to segment-level regimes would let this knob be picked directly
- * against latency instead of against incident duration as a stand-in, which
- * is what the 2026-08-23 choice actually is.
- *
- * entered_at / recovery staleness: the regime clock can now start up to
- * ~83 minutes after a disruption's true onset (was ~25 min before this
- * retune) — SegmentStatus.entered_at and .recovery should be read with that
- * worst-case lag in mind.
+ * hot per-tick params parse. NOTE: with overlapping decayed samples neither tail
+ * is a calibrated p-value — DECAY, CLASSIFY_ALPHA and THROUGHPUT_ALPHA are
+ * empirical knobs.
  */
 
-import { classifyAdvance } from './movement_state';
+import { schedule_bin } from './hmm';
+import { classifyAdvance, poisLowerTail } from './movement_state';
 import type { RegimeEntry } from './regime';
 import type { MovementRow } from './vehicles';
-import type { SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
+import type {
+  SegmentCondition,
+  SegmentFlowDoc,
+  SegmentParamsDoc,
+  StationFlowDoc,
+} from './state';
 
-// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 17-tick (~83 min) effective
-// window. Retuned 2026-08-23 (was 0.8, ~25 min) — see the module docstring for
-// the sweep, the mechanical rule's own pick (0.98, rejected), and why 0.94 was
-// chosen against incident duration instead.
-export const SEGMENT_DECAY = 0.94;
-// Effective (decayed) matched trips a segment needs before it's judged at all.
-// Held at 3 through the 2026-08-23 retune (was 5): floor 1, 2, and 3 tie
-// EXACTLY at every decay tested (701.0 judged/tick at decay=0.94, all three
-// identical) — movement_state.classifyAdvance's own MIN_MATCHED_TRIPS=3
-// already rejects any call under 3 matched, so a floor below 3 would be
-// strictly cosmetic, never looser in practice. 3 is the honest floor: as low
-// as this can go without publishing a value that can never bind.
-export const MIN_EFF_MATCHED = 3;
-// Drop a segment from the carried state once its decayed matched falls below this
-// (gone quiet) so the state object stays bounded.
+// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 5-tick (~25 min) effective window.
+//
+// A graded bakeoff found a WIDER window (0.94, ~83 min) crossed with the
+// throughput branch below separates real service collapses from healthy service
+// better than this pairing does — 5.2x against 3.7x on the independent
+// assigned_n episode label — and alarms less on healthy routes while doing it.
+// It is deliberately not taken here. Window length is not free: a verdict can be
+// stale by up to the window, and `entered_at` plus the recovery forecast
+// conditioned on it inherit that staleness directly. Onset latency was measured
+// rather than assumed (training/segment_coverage.py `_onset_latency`) and showed
+// no penalty, but on 3-11 detections per policy — which cannot rank policies, so
+// the wider window remains unpriced rather than proven harmless. This value
+// changes when that measurement can carry the claim.
+export const SEGMENT_DECAY = 0.8;
+// Effective (decayed) matched trips a segment needs before the advance-rate
+// branch judges it. Under it the throughput branch takes over — it used to be
+// the point where the cell dropped out entirely.
+export const MIN_EFF_MATCHED = 5;
+// Drop a segment from the carried accumulator once BOTH its decayed matched and
+// its decayed expectation fall below this — nothing observed and nothing
+// expected, so the entry carries no information and the state object stays
+// bounded. Both halves matter: dropping a cell that still expects traffic would
+// restart its expectation from zero and bias it toward normal, and dropping one
+// that saw traffic would do the same to the observation. Re-entry from zero
+// discards at most this much of either tail.
 const PRUNE_MATCHED = 0.3;
+
+// Poisson lower-tail threshold for the throughput branch — the role
+// CLASSIFY_ALPHA plays on the advance branch, and deliberately the same number,
+// so both branches call a cell disrupted at one nominal strictness.
+export const THROUGHPUT_ALPHA = 0.05;
+
+// A decayed sum of per-tick Poisson counts is not itself Poisson: with weights
+// DECAY^i its mean is sum(DECAY^i * lambda_i) but its variance only
+// sum(DECAY^2i * lambda_i), so a raw Poisson tail on it would be badly
+// over-strict. Scaling by (1+DECAY) — the standard weighted-Poisson effective
+// count — puts mean and variance back on each other, and one Poisson tail then
+// covers both sides:
+//     k_eff = matched * (1+DECAY),   mu = expected * (1+DECAY)
+// where `expected` is the SAME decaying sum run over the per-tick rates rather
+// than the per-tick counts. Running it that way instead of scaling the current
+// bin's rate by 1/(1-DECAY) is what keeps an hourly or weekday/weekend bin edge
+// honest: for the ~5 ticks after 06:00 the window still holds overnight
+// traffic, and comparing it against a rush-hour rate would read as a collapse
+// on every cell at every bin edge. With a constant rate the two agree exactly.
+const EFF_COUNT_SCALE = 1 + SEGMENT_DECAY;
+
+// Expected effective traversals a window needs before absence can be judged at
+// all. Below -ln(THROUGHPUT_ALPHA) even a completely empty window sits above the
+// tail threshold, so the test provably has no power there. A cell under it reads
+// 'quiet' rather than abstaining: too little runs here right now for silence to
+// carry information, and saying so IS the opinion that cell warrants.
+const QUIET_MAX_EXPECTED = -Math.log(THROUGHPUT_ALPHA);
+
+// THE OUTAGE GUARD, and what it deliberately does not cover.
+//
+// A route the vehicle feed said nothing about this tick has no transitions for
+// any of its cells, so every one of them would read disrupted at once. That is
+// what `vehicles` (route -> this tick's tracked vehicles, omitted at zero) is
+// for: no entry, no throughput call.
+//
+// Whole-ROUTE only. A single direction going dark while the route is otherwise
+// reported IS evidence and is judged, because that is the case this branch
+// exists for. The cost is that a route which genuinely stops running in both
+// directions abstains here instead of reading disrupted — and that is the right
+// division of labour, not a gap: whole-route service is the route classifier's
+// question, and deriveMovementStates already answers it with suspended /
+// not_scheduled off the schedule rate. The segment surface exists for the
+// sub-route granularity that one cannot see.
+//
+// Presence, not a threshold: one decoded vehicle is the difference between "the
+// feed told us about this route" and "it did not". Residual it cannot cover: a
+// feed that still decodes vehicles but stops matching them across ticks would
+// depress matched without depressing this.
 
 /** Collapse a directional stop id to its station: strip a trailing N/S. */
 export function stationId(stop: string): string {
   const last = stop.at(-1);
-  return last === "N" || last === "S" ? stop.slice(0, -1) : stop;
+  return last === 'N' || last === 'S' ? stop.slice(0, -1) : stop;
 }
 
 /** This tick's advanced/matched per (route|dir|from) from the raw transitions. */
@@ -124,11 +132,11 @@ function tickCounts(
 ): Map<string, { adv: number; matched: number }> {
   const out = new Map<string, { adv: number; matched: number }>();
   for (const [routeId, row] of moveRows) {
-    for (const dir of ["north", "south"] as const) {
+    for (const dir of ['north', 'south'] as const) {
       const trans = row.by_direction[dir]?.transitions;
       if (!trans) continue;
       for (const [pair, n] of Object.entries(trans)) {
-        const gt = pair.indexOf(">");
+        const gt = pair.indexOf('>');
         if (gt < 0 || n <= 0) continue;
         const frm = pair.slice(0, gt);
         const to = pair.slice(gt + 1);
@@ -144,8 +152,37 @@ function tickCounts(
   return out;
 }
 
-/** Advance the decaying per-segment accumulator with this tick's counts. Only
- * segments the trainer baselined are tracked; quiet ones prune out. */
+/** This tick's tracked vehicles per route, omitting routes the feed said nothing
+ * about — the feed-liveness input to the outage guard, independent of whether
+ * any trip was matched across ticks. */
+function tickVehicles(moveRows: Map<string, MovementRow>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [routeId, row] of moveRows) {
+    if (row.vehicles_n > 0) out[routeId] = row.vehicles_n;
+  }
+  return out;
+}
+
+/** The published bin whose rates apply at `observedAt`, or null when the trainer
+ * published no throughput fit covering it — a params doc predating the fit, or a
+ * bin that never cleared its exposure floor. Null means the throughput branch
+ * has nothing to test against and abstains. */
+function fittedBin(params: SegmentParamsDoc, observedAt: number): string | null {
+  const tp = params.throughput;
+  if (tp == null) return null;
+  const bin = schedule_bin(observedAt);
+  return bin in tp.ticks ? bin : null;
+}
+
+/** Advance the decaying per-segment accumulator with this tick's counts and this
+ * tick's expected rate, and record this tick's per-route vehicle counts for the
+ * outage guard.
+ *
+ * Iteration is over the trainer's baselined cells, not over what moved: a cell
+ * that saw no train still has to accrue its expectation, because the gap between
+ * the two is what the throughput branch reads. Cells with nothing observed and
+ * nothing expected prune back out, which keeps the doc to the cells that are
+ * actually in play. */
 export function updateSegmentFlow(
   prev: SegmentFlowDoc | null,
   moveRows: Map<string, MovementRow>,
@@ -154,80 +191,131 @@ export function updateSegmentFlow(
 ): SegmentFlowDoc {
   const counts = tickCounts(moveRows);
   const prevCells = prev?.cells ?? {};
-  const cells: Record<string, { a: number; m: number }> = {};
-  const keys = new Set<string>([...Object.keys(prevCells), ...counts.keys()]);
-  for (const key of keys) {
-    if (!(key in params.cells)) continue;
-    const p = prevCells[key] ?? { a: 0, m: 0 };
+  const bin = fittedBin(params, observedAt);
+  const cells: Record<string, { a: number; m: number; e: number }> = {};
+  for (const [key, cell] of Object.entries(params.cells)) {
+    const { a: pa = 0, m: pm = 0, e: pe = 0 } = prevCells[key] ?? {};
     const t = counts.get(key) ?? { adv: 0, matched: 0 };
-    const a = t.adv + SEGMENT_DECAY * p.a;
-    const m = t.matched + SEGMENT_DECAY * p.m;
-    if (m < PRUNE_MATCHED) continue;
-    cells[key] = { a, m };
+    const a = t.adv + SEGMENT_DECAY * pa;
+    const m = t.matched + SEGMENT_DECAY * pm;
+    // An unfitted bin contributes nothing to the expectation, which understates
+    // it for the following window and biases those ticks toward normal — the
+    // safe direction, and unreachable at any sane trainer window width, where
+    // every bin clears its exposure floor.
+    const e = (bin === null ? 0 : (cell.lam?.[bin] ?? 0)) + SEGMENT_DECAY * pe;
+    if (m < PRUNE_MATCHED && e < PRUNE_MATCHED) continue;
+    cells[key] = { a, m, e };
   }
+
+  const vehicles = tickVehicles(moveRows);
+
   // Regimes are advanced by the caller (step 8b, alongside advanceRegimes) and
   // written back onto this doc once computed; carry the previous map through
   // so the type is whole in between.
-  return { observed_at: observedAt, cells, regimes: prev?.regimes ?? {} };
+  return { observed_at: observedAt, cells, vehicles, regimes: prev?.regimes ?? {} };
 }
 
-function deficitOf(p0: number, rate: number): number {
-  if (p0 <= 0) return 0;
-  return Math.max(0, Math.min(1, (p0 - rate) / p0));
+/** Clamped relative shortfall of `observed` against `expected`, in [0, 1] — the
+ * magnitude the station roll-up ranks segments by. Both branches feed it: the
+ * advance branch in advance-rate units, the throughput branch in effective
+ * traversal counts. Zero when there is nothing to fall short of. */
+function deficitOf(expected: number, observed: number): number {
+  if (expected <= 0) return 0;
+  return Math.max(0, Math.min(1, (expected - observed) / expected));
 }
 
 interface SegmentCall {
   key: string;
-  call: "normal" | "disrupted";
+  call: SegmentCondition;
   route: string;
   seg: [string, string];
   deficit: number;
 }
 
-/** Beta-Binomial call for every segment cell with enough effective matched
- * trips this tick, via the one decision rule shared with the direction
- * classifier (movement_state.classifyAdvance). A cell classifyAdvance
- * abstains on — too few matches, or a point-estimate drop indistinguishable
- * from a low-p0 fluctuation — is simply absent: the shared basis for both
- * deriveStationFlow's incident roll-up and deriveSegmentStates' regime-clock
+/**
+ * The throughput call for one cell: is the window's traversal count consistent
+ * with what the timetable expected over that same window?
+ *
+ * Both arguments are decayed sums over the accumulator's window — `matched` of
+ * the observed traversals, `expected` of the per-tick rates that applied when
+ * each of them could have happened — so a bin edge inside the window is already
+ * accounted for. They go onto the effective-Poisson scale together.
+ *
+ *   quiet     — the window expected less than QUIET_MAX_EXPECTED traversals, so
+ *               no observation could reach the tail. Normal for now, by
+ *               timetable, and saying so beats abstaining.
+ *   null      — the expectation is real but the vehicle feed said nothing about
+ *               this route at all, so the silence is unattributable.
+ *   disrupted — Poisson lower tail at or under THROUGHPUT_ALPHA: the trains the
+ *               timetable promised are not arriving.
+ *   normal    — enough of them are.
+ *
+ * The effective count FLOORS rather than rounds: it is "how many complete
+ * traversals the window can account for", and rounding a fractional decayed
+ * remnant up to a whole traversal credits evidence that was never observed.
+ * Flooring also makes the call monotone in `matched`, which matters at the edge
+ * of the quiet band — with rounding, a cell whose expectation is fading out
+ * flips normal/disrupted purely on which side of .5 the remnant lands.
+ */
+export function classifyThroughput(
+  matched: number,
+  expected: number,
+  routeSeen: boolean,
+): SegmentCondition | null {
+  const mu = expected * EFF_COUNT_SCALE;
+  if (mu < QUIET_MAX_EXPECTED) return 'quiet';
+  if (!routeSeen) return null;
+  const k = Math.floor(matched * EFF_COUNT_SCALE);
+  return poisLowerTail(k, mu) <= THROUGHPUT_ALPHA ? 'disrupted' : 'normal';
+}
+
+/** A call for every cell the trainer baselined — iteration is over
+ * `params.cells`, not the accumulator, because a cell that saw no train has no
+ * accumulator entry and that silence is exactly what the throughput branch
+ * reads. A cell both branches abstain on is simply absent: the shared basis for
+ * both deriveStationFlow's incident roll-up and deriveSegmentStates' regime-clock
  * feed, so the two never disagree about which cells were judged. */
-function classifySegments(
-  state: SegmentFlowDoc,
-  params: SegmentParamsDoc,
-): SegmentCall[] {
+function classifySegments(state: SegmentFlowDoc, params: SegmentParamsDoc): SegmentCall[] {
   const out: SegmentCall[] = [];
-  for (const [key, { a, m }] of Object.entries(state.cells)) {
-    const cell = params.cells[key];
+  // The accumulated expectation is only meaningful while the fit covers the
+  // current bin; outside that the throughput branch has nothing to test.
+  const binFitted = fittedBin(params, state.observed_at) !== null;
+  for (const [key, cell] of Object.entries(params.cells)) {
     const adj = params.adjacency[key];
-    if (!cell || !adj) continue;
+    if (!adj) continue;
+    const parts = key.split('|');
+    const route = parts[0] ?? '';
+    const frm = parts[2] ?? '';
+    const { a = 0, m = 0, e = 0 } = state.cells[key] ?? {};
     const matched = Math.round(m);
-    if (matched < MIN_EFF_MATCHED) continue;
     const advanced = Math.min(Math.round(a), matched);
-    const call = classifyAdvance(advanced, matched - advanced, cell.p0);
+    let call: SegmentCondition | null = null;
+    let deficit = 0;
+    if (matched >= MIN_EFF_MATCHED) {
+      call = classifyAdvance(advanced, matched - advanced, cell.p0);
+      if (call !== null) deficit = deficitOf(cell.p0, advanced / matched);
+    }
+    if (call === null && binFitted) {
+      call = classifyThroughput(m, e, route in state.vehicles);
+      if (call === 'disrupted') deficit = deficitOf(e, m);
+    }
     if (call === null) continue;
-    const parts = key.split("|");
-    const route = parts[0] ?? "";
-    const frm = parts[2] ?? "";
-    out.push({
-      key,
-      call,
-      route,
-      seg: [frm, adj.to],
-      deficit: deficitOf(cell.p0, advanced / matched),
-    });
+    out.push({ key, call, route, seg: [frm, adj.to], deficit });
   }
   return out;
 }
 
 /** Classify each smoothed segment and roll incident segments up to per-station
- * service flow: a station is degraded when any segment touching it reads disrupted. */
+ * service flow: a station is degraded when any segment touching it reads
+ * disrupted, flowing when any reads normal, and quiet when every one of them is
+ * quiet — nothing scheduled here right now is neither of the other two. */
 export function deriveStationFlow(
   state: SegmentFlowDoc,
   params: SegmentParamsDoc,
 ): StationFlowDoc {
   interface Incident {
     deficit: number;
-    disrupted: boolean;
+    call: SegmentCondition;
     route: string;
     seg: [string, string];
   }
@@ -235,7 +323,7 @@ export function deriveStationFlow(
   for (const c of classifySegments(state, params)) {
     const incident: Incident = {
       deficit: c.deficit,
-      disrupted: c.call === "disrupted",
+      call: c.call,
       route: c.route,
       seg: c.seg,
     };
@@ -246,14 +334,18 @@ export function deriveStationFlow(
     }
   }
 
-  const stations: StationFlowDoc["stations"] = {};
+  const stations: StationFlowDoc['stations'] = {};
   for (const [sid, incs] of byStation) {
     const worst = incs.reduce((w, c) => (c.deficit > w.deficit ? c : w));
     // Status follows the shared classifier only, so the station surface never
-    // contradicts the segment call; worst_deficit rides along as magnitude.
-    const degraded = incs.some((c) => c.disrupted);
+    // contradicts the segment calls; worst_deficit rides along as magnitude.
+    const status = incs.some((c) => c.call === 'disrupted')
+      ? 'degraded'
+      : incs.some((c) => c.call === 'normal')
+        ? 'flowing'
+        : 'quiet';
     stations[sid] = {
-      status: degraded ? "degraded" : "flowing",
+      status,
       worst_deficit: worst.deficit,
       worst_segment: worst.seg,
       routes: [...new Set(incs.map((c) => c.route))].sort(),
@@ -264,33 +356,33 @@ export function deriveStationFlow(
 }
 
 /** Per-tick classification call for every judged segment cell, keyed the
- * same way as SegmentFlowDoc.cells (`route|direction|from_stop`). A cell
- * classifyAdvance abstains on is absent from the map — same contract as
+ * same way as segment_params.json's cells (`route|direction|from_stop`). A cell
+ * both branches abstain on is absent from the map — same contract as
  * movement_state.deriveMovementStates — so advanceRegimes treats "can't
  * judge this tick" as an abstention that holds the open regime, not a
  * reading of change. */
 export function deriveSegmentStates(
   state: SegmentFlowDoc,
   params: SegmentParamsDoc,
-): Record<string, "normal" | "disrupted"> {
-  const out: Record<string, "normal" | "disrupted"> = {};
+): Record<string, SegmentCondition> {
+  const out: Record<string, SegmentCondition> = {};
   for (const c of classifySegments(state, params)) out[c.key] = c.call;
   return out;
 }
 
-/** Keep only regime entries for cells updateSegmentFlow still tracks this
- * tick. A cell's decayed matched count falling below PRUNE_MATCHED drops it
- * from `cells` outright (gone quiet); without this, advanceRegimes would
- * hold its regime open through the idle-abstention grace (up to
- * MAX_IDLE_SEC) as if it were merely unheard from this tick, when pruning
- * already means gone. Call against the SAME tick's updated cell set, every
- * tick. */
+/** Keep only regime entries for cells the trainer still baselines. A retrained
+ * segment_params.json that drops a cell (its from_stop left the timetable's
+ * through-stop set) must not leave that cell's regime alive in the carried doc,
+ * where nothing will ever judge or expire it again. Cells that merely abstain
+ * this tick are NOT pruned here — advanceRegimes' idle grace (up to
+ * MAX_IDLE_SEC) is the right expiry for those. Call against the same params
+ * doc classifySegments read, every tick. */
 export function pruneSegmentRegimes<C extends string>(
   entries: Record<string, RegimeEntry<C>>,
-  liveCells: SegmentFlowDoc["cells"],
+  baselined: SegmentParamsDoc['cells'],
 ): Record<string, RegimeEntry<C>> {
   const out: Record<string, RegimeEntry<C>> = {};
-  for (const key of Object.keys(liveCells)) {
+  for (const key of Object.keys(baselined)) {
     const entry = entries[key];
     if (entry) out[key] = entry;
   }

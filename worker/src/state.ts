@@ -359,6 +359,13 @@ const SegmentParamsSchema = z.object({
     z.object({
       p0: z.number().min(0).max(1),
       n: z.number().int().nonnegative(),
+      // Expected matched traversals per tick at each `throughput.ticks` bin —
+      // the denominator that turns an empty window into evidence instead of an
+      // abstention (training/load_r2.py build_segment_throughput). A bin
+      // present in `throughput.ticks` but absent here was fitted at zero:
+      // nothing runs then, so silence is normal. Absent entirely on docs
+      // written before the fit existed.
+      lam: z.record(z.string(), z.number().nonnegative()).optional(),
     }),
   ),
   adjacency: z.record(
@@ -382,6 +389,18 @@ const SegmentParamsSchema = z.object({
         .optional(),
     }),
   ),
+  // How `cells[].lam` was fitted. `ticks` is the observed-tick exposure per
+  // published bin, and its key set IS the published bin set: a bin missing
+  // here was never fitted and the throughput branch abstains for that tick.
+  // Absent on docs written before the fit existed, which is exactly the
+  // condition under which the Worker falls back to advance-rate-only judging.
+  throughput: z
+    .object({
+      bin: z.literal('schedule_bin'),
+      min_ticks: z.number().int().nonnegative(),
+      ticks: z.record(z.string(), z.number().int().nonnegative()),
+    })
+    .optional(),
   // Canonical per-(route, direction) stop order: the scheduled trip patterns,
   // most-run first, keyed 'route|direction'. Written by the trainer from static
   // GTFS (training/gtfs_static.route_patterns) for off-Worker consumers (the
@@ -484,10 +503,13 @@ export async function readServiceBaseline(
 export const SEGMENT_FLOW_KEY = "state/segment_flow.json";
 
 // Segment cell's debounced regime and its clock — same shape as
-// MovementRegimeSchema (mirrors RegimeEntry in regime.ts), scoped to the two
-// calls classifyAdvance can make for a segment cell. No suspended/
-// not_scheduled: those come from the route's own schedule, not a segment.
-const SegmentConditionSchema = z.enum(["normal", "disrupted"]);
+// MovementRegimeSchema (mirrors RegimeEntry in regime.ts), scoped to the calls
+// a segment cell can draw. No suspended/not_scheduled: those come from the
+// route's own schedule, not a segment. 'quiet' is the quiet-normal state — the
+// timetable runs too little here for an empty window to mean anything, so the
+// cell is normal FOR NOW rather than unjudged.
+const SegmentConditionSchema = z.enum(['normal', 'quiet', 'disrupted']);
+export type SegmentCondition = z.infer<typeof SegmentConditionSchema>;
 
 const SegmentRegimeSchema = z.object({
   state: SegmentConditionSchema,
@@ -501,7 +523,26 @@ export type SegmentRegime = z.infer<typeof SegmentRegimeSchema>;
 
 const SegmentFlowSchema = z.object({
   observed_at: z.number(),
-  cells: z.record(z.string(), z.object({ a: z.number(), m: z.number() })),
+  cells: z.record(
+    z.string(),
+    z.object({
+      a: z.number(),
+      m: z.number(),
+      // Decayed expected traversals over the same window as `m`, summed from
+      // segment_params.json's per-bin `lam` at each tick's own bin so a bin edge
+      // inside the window is accounted for. 0 on a doc written before the
+      // throughput branch landed, which reads as "expects nothing" and warms up
+      // over the next window.
+      e: z.number().default(0),
+    }),
+  ),
+  // This tick's tracked vehicles per route, omitting routes the vehicle feed
+  // said nothing about. Only the throughput branch reads it, and only for
+  // presence: a route the feed skipped has no transitions for any of its cells,
+  // so judging their silence would blame the railway for a decode failure.
+  // Absent on a doc written before the branch landed; {} then reads as "no route
+  // was reported", which abstains — the pre-branch behaviour.
+  vehicles: z.record(z.string(), z.number()).default({}),
   // Absent on a live doc written before the regime clock landed; defaults to
   // {} so it still parses instead of resetting the decayed cell state too.
   regimes: z.record(z.string(), SegmentRegimeSchema).default({}),
@@ -593,7 +634,10 @@ const StationFlowSchema = z.object({
   stations: z.record(
     z.string(),
     z.object({
-      status: z.enum(["flowing", "degraded"]),
+      // 'quiet' when every segment touching the station is quiet-normal:
+      // nothing scheduled here right now, which is neither flowing nor
+      // degraded. See segment_flow.ts deriveStationFlow.
+      status: z.enum(['flowing', 'quiet', 'degraded']),
       worst_deficit: z.number(),
       worst_segment: z.tuple([z.string(), z.string()]).nullable(),
       routes: z.array(z.string()),

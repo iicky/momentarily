@@ -222,6 +222,14 @@ a:hover {
   color: var(--normal);
   background: color-mix(in srgb, var(--normal) 14%, transparent);
 }
+/* Quiet-normal: a judged cell whose timetable runs too little right now for
+   silence to mean anything. Muted, deliberately not the .normal green — a page
+   full of these overnight must not read as an all-clear. Distinct from
+   .unknown, which is the absence of any judgment at all. */
+.cond.quiet {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+}
 .cond.disrupted {
   color: var(--disrupted);
   background: color-mix(in srgb, var(--disrupted) 16%, transparent);
@@ -1109,6 +1117,9 @@ code {
 .stop-node.normal {
   background: var(--normal);
 }
+.stop-node.quiet {
+  background: var(--muted);
+}
 .stop-node.disrupted {
   background: var(--disrupted);
 }
@@ -1122,6 +1133,9 @@ code {
 }
 .stop-conn.normal {
   background: var(--normal);
+}
+.stop-conn.quiet {
+  background: var(--muted);
 }
 .stop-conn.disrupted {
   background: var(--disrupted);
@@ -1297,6 +1311,9 @@ code {
 }
 .map-node.degraded {
   fill: var(--disrupted);
+}
+.map-node.quiet {
+  fill: var(--muted);
 }
 .map-label {
   fill: var(--text);

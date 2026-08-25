@@ -217,6 +217,7 @@ export interface Overlay {
 const STROKE: Record<SegmentState, { width: number; opacity: number }> = {
   unscheduled: { width: 0, opacity: 0 },
   unmeasured: { width: 1.7, opacity: 0.45 },
+  quiet: { width: 2.0, opacity: 0.8 },
   normal: { width: 2.4, opacity: 0.95 },
   disrupted: { width: 3.6, opacity: 1 },
 };
@@ -225,6 +226,7 @@ const STROKE: Record<SegmentState, { width: number; opacity: number }> = {
 export const STATE_VAR: Record<SegmentState, string | null> = {
   unscheduled: null,
   unmeasured: null,
+  quiet: "var(--muted)",
   normal: "var(--normal)",
   disrupted: "var(--disrupted)",
 };
@@ -232,6 +234,7 @@ export const STATE_VAR: Record<SegmentState, string | null> = {
 const STATE_LABEL: Record<SegmentState, string> = {
   unscheduled: "not scheduled here",
   unmeasured: "no reading",
+  quiet: "little service",
   normal: "advancing",
   disrupted: "not advancing",
 };
@@ -302,6 +305,7 @@ const MOVEMENT: Overlay = {
   legend: () => [
     { label: "not advancing", color: "var(--disrupted)", shape: "line" },
     { label: "advancing", color: "var(--normal)", shape: "line" },
+    { label: "little service", color: "var(--muted)", shape: "line" },
     { label: "no reading — route colour, dimmed", color: null, shape: "line" },
   ],
   stamp(ctx) {

@@ -1,0 +1,689 @@
+{
+  "tick_seconds": 300,
+  "params": {
+    "schema_version": "1",
+    "trained_at": 1787145300,
+    "min_share": 0.5,
+    "topology_source": "gtfs_static",
+    "cells": {
+      "F|south|A09S": {
+        "p0": 0.9,
+        "n": 4000,
+        "lam": {
+          "wd09": 2.0,
+          "wd10": 2.0
+        }
+      },
+      "F|south|A10S": {
+        "p0": 0.9,
+        "n": 900,
+        "lam": {
+          "wd09": 1.9
+        }
+      },
+      "F|south|A11S": {
+        "p0": 0.05,
+        "n": 40
+      },
+      "F|south|Z99S": {
+        "p0": 0.9,
+        "n": 100,
+        "lam": {
+          "wd09": 2.0,
+          "wd10": 2.0
+        }
+      }
+    },
+    "adjacency": {
+      "F|south|A09S": {
+        "to": "A10S",
+        "source": "gtfs_static"
+      },
+      "F|south|A10S": {
+        "to": "A11S",
+        "source": "gtfs_static"
+      },
+      "F|south|A11S": {
+        "to": "A12S",
+        "source": "gtfs_static"
+      }
+    },
+    "throughput": {
+      "bin": "schedule_bin",
+      "min_ticks": 20,
+      "ticks": {
+        "wd09": 600,
+        "wd10": 600
+      }
+    }
+  },
+  "steps": [
+    {
+      "observed_at": 1787145300,
+      "counts": {
+        "F|south|A09S": [
+          2,
+          2
+        ],
+        "F|south|A10S": [
+          2,
+          2
+        ]
+      },
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 2.0,
+          "m": 2.0,
+          "e": 2.0
+        },
+        "F|south|A10S": {
+          "a": 2.0,
+          "m": 2.0,
+          "e": 1.9
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 2.0
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "normal",
+        "F|south|A10S": "normal",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787145600,
+      "counts": {
+        "F|south|A09S": [
+          2,
+          2
+        ],
+        "F|south|A10S": [
+          2,
+          2
+        ]
+      },
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 3.6,
+          "m": 3.6,
+          "e": 3.6
+        },
+        "F|south|A10S": {
+          "a": 3.6,
+          "m": 3.6,
+          "e": 3.42
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 3.6
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "normal",
+        "F|south|A10S": "normal",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787145900,
+      "counts": {
+        "F|south|A09S": [
+          2,
+          2
+        ],
+        "F|south|A10S": [
+          2,
+          2
+        ]
+      },
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 4.880000000000001,
+          "m": 4.880000000000001,
+          "e": 4.880000000000001
+        },
+        "F|south|A10S": {
+          "a": 4.880000000000001,
+          "m": 4.880000000000001,
+          "e": 4.636
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 4.880000000000001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "normal",
+        "F|south|A10S": "normal",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787146200,
+      "counts": {
+        "F|south|A09S": [
+          0,
+          4
+        ]
+      },
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 3.904000000000001,
+          "m": 7.904000000000001,
+          "e": 5.904000000000001
+        },
+        "F|south|A10S": {
+          "a": 3.904000000000001,
+          "m": 3.904000000000001,
+          "e": 5.6088000000000005
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 5.904000000000001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "normal",
+        "F|south|A10S": "normal",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787146500,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 3.1232000000000006,
+          "m": 6.323200000000001,
+          "e": 6.723200000000001
+        },
+        "F|south|A10S": {
+          "a": 3.1232000000000006,
+          "m": 3.1232000000000006,
+          "e": 6.387040000000001
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 6.723200000000001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "normal",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787146800,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 2.498560000000001,
+          "m": 5.058560000000001,
+          "e": 7.378560000000001
+        },
+        "F|south|A10S": {
+          "a": 2.498560000000001,
+          "m": 2.498560000000001,
+          "e": 7.009632000000002
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 7.378560000000001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "normal",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787147100,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 1.9988480000000006,
+          "m": 4.046848000000001,
+          "e": 7.902848000000001
+        },
+        "F|south|A10S": {
+          "a": 1.9988480000000006,
+          "m": 1.9988480000000006,
+          "e": 7.507705600000001
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 7.902848000000001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787147400,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 1.5990784000000007,
+          "m": 3.2374784000000005,
+          "e": 8.322278400000002
+        },
+        "F|south|A10S": {
+          "a": 1.5990784000000007,
+          "m": 1.5990784000000007,
+          "e": 7.906164480000001
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 8.322278400000002
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787147700,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 1.2792627200000006,
+          "m": 2.5899827200000005,
+          "e": 8.657822720000002
+        },
+        "F|south|A10S": {
+          "a": 1.2792627200000006,
+          "m": 1.2792627200000006,
+          "e": 8.224931584000002
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 8.657822720000002
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787148000,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 1.0234101760000005,
+          "m": 2.0719861760000007,
+          "e": 8.926258176000001
+        },
+        "F|south|A10S": {
+          "a": 1.0234101760000005,
+          "m": 1.0234101760000005,
+          "e": 6.579945267200002
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 8.926258176000001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787148300,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.8187281408000004,
+          "m": 1.6575889408000006,
+          "e": 9.141006540800001
+        },
+        "F|south|A10S": {
+          "a": 0.8187281408000004,
+          "m": 0.8187281408000004,
+          "e": 5.263956213760002
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.141006540800001
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787148600,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.6549825126400004,
+          "m": 1.3260711526400006,
+          "e": 9.312805232640002
+        },
+        "F|south|A10S": {
+          "a": 0.6549825126400004,
+          "m": 0.6549825126400004,
+          "e": 4.211164971008002
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.312805232640002
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787148900,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.5239860101120003,
+          "m": 1.0608569221120006,
+          "e": 9.450244186112002
+        },
+        "F|south|A10S": {
+          "a": 0.5239860101120003,
+          "m": 0.5239860101120003,
+          "e": 3.368931976806402
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.450244186112002
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787149200,
+      "counts": {},
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.41918880808960024,
+          "m": 0.8486855376896005,
+          "e": 9.560195348889602
+        },
+        "F|south|A10S": {
+          "a": 0.41918880808960024,
+          "m": 0.41918880808960024,
+          "e": 2.6951455814451215
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.560195348889602
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "disrupted",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787149500,
+      "counts": {},
+      "vehicles": {},
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.33535104647168024,
+          "m": 0.6789484301516805,
+          "e": 9.648156279111681
+        },
+        "F|south|A10S": {
+          "a": 0.33535104647168024,
+          "m": 0.33535104647168024,
+          "e": 2.156116465156097
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.648156279111681
+        }
+      },
+      "state_vehicles": {},
+      "calls": {
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787149800,
+      "counts": {},
+      "vehicles": {},
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.2682808371773442,
+          "m": 0.5431587441213445,
+          "e": 9.718525023289345
+        },
+        "F|south|A10S": {
+          "a": 0.2682808371773442,
+          "m": 0.2682808371773442,
+          "e": 1.7248931721248777
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.718525023289345
+        }
+      },
+      "state_vehicles": {},
+      "calls": {
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787150100,
+      "counts": {},
+      "vehicles": {},
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.21462466974187536,
+          "m": 0.4345269952970756,
+          "e": 9.774820018631477
+        },
+        "F|south|A10S": {
+          "a": 0.21462466974187536,
+          "m": 0.21462466974187536,
+          "e": 1.3799145376999022
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.774820018631477
+        }
+      },
+      "state_vehicles": {},
+      "calls": {
+        "F|south|A10S": "quiet",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787150400,
+      "counts": {},
+      "vehicles": {},
+      "cells": {
+        "F|south|A09S": {
+          "a": 0.17169973579350029,
+          "m": 0.34762159623766054,
+          "e": 9.81985601490518
+        },
+        "F|south|A10S": {
+          "a": 0.17169973579350029,
+          "m": 0.17169973579350029,
+          "e": 1.1039316301599218
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.81985601490518
+        }
+      },
+      "state_vehicles": {},
+      "calls": {
+        "F|south|A10S": "quiet",
+        "F|south|A11S": "quiet"
+      }
+    },
+    {
+      "observed_at": 1787150700,
+      "counts": {
+        "F|south|A09S": [
+          3,
+          3
+        ],
+        "F|south|A10S": [
+          3,
+          3
+        ]
+      },
+      "vehicles": {
+        "F": 20
+      },
+      "cells": {
+        "F|south|A09S": {
+          "a": 3.1373597886348,
+          "m": 3.2780972769901284,
+          "e": 9.855884811924145
+        },
+        "F|south|A10S": {
+          "a": 3.1373597886348,
+          "m": 3.1373597886348,
+          "e": 0.8831453041279375
+        },
+        "F|south|Z99S": {
+          "a": 0.0,
+          "m": 0.0,
+          "e": 9.855884811924145
+        }
+      },
+      "state_vehicles": {
+        "F": 20
+      },
+      "calls": {
+        "F|south|A09S": "disrupted",
+        "F|south|A10S": "quiet",
+        "F|south|A11S": "quiet"
+      }
+    }
+  ]
+}

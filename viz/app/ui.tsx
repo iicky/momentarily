@@ -2,7 +2,17 @@
 
 import Link from "next/link";
 import Nav from "./Nav";
-import type { Snapshot } from "@/lib/types";
+import type { Snapshot, StationServiceFlow } from "@/lib/types";
+
+// Station-flow status -> the CSS state class its badge and stop node share.
+// 'flowing' reuses the .normal palette; 'quiet' gets its own muted one, so a
+// page full of stations with nothing scheduled doesn't read as a green
+// all-clear. Shared so the line page and the station page can't drift.
+export const FLOW_CLASS: Record<StationServiceFlow["status"], string> = {
+  flowing: "normal",
+  quiet: "quiet",
+  degraded: "disrupted",
+};
 
 /** Shared topbar for the non-Status pages: wordmark home link + nav + subtitle. */
 export function PageHeader({ subtitle }: { subtitle?: React.ReactNode }) {

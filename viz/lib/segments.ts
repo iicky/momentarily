@@ -39,7 +39,7 @@ import type { SegmentFlow, SegmentStatus } from "./types";
 
 export const DIRECTIONS: readonly Direction[] = ["north", "south"];
 
-export type SegmentState = "disrupted" | "normal" | "unmeasured" | "unscheduled";
+export type SegmentState = "disrupted" | "normal" | "quiet" | "unmeasured" | "unscheduled";
 
 /** A directional stop id collapsed to its parent station: `A24S` -> `A24`.
  * Mirrors worker/src/segment_flow.ts stationId and training/diagram.py
@@ -53,9 +53,16 @@ export function stationOf(stop: string): string {
 // Worst-first, and `unmeasured` outranks `normal` deliberately: when one
 // direction of a pair has a good reading and the other has none, the pair as a
 // whole has not been shown to be healthy, so the combined view says so.
+//
+// `quiet` is a definite verdict — "the timetable runs too little here right now
+// for silence to mean anything, normal for now" — so it outranks `normal`: a
+// pair with any quiet direction must not read as a clean advancing all-clear.
+// It ranks below `unmeasured`, since no verdict at all is the more conservative
+// read than a benign one.
 const STATE_RANK: Record<SegmentState, number> = {
-  disrupted: 3,
-  unmeasured: 2,
+  disrupted: 4,
+  unmeasured: 3,
+  quiet: 2,
   normal: 1,
   unscheduled: 0,
 };
@@ -192,6 +199,7 @@ export function coverage(diagram: Diagram, flow: SegmentFlow | null): Coverage {
 export const PAINT_ORDER: Record<SegmentState, number> = {
   unscheduled: 0,
   unmeasured: 1,
-  normal: 2,
-  disrupted: 3,
+  quiet: 2,
+  normal: 3,
+  disrupted: 4,
 };

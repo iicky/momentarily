@@ -42,6 +42,7 @@ import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
 import type {
+  SegmentCondition,
   SegmentDwellDoc,
   SegmentFlowDoc,
   SegmentParamsDoc,
@@ -257,7 +258,9 @@ interface SegmentStatusOut {
   direction: string;
   from_stop: string;
   to: string | null;
-  status: "normal" | "disrupted";
+  // 'quiet' is the quiet-normal call: the timetable runs too little here right
+  // now for an empty window to mean anything (segment_flow.ts classifyThroughput).
+  status: SegmentCondition;
   entered_at: number;
   recovery: SegmentRecovery | null;
 }
@@ -290,7 +293,9 @@ interface SegmentFlowOut {
 // StationFlowDoc's per-station entry, additively carrying the expected
 // recovery of its already-selected worst_segment.
 interface StationServiceFlowOut {
-  status: "flowing" | "degraded";
+  // 'quiet' when every segment touching the station is quiet — nothing
+  // scheduled here right now, which is neither flowing nor degraded.
+  status: StationFlowDoc['stations'][string]['status'];
   worst_deficit: number;
   worst_segment: [string, string] | null;
   routes: string[];

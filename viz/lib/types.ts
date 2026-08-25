@@ -155,7 +155,9 @@ export interface SegmentStatus {
   // only its from_stop, so at a branch or express split several drawn edges
   // claim it, and `to` is what says which hop the reading is actually about.
   to: string | null;
-  status: "normal" | "disrupted";
+  // "quiet" is the quiet-normal call: too little scheduled through this cell
+  // right now for an empty window to be evidence of anything.
+  status: "normal" | "quiet" | "disrupted";
   entered_at: number;
   // Null on a NORMAL cell -- a healthy segment has nothing to forecast, so
   // this is never fabricated for one. Populated on a DISRUPTED cell only
@@ -184,7 +186,9 @@ export interface SegmentFlow {
 }
 
 export interface StationServiceFlow {
-  status: "flowing" | "degraded";
+  // "quiet" when every segment touching the station is quiet-normal — nothing
+  // much scheduled here right now, so neither flowing nor degraded.
+  status: "flowing" | "quiet" | "degraded";
   worst_deficit: number;
   worst_segment: [string, string] | null;
   routes: string[];

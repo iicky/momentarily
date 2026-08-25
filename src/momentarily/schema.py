@@ -457,7 +457,10 @@ class StationServiceFlow(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    status: Literal["flowing", "degraded"]
+    # "quiet" when every segment touching the station is quiet-normal: the
+    # timetable runs too little here right now for silence to mean anything, so
+    # the station is neither provably flowing nor degraded.
+    status: Literal["flowing", "quiet", "degraded"]
     # Worst incident segment's live advance shortfall vs its normal (0=normal,
     # 1=frozen), from the decay-smoothed movement signal.
     worst_deficit: float
@@ -484,7 +487,9 @@ class SegmentStatus(BaseModel):
     # Successor stop from segment_params.json's adjacency, or null when the
     # topology doc is unavailable.
     to: str | None = None
-    status: Literal["normal", "disrupted"]
+    # "quiet" is the quiet-normal call: too little scheduled through this cell
+    # right now for an empty window to be evidence of anything.
+    status: Literal["normal", "quiet", "disrupted"]
     # When this regime began (the segment clock the recovery is conditioned
     # on). 0 before the clock has ever started.
     entered_at: int

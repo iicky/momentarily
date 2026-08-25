@@ -24,6 +24,7 @@ from training.load_r2 import (
     build_movement_series,
     build_movement_series_by_direction,
     build_segment_series,
+    build_segment_throughput,
     build_tick_observations,
     classify_direction,
     compute_advance_baseline,
@@ -35,6 +36,8 @@ from training.load_r2 import (
     presence_mask_from_predictions,
     service_baseline_to_json,
     service_quantiles_to_json,
+    throughput_exposure,
+    throughput_to_json,
 )
 
 
@@ -797,3 +800,94 @@ def test_binom_lower_tail_monotonic_nondecreasing_in_k():
     n, p = 20, 0.3
     tails = [_binom_lower_tail(k, n, p) for k in range(n + 1)]
     assert all(b >= a for a, b in pairwise(tails))
+
+
+# --- Expected throughput per segment cell (build_segment_throughput) ---
+#
+# T0 is a Tuesday 17:15 ET, so every tick within an hour of it lands in
+# schedule_bin 'wd17'. min_ticks is passed explicitly rather than relying on
+# MIN_THROUGHPUT_TICKS, so these stay readable at three-tick scale.
+
+
+def _throughput_body(
+    tick: int,
+    route: str,
+    *,
+    south: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    return {
+        "observed_at": tick,
+        "rows": {route: {"by_direction": {"south": {"transitions": south or {}}}}},
+    }
+
+
+def test_throughput_exposure_counts_each_snapped_tick_once():
+    bodies = [
+        _throughput_body(T0 + 7, "A", south={"A09S>A10S": 1}),
+        _throughput_body(T0 + 100, "A", south={"A09S>A10S": 1}),  # same tick
+        _throughput_body(T0 + TICK, "A", south={"A09S>A10S": 1}),
+    ]
+    assert throughput_exposure(bodies) == {"wd17": 2}
+
+
+def test_throughput_exposure_skips_feed_outage_ticks():
+    """A body with no rows is a blind tick. Counting it in the denominator would
+    drag every cell's rate toward zero exactly where the archive saw nothing."""
+    bodies: list[dict[str, Any]] = [
+        _throughput_body(T0, "A", south={"A09S>A10S": 1}),
+        {"observed_at": T0 + TICK, "rows": {}},
+        {"observed_at": T0 + 2 * TICK},  # no rows key at all
+    ]
+    assert throughput_exposure(bodies) == {"wd17": 1}
+
+
+def test_throughput_divides_matched_by_ticks_observed_not_ticks_seen():
+    """The denominator is the archive's exposure, not the cell's own appearances:
+    a cell missing from a tick's transitions saw no train, which is the signal."""
+    bodies = [
+        _throughput_body(T0, "A", south={"A09S>A10S": 3, "A09S>A09S": 1}),
+        _throughput_body(T0 + TICK, "A", south={"A09S>A10S": 4}),
+        _throughput_body(T0 + 2 * TICK, "A", south={"B01S>B02S": 2}),  # A09S silent
+    ]
+    rates, exposure = build_segment_throughput(bodies, min_ticks=3)
+    assert exposure == {"wd17": 3}
+    # 8 matched transitions (advances AND stalls) over 3 observed ticks.
+    assert rates[("A", "south", "A09S")] == {"wd17": 8 / 3}
+    assert rates[("A", "south", "B01S")] == {"wd17": 2 / 3}
+
+
+def test_throughput_omits_bins_under_the_exposure_floor():
+    """Under the floor the Worker gets no rate and keeps abstaining, rather than
+    judging silence against a handful of ticks."""
+    bodies = [
+        _throughput_body(T0 + i * TICK, "A", south={"A09S>A10S": 1}) for i in range(2)
+    ]
+    rates, exposure = build_segment_throughput(bodies, min_ticks=3)
+    assert exposure == {}
+    assert rates == {}
+
+
+def test_throughput_honours_the_through_stop_filter():
+    bodies = [
+        _throughput_body(T0 + i * TICK, "A", south={"A09S>A10S": 2, "A99S>B01S": 2})
+        for i in range(3)
+    ]
+    rates, _ = build_segment_throughput(
+        bodies, counts_from_stop=lambda _r, _d, frm: frm == "A09S", min_ticks=3
+    )
+    assert set(rates) == {("A", "south", "A09S")}
+
+
+def test_throughput_to_json_drops_zero_bins_and_keys_like_the_worker():
+    """Zero bins are read back off the doc's own exposure map, so dropping them
+    is lossless — and it takes a fitted-everywhere 48-bin table down to the bins
+    where trains actually run."""
+    doc = throughput_to_json(
+        {("A", "south", "A09S"): {"wd17": 2.0, "wd03": 0.0, "wd18": 0.5}}
+    )
+    assert doc == {"A|south|A09S": {"wd17": 2.0, "wd18": 0.5}}
+
+
+def test_throughput_rounds_to_four_places():
+    doc = throughput_to_json({("A", "south", "A09S"): {"wd17": 1 / 3}})
+    assert doc == {"A|south|A09S": {"wd17": 0.3333}}

@@ -55,6 +55,9 @@ All fetched from the MTA developer gateway (`api-endpoint.mta.info`):
 | Elevator/escalator (upcoming) | `…/nyct%2Fnyct_ene_upcoming.json` | hourly |
 | Elevator/escalator (registry) | `…/nyct%2Fnyct_ene_equipments.json` | hourly |
 | MTA Subway Stations | NYS Open Data `39hk-dx4f` | daily |
+| MTA Subway Hourly Ridership | NYS Open Data `5wq4-mkjj` | weekly |
+
+The ridership feed is entry-side only — it has no `exits` column — and is reduced offline (`training/ridership.py`) to a per-station-complex entry-rate baseline behind the live platform-crowding estimate; it publishes with roughly a 10-day lag, so the ingest resolves its own trailing window against the feed's own latest available hour rather than against today.
 
 The published v1 snapshot is JSON-derived. The protobuf GTFS-RT feeds (trip updates and vehicle positions) are decoded too, but only for offline HMM validation — each tick archives a per-route service metric (assigned trips) and a movement metric (where trains are, advancing vs stalled across ticks), held out as independent truth for recovery and current-state classification. They do not feed the public snapshot.
 

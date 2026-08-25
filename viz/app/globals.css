@@ -1104,6 +1104,9 @@ code {
   }
   .station-cols {
     grid-template-columns: 1fr;
+  }
+}
+
 /* --- Segment map --- */
 
 .controls button.active {

@@ -206,6 +206,9 @@ function diagramOf(edges: DiagramEdge[]): Diagram {
     stations: {},
     edges,
     insets: [],
+    topology_source: "gtfs_static",
+    adjacency: [],
+    route_stops: {},
   };
 }
 

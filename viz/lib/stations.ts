@@ -2,12 +2,17 @@
 // and Map surfaces. Client- and server-safe (no node builtins here).
 //
 // Two data sources feed these:
-//   - /api/stations  → coordinates + labels from NYS Open Data 39hk-dx4f.
-//   - /api/topology  → segment adjacency from state/segment_params.json (R2),
-//     the static-GTFS successor graph the segment movement model is built on.
+//   - /api/stations   → coordinates + labels from NYS Open Data 39hk-dx4f.
+//   - diagram.json    → segment adjacency + scheduled stopping patterns, the
+//     static-GTFS successor graph the segment movement model is built on —
+//     the same read training/train_em.py publishes to the credentialed
+//     state/segment_params.json, carried on the committed asset instead so
+//     this needs no R2 vault. See viz/lib/diagram.ts.
 // The public snapshot supplies the rest (station metadata, live flow status).
 
 /** Coordinates + static labels for one station, keyed by undirected GTFS id. */
+import type { FeedVersion } from "./diagram";
+
 export interface StationCoord {
   stop_id: string;
   name: string;
@@ -42,17 +47,16 @@ export interface RoutePattern {
 /** Patterns keyed by `route|direction`, most-run first. */
 export type RouteStops = Record<string, RoutePattern[]>;
 
-export interface Provenance {
-  code_sha: string;
-  dirty: boolean | null;
-  producer: string;
-}
-
+/** Segment topology + canonical stop order, read off the committed diagram
+ * asset (see useTopology in app/useData.ts). Always populated — no
+ * "not configured" state, unlike the credentialed R2 surfaces (Models). */
 export interface Topology {
-  configured: boolean;
-  trained_at?: number;
   topology_source?: string;
-  provenance?: Provenance;
+  // Which static feed this topology was built from. This is the whole of its
+  // provenance and deliberately so: it is read off a committed asset, where a
+  // code sha would describe the working tree of whoever last regenerated it
+  // rather than anything a reader can act on.
+  feed_version?: FeedVersion;
   edges: AdjEdge[];
   routeStops: RouteStops;
 }

@@ -517,6 +517,66 @@ def test_the_asset_is_stable_across_builds_of_the_same_feed() -> None:
     assert to_json(build(_feed())) == to_json(build(_feed()))
 
 
+def test_adjacency_carries_the_full_static_successor_graph_ranked() -> None:
+    """adjacency is gtfs_static.successors() reshaped to the array AdjEdge
+    shape the viz consumes directly: `to` is the top-ranked (most-run,
+    smaller-stop-id-tiebreak) successor, `successors` the full ranked list —
+    the same rule gtfs_static.dominant_successor uses, not a second one."""
+    payload = to_json(build(_feed()))
+    by_key = {a["key"]: a for a in payload["adjacency"]}
+    assert set(by_key) == {
+        "1|north|100N",
+        "1|north|101N",
+        "1|north|102N",
+        "1|south|101S",
+        "1|south|102S",
+        "2|north|100N",
+        "2|north|101N",
+        "2|south|101S",
+        "2|south|103S",
+    }
+    # 100N->101N is run by t1, t1b, t1c, t1sat: four trips, one successor.
+    assert by_key["1|north|100N"] == {
+        "key": "1|north|100N",
+        "route": "1",
+        "direction": "north",
+        "from": "100N",
+        "to": "101N",
+        "successors": [{"to": "101N", "n_trips": 4}],
+    }
+
+
+def test_route_stops_carries_scheduled_patterns_most_run_first() -> None:
+    """route_stops is gtfs_static.route_patterns() (the same read
+    train_em.write_segment_params publishes as segment_params.json's own
+    route_stops), keyed 'route|direction', most-run pattern first."""
+    payload = to_json(build(_feed()))
+    assert set(payload["route_stops"]) == {"1|north", "1|south", "2|north", "2|south"}
+    one_north = payload["route_stops"]["1|north"]
+    # t1b, t1c and t1sat run the short 100N->101N pattern; only t1 runs the
+    # longer one through 102N — the short pattern is most-run and sorts first.
+    assert one_north[0] == {"stops": ["100N", "101N"], "n_trips": 3}
+    assert {"stops": ["100N", "101N", "102N"], "n_trips": 1} in one_north
+    assert {"stops": ["102N", "103N"], "n_trips": 1} in one_north
+    assert payload["route_stops"]["2|south"] == [
+        {"stops": ["103S", "101S", "100S"], "n_trips": 1}
+    ]
+
+
+def test_the_asset_carries_no_code_provenance() -> None:
+    """The feed version is the whole provenance of a COMMITTED asset, and the
+    absence of a code_provenance() block is deliberate, not an oversight: a
+    code sha here would describe the working tree of whoever last ran the
+    generator and be shown to every reader forever, and it would churn the
+    asset on every commit, destroying the property that an empty diff means the
+    timetable didn't move. `state/segment_params.json` carries one because it
+    is published to R2, where nothing else records what produced it."""
+    payload = to_json(build(_feed()))
+    assert payload["topology_source"] == "gtfs_static"
+    assert "provenance" not in payload
+    assert payload["feed_version"]["version"] == "test-feed"
+
+
 def test_route_order_puts_unlisted_routes_last() -> None:
     assert route_sort_key("1") < route_sort_key("A")
     assert route_sort_key("SI") < route_sort_key("ZZ")

@@ -103,13 +103,6 @@ function MapView() {
         </div>
       </div>
 
-      {topo && !topo.configured && (
-        <div className="note muted">
-          No segment topology — the full trip needs the R2 vault (run under <code>murk exec</code>).
-          Showing this line&apos;s stations only.
-        </div>
-      )}
-
       {!snap || !coords ? (
         <div className="sub">loading…</div>
       ) : trip.markers.length === 0 ? (
@@ -121,14 +114,14 @@ function MapView() {
         </div>
       )}
 
-      {topo?.provenance && (
+      {topo?.feed_version && (
         <div className="prov-note">
-          topology · {topo.provenance.producer} @{" "}
-          <code>{topo.provenance.code_sha.slice(0, 7)}</code>
-          {topo.provenance.dirty ? " (dirty)" : ""}
-          {topo.trained_at
-            ? ` · trained ${new Date(topo.trained_at * 1000).toISOString().slice(0, 10)}`
-            : ""}
+          {/* The timetable, not a code sha: this topology is read off a
+              committed asset, so what identifies it is which static feed it was
+              built from. MTA republishes on every service change and names the
+              change in the version string. */}
+          timetable · <code>{topo.feed_version.version}</code>
+          {topo.topology_source ? ` · ${topo.topology_source}` : ""}
         </div>
       )}
     </div>
@@ -157,15 +150,13 @@ function buildTrip(
 ): Trip {
   if (!snap || !coords || !route) return { segs: [], markers: [] };
 
-  const rdEdges = topo?.configured ? edgesFor(topo.edges, route, dir) : [];
-  // Which stations belong to this trip, in order: the trainer's canonical
-  // patterns when the topology names this route+direction, else every station
-  // that serves the line (markers-only fallback, also covering a configured-but-
-  // empty or stale topology response).
+  const rdEdges = topo ? edgesFor(topo.edges, route, dir) : [];
+  // Which stations belong to this trip, in order: the diagram asset's
+  // canonical patterns when the topology names this route+direction, else
+  // every station that serves the line (markers-only fallback, also covering
+  // the moment before the asset has loaded).
   const dirSuffix = dir === "north" ? "N" : "S";
-  const topoStops = topo?.configured
-    ? orderTrip(topo.routeStops, topo.edges, route, dir)
-    : [];
+  const topoStops = topo ? orderTrip(topo.routeStops, topo.edges, route, dir) : [];
   const stopIds = topoStops.length
     ? topoStops
     : Object.values(snap.stations)

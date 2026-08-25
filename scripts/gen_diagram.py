@@ -61,11 +61,15 @@ def main() -> int:
     # change.
     n_cells = sum(len(dirs) for e in edges for dirs in e["seconds"].values())
     n_untimed = sum(1 for e in edges if not e["seconds"])
+    n_stops = sum(len(pats) for pats in payload["route_stops"].values())
     print(
         f"wrote {args.out} — feed {payload['feed_version']['version']}, "
         f"{len(payload['stations'])} stations, {len(edges)} edges, "
         f"{n_cells} (class, direction) cells with a scheduled time, "
-        f"{n_untimed} edges with no timing in any class or direction"
+        f"{n_untimed} edges with no timing in any class or direction, "
+        f"{len(payload['adjacency'])} adjacency keys, "
+        f"{len(payload['route_stops'])} route|direction patterns "
+        f"({n_stops} total, incl. minor variants)"
     )
     return 0
 

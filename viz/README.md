@@ -65,8 +65,8 @@ than by the feed:
 pairwise segments on a geographic projection with the segment list beside it.
 The system map answers "where is the network hurting"; this answers "what does
 my ride look like end to end". Station coordinates come from NYS Open Data
-39hk-dx4f; its segment topology needs the R2 vault and falls back to plotting
-stations only.
+39hk-dx4f; segment topology and canonical stop order come from the committed
+diagram asset (below) — needs no credentials either.
 
 
 **Models** (`/models`) — does the model deserve trust? Reads the prediction and
@@ -120,15 +120,21 @@ npm test     # verifies the calibration math (Node's built-in runner)
 
 ## The diagram asset
 
-`public/diagram.json` is the map's geometry: station positions, one edge per
+`public/diagram.json` is the map's geometry — station positions, one edge per
 (route, station pair), the `segment_flow` key that measures each edge in each
-direction, and that hop's scheduled run time. Timing is split by NYCT service
-class — `seconds: {weekday?, saturday?, sunday?}`, each `{north?, south?}` in
-whole seconds — because the weekend timetable really is a different schedule,
-not noise around the weekday one; a class or direction the static timetable
-never gave a time for is absent from the object, never published as 0. It's
-generated from the static GTFS feed and committed, because the feed is a ~40
-MB download and a full `stop_times` pass — not a page load.
+direction, and that hop's scheduled run time — plus the same static-GTFS
+segment topology the trainer publishes to the credentialed
+`state/segment_params.json`: `adjacency` (ranked successors per
+`route|direction|from_stop`) and `route_stops` (scheduled stopping patterns,
+most-run first). Carrying topology on the committed asset too is what lets
+Lines, Station and the per-line Trip view read it with no R2 vault. Timing is
+split by NYCT service class — `seconds: {weekday?, saturday?, sunday?}`, each
+`{north?, south?}` in whole seconds — because the weekend timetable really is
+a different schedule, not noise around the weekday one; a class or direction
+the static timetable never gave a time for is absent from the object, never
+published as 0. It's generated from the static GTFS feed and committed,
+because the feed is a ~40 MB download and a full `stop_times` pass — not a
+page load.
 
 ```bash
 uv run python -m scripts.gen_diagram          # from the repo root
@@ -136,9 +142,11 @@ uv run python -m scripts.gen_diagram          # from the repo root
 
 Regenerate after an MTA service change (new station, new branch, route
 withdrawn). Output is deterministic for a given feed — no timestamp, sorted
-keys — so an empty diff means the timetable didn't move. The producer is
-`training/diagram.py`; `lib/segments.ts` is the one place that decides what the
-snapshot says about a segment, shared with the station views to come.
+keys, `provenance.code_sha`/`dirty` aside — so an empty diff means the
+timetable didn't move. The producer is `training/diagram.py`; `lib/segments.ts`
+is the one place that decides what the snapshot says about a segment, and
+`lib/stations.ts` the one place that orders a line's stops, shared across the
+Lines, Station and Trip views.
 
 The layout is ours, derived from MTA's published stop coordinates and
 timetable — not traced from MTA's map artwork. Edges run octilinear (the eight

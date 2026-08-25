@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import Nav from "../Nav";
 import { fetchSnapshot, fetchTrains, fmtAgo } from "@/lib/feed";
 import type { TrainsFeed } from "@/lib/feed";
@@ -243,7 +244,8 @@ export default function MapPage() {
                 : `${stamp.label} ${fmtAgo(stamp.at, fetchedAt)}`}{" "}
             · snapshot {fmtAgo(snap.generated_at, fetchedAt)}
           </>
-        )}
+        )}{" "}
+        · <Link href="/map/trip">per-line trip view</Link>
       </div>
 
       {err && <div className="error">Failed to load: {err}</div>}

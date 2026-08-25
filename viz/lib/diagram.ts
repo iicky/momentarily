@@ -2,8 +2,14 @@
 // scripts/gen_diagram.py from the static GTFS feed. Keep these types in
 // lockstep with training/diagram.py:to_json — that function is the producer.
 //
-// The asset is geometry only: no status, no timestamp. It changes when the MTA
-// timetable changes, so it's fetched once per page load and never polled.
+// Geometry (`stations`, `edges`, `insets`) plus the same static-GTFS
+// topology (`adjacency`, `route_stops`) the trainer publishes to the
+// credentialed `state/segment_params.json` — carried here too so the spatial
+// views need no R2 vault. No live status, no generation timestamp: it
+// changes only when the MTA timetable does, so it's fetched once per page
+// load, cached, and never polled.
+
+import type { AdjEdge, RouteStops } from "./stations";
 
 export interface DiagramStation {
   name: string;
@@ -43,13 +49,29 @@ export interface DiagramInset {
   scale: number;
 }
 
+// Which static feed the asset was built from. MTA republishes on every
+// service change and names the change in the version string, so this is what
+// identifies a diagram — see the generator's Diagram docstring for why it is
+// the only provenance a committed asset should carry.
+export interface FeedVersion {
+  version: string;
+  start: string | null;
+  end: string | null;
+}
+
 export interface Diagram {
-  feed_version: { version: string; start: string | null; end: string | null };
+  feed_version: FeedVersion;
   view_box: [number, number, number, number];
   routes: Record<string, DiagramRoute>;
   stations: Record<string, DiagramStation>;
   edges: DiagramEdge[];
   insets: DiagramInset[];
+  topology_source: string;
+  // Every route|direction|from_stop successor cell in the static feed — not
+  // just the ones a drawable edge covers. The AdjEdge shape a page consumes
+  // directly, with no credentialed R2 route in between.
+  adjacency: AdjEdge[];
+  route_stops: RouteStops;
 }
 
 // The two directions a segment cell can be keyed on. The runtime tuple lives
@@ -63,10 +85,55 @@ export type Direction = "north" | "south";
 // no consumer should pretend to know.
 export type ServiceClass = "weekday" | "saturday" | "sunday";
 
-export async function fetchDiagram(): Promise<Diagram> {
-  const res = await fetch("/diagram.json", { cache: "force-cache" });
-  if (!res.ok) throw new Error(`diagram fetch failed: ${res.status}`);
-  return res.json();
+// Module-scoped singleton: the map overview and the per-line topology hook
+// (useTopology) both now read this same ~500KB asset, and it must be fetched
+// and parsed exactly once between them, not once per consumer. Failures are
+// not cached, so a transient error doesn't wedge every consumer for the rest
+// of the session.
+let diagramPromise: Promise<Diagram> | null = null;
+
+// Required top-level keys. Checked at load because a browser holding an older
+// copy of this asset is a real, reachable state: regenerating it after a
+// service change (or after adding a key, as `adjacency`/`route_stops` were)
+// changes its shape, and a stale body would otherwise fail far away from here
+// — as an undefined lookup deep inside the stop-ordering code, with nothing
+// pointing at the asset. Fail loudly, at the source, with the fix in the text.
+const REQUIRED_KEYS = [
+  "view_box",
+  "routes",
+  "stations",
+  "edges",
+  "adjacency",
+  "route_stops",
+] as const;
+
+export function fetchDiagram(): Promise<Diagram> {
+  if (!diagramPromise) {
+    // Deliberately NOT `cache: "force-cache"`. That never revalidates, so an
+    // asset regenerated after a timetable change would never reach a browser
+    // that already holds one. Default semantics let the HTTP layer revalidate;
+    // the module-scoped promise above is what keeps it to one fetch per load.
+    diagramPromise = fetch("/diagram.json")
+      .then((res) => {
+        if (!res.ok) throw new Error(`diagram fetch failed: ${res.status}`);
+        return res.json() as Promise<Diagram>;
+      })
+      .then((doc) => {
+        const missing = REQUIRED_KEYS.filter((k) => doc[k] === undefined);
+        if (missing.length > 0) {
+          throw new Error(
+            `diagram.json is missing ${missing.join(", ")} — the cached copy ` +
+              `predates the current shape. Hard-reload to pick up the new one.`,
+          );
+        }
+        return doc;
+      })
+      .catch((e: unknown) => {
+        diagramPromise = null;
+        throw e;
+      });
+  }
+  return diagramPromise;
 }
 
 // SVG `d` for an edge. A path, not a line, because the geometry contract allows

@@ -50,8 +50,13 @@ from typing import Any
 from training.gtfs_static import (
     FeedVersion,
     HopKey,
+    RoutePattern,
+    SegmentKey,
     base_route,
+    dominant_successor,
     parent_station,
+    patterns_to_json,
+    route_patterns,
     successors,
     timetable,
 )
@@ -244,9 +249,29 @@ class Inset:
 class Diagram:
     """The whole drawable graph plus the timetable it was derived from.
 
-    `feed_version` is the provenance that matters: the static feed is a
-    snapshot republished on every service change, so a diagram missing a branch
-    is answered by which feed built it rather than by re-deriving it.
+    `feed_version` is the provenance, and deliberately the ONLY one. This asset
+    is committed to the repo, so "which code wrote it" is already recorded by
+    the commit that changed it; a `code_provenance()` block here would instead
+    bake in the working tree of whoever last ran the generator and then show it
+    to every reader forever — `producer: local`, `dirty: true`, permanently,
+    regardless of what they are actually running. That is worse than no
+    provenance: it is provenance that describes someone else's laptop.
+
+    It would also cost the property this file is built around. Regenerating
+    against an unchanged feed produces a byte-identical asset, so an empty diff
+    means the timetable didn't move — but `code_sha` changes on every commit,
+    which would churn the asset whether or not the schedule did.
+
+    The distinction from `state/segment_params.json`, which DOES carry a code
+    provenance block: that one is published to R2 by the trainer, where nothing
+    else records what produced it.
+
+    `adjacency` and `route_stops` are the same static-GTFS topology
+    `training.train_em.write_segment_params` publishes to the credentialed
+    `state/segment_params.json` (route|direction|from_stop successors and
+    scheduled stopping patterns) — carried here too so the spatial views
+    (`/lines`, `/stations/*`, `/map/trip`) can read a full pairwise segment
+    graph straight off the committed asset, with no R2 vault needed.
     """
 
     feed_version: FeedVersion
@@ -255,6 +280,8 @@ class Diagram:
     stations: Mapping[str, Station]
     edges: tuple[Edge, ...]
     insets: tuple[Inset, ...]
+    adjacency: Mapping[SegmentKey, list[tuple[str, int]]]
+    route_stops: Mapping[tuple[str, str], list[RoutePattern]]
 
 
 def _read_stops(zf: zipfile.ZipFile) -> dict[str, tuple[str, float, float]]:
@@ -755,6 +782,13 @@ def build(zf: zipfile.ZipFile) -> Diagram:
     routes = {
         rid: meta for rid, meta in sorted(_read_routes(zf).items()) if rid in drawn
     }
+
+    # A third read of stop_times.txt: the scheduled stopping patterns
+    # (training.gtfs_static.route_patterns), the same static-topology read
+    # `training.train_em.write_segment_params` feeds into
+    # `state/segment_params.json`'s own `route_stops`. Reusing it here, rather
+    # than relinearizing `succ`, keeps the asset's canonical line order the
+    # exact one the trainer already publishes.
     return Diagram(
         feed_version=tt.version,
         view_box=view_box,
@@ -762,13 +796,18 @@ def build(zf: zipfile.ZipFile) -> Diagram:
         stations=stations,
         edges=tuple(edges),
         insets=insets,
+        adjacency=succ,
+        route_stops=route_patterns(zf),
     )
 
 
 def to_json(diagram: Diagram) -> dict[str, Any]:
-    """The committed asset's shape. No generation timestamp: regenerating
-    against the same static feed produces a byte-identical file, so a diff
-    means the timetable moved."""
+    """The committed asset's shape.
+
+    No generation timestamp and no code provenance: regenerating against the
+    same static feed produces a byte-identical file, so an empty diff means the
+    timetable didn't move. See Diagram's docstring for why a code_provenance()
+    block is deliberately absent from a committed artifact."""
     version = diagram.feed_version
     return {
         "feed_version": {
@@ -809,4 +848,23 @@ def to_json(diagram: Diagram) -> dict[str, Any]:
             }
             for inset in diagram.insets
         ],
+        "topology_source": "gtfs_static",
+        # Every route|direction|from_stop cell, ranked most-run first — same
+        # tie-break as gtfs_static.dominant_successor (`to` is succs[0]), so a
+        # from_stop with a real branch/express split keeps its full successor
+        # list instead of being truncated to the modal winner. Sorted by key:
+        # `adjacency` is a JSON array, so `json.dumps(..., sort_keys=True)`
+        # can't order it for us the way it orders the dict-valued keys above.
+        "adjacency": [
+            {
+                "key": f"{route}|{direction}|{frm}",
+                "route": route,
+                "direction": direction,
+                "from": frm,
+                "to": dominant_successor(succs)[0],
+                "successors": [{"to": to, "n_trips": n} for to, n in succs],
+            }
+            for (route, direction, frm), succs in sorted(diagram.adjacency.items())
+        ],
+        "route_stops": patterns_to_json(diagram.route_stops),
     }

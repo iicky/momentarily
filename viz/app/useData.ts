@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { fetchSnapshot } from "@/lib/feed";
+import { fetchDiagram } from "@/lib/diagram";
 import type { Snapshot } from "@/lib/types";
-import type { StationCoord, Topology, AdjEdge, RouteStops, Provenance } from "@/lib/stations";
+import type { StationCoord, Topology } from "@/lib/stations";
 
 const SNAP_POLL_MS = 60_000;
 
@@ -65,40 +66,30 @@ export function useCoords(): Async<Record<string, StationCoord>> {
   return state;
 }
 
-/** Segment adjacency topology (from /api/topology). `configured` is false when
- * the R2 vault isn't loaded, in which case `edges` is empty. */
+/** Segment topology + canonical stop order, read off the committed diagram
+ * asset (viz/lib/diagram.ts) — one fetch shared with the map overview via
+ * fetchDiagram's own module-level cache, not refetched here. */
 export function useTopology(): Async<Topology> {
   const [state, setState] = useState<Async<Topology>>({ data: null, error: null });
   useEffect(() => {
     let alive = true;
-    (async () => {
-      try {
-        const res = await fetch("/api/topology");
-        const json = (await res.json()) as {
-          configured?: boolean;
-          trained_at?: number;
-          topology_source?: string;
-          provenance?: Provenance;
-          edges?: AdjEdge[];
-          routeStops?: RouteStops;
-          error?: string;
-        };
+    fetchDiagram().then(
+      (d) => {
         if (!alive) return;
         setState({
           data: {
-            configured: json.configured ?? false,
-            trained_at: json.trained_at,
-            topology_source: json.topology_source,
-            provenance: json.provenance,
-            edges: json.edges ?? [],
-            routeStops: json.routeStops ?? {},
+            topology_source: d.topology_source,
+            feed_version: d.feed_version,
+            edges: d.adjacency,
+            routeStops: d.route_stops,
           },
-          error: json.error ?? null,
+          error: null,
         });
-      } catch (e) {
-        if (alive) setState({ data: null, error: (e as Error).message });
-      }
-    })();
+      },
+      (e: Error) => {
+        if (alive) setState({ data: null, error: e.message });
+      },
+    );
     return () => {
       alive = false;
     };

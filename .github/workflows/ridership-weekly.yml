@@ -1,0 +1,37 @@
+name: Ridership baseline (weekly)
+
+# Refresh state/ridership_baseline.json -- the per-station-complex entry-rate
+# baseline the live platform-crowding estimate multiplies by minutes-since-
+# last-train (training/ridership.py).
+#
+# WEEKLY, NOT DAILY. The upstream feed (NYS Open Data 5wq4-mkjj) publishes
+# with roughly a 10-day lag, so a daily run would mostly re-fetch a trailing
+# 90-day window that has barely moved -- each of the two aggregate queries
+# alone takes on the order of a minute against the live feed, so a tighter
+# cadence buys close to nothing and just burns Socrata's rate limit and our
+# own CI minutes. Weekly keeps the baseline's rolling window current relative
+# to how fast the source data actually changes.
+on:
+  schedule:
+    - cron: '0 6 * * 0'  # 06:00 UTC every Sunday. GHA cron is best-effort.
+  workflow_dispatch:      # manual refresh
+
+concurrency:
+  group: ridership-baseline
+  cancel-in-progress: false
+
+jobs:
+  ridership-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Refresh the ridership entry-rate baseline
+        run: uv run python -m training.ridership
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}

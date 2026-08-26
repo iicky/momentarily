@@ -1,5 +1,6 @@
 /**
- * Render and publish the public snapshot.
+ * Render and publish the two public artifacts: the snapshot, and its sibling
+ * `trains` object.
  *
  * Shape matches src/momentarily/schema.py's Snapshot. Surfaces whose upstream
  * source isn't wired yet (observations, stations, bridges, tunnels) emit as
@@ -8,22 +9,46 @@
  *
  * Output is publicly readable at https://feed.momentarily.nyc/v1/snapshot.json
  * via the R2 custom domain. Cache headers per ADR (max-age=60, s-maxage=300).
+ *
+ * `trains` (buildTrains/publishTrains below) is published separately, at
+ * v1/trains.json, rather than embedded as a Snapshot field: at ~700
+ * concurrent trips it adds ~36KB (measured on a realistic vehicle set, see
+ * the worker's vehicles.test.ts) to every fetch, and the canonical snapshot
+ * consumer (homeassistant-mta-subway, polling many installs every few
+ * minutes) never reads it — charging every install that bandwidth forever
+ * for a feature only the /map overlay uses is the wrong trade. It carries
+ * the same cache policy and its own observed_at + provenance, so a consumer
+ * holding only that object can still say which build produced it and how
+ * stale it is.
  */
 
 import type { RouteRoll } from './alpha';
 import type { Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
-import type { AlertOut, AlertRef, DirectionAlerts, RouteSnapshot } from './derive';
+import { CROWDING_MAX_GAP_MINUTES, CROWDING_SERVED_WINDOW_MINUTES, derivePlatformCrowding } from './crowding';
+import type {
+  AlertOut,
+  AlertRef,
+  DirectionAlerts,
+  RouteSnapshot,
+} from './derive';
 import { buildRoutes, metaForRoute } from './derive';
 import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
-import type { DwellQuantiles, TrainedParams } from './params';
+import type { DwellQuantiles, RidershipBaselineDoc, TrainedParams } from './params';
 import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
-import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
+import type {
+  SegmentDwellDoc,
+  SegmentFlowDoc,
+  SegmentParamsDoc,
+  StationFlowDoc,
+  StationWaitDoc,
+} from './state';
+import type { TrainPosition } from './vehicles';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -43,14 +68,20 @@ const FAST_ATTACK_PROB = 0.9;
 // past this age the route falls back to the alert/HMM condition. Six ticks.
 const MAX_MOVEMENT_STATE_AGE_SEC = 1800;
 
-const SNAPSHOT_KEY = 'v1/snapshot.json';
+const SNAPSHOT_KEY = "v1/snapshot.json";
+const TRAINS_KEY = "v1/trains.json";
 
-export const SCHEMA_VERSION = '1';
+// Shared by publishSnapshot and publishTrains so the two public artifacts
+// can never drift on cache policy — see the ADR reference in the file
+// header comment for where these numbers come from.
+const PUBLIC_CACHE_CONTROL = "public, max-age=60, s-maxage=300";
+
+export const SCHEMA_VERSION = "1";
 
 export const ATTRIBUTION =
-  'Snapshot built from MTA GTFS-RT feeds via api.mta.info. '
-  + 'Published by Momentarily (https://feed.momentarily.nyc). '
-  + 'Not affiliated with the MTA.';
+  "Snapshot built from MTA GTFS-RT feeds via api.mta.info. " +
+  "Published by Momentarily (https://feed.momentarily.nyc). " +
+  "Not affiliated with the MTA.";
 
 // The HMM/alert forecast for a route — recovery timing (recovery_minutes,
 // p_normal_in_H) plus the alert-derived regime read. With movement-primary
@@ -99,7 +130,7 @@ interface Inference {
   // movement-sourced and a curve exists); "hmm" is the alert-regime dwell
   // estimate, used only as the fallback. The grader excludes "schedule" rows
   // from HMM calibration.
-  recovery_source: 'hmm' | 'schedule' | 'movement';
+  recovery_source: "hmm" | "schedule" | "movement";
   // Announced resume time (epoch s) for schedule recovery; null for hmm.
   resumes_at: number | null;
   // now has passed resumes_at but the planned alert is still active — recovery
@@ -226,13 +257,31 @@ interface SegmentStatusOut {
   direction: string;
   from_stop: string;
   to: string | null;
-  status: 'normal' | 'disrupted';
+  status: "normal" | "disrupted";
   entered_at: number;
   recovery: SegmentRecovery | null;
 }
 
 // The segment-flow surface: sibling of StationFlow, keyed the same way as
 // segment_flow.json/segment_params.json (`route|direction|from_stop`).
+// `segments` carries EVERY judged cell, normal and disrupted alike — a key
+// absent from it was never judged this tick, never a healthy read by
+// omission. That single-dict membership check is the whole honesty
+// property this surface rests on.
+//
+// SIZING (why this is one dict, not the normal/disrupted split shipped and
+// reverted the same day, 2026-08-23): measured on the live feed that day —
+// base snapshot minus segment_flow 179.9 KB, a bare segment record (incl.
+// its key) 151 B, a record carrying a recovery block 382 B. A normal cell
+// is always bare (SegmentStatusOut.recovery is null on healthy track), so
+// the shipped policy's ~701 judged cells/tick (~3 typically disrupted)
+// totals ~284.0 KB, under the 300 KB line with ~120 KB (~814 bare records)
+// of headroom before that line is even in question — ~16% above today's
+// population. The split existed only for a policy that was measured and
+// REJECTED before shipping: decay=0.98, ~1199 judged cells/tick (see
+// segment_flow.ts's module docstring). Revisit only if judged volume
+// climbs toward that headroom ceiling or the disrupted share grows well
+// past today's ~0.4%; not before.
 interface SegmentFlowOut {
   observed_at: number;
   segments: Record<string, SegmentStatusOut>;
@@ -241,7 +290,7 @@ interface SegmentFlowOut {
 // StationFlowDoc's per-station entry, additively carrying the expected
 // recovery of its already-selected worst_segment.
 interface StationServiceFlowOut {
-  status: 'flowing' | 'degraded';
+  status: "flowing" | "degraded";
   worst_deficit: number;
   worst_segment: [string, string] | null;
   routes: string[];
@@ -252,6 +301,52 @@ interface StationServiceFlowOut {
 interface StationFlowOut {
   observed_at: number;
   stations: Record<string, StationServiceFlowOut>;
+}
+
+// One dot per distinct (route, direction, stop, stopped) tuple, folded by
+// vehicles.ts's trainPositions() from the ~700 concurrent in-service trips.
+// `stop` carries NYCT's usual duality — the stop a train is heading to while
+// moving, the stop it is at once stopped — and this surface deliberately
+// never infers which segment a moving train occupies (ambiguous at branch/
+// express points); see trainPositions()'s doc comment for the full rationale.
+// Part of PublishedTrains (buildTrains/publishTrains below), NOT the
+// Snapshot — see that pair's doc comment for why it's a sibling artifact.
+interface TrainPositionOut {
+  route: string;
+  direction: "north" | "south" | null;
+  stop: string;
+  stopped: boolean;
+  n: number;
+}
+
+// The platform-crowding surface: entries_per_min * minutes_since_last_train,
+// split evenly across a station complex's currently-served platforms. See
+// the crowding contract for the full derivation; crowding.ts computes
+// everything here except `method`, which this module attaches from its own
+// constants plus the baseline document's provenance.
+interface PlatformCrowdingEstimateOut {
+  last_train_at: number;
+  entries_per_min: number;
+  waiting_riders: number;
+}
+
+interface PlatformCrowdingMethodOut {
+  formula: string;
+  split_basis: 'uniform_over_served_platforms';
+  max_gap_minutes: number;
+  served_window_minutes: number;
+  excludes: string[];
+  baseline_generated_at: number;
+  baseline_window_start: string;
+  baseline_window_end: string;
+}
+
+interface PlatformCrowdingOut {
+  observed_at: number;
+  method: PlatformCrowdingMethodOut;
+  platforms: Record<string, PlatformCrowdingEstimateOut>;
+  n_platforms: number;
+  abstained: Record<string, number>;
 }
 
 interface Snapshot {
@@ -277,6 +372,11 @@ interface Snapshot {
   // Per-segment service flow ("is this stretch of track moving"), the same
   // segment movement model station_flow rolls up. Null when absent or stale.
   segment_flow: SegmentFlowOut | null;
+  // Estimated riders waiting per platform, derived from the ridership
+  // baseline and this tick's platform-wait state. Null before the ridership
+  // baseline is published, before the first vehicle tick after deploy, or
+  // when stale.
+  platform_crowding: PlatformCrowdingOut | null;
   system: SystemStatus;
   compat: Compat;
 }
@@ -312,7 +412,8 @@ export function buildSnapshot(args: {
     // Per-route service-level regimes; the published service_condition (supply
     // axis). Absent on docs from before the axis or a params set with no hourly
     // service baseline — service_condition then reads 'unknown'.
-    service_regimes?: Record<string, { state: string; entered_at: number }> | undefined;
+    service_regimes?:
+      Record<string, { state: string; entered_at: number }> | undefined;
     // Per-route raw service ratio behind service_condition. Same lifecycle as
     // service_regimes; absent -> service_ratio null.
     service_ratios?: Record<string, number> | undefined;
@@ -335,6 +436,17 @@ export function buildSnapshot(args: {
    * until the trainer publishes segment_dwell.json — segments then publish
    * status without recovery, never a fabricated number. */
   segmentDwell?: SegmentDwellDoc | null;
+  /** This tick's own platform-wait state (state/station_wait.json),
+   * threaded through in-memory from index.ts step 0 rather than read back
+   * from R2 — unlike stationFlow/segmentFlow, it is NOT one-tick-lagged.
+   * Null/undefined before the first vehicle tick after deploy, or when
+   * step 0's read/update/write failed this tick. */
+  stationWait?: StationWaitDoc | null;
+  /** Per-station-complex entries/min baseline from training/ridership.py.
+   * Read fresh each tick, not tick-lagged — it only changes weekly. Null
+   * until the trainer's first run, or when the document fails validation;
+   * platform_crowding then publishes null rather than estimate off nothing. */
+  ridershipBaseline?: RidershipBaselineDoc | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -342,11 +454,13 @@ export function buildSnapshot(args: {
   // gap shouldn't pin a stale condition on the public surface.
   const movementFresh =
     args.movementStates != null &&
-    args.generatedAt - args.movementStates.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+    args.generatedAt - args.movementStates.observed_at <=
+      MAX_MOVEMENT_STATE_AGE_SEC;
   const movementStates = movementFresh ? args.movementStates : null;
   const stationFlowFresh =
     args.stationFlow != null &&
-    args.generatedAt - args.stationFlow.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+    args.generatedAt - args.stationFlow.observed_at <=
+      MAX_MOVEMENT_STATE_AGE_SEC;
   const segmentFlow = args.segmentFlow ?? null;
   const segmentFlowFresh =
     segmentFlow != null &&
@@ -363,6 +477,28 @@ export function buildSnapshot(args: {
   const stationFlowOut =
     stationFlowFresh && args.stationFlow != null
       ? buildStationFlowOut(args.stationFlow, segmentFlowOut)
+      : null;
+
+  // The freshest-decaying published surface: unlike stationFlow/segmentFlow
+  // (a one-tick-lagged read, gated the same way), stationWait is this same
+  // tick's own just-written doc, so under normal operation this gate is
+  // never the reason it's absent — it exists to catch the case step 0's
+  // read/write failed and left stationWait stale or null. The gate matters
+  // more here than anywhere else: a stale station_flow just shows a wrong
+  // status, but a stale platform_crowding shows a wrong and ever-more-wrong
+  // number, because the crowd it describes keeps growing at entries_per_min
+  // for every minute it goes unrefreshed.
+  const stationWaitFresh =
+    args.stationWait != null
+    && args.generatedAt - args.stationWait.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+  const platformCrowdingOut =
+    stationWaitFresh && args.stationWait != null && args.ridershipBaseline != null
+      ? buildPlatformCrowdingOut(
+          args.stationWait,
+          args.ridershipBaseline,
+          args.stations ?? {},
+          args.generatedAt,
+        )
       : null;
 
   // Publish every route we have alpha for — good-service lines get their
@@ -415,7 +551,7 @@ export function buildSnapshot(args: {
       alerts: activeAlerts,
       condition,
       condition_source,
-      service_condition: serviceRegime?.state ?? 'unknown',
+      service_condition: serviceRegime?.state ?? "unknown",
       service_ratio: movementStates?.service_ratios?.[routeId] ?? null,
       service_low_ratio: movementStates?.service_quantile_ratios?.[routeId]?.low ?? null,
       service_high_ratio: movementStates?.service_quantile_ratios?.[routeId]?.high ?? null,
@@ -430,7 +566,11 @@ export function buildSnapshot(args: {
     };
   }
 
-  const system = buildSystemStatus(route_status, args.routeSnapshots, args.stationStatuses ?? {});
+  const system = buildSystemStatus(
+    route_status,
+    args.routeSnapshots,
+    args.stationStatuses ?? {},
+  );
   const compat = buildCompat(route_status, args.routeSnapshots);
 
   return {
@@ -438,7 +578,7 @@ export function buildSnapshot(args: {
     generated_at: args.generatedAt,
     provenance: codeProvenance(),
     attribution: ATTRIBUTION,
-    supported_modes: ['subway'],
+    supported_modes: ["subway"],
     freshness: {
       subway_alerts: args.alertsFreshness,
       lirr_alerts: null,
@@ -460,6 +600,7 @@ export function buildSnapshot(args: {
     station_status: args.stationStatuses ?? {},
     station_flow: stationFlowOut,
     segment_flow: segmentFlowOut,
+    platform_crowding: platformCrowdingOut,
     system,
     compat,
   };
@@ -481,9 +622,10 @@ function buildSystemStatus(
     // severity_max is the alert severity of the worst movement-confirmed
     // disruption — alerts explain a disruption's severity but never assert one, so
     // a route reading normal/unknown/not_scheduled folds no alert severity in.
-    if (rs.condition !== 'disrupted' && rs.condition !== 'suspended') continue;
+    if (rs.condition !== "disrupted" && rs.condition !== "suspended") continue;
     const snap = routeSnapshots.get(routeId);
-    if (snap && snap.severity_max > severity_max) severity_max = snap.severity_max;
+    if (snap && snap.severity_max > severity_max)
+      severity_max = snap.severity_max;
   }
   routes_with_alerts.sort();
 
@@ -498,7 +640,8 @@ function buildSystemStatus(
     // (a movement-only route has inference null). Ranking within (most degraded /
     // recovered) still uses the HMM's continuous probabilities and regime age when
     // present — a movement-only disrupted route scores a flat 1.
-    const disrupted = rs.condition === 'disrupted' || rs.condition === 'suspended';
+    const disrupted =
+      rs.condition === "disrupted" || rs.condition === "suspended";
     if (disrupted) {
       lines_disrupted_count += 1;
       const score = inf ? inf.p_disrupted + inf.p_suspended : 1;
@@ -506,7 +649,11 @@ function buildSystemStatus(
         mostDegradedScore = score;
         most_degraded_line = routeId;
       }
-    } else if (rs.condition === 'normal' && inf && inf.regime_entered_at > mostRecoveredEnteredAt) {
+    } else if (
+      rs.condition === "normal" &&
+      inf &&
+      inf.regime_entered_at > mostRecoveredEnteredAt
+    ) {
       mostRecoveredEnteredAt = inf.regime_entered_at;
       most_recovered_line = routeId;
     }
@@ -519,7 +666,7 @@ function buildSystemStatus(
     accessibility: buildAccessibility(stationStatuses),
     overall_label:
       routes_with_alerts.length === 0
-        ? 'All systems normal'
+        ? "All systems normal"
         : `Alerts on ${routes_with_alerts.length} subway lines`,
     condition: null,
     lines_disrupted_count,
@@ -537,7 +684,7 @@ function buildAccessibility(
   for (const s of Object.values(stationStatuses)) {
     elevators_out += s.elevators_out;
     escalators_out += s.escalators_out;
-    if (s.ada_status === 'ada_degraded') ada_pathways_degraded += 1;
+    if (s.ada_status === "ada_degraded") ada_pathways_degraded += 1;
   }
   return { elevators_out, escalators_out, ada_pathways_degraded };
 }
@@ -561,12 +708,16 @@ function buildCompat(
         : null,
     };
 
-    const northRefs = refs.filter((r) => r.direction_id === 0 || r.direction_id === null);
-    const southRefs = refs.filter((r) => r.direction_id === 1 || r.direction_id === null);
+    const northRefs = refs.filter(
+      (r) => r.direction_id === 0 || r.direction_id === null,
+    );
+    const southRefs = refs.filter(
+      (r) => r.direction_id === 1 || r.direction_id === null,
+    );
 
-    const delayKeywords = ['delay'];
-    const irregularityKeywords = ['slow', 'reroute', 'skip'];
-    const changeKeywords = ['service change', 'suspend', 'express', 'local'];
+    const delayKeywords = ["delay"];
+    const irregularityKeywords = ["slow", "reroute", "skip"];
+    const changeKeywords = ["service change", "suspend", "express", "local"];
 
     const delay_summaries: CompatRouteSummary = {
       north: firstHeaderMatching(northRefs, delayKeywords),
@@ -587,12 +738,12 @@ function buildCompat(
     // coarse label (shadow) — this legacy compat surface intentionally lags the
     // movement-primary route_status.condition; a movement-derived status mapping is
     // deferred to the HA integration work so its contract isn't changed blind.
-    const notScheduled = rs.condition === 'not_scheduled';
+    const notScheduled = rs.condition === "not_scheduled";
     subwaynow_routes[routeId] = {
       id: routeId,
       name: meta.name,
       color: meta.color,
-      status: notScheduled ? 'Not Scheduled' : rs.label,
+      status: notScheduled ? "Not Scheduled" : rs.label,
       scheduled: !notScheduled,
       direction_statuses,
       delay_summaries,
@@ -603,7 +754,10 @@ function buildCompat(
   return { subwaynow_routes };
 }
 
-function firstHeaderMatching(refs: AlertRef[], keywords: string[]): string | null {
+function firstHeaderMatching(
+  refs: AlertRef[],
+  keywords: string[],
+): string | null {
   for (const r of refs) {
     if (!r.header_text) continue;
     const typeLower = r.alert_type.toLowerCase();
@@ -645,17 +799,18 @@ interface MovementRegime {
 // off it and buildInference gates the forecast on it, so the precedence lives
 // here once — a second copy that drifted would publish a forecast about a
 // condition nobody was shown.
-type ConditionSource = 'schedule' | 'movement' | 'unknown';
+type ConditionSource = "schedule" | "movement" | "unknown";
 
 function resolvePublishedCondition(
   schedule: ScheduleFacts,
   movementRegime: MovementRegime | null,
 ): { condition: string; source: ConditionSource } {
-  if (schedule.isNotScheduled) return { condition: 'not_scheduled', source: 'schedule' };
+  if (schedule.isNotScheduled)
+    return { condition: "not_scheduled", source: "schedule" };
   if (movementRegime !== null) {
-    return { condition: movementRegime.state, source: 'movement' };
+    return { condition: movementRegime.state, source: "movement" };
   }
-  return { condition: 'unknown', source: 'unknown' };
+  return { condition: "unknown", source: "unknown" };
 }
 
 // atom_p/atom_sec activate the mixture closed form in pLeaveBy/conditionalRecovery
@@ -665,7 +820,8 @@ function resolvePublishedCondition(
 // returns undefined and callers fall back to the pure curve_sec/tail_ll path,
 // byte-for-byte what it was before this mixture was added.
 function atomFor(cell: DwellQuantiles): { p: number; sec: number } | undefined {
-  if (cell.atom_p === undefined || cell.atom_sec === undefined) return undefined;
+  if (cell.atom_p === undefined || cell.atom_sec === undefined)
+    return undefined;
   if (!(cell.atom_p > 0 && cell.atom_p < 1)) return undefined;
   // A non-positive atom location would place the point mass at or before t=0 and
   // apply it to every elapsed value. dwell.ts rejects it too; this keeps the
@@ -719,7 +875,7 @@ function buildInference(
   let recovery_minutes_low = 0;
   let recovery_minutes_high = 0;
   let recovery_indeterminate = false;
-  let recovery_source: 'hmm' | 'schedule' | 'movement' = 'hmm';
+  let recovery_source: "hmm" | "schedule" | "movement" = "hmm";
   let resumes_at: number | null = null;
   let overdue = false;
 
@@ -728,7 +884,10 @@ function buildInference(
   // whenever there are no disruptive alerts, so a route published
   // not_scheduled overnight used to look "normal" here and lose its
   // deterministic countdown to an alert-regime dwell estimate.
-  const publishedCondition = resolvePublishedCondition(schedule, movementRegime).condition;
+  const publishedCondition = resolvePublishedCondition(
+    schedule,
+    movementRegime,
+  ).condition;
 
   // Whether "when is it back" is even a question for this route. Published
   // normal: nothing to recover from. Published unknown: we declined to judge,
@@ -736,14 +895,16 @@ function buildInference(
   // see. Both the schedule countdown and the withholding gate below key off
   // this one predicate so they cannot disagree about `unknown`.
   const publishedNotNormal =
-    publishedCondition !== 'normal' && publishedCondition !== 'unknown';
+    publishedCondition !== "normal" && publishedCondition !== "unknown";
 
   // A planned-work disruption announces its own resume time (the window end),
   // so recovery is a deterministic schedule lookup, not a dwell estimate — for
   // ALL planned_work, not just no-service. Real-time alerts have no trustworthy
   // end and keep HMM recovery; when both are present the real-time alert wins.
   const scheduleRecovery =
-    publishedNotNormal && !schedule.hasRealtimeAlert && schedule.scheduledResumeAt !== null;
+    publishedNotNormal &&
+    !schedule.hasRealtimeAlert &&
+    schedule.scheduledResumeAt !== null;
 
   // Movement curve, conditioned on the movement clock — only when the
   // published condition actually came from movement (mirrors buildSnapshot's
@@ -752,12 +913,18 @@ function buildInference(
   // the trainer hasn't published dwell_movement for this cell yet.
   const movement =
     !schedule.isNotScheduled && movementRegime !== null
-      ? movementRecovery(trained, routeId, movementRegime.state, movementRegime.entered_at, now)
+      ? movementRecovery(
+          trained,
+          routeId,
+          movementRegime.state,
+          movementRegime.entered_at,
+          now,
+        )
       : null;
 
   if (scheduleRecovery) {
     const resume = schedule.scheduledResumeAt!;
-    recovery_source = 'schedule';
+    recovery_source = "schedule";
     resumes_at = resume;
     // now has passed the announced resume but the alert is still active this
     // tick — clamp to 0 rather than count down past it. Next tick an extension
@@ -769,12 +936,13 @@ function buildInference(
     recovery_minutes_high = remaining;
     // It's back at the announced time: P(normal in k) is 1 once the window end
     // falls within k minutes, else 0.
-    const within = (mins: number): number => (resume <= now + mins * 60 ? 1 : 0);
+    const within = (mins: number): number =>
+      resume <= now + mins * 60 ? 1 : 0;
     p_normal_in_30 = within(30);
     p_normal_in_60 = within(60);
     p_normal_in_120 = within(120);
   } else if (movement !== null) {
-    recovery_source = 'movement';
+    recovery_source = "movement";
     recovery_minutes = movement.recovery_minutes;
     recovery_minutes_low = movement.recovery_minutes_low;
     recovery_minutes_high = movement.recovery_minutes_high;
@@ -782,7 +950,7 @@ function buildInference(
     p_normal_in_30 = movement.p_normal_in_30;
     p_normal_in_60 = movement.p_normal_in_60;
     p_normal_in_120 = movement.p_normal_in_120;
-  } else if (condition !== 'normal') {
+  } else if (condition !== "normal") {
     const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
     const empirical = dwellForRouteState(
       trained,
@@ -827,7 +995,8 @@ function buildInference(
     } else {
       const selfLoop = params.transition[argmaxIdx]![argmaxIdx]!;
       const dwellTicks = dwellQuantiles(selfLoop);
-      const dwellToMinutes = (t: number): number => Math.round((t * tickSeconds) / 60);
+      const dwellToMinutes = (t: number): number =>
+        Math.round((t * tickSeconds) / 60);
       const rawMedian = dwellToMinutes(dwellTicks.median);
       recovery_indeterminate = rawMedian >= MAX_RECOVERY_MINUTES;
       recovery_minutes = clamp(rawMedian);
@@ -840,9 +1009,9 @@ function buildInference(
   // than the hysteresis window), the published label hasn't cleared hysteresis,
   // or we're recovering from a feed gap ("unknown").
   const model_warming_up =
-    roll.published.label === PUBLISHED_UNKNOWN
-    || roll.published.pending_streak < HYSTERESIS_TICKS
-    || now - roll.filter.regime_entered_at < HYSTERESIS_TICKS * tickSeconds;
+    roll.published.label === PUBLISHED_UNKNOWN ||
+    roll.published.pending_streak < HYSTERESIS_TICKS ||
+    now - roll.filter.regime_entered_at < HYSTERESIS_TICKS * tickSeconds;
   // The forecast is published only when it is about the condition we publish.
   // Both arms below are: movement shares the published condition's arm, clock
   // and regime, and the schedule countdown can only fire when the published
@@ -852,7 +1021,7 @@ function buildInference(
   // is assembled, rather than in each arm: there are five ways these values
   // get set and a per-arm gate would silently miss the next one added.
   const forecastsThePublishedCondition =
-    recovery_source === 'movement' || recovery_source === 'schedule';
+    recovery_source === "movement" || recovery_source === "schedule";
 
   // recovery_minutes is the same claim in minutes, so it gets the same gate,
   // wherever the question arises at all. Measured over 6 days of the prediction
@@ -877,7 +1046,7 @@ function buildInference(
     // disruption. The PUBLISHED disruption is route_status.condition (movement-
     // primary); this tracks the HMM view that also anchors the recovery forecast.
     // normal (incl. planned-only, zero realtime alerts) and not_scheduled never count.
-    is_disrupted: condition !== 'normal' && condition !== 'not_scheduled',
+    is_disrupted: condition !== "normal" && condition !== "not_scheduled",
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],
@@ -890,9 +1059,13 @@ function buildInference(
     // Same gate, plus the measured one: only the schedule arm's deterministic
     // countdown survives at these horizons — see the Inference interface above.
     p_normal_in_60min:
-      forecastsThePublishedCondition && recovery_source === 'schedule' ? p_normal_in_60 : null,
+      forecastsThePublishedCondition && recovery_source === "schedule"
+        ? p_normal_in_60
+        : null,
     p_normal_in_120min:
-      forecastsThePublishedCondition && recovery_source === 'schedule' ? p_normal_in_120 : null,
+      forecastsThePublishedCondition && recovery_source === "schedule"
+        ? p_normal_in_120
+        : null,
     model_warming_up,
     recovery_source,
     resumes_at,
@@ -913,7 +1086,10 @@ interface MovementRecoveryResult {
 // Movement states whose exit destination has actually been measured, so an
 // exit probability can honestly be read as P(normal). Anything outside this
 // table falls back to the alert arm rather than assuming an unobserved split.
-const MOVEMENT_SPLIT_MEASURED: Record<string, true> = { normal: true, disrupted: true };
+const MOVEMENT_SPLIT_MEASURED: Record<string, true> = {
+  normal: true,
+  disrupted: true,
+};
 
 /**
  * Recovery + p_normal_in_H off the movement curve, conditioned on the
@@ -957,7 +1133,7 @@ function movementRecovery(
   const atom = atomFor(cell);
   const elapsedSec = Math.max(0, now - enteredAt);
 
-  if (state === 'normal') {
+  if (state === "normal") {
     const staysNormalFor = (horizonSec: number): number =>
       1 - pLeaveBy(curve, elapsedSec, horizonSec, tail, atom);
     return {
@@ -1002,12 +1178,15 @@ function movementRecovery(
 }
 
 /**
- * Recovery for a segment cell off its own dwell curve, conditioned on the
- * segment regime clock (elapsed = now - entered_at) — the same math as
- * movementRecovery, sourced from segment_dwell.json instead of
- * dwell_movement. Returns null when there's no usable clock (entered_at <= 0)
- * or no trained curve for this (key, state) cell, so the caller publishes
- * status without a fabricated recovery.
+ * Recovery for a DISRUPTED segment cell off its own dwell curve,
+ * conditioned on the segment regime clock (elapsed = now - entered_at) —
+ * the same math as movementRecovery, sourced from segment_dwell.json
+ * instead of dwell_movement. Returns null when there's no usable clock
+ * (entered_at <= 0) or no trained curve for this (key, state) cell, so the
+ * caller publishes status without a fabricated recovery. Never called for
+ * a NORMAL cell — buildSegmentFlowOut publishes `recovery: null` for one
+ * directly, without a curve lookup: a healthy segment has nothing to
+ * forecast, so there is no "recovery from normal" to compute.
  */
 function segmentRecovery(
   dwell: SegmentDwellDoc | null,
@@ -1022,20 +1201,6 @@ function segmentRecovery(
   const curve = cell.curve_sec;
   const tail = cell.tail_ll;
   const elapsedSec = Math.max(0, now - enteredAt);
-
-  if (state === 'normal') {
-    const staysNormalFor = (horizonSec: number): number =>
-      1 - pLeaveBy(curve, elapsedSec, horizonSec, tail);
-    return {
-      recovery_minutes: 0,
-      recovery_minutes_low: 0,
-      recovery_minutes_high: 0,
-      recovery_indeterminate: false,
-      p_normal_in_30min: staysNormalFor(1800),
-      p_normal_in_60min: staysNormalFor(3600),
-      p_normal_in_120min: staysNormalFor(7200),
-    };
-  }
 
   const clamp = (m: number): number => Math.min(m, MAX_RECOVERY_MINUTES);
   const secToMin = (s: number): number => Math.round(s / 60);
@@ -1070,8 +1235,11 @@ function segmentRecovery(
 /**
  * Per-segment published surface: debounced status + clock + successor stop +
  * expected recovery, keyed the same way as segment_flow.json/
- * segment_params.json (`route|direction|from_stop`). Sibling of
- * station_flow; caller gates freshness before calling this.
+ * segment_params.json (`route|direction|from_stop`) — every judged cell,
+ * normal and disrupted alike. A NORMAL cell's recovery is always null: a
+ * healthy segment has nothing to forecast, so its curve is never even
+ * looked up. Sibling of station_flow; caller gates freshness before
+ * calling this.
  */
 function buildSegmentFlowOut(
   flow: SegmentFlowDoc,
@@ -1081,10 +1249,10 @@ function buildSegmentFlowOut(
 ): SegmentFlowOut {
   const segments: Record<string, SegmentStatusOut> = {};
   for (const [key, regime] of Object.entries(flow.regimes)) {
-    const parts = key.split('|');
-    const route = parts[0] ?? '';
-    const direction = parts[1] ?? '';
-    const from_stop = parts[2] ?? '';
+    const parts = key.split("|");
+    const route = parts[0] ?? "";
+    const direction = parts[1] ?? "";
+    const from_stop = parts[2] ?? "";
     segments[key] = {
       route,
       direction,
@@ -1092,7 +1260,10 @@ function buildSegmentFlowOut(
       to: params?.adjacency[key]?.to ?? null,
       status: regime.state,
       entered_at: regime.entered_at,
-      recovery: segmentRecovery(dwell, key, regime.state, regime.entered_at, now),
+      recovery:
+        regime.state === "disrupted"
+          ? segmentRecovery(dwell, key, regime.state, regime.entered_at, now)
+          : null,
     };
   }
   return { observed_at: flow.observed_at, segments };
@@ -1104,7 +1275,12 @@ function buildSegmentFlowOut(
  * more than one route shares that physical track (common on shared
  * trackage) more than one live segment key can match; they describe the
  * same movement, so picking the lexicographically first key is a stable
- * tie-break, not a second "worst" determination.
+ * tie-break, not a second "worst" determination. A worst_segment that
+ * currently reads NORMAL still has an entry in `segments` like any other
+ * judged cell, but its `recovery` is always null — there is nothing more
+ * informative to say about a segment that isn't disrupted than that it
+ * isn't, so this returns null for that case exactly as it does for "never
+ * judged".
  */
 function worstSegmentRecovery(
   worstSegment: readonly [string, string] | null,
@@ -1140,6 +1316,33 @@ function buildStationFlowOut(
   return { observed_at: stationFlow.observed_at, stations };
 }
 
+/**
+ * Attach `method` (the constants plus the baseline's own provenance) to
+ * crowding.ts's per-platform derivation, producing the published
+ * PlatformCrowdingOut surface. Caller gates freshness before calling this.
+ */
+function buildPlatformCrowdingOut(
+  stationWait: StationWaitDoc,
+  ridershipBaseline: RidershipBaselineDoc,
+  stations: Record<string, StationOut>,
+  now: number,
+): PlatformCrowdingOut {
+  const result = derivePlatformCrowding(stationWait, ridershipBaseline, stations, now);
+  return {
+    ...result,
+    method: {
+      formula: 'entries_per_min * minutes_since_last_train',
+      split_basis: 'uniform_over_served_platforms',
+      max_gap_minutes: CROWDING_MAX_GAP_MINUTES,
+      served_window_minutes: CROWDING_SERVED_WINDOW_MINUTES,
+      excludes: ['in-system transfers', 'exits'],
+      baseline_generated_at: ridershipBaseline.generated_at,
+      baseline_window_start: ridershipBaseline.source.window_start,
+      baseline_window_end: ridershipBaseline.source.window_end,
+    },
+  };
+}
+
 function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {
   if (v[0] >= v[1] && v[0] >= v[2]) return 0;
   if (v[1] >= v[2]) return 1;
@@ -1170,22 +1373,27 @@ function resolveCondition(
   disruptiveAlertCount: number,
   schedule: ScheduleFacts,
 ): string {
-  if (schedule.hasRealtimeAlert) return effectiveCondition(roll, disruptiveAlertCount);
-  if (schedule.isNotScheduled) return 'not_scheduled';
+  if (schedule.hasRealtimeAlert)
+    return effectiveCondition(roll, disruptiveAlertCount);
+  if (schedule.isNotScheduled) return "not_scheduled";
   return effectiveCondition(roll, disruptiveAlertCount);
 }
 
-function effectiveCondition(roll: RouteRoll, disruptiveAlertCount: number): PublishedLabel {
+function effectiveCondition(
+  roll: RouteRoll,
+  disruptiveAlertCount: number,
+): PublishedLabel {
   // Consistency guardrail: every disruption signal the filter sees is derived
   // from real-time alerts, so with zero real-time disruptive alerts the honest
   // condition is `normal` — planned/scheduled work never reads disrupted. It
   // also stops a stale or over-confident filter from publishing `disrupted` with
   // nothing live to explain it, and keeps system.overall_label consistent with
   // lines_disrupted_count.
-  if (disruptiveAlertCount === 0) return 'normal';
+  if (disruptiveAlertCount === 0) return "normal";
   const argmaxState = STATES[argmaxOf(roll.filter.probabilities)]!;
   if (roll.published.label === PUBLISHED_UNKNOWN) return argmaxState;
-  const peakProb = roll.filter.probabilities[argmaxOf(roll.filter.probabilities)];
+  const peakProb =
+    roll.filter.probabilities[argmaxOf(roll.filter.probabilities)];
   if (peakProb >= FAST_ATTACK_PROB && argmaxState !== roll.published.label) {
     return argmaxState;
   }
@@ -1203,7 +1411,9 @@ function dwellQuantiles(selfLoop: number): {
   const logSelf = Math.log(selfLoop);
   const q = (qv: number): number => {
     const target = 1 - qv;
-    return target <= 0 ? LARGE : Math.max(1, Math.ceil(Math.log(target) / logSelf));
+    return target <= 0
+      ? LARGE
+      : Math.max(1, Math.ceil(Math.log(target) / logSelf));
   };
   return { median: q(0.5), q25: q(0.25), q75: q(0.75) };
 }
@@ -1216,12 +1426,12 @@ function dwellQuantiles(selfLoop: number): {
  */
 export function snapshotFatalViolations(s: Snapshot): string[] {
   const v: string[] = [];
-  if (!s.schema_version) v.push('schema_version is empty');
+  if (!s.schema_version) v.push("schema_version is empty");
   if (!Number.isFinite(s.generated_at) || s.generated_at <= 0) {
     v.push(`generated_at invalid: ${s.generated_at}`);
   }
-  if (!s.provenance || typeof s.provenance.code_sha !== 'string') {
-    v.push('provenance.code_sha missing');
+  if (!s.provenance || typeof s.provenance.code_sha !== "string") {
+    v.push("provenance.code_sha missing");
   }
   return v;
 }
@@ -1240,7 +1450,8 @@ export function snapshotConsistencyWarnings(s: Snapshot): string[] {
     w.push(`system.alert_count=${subwayAlerts} but alerts[] is empty`);
   }
   const out =
-    s.system.accessibility.elevators_out + s.system.accessibility.escalators_out;
+    s.system.accessibility.elevators_out +
+    s.system.accessibility.escalators_out;
   if (out > 0 && s.equipment.length === 0) {
     w.push(`accessibility reports ${out} units out but equipment[] is empty`);
   }
@@ -1299,21 +1510,98 @@ export async function publishSnapshot(
   const scrubbed = scrubCorruptInferences(snapshot);
   if (scrubbed.length > 0) {
     console.warn(
-      `publish: scrubbed non-finite inference on ${scrubbed.length} route(s): ${scrubbed.join(', ')}`,
+      `publish: scrubbed non-finite inference on ${scrubbed.length} route(s): ${scrubbed.join(", ")}`,
     );
   }
   const fatal = snapshotFatalViolations(snapshot);
   if (fatal.length > 0) {
-    throw new Error(`snapshot fatally malformed, not publishing: ${fatal.join('; ')}`);
+    throw new Error(
+      `snapshot fatally malformed, not publishing: ${fatal.join("; ")}`,
+    );
   }
   const inconsistencies = snapshotConsistencyWarnings(snapshot);
   if (inconsistencies.length > 0) {
-    console.warn(`publish: snapshot consistency: ${inconsistencies.join('; ')}`);
+    console.warn(
+      `publish: snapshot consistency: ${inconsistencies.join("; ")}`,
+    );
   }
   await bucket.put(SNAPSHOT_KEY, JSON.stringify(snapshot), {
     httpMetadata: {
-      contentType: 'application/json',
-      cacheControl: 'public, max-age=60, s-maxage=300',
+      contentType: "application/json",
+      cacheControl: PUBLIC_CACHE_CONTROL,
+    },
+  });
+}
+
+// The trains.json artifact's shape — see the file header comment for why
+// this is a sibling of Snapshot rather than a field on it. Self-describing
+// like Snapshot itself: its own observed_at, and the same provenance block
+// (code_sha/dirty/producer) Snapshot carries, so a consumer holding only
+// this object can still say which build produced it.
+//
+// fresh_feeds/expected_feeds exist because `positions` alone cannot
+// distinguish "zero trains right now" from "some NYCT line-group feeds
+// failed to decode, so those routes are silently missing" — Promise
+// .allSettled in index.ts SKIPS a rejected feed rather than throwing, so
+// nothing about a partial vehicle set is exceptional from trainPositions()'s
+// point of view. fresh_feeds names which feeds decoded this tick (same
+// convention archive.ts's archiveVehicleMetric/archiveTripUpdateMetric/
+// archiveTraceRows already use); expected_feeds is the full constant list,
+// same order, so a consumer can diff the two without hardcoding NYCT's feed
+// grouping. fresh_feeds.length < expected_feeds.length means `positions` is
+// a PARTIAL read — some line groups are silently absent, not actually
+// empty — and only fresh_feeds.length === expected_feeds.length makes an
+// empty `positions` a genuine "zero trains observed".
+export interface PublishedTrains {
+  observed_at: number;
+  provenance: Provenance;
+  fresh_feeds: string[];
+  expected_feeds: string[];
+  positions: TrainPositionOut[];
+}
+
+export function buildTrains(
+  observedAt: number,
+  positions: TrainPosition[],
+  freshFeeds: readonly string[],
+  expectedFeeds: readonly string[],
+): PublishedTrains {
+  return {
+    observed_at: observedAt,
+    provenance: codeProvenance(),
+    fresh_feeds: [...freshFeeds],
+    expected_feeds: [...expectedFeeds],
+    positions,
+  };
+}
+
+/**
+ * Publish trains.json alongside (never gating, never gated on) snapshot.json.
+ *
+ * index.ts is responsible for the fail-soft contract, and it has two distinct
+ * failure shapes to honor, not one:
+ *   - NO feed decoded this tick (freshFeeds empty): index.ts must not call
+ *     this at all. An all-feeds-failed publish would otherwise write
+ *     {positions: []} — indistinguishable from "zero trains in NYC", a
+ *     fabrication this surface exists specifically to avoid. The object is
+ *     left un-rewritten; a consumer sees the last-good read, with its own
+ *     observed_at to judge staleness, never a fabricated empty one.
+ *   - SOME feeds decoded (freshFeeds a strict subset of expectedFeeds):
+ *     index.ts calls this normally. The object IS published, flagged
+ *     partial via fresh_feeds/expected_feeds, rather than withheld — a
+ *     partial map is still useful, as long as it says so.
+ *
+ * Unlike publishSnapshot there's no fatal-violation gate here: TrainPosition
+ * has no derived floating-point fields that could go non-finite.
+ */
+export async function publishTrains(
+  bucket: R2Bucket,
+  trains: PublishedTrains,
+): Promise<void> {
+  await bucket.put(TRAINS_KEY, JSON.stringify(trains), {
+    httpMetadata: {
+      contentType: "application/json",
+      cacheControl: PUBLIC_CACHE_CONTROL,
     },
   });
 }

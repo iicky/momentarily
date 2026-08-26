@@ -311,7 +311,8 @@ def _feed_date(value: str) -> date | None:
         return None
 
 
-def _read_version(zf: zipfile.ZipFile) -> FeedVersion:
+def read_version(zf: zipfile.ZipFile) -> FeedVersion:
+    """The feed's self-declared version window, from the optional feed_info.txt."""
     rows = _rows(zf, "feed_info.txt")
     row = rows[0] if rows else {}
     return FeedVersion(
@@ -570,7 +571,7 @@ def timetable(zf: zipfile.ZipFile) -> Timetable:
         },
         patterns=patterns,
         calendar=_read_calendar(zf),
-        version=_read_version(zf),
+        version=read_version(zf),
     )
 
 

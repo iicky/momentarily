@@ -16,6 +16,24 @@ https://feed.momentarily.nyc/v1/snapshot.json
 
 Path-versioned. Breaking schema changes will publish to `/v2/`, `/v3/`, etc.
 
+## Trains URL
+
+Aggregated live train positions, for map overlays — published separately
+from the snapshot so lightweight consumers never pay for it:
+
+```
+https://feed.momentarily.nyc/v1/trains.json
+```
+
+At ~700 concurrent trips this would add tens of kilobytes to every snapshot
+fetch, and the canonical snapshot consumer (homeassistant-mta-subway) never
+reads it. `positions` is one entry per (route, direction, stop, stopped)
+tuple actually observed; `fresh_feeds`/`expected_feeds` say whether that set
+is complete — a NYCT line-group feed can fail independently of the others,
+and a consumer needs to tell "zero trains on that line" from "that line's
+feed didn't decode this tick" apart. When every feed fails, the object is
+left un-rewritten rather than published as a false empty read.
+
 ## What's in the snapshot
 
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata
@@ -55,6 +73,9 @@ All fetched from the MTA developer gateway (`api-endpoint.mta.info`):
 | Elevator/escalator (upcoming) | `…/nyct%2Fnyct_ene_upcoming.json` | hourly |
 | Elevator/escalator (registry) | `…/nyct%2Fnyct_ene_equipments.json` | hourly |
 | MTA Subway Stations | NYS Open Data `39hk-dx4f` | daily |
+| MTA Subway Hourly Ridership | NYS Open Data `5wq4-mkjj` | weekly |
+
+The ridership feed is entry-side only — it has no `exits` column — and is reduced offline (`training/ridership.py`) to a per-station-complex entry-rate baseline behind the live platform-crowding estimate; it publishes with roughly a 10-day lag, so the ingest resolves its own trailing window against the feed's own latest available hour rather than against today.
 
 The published v1 snapshot is JSON-derived. The protobuf GTFS-RT feeds (trip updates and vehicle positions) are decoded too, but only for offline HMM validation — each tick archives a per-route service metric (assigned trips) and a movement metric (where trains are, advancing vs stalled across ticks), held out as independent truth for recovery and current-state classification. They do not feed the public snapshot.
 

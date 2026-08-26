@@ -150,12 +150,34 @@ export interface SegmentStatus {
   route: string;
   direction: string;
   from_stop: string;
+  // Successor stop from the trainer's adjacency, null when the topology doc
+  // wasn't available that tick. Load-bearing for attribution: a cell key names
+  // only its from_stop, so at a branch or express split several drawn edges
+  // claim it, and `to` is what says which hop the reading is actually about.
   to: string | null;
   status: "normal" | "disrupted";
   entered_at: number;
+  // Null on a NORMAL cell -- a healthy segment has nothing to forecast, so
+  // this is never fabricated for one. Populated on a DISRUPTED cell only
+  // once a trained dwell curve exists and its regime clock has started.
   recovery: SegmentRecovery | null;
 }
 
+// `segments` carries EVERY judged cell, normal and disrupted alike -- a key
+// absent from it was never judged this tick, never a healthy read by
+// omission. The whole surface is null when the Worker couldn't read its
+// segment state.
+//
+// SIZING (why this is one dict, not the normal/disrupted split shipped and
+// reverted the same day, 2026-08-23): measured on the live feed that day --
+// base snapshot minus segment_flow 179.9 KB, a bare segment record (incl.
+// its key) 151 B, a record carrying a recovery block 382 B. A normal cell
+// is always bare (SegmentStatus.recovery is null on healthy track), so the
+// shipped policy's ~701 judged cells/tick (~3 typically disrupted) totals
+// ~284.0 KB, under the 300 KB line with ~120 KB (~814 bare records) of
+// headroom before that line is even in question -- ~16% above today's
+// population. Revisit only if judged volume climbs toward that ceiling or
+// the disrupted share grows well past today's ~0.4%; not before.
 export interface SegmentFlow {
   observed_at: number;
   segments: Record<string, SegmentStatus>;
@@ -175,6 +197,44 @@ export interface StationFlow {
   stations: Record<string, StationServiceFlow>;
 }
 
+// --- Platform crowding (mirrors worker/src/snapshot.ts + schema) ---
+
+// One platform's estimate. The two inputs travel with the answer on purpose:
+// waiting_riders is only correct as of PlatformCrowding.observed_at, and a
+// consumer polling every 60s has to re-derive it against its own clock.
+export interface PlatformCrowdingEstimate {
+  last_train_at: number;
+  // This platform's ASSUMED share of its complex's entry rate for the current
+  // (weekday/weekend, hour) cell — see PlatformCrowdingMethod.split_basis.
+  entries_per_min: number;
+  waiting_riders: number;
+}
+
+// The constants and admitted assumptions behind every estimate in the surface,
+// published rather than documented so a reader can reproduce the arithmetic.
+export interface PlatformCrowdingMethod {
+  formula: string;
+  split_basis: "uniform_over_served_platforms";
+  max_gap_minutes: number;
+  served_window_minutes: number;
+  excludes: string[];
+  baseline_generated_at: number;
+  baseline_window_start: string;
+  baseline_window_end: string;
+}
+
+export interface PlatformCrowding {
+  observed_at: number;
+  method: PlatformCrowdingMethod;
+  // Keyed by DIRECTIONAL GTFS stop id ('127N'). The parent station is the key
+  // with its N/S suffix stripped (undirected(), same rule as the worker), and
+  // its metadata lives in `stations` under that id. Platforms that cannot be
+  // estimated are ABSENT, not zeroed; the reason is counted in `abstained`.
+  platforms: Record<string, PlatformCrowdingEstimate>;
+  n_platforms: number;
+  abstained: Record<string, number>;
+}
+
 // Full alert record from snap.alerts — the resolvable detail behind the ids
 // carried on RouteStatus.alerts. Mirrors worker/src/derive.ts AlertOut.
 export interface Alert {
@@ -185,6 +245,65 @@ export interface Alert {
   active_period: Array<{ start?: number; end?: number }>;
   header_text: { translation: Array<{ text: string; language: string }> } | null;
   informed_entities: Array<{ route_id: string; direction_id?: number }>;
+}
+
+// --- Train position surface ---
+// Published as its OWN object at v1/trains.json, a sibling of the snapshot
+// rather than a field on it: measured at 36.2KB against a 185.8KB snapshot
+// whose canonical consumer (a Home Assistant integration) can't use train
+// positions, so it doesn't belong in the shared payload.
+//
+// Mirrors worker/src/snapshot.ts TrainsOut / TrainPositionOut. Aggregated: one
+// entry per distinct (route, direction, stop, stopped) tuple, with `n`
+// counting the trains that match it.
+
+export interface TrainPosition {
+  // Base route; the 6X/7X/FX express variants are folded into 6/7/F.
+  route: string;
+  // null when the feed's trip descriptor doesn't determine a direction.
+  direction: "north" | "south" | null;
+  // The DIRECTIONAL stop id exactly as NYCT reports it. Its meaning depends on
+  // `stopped`: NYCT names the stop a train is HEADING TO while in transit, and
+  // the stop it is AT once STOPPED_AT. There is deliberately no segment here —
+  // which segment a moving train occupies is ambiguous at a branch, so the
+  // surface refuses to guess and a consumer must not either.
+  stop: string;
+  // true = standing at the platform, false = en route toward it.
+  stopped: boolean;
+  // How many trains share this tuple.
+  n: number;
+}
+
+// Build provenance for a published object: the git commit the Worker was
+// deployed from, whether that deploy had uncommitted changes, and which
+// component wrote the object.
+export interface Provenance {
+  code_sha: string;
+  dirty: boolean | null;
+  producer: string;
+}
+
+// Its own clock. On a tick where every vehicle feed fails the Worker skips
+// rewriting the object rather than publishing an empty one, so a served body
+// can be stale — `observed_at` is the only thing that says how stale, and it
+// is NOT the snapshot's generated_at.
+export interface Trains {
+  observed_at: number;
+  provenance: Provenance;
+  // NYCT splits realtime vehicles across line-group feeds. `expected_feeds` is
+  // the constant list the Worker polls every tick (currently 8: ace, bdfm, g,
+  // jz, nqrw, l, numbered, si); `fresh_feeds` is the subset that decoded.
+  //
+  // When they differ, `positions` is a PARTIAL read: the routes behind a failed
+  // feed have no entries, and that is silence rather than an empty platform.
+  // The object deliberately carries no feed-name -> route-id mapping, because
+  // NYCT's grouping has shuttle edge cases nobody here can verify, and a
+  // guessed mapping would turn silence into a wrong per-route claim. So a
+  // consumer may say how many feeds reported and which are missing, and may
+  // NOT say which routes are affected.
+  fresh_feeds: string[];
+  expected_feeds: string[];
+  positions: TrainPosition[];
 }
 
 export interface Snapshot {
@@ -200,6 +319,7 @@ export interface Snapshot {
   station_status: Record<string, StationStatus>;
   station_flow: StationFlow | null;
   segment_flow: SegmentFlow | null;
+  platform_crowding: PlatformCrowding | null;
 }
 
 // --- Grading streams (Phase B) ---

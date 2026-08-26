@@ -18,6 +18,8 @@ from momentarily.schema import (
     Snapshot,
     StationServiceFlow,
     StationStatus,
+    TrainPosition,
+    Trains,
     Tunnel,
 )
 
@@ -187,3 +189,76 @@ def test_station_service_flow_worst_recovery_optional() -> None:
     assert payload["status"] == "degraded"
     assert payload["worst_deficit"] == 0.9
     assert payload["n_segments"] == 1
+
+
+def test_snapshot_has_no_trains_field() -> None:
+    """trains lives at its own published artifact (v1/trains.json) now, not
+    on Snapshot — the whole point of splitting it out so the canonical
+    snapshot consumer (homeassistant-mta-subway) never pays bandwidth for a
+    payload it can't use. See Trains's docstring for the full rationale."""
+    snap = Snapshot(generated_at=0)
+    assert not hasattr(snap, "trains")
+    payload = json.loads(snap.model_dump_json())
+    assert "trains" not in payload
+
+
+def test_trains_is_self_describing_like_snapshot() -> None:
+    """Trains (the v1/trains.json shape) carries its own observed_at and the
+    same provenance block Snapshot does, so a consumer holding only this
+    object can still say which build produced it."""
+    trains = Trains(observed_at=1_700_000_000)
+    payload = json.loads(trains.model_dump_json())
+    assert payload["observed_at"] == 1_700_000_000
+    assert payload["provenance"] == {
+        "code_sha": "unknown",
+        "dirty": None,
+        "producer": "unknown",
+    }
+    assert payload["positions"] == []
+
+
+def test_train_position_serializes() -> None:
+    """One dot per (route, direction, stop, stopped) tuple, with the fold
+    count `n` — the map overlay's whole point."""
+    trains = Trains(
+        observed_at=1_700_000_000,
+        fresh_feeds=["ace", "bdfm"],
+        expected_feeds=["ace", "bdfm"],
+        positions=[
+            TrainPosition(
+                route="F", direction="north", stop="A09N", stopped=False, n=3
+            ),
+        ],
+    )
+    payload = json.loads(trains.model_dump_json())
+    assert payload["observed_at"] == 1_700_000_000
+    assert payload["positions"][0] == {
+        "route": "F",
+        "direction": "north",
+        "stop": "A09N",
+        "stopped": False,
+        "n": 3,
+    }
+
+
+def test_trains_fresh_feeds_shorter_than_expected_flags_a_partial_read() -> None:
+    """A rejected NYCT line-group feed is a silent skip, not an exception —
+    fresh_feeds vs. expected_feeds is how a consumer tells "zero trains" from
+    "some lines are missing" without hardcoding the feed grouping itself."""
+    trains = Trains(
+        observed_at=1_700_000_000,
+        fresh_feeds=["bdfm", "g"],
+        expected_feeds=["ace", "bdfm", "g"],
+    )
+    payload = json.loads(trains.model_dump_json())
+    assert len(payload["fresh_feeds"]) < len(payload["expected_feeds"])
+    assert "ace" not in payload["fresh_feeds"]
+
+
+def test_train_position_direction_optional() -> None:
+    """direction is null when NYCT's feed gives no N/S signal at all on
+    either the stop_id suffix or the trip_id — never fabricated."""
+    pos = TrainPosition(route="L", stop="L06", stopped=True, n=1)
+    assert pos.direction is None
+    payload = json.loads(pos.model_dump_json())
+    assert payload["direction"] is None

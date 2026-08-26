@@ -30,14 +30,28 @@ import {
   archiveTripUpdateMetric,
   archiveVehicleMetric,
 } from './archive';
+import { updateStationWait } from './crowding';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
-import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
+import {
+  FEEDS,
+  STATIONS_FEED,
+  TRIP_UPDATE_FEEDS,
+  TRIP_UPDATE_FEED_NAMES,
+  fetchJson,
+  fetchProtobuf,
+} from './fetch';
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
-import { deriveRouteMovementMetric, deriveTrace, stopPositions } from './vehicles';
+import type { TraceRow } from './vehicles';
+import {
+  deriveRouteMovementMetric,
+  deriveTrace,
+  stopPositions,
+  trainPositions,
+} from './vehicles';
 import {
   MOVEMENT_STATE_PUBLISH,
   deriveMovementStates,
@@ -65,10 +79,16 @@ import {
   movementChannelActive,
   stationaryDistribution,
 } from './hmm';
-import { loadParams, paramsForRoute } from './params';
+import { loadParams, loadRidershipBaseline, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
-import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
+import {
+  TICK_SECONDS,
+  buildSnapshot,
+  buildTrains,
+  publishSnapshot,
+  publishTrains,
+} from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import {
@@ -81,6 +101,7 @@ import {
   readServiceBaseline,
   readServiceMetric,
   readStationFlow,
+  readStationWait,
   readVehicleStops,
   writeLastSeen,
   writeMovementMetric,
@@ -88,9 +109,10 @@ import {
   writeSegmentFlow,
   writeServiceMetric,
   writeStationFlow,
+  writeStationWait,
   writeVehicleStops,
 } from './state';
-import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc } from './state';
+import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc, StationWaitDoc } from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -221,8 +243,9 @@ export default {
         console.error(`trip-updates ${name} failed:`, r.reason);
       }
     }
+    let rows: TraceRow[] = [];
     try {
-      const rows = deriveTrace(vehicles);
+      rows = deriveTrace(vehicles);
       await archiveTraceRows(
         env.MOMENTARILY,
         rows,
@@ -233,6 +256,53 @@ export default {
       console.log(`trace: ${rows.length} rows from ${vehicles.length} vehicles`);
     } catch (err) {
       console.error('trace step failed:', err);
+    }
+
+    // Per-platform train-departure tracking for the live crowding surface
+    // — see crowding.ts's updateStationWait. Runs every minute,
+    // right alongside the trace above, deliberately NOT gated behind the
+    // 5-minute boundary below: the whole point is 1-minute resolution on
+    // when a train cleared a platform, which is exactly the signal a
+    // 5-minute cadence would blur past recognition (see the hazard comment
+    // above — vehicle_stops.json's 5-minute stop_id carry serves a
+    // different, coarser purpose and must stay untouched by this). Reads
+    // and writes ONLY state/station_wait.json, its own R2 object — never
+    // vehicle_stops.json, never archive/vehicles/. A read/write failure
+    // degrades to publishing without the crowding surface this tick, never
+    // a failed tick.
+    //
+    // A tick that produced NO trace rows is skipped entirely rather than
+    // folded in as an empty observation, and that distinction is load-bearing
+    // twice over. updateStationWait prunes trips absent from the rows it is
+    // given, so folding in zero rows would wipe the trip -> stop carry the
+    // departure rule depends on, blinding it for the tick after the feed
+    // returns. And it would stamp a fresh observed_at over frozen platform
+    // timestamps, which is precisely the state buildSnapshot's freshness gate
+    // exists to catch: the surface would keep publishing an ageing crowd as
+    // though it were current. Leaving the prior doc untouched lets the gate
+    // age the surface out on its own. Zero rows means a total vehicle-feed
+    // outage or a throw above, never a real empty system.
+    let stationWaitDoc: StationWaitDoc | null = null;
+    if (rows.length > 0) {
+      try {
+        const prevStationWait = await readStationWait(env.MOMENTARILY);
+        stationWaitDoc = updateStationWait(rows, prevStationWait, observedAt);
+        await writeStationWait(env.MOMENTARILY, stationWaitDoc);
+      } catch (err) {
+        console.error('station wait update failed; publishing without platform crowding:', err);
+      }
+    } else {
+      // Fall back to whatever is already stored, unmodified. A single missed
+      // minute shouldn't blank the surface outright — published with its own
+      // (now older) observed_at, buildSnapshot's freshness gate ages it out
+      // over ~30 min while the cap retires individual platforms as their gaps
+      // grow. Same posture as stationFlow: degrade honestly, don't vanish.
+      console.log('trace produced no rows; station wait carried forward untouched');
+      try {
+        stationWaitDoc = await readStationWait(env.MOMENTARILY);
+      } catch (err) {
+        console.error('station wait read failed; publishing without platform crowding:', err);
+      }
     }
     step('0-trace');
 
@@ -253,12 +323,14 @@ export default {
       trainedParams,
       prevMovementMetric,
       prevServiceMetric,
+      ridershipBaseline,
     ] = await Promise.all([
       readLastSeen(env.MOMENTARILY),
       readAlphaState(env.MOMENTARILY),
       loadParams(env.MOMENTARILY),
       readMovementMetric(env.MOMENTARILY),
       readServiceMetric(env.MOMENTARILY),
+      loadRidershipBaseline(env.MOMENTARILY),
     ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
@@ -507,6 +579,8 @@ export default {
         segmentFlow,
         segmentParams,
         segmentDwell,
+        stationWait: stationWaitDoc,
+        ridershipBaseline,
       });
       step('6a-build-snapshot');
       try {
@@ -518,6 +592,54 @@ export default {
         console.error('snapshot publish failed:', err);
       }
       step('6b-publish-snapshot');
+
+      // Aggregated live train positions for the /map overlay, published as
+      // its own object (v1/trains.json) rather than embedded in the
+      // snapshot — see snapshot.ts's file header for the size/consumer
+      // rationale. Built from this tick's already-decoded vehicle-position
+      // fetch (step 0 above, `vehicles`/`vehicleFreshFeeds`), so it costs no
+      // extra request, and published on the same tick as snapshot.json,
+      // right after it. Fully independent of the snapshot publish above: a
+      // failure on either side never blocks or fails the other, and never
+      // fails the tick.
+      //
+      // vehicleFreshFeeds can be a STRICT SUBSET of TRIP_UPDATE_FEED_NAMES —
+      // Promise.allSettled above logs and SKIPS a rejected feed rather than
+      // throwing, so a partial vehicle set never reaches this try/catch as
+      // an exception. Two cases, not one:
+      //   - NO feed decoded (vehicleFreshFeeds empty): skip the publish
+      //     entirely. Calling buildTrains/publishTrains here would write
+      //     {positions: []} — indistinguishable from "zero trains in NYC",
+      //     exactly the fabrication this surface exists to avoid. The
+      //     object is left un-rewritten; a consumer sees the last-good read
+      //     with its own observed_at, never a fabricated empty one.
+      //   - SOME feeds decoded: publish normally, flagged partial via
+      //     fresh_feeds/expected_feeds (see PublishedTrains's doc comment)
+      //     rather than withheld — a partial map is still useful, as long
+      //     as it says so.
+      if (vehicleFreshFeeds.length > 0) {
+        try {
+          await publishTrains(
+            env.MOMENTARILY,
+            buildTrains(
+              observedAt,
+              trainPositions(vehicles),
+              vehicleFreshFeeds,
+              TRIP_UPDATE_FEED_NAMES,
+            ),
+          );
+        } catch (err) {
+          console.error(
+            'trains publish failed; leaving v1/trains.json unrewritten this tick:',
+            err,
+          );
+        }
+      } else {
+        console.warn(
+          'trains: no vehicle feed decoded this tick, leaving v1/trains.json unrewritten',
+        );
+      }
+      step('6c-publish-trains');
 
       // --- Step 7: grading streams ---
       const predictions: PredictionRecord[] = [];

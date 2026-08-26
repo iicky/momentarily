@@ -250,3 +250,66 @@ export function deriveTrace(vehicles: VehicleLite[]): TraceRow[] {
   }
   return rows;
 }
+
+/**
+ * Aggregate raw per-vehicle rows into a map-drawable view: how many trains
+ * currently share each (route, direction, stop, stopped) tuple. Reuses
+ * baseRoute/directionOf/STOPPED_AT above — the same rules deriveTrace uses —
+ * so a train's route/direction here never disagrees with its trace row. At
+ * ~700 concurrent trips this typically collapses to a few hundred distinct
+ * tuples (measured in trainPositions.test.ts against a synthetic feed of
+ * that size): trains queued behind each other, or bunched at a terminal,
+ * fold into one dot with a count instead of N overlapping markers.
+ *
+ * Skips vehicles with an empty stop_id — same caution as deriveTrace and the
+ * transitions map in deriveRouteMovementMetric: an unplaced train can't be
+ * drawn.
+ *
+ * Deliberately does NOT report which segment a moving train occupies. NYCT's
+ * stop_id is the stop a train is *heading to* while in transit (stopped ===
+ * false) and the stop it is *at* once STOPPED_AT (stopped === true) — the
+ * same duality TraceRow documents above. Turning that into "on segment A->B"
+ * would mean guessing a direction of travel at every branch or express
+ * point (e.g. a 6 train signed for Pelham Bay Park could still be running
+ * express or local past 125th St) where stop_id alone doesn't disambiguate.
+ * Consumers place the dot at stationOf(stop) and read `stopped` to tell
+ * at-platform from approaching, rather than Momentarily guessing the hop.
+ *
+ * Output is sorted by (route, direction, stop, stopped) so the published
+ * snapshot diffs cleanly tick to tick instead of reordering on Map iteration.
+ */
+export interface TrainPosition {
+  route: string; // baseRoute()-folded, like TraceRow's route_id
+  direction: 'north' | 'south' | null; // directionOf(), same as TraceRow
+  stop: string; // directional stop_id, exactly as the feed reports it
+  stopped: boolean; // true = at the platform, false = heading toward it
+  n: number; // how many vehicles share this exact tuple
+}
+
+export function trainPositions(vehicles: VehicleLite[]): TrainPosition[] {
+  const byKey = new Map<string, TrainPosition>();
+  for (const v of vehicles) {
+    if (!v.stopId) continue;
+    const route = baseRoute(v.routeId);
+    const direction = directionOf(v);
+    const stopped = v.status === STOPPED_AT;
+    const key = `${route}|${direction ?? ''}|${v.stopId}|${stopped}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.n += 1;
+    } else {
+      byKey.set(key, { route, direction, stop: v.stopId, stopped, n: 1 });
+    }
+  }
+  return [...byKey.values()].sort(compareTrainPositions);
+}
+
+function compareTrainPositions(a: TrainPosition, b: TrainPosition): number {
+  if (a.route !== b.route) return a.route < b.route ? -1 : 1;
+  const ad = a.direction ?? '';
+  const bd = b.direction ?? '';
+  if (ad !== bd) return ad < bd ? -1 : 1;
+  if (a.stop !== b.stop) return a.stop < b.stop ? -1 : 1;
+  if (a.stopped !== b.stopped) return a.stopped ? 1 : -1;
+  return 0;
+}

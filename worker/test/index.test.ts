@@ -15,6 +15,10 @@ const fetchState = vi.hoisted(() => ({
   jsonByUrl: new Map<string, unknown>(),
   protobufByUrl: new Map<string, Uint8Array>(),
   protobufCalls: [] as string[],
+  // Urls that should reject this test, simulating a real fetchProtobuf
+  // network/upstream failure rather than an empty-but-successful feed —
+  // Promise.allSettled in index.ts treats these two very differently.
+  protobufFailUrls: new Set<string>(),
 }));
 
 vi.mock('../src/fetch', async (importOriginal) => {
@@ -24,6 +28,7 @@ vi.mock('../src/fetch', async (importOriginal) => {
     fetchJson: async (url: string) => fetchState.jsonByUrl.get(url) ?? {},
     fetchProtobuf: async (url: string) => {
       fetchState.protobufCalls.push(url);
+      if (fetchState.protobufFailUrls.has(url)) throw new Error(`mock fetch failure: ${url}`);
       return fetchState.protobufByUrl.get(url) ?? new Uint8Array();
     },
   };
@@ -163,6 +168,7 @@ beforeEach(() => {
   fetchState.jsonByUrl.clear();
   fetchState.protobufByUrl.clear();
   fetchState.protobufCalls = [];
+  fetchState.protobufFailUrls.clear();
 });
 
 describe('tickMinute', () => {
@@ -200,14 +206,43 @@ describe('scheduled: the 5-minute pipeline gate', () => {
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: false }),
     ]);
 
-    // Nothing else did: the trace never writes ANY state/ object (it is a
-    // pure function of the feed, not a carry), no 5-minute pipeline state,
-    // no snapshot, no vehicles/trip-updates archive.
-    expect(keysWithPrefix(store, 'state/')).toHaveLength(0);
+    // Nothing else did — with one deliberate exception: the per-minute
+    // platform-wait carry (state/station_wait.json) is allowed
+    // off the 5-minute boundary too, for the same reason the trace itself
+    // is — 1-minute resolution on when a train cleared a platform. No other
+    // state/ object moves: no 5-minute pipeline state (vehicle_stops.json
+    // included), no snapshot, no vehicles/trip-updates archive.
+    expect(keysWithPrefix(store, 'state/')).toEqual(['state/station_wait.json']);
     expect(store.has('v1/snapshot.json')).toBe(false);
     expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(0);
     expect(keysWithPrefix(store, 'archive/trip_updates/')).toHaveLength(0);
     expect(keysWithPrefix(store, 'v1/')).toHaveLength(0);
+  });
+
+  test('a tick with no trace rows leaves the platform-wait carry untouched', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    // A total vehicle-feed outage: every feed fails, so deriveTrace yields
+    // zero rows. Folding that in as an observation would prune the whole
+    // trip -> stop carry (blinding the departure rule for the tick after the
+    // feed returns) and stamp a fresh observed_at over frozen platform
+    // timestamps, so the surface would keep publishing an ageing crowd as if
+    // it were current. The prior doc must survive byte-for-byte instead.
+    const prior = JSON.stringify({
+      observed_at: NON_BOUNDARY_AT - 600,
+      platforms: { A01N: NON_BOUNDARY_AT - 700 },
+      trips: { a: 'A01N' },
+    });
+    store.set('state/station_wait.json', { body: prior, etag: 'w0' });
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(NON_BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(store.get('state/station_wait.json')?.body).toBe(prior);
   });
 
   test('boundary minute (minute % 5 === 0): the 5-minute pipeline runs as before, AND the trace also runs', async () => {
@@ -350,6 +385,70 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     ]);
     expect(traceRowsAt(store, traceKeys[1]!)).toEqual([
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: true, stop_seq: 1 }),
+    ]);
+  });
+});
+
+describe('scheduled: trains.json publish (fail-soft on the vehicle feed)', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  test('all vehicle feeds failing: v1/trains.json is left un-rewritten, never published as a fabricated empty read', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    for (const [, url] of TRIP_UPDATE_FEEDS) fetchState.protobufFailUrls.add(url);
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // The snapshot still publishes — a trains.json failure must never block
+    // or fail the tick it rides alongside.
+    expect(store.has('v1/snapshot.json')).toBe(true);
+    // trains.json is simply absent, not written as {positions: []} — that
+    // would assert "zero trains in NYC" when the true state is "unknown".
+    expect(store.has('v1/trains.json')).toBe(false);
+  });
+
+  test('one of eight vehicle feeds failing: v1/trains.json IS published, flagged partial via fresh_feeds', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufFailUrls.add(TRIP_UPDATE_FEEDS[0]![1]); // 'ace' fails
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[1]![1], // 'bdfm' decodes normally
+      vehicleFeed({ tripId: 'a', routeId: 'F', stopId: 'A09N' }),
+    );
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(store.has('v1/trains.json')).toBe(true);
+    const trains = jsonAt(store, 'v1/trains.json') as {
+      fresh_feeds: string[];
+      expected_feeds: string[];
+      positions: unknown[];
+    };
+    // expected_feeds is the full constant set regardless of what failed —
+    // it's what a consumer diffs fresh_feeds against.
+    expect(trains.expected_feeds).toEqual(TRIP_UPDATE_FEEDS.map(([name]) => name));
+    // fresh_feeds names only the survivors: 'ace' is silently excluded, the
+    // other seven decoded and are named.
+    expect(trains.fresh_feeds).not.toContain('ace');
+    expect(trains.fresh_feeds).toHaveLength(TRIP_UPDATE_FEEDS.length - 1);
+    // The published positions still reflect exactly what DID decode — the
+    // 'ace' gap doesn't zero out the routes that came through on other feeds.
+    expect(trains.positions).toEqual([
+      { route: 'F', direction: 'north', stop: 'A09N', stopped: false, n: 1 },
     ]);
   });
 });

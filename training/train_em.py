@@ -795,10 +795,10 @@ class MovementInputs:
     `baseline_json`/`n_cells`/`route_rates` are the published baseline and the
     per-route normal-state prior seeds (as before). `baseline_cells` is the raw
     (route, direction, tod_bin) key set of the fitted baseline — the presence
-    gate the live filter keys `has_movement` on. `movement_by_tick` is the raw,
-    unfiltered per-(route, tick) counts the live filter folds into an
-    observation; the emission is fitted on these, not on the through-filtered
-    baseline population, so training scores what inference scores.
+    gate the live filter keys `has_movement` on. `movement_by_tick` is the
+    through-filtered per-(route, tick) counts the live filter folds into an
+    observation; the emission is fitted on the same filtered population as the
+    baseline and the live classifier, so training scores what inference scores.
     """
 
     baseline_json: dict[str, Any]
@@ -821,19 +821,19 @@ def _movement_baseline(
     - the per-(route, direction, tod) baseline, serialized for params.json
       delivery to the Worker's movement posterior, plus its raw cell key set;
     - the per-route normal advance rate that seeds each route's EM prior;
-    - the raw per-(route, tick) counts, both directions summed off the route
-      counters, that the HMM movement emission is now fitted on.
+    - the through-filtered per-(route, tick) counts, both directions summed, that
+      the HMM movement emission is fitted on (same filter as the baseline).
 
-    `through` restricts the *baseline* to trips whose from_stop has a scheduled
-    predecessor and successor. Without it the rate blends two physically
-    different populations: measured over 2026-08-05..08-11, chain endpoints stall
-    89.0% of the time and stops the timetable never names stall 77.9%, together
-    83% of all stall mass, against 11.6% mid-line. None means the static feed was
-    unavailable, and then nothing is filtered — the published stop set and this
-    fit have to agree. The raw per-tick counts are deliberately NOT through-
-    filtered: the live filter reads the unfiltered route counters, so the
-    training emission must see the same population (the baseline it is scored
-    against stays through-filtered either way — a pre-existing asymmetry).
+    `through` restricts the movement counts — the baseline AND the per-tick counts
+    the emission is fitted on — to trips whose from_stop has a scheduled
+    predecessor and successor. This is the SAME filter the live Worker applies
+    before it classifies (worker/src/vehicles.ts deriveRouteMovementMetric, since
+    2026-08-12), so the baseline, the training emission, and the live classifier
+    all score the identical population. Terminal/chain-endpoint layovers stall
+    ~89% of the time (measured 2026-08-05..08-11: 83% of all stall mass vs 11.6%
+    mid-line); counting them blends two physically different populations and makes
+    every route read chronically sub-normal. None means the static feed was
+    unavailable — then nothing is filtered, on any side.
 
     Uses the explicit training window — fetch_vehicle_metrics defaults to
     yesterday..today, too narrow for a stable prior. Fail-soft: any
@@ -858,7 +858,9 @@ def _movement_baseline(
             n_cells=len(baseline),
             route_rates=route_rates,
             baseline_cells=set(baseline.keys()),
-            movement_by_tick=build_movement_series(bodies),
+            movement_by_tick=build_movement_series(
+                bodies, counts_from_stop=counts_from_stop
+            ),
         )
     except Exception as exc:
         print(f"movement baseline skipped ({exc})", file=sys.stderr)

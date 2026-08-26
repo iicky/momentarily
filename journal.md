@@ -4531,3 +4531,102 @@ is the prerequisite for the movement-native state work.
 write; this shifts the live operating point (the trip-wire fires ~0.14% vs
 0.17%) and should go out with a params review. Tests updated to lock the
 no-saturation property and the pooled/trim behaviour; suite green.
+
+## 2026-08-25 — study: movement's own structure says the degradation axis is a continuum, not three states — but disruptions are rare, sticky regimes (dwell ~14 min), so a stateful model is warranted
+
+origin: agent
+
+Before reshaping the model around movement, asked the (now pooled, correct)
+advance distribution how many states it wants. Window 2026-07-31..08-13,
+through-filtered, 189k (route, direction, tick) cells. Clustering is on the
+BASELINE-RELATIVE signal (advance fraction / cell p0) so routes with different
+normals are comparable; persistence is measured only across genuinely adjacent
+5-minute ticks (a judged tick whose t+300 is also judged), not across gaps.
+
+**Presence (the suspended axis).** 97.8% of cells have trains present; of those
+76.2% clear the 3-match floor, 23.8% are present-but-sparse (overnight / low
+frequency). No trains at all: ~2%. "Suspended / no-service" is a real but small
+state and it is a *presence* distinction — trains absent — not a point on the
+advance axis.
+
+**The degradation axis is a continuum, not clusters.** Baseline-relative advance
+is one dominant mass at/above 1.0 (peak 39% in [1.00,1.05), ~80% of mass in
+[0.9,1.15]) with a smooth thin left tail to 0 — no valley. A Gaussian-mixture BIC
+keeps "preferring" more components (k=4 over k=3 over k=2), but the components
+expose it as shape-fitting: every one added past the first is either a
+near-duplicate normal sliver at ~1.0 or the single small tail blob at ~0.5
+(weight ~6-7%). There is no clean multi-modal separation. On the advance axis the
+most the data supports is TWO running states — normal (~1.0 of its own baseline)
+and a small-mass degraded tail (~0.5) — not the alert model's three.
+
+**But disruptions are rare, sticky regimes.** Over 73,741 genuinely adjacent
+(t, t+5min) judged pairs, the movement-disrupted base rate is only 0.21%, yet
+P(disrupted next | disrupted now) = 63.9% (99/155) vs P(disrupted next | normal
+now) = 0.076% (56/73,586) — 839× stickier to stay than to enter, an implied dwell
+of ~2.8 ticks (~14 min). Small disrupted sample (155 pairs), rare events, but the
+asymmetry is unambiguous: a memoryless per-tick threshold (today's
+`movement_state.ts`) throws away that persistence; a stateful model with learned
+dwell/transitions is warranted.
+
+**What this means for the state space.** The alert model's three states don't
+transfer as-is. Movement has a *presence* axis (running / sparse / absent) and a
+*continuous* degradation axis when running. A discrete label can carry at most:
+suspended = trains absent (presence), normal vs degraded = one chosen cut on the
+continuous advance-vs-baseline axis. There is no movement evidence for a third
+*advancing* regime — the disrupted/suspended split the alert model draws is an
+alert distinction, not a movement one. Two candidate architectures, to decide
+deliberately: a 2-running-state + presence discrete HMM with a threshold cut and
+learned dwell, vs a continuous-severity semi-Markov model. The data leans toward
+"few coarse states are enough on the advance axis; spend the modelling on
+persistence/dwell, not on more emission clusters."
+
+## 2026-08-25 — experiment: a continuous-severity filter (Option B) demonstrates the mechanics, and running it caught a train/serve skew in today's movement-wiring — the offline emission was fitted on unfiltered counts while the live worker filters
+
+origin: agent
+
+Prototyped Option B to see it, not describe it: latent per-tick advance rate
+θ_t, observed advanced_n ~ Binomial(matched_n, θ_t), logit(θ) a mean-reverting
+AR(1) toward the route's normal (persistence = the transition model). Particle
+filter, numpy only, on the real window.
+
+**The mechanics work; calibration is deferred.** The filter tracks the signal
+and smooths single-tick Binomial noise (a lone 0-of-13 tick dips within its band
+instead of snapping to 0). It is NOT yet calibrated: φ=0.75 and σ=0.45 were
+hand-set, and its 15-minute recovery forecast failed on the showcase, so treat
+this as a demonstration of the filtering machinery, not of its uncertainty or
+forecasts. Calibration waits until the signal it runs on is trustworthy. The
+empirical lag-1 autocorr of logit(advance) on high-n adjacent ticks is 0.86 —
+the real transition is stickier than the prototype assumed.
+
+**What running it caught — a skew I introduced earlier today.** The showcase
+picked route G's "longest sub-0.6·p0 run" and it came back 661 ticks (~55 hours)
+of raw advance at 15–25% against baseline 0.609. Not a disruption — an artifact.
+The live worker filters the advance counters to scheduled through-stops
+(`worker/src/vehicles.ts deriveRouteMovementMetric`, since 8e88644, 2026-08-12:
+a terminal/layover stall is not signal), and the baseline is fitted the same
+way. But my movement-wiring change (earlier today) reconstructed the offline
+training counts with `build_movement_series(bodies)` — the RAW unfiltered route
+counters — so the HMM movement emission was fitted on a population the live
+classifier never feeds it, and the prototype inherited the same raw counts.
+Measured, the raw-vs-filtered gap is systematic (median 0.258; Z 0.473 vs 0.946,
+E 0.461 vs 0.921), and it vanishes when the reconstruction is filtered the way
+the worker filters (median gap to the baseline 0.258 → 0.001).
+
+Not a live bug: production has been consistent (filtered vs filtered) since the
+worker filter landed. The bug was entirely in the offline reconstruction I added.
+
+**Fix.** `_movement_baseline` now builds `movement_by_tick` with the same
+`counts_from_stop` the baseline uses, so training, the baseline, and the live
+worker all score one population. Re-verified on the window: normal-state fitted
+advance now tracks each route's filtered baseline (Z 0.95=0.946, A 0.88, C 0.99,
+Q 0.92) instead of the skewed ~0.5, and the global prior advance_rate is
+(0.91, 0.85, 0.88) — correcting the (0.63, 0.62, 0.64) the earlier wiring entry
+reported, which was that entry's skewed fit (its "fitted rates overlap ~0.55"
+read was the same artifact). Test locks that the per-tick counts get the same
+filter as the baseline.
+
+**Bearing on A vs B.** The state-space study above already ran on the filtered
+signal, so its findings (continuum, not clusters; rare but ~14-min-sticky
+regimes) stand. B's machinery is sound and now runs on an honest signal; with
+the skew closed it is a live contender, calibration (φ, σ, per-route) being the
+next real step before it could be trusted for forecasts.

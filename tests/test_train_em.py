@@ -549,9 +549,11 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
 def test_movement_baseline_counts_only_through_stops(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A through-stop set becomes the from_stop filter the series builder counts
-    with, so the fitted baseline and the set published beside it agree."""
+    """A through-stop set becomes the from_stop filter BOTH the baseline series
+    builder and the per-tick counts builder count with, so the baseline, the
+    emission's training counts, and the live classifier all score one population."""
     filters_seen: list[Any] = []
+    pertick_filters_seen: list[Any] = []
 
     def _fake_fetch(
         cfg: R2Config,
@@ -570,10 +572,19 @@ def test_movement_baseline_counts_only_through_stops(
         filters_seen.append(counts_from_stop)
         return {}
 
+    def _fake_build_by_tick(
+        bodies: list[dict[str, Any]],
+        *,
+        counts_from_stop: Any = None,
+    ) -> dict[tuple[str, int], dict[str, int]]:
+        pertick_filters_seen.append(counts_from_stop)
+        return {}
+
     monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _fake_fetch)
     monkeypatch.setattr(
         "training.train_em.build_movement_series_by_direction", _fake_build_series
     )
+    monkeypatch.setattr("training.train_em.build_movement_series", _fake_build_by_tick)
 
     through = frozenset({("A", "north", "A02N")})
     _movement_baseline(
@@ -589,6 +600,10 @@ def test_movement_baseline_counts_only_through_stops(
     assert filt("A", "north", "A02N")
     assert not filt("A", "north", "A01N")  # terminal, absent from the set
     assert not filt("A", "south", "A02N")  # same stop, other direction
+    # The per-tick counts the emission trains on must use the SAME filter — else
+    # training scores an unfiltered population the live worker never feeds it.
+    (pertick_filt,) = pertick_filters_seen
+    assert pertick_filt is filt
 
 
 def test_movement_baseline_fails_soft_on_archive_error(

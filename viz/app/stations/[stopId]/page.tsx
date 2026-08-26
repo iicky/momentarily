@@ -7,7 +7,7 @@ import { useSnapshot, useCoords, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
-import { fmtAgo, fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
+import { fmtEta, fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
 import type { PlatformCrowdingView } from "@/lib/feed";
 import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
@@ -58,6 +58,38 @@ export default function StationPage() {
 
   const name = meta?.name ?? coord?.name ?? id;
 
+  // Destination labels for the two platforms, falling back to the compass word.
+  const northLabel = coord?.north_label ?? "Northbound";
+  const southLabel = coord?.south_label ?? "Southbound";
+
+  // Movement through the station, rolled up per direction from the segments
+  // touching it: disrupted if any of that direction's segments is, else moving
+  // if any was judged at all, else no live read. This is the detail the header
+  // chip rolls up — one place for the verdict, one for the per-direction read.
+  const movement = useMemo(() => {
+    const forDir = (d: "north" | "south") => {
+      const segs = adj.filter((a) => a.direction === d);
+      if (segs.length === 0) return null;
+      return {
+        dir: d,
+        disrupted: segs.some((s) => s.status === "disrupted"),
+        judged: segs.some((s) => s.status !== null),
+      };
+    };
+    const north = forDir("north");
+    const south = forDir("south");
+    return [north, south].filter((m): m is NonNullable<typeof m> => m != null);
+  }, [adj]);
+
+  // A directional stop id to its station name, preferring live metadata, then
+  // the coordinate file, and only falling back to the raw id when neither
+  // carries the station — so the segment list and worst-segment line read as
+  // places, not GTFS ids.
+  const nameOf = (dirStop: string): string => {
+    const u = undirected(dirStop);
+    return snap?.stations[u]?.name ?? coords?.[u]?.name ?? u;
+  };
+
   return (
     <div className="wrap">
       <PageHeader subtitle={<Link href="/lines">Lines</Link>} />
@@ -74,107 +106,30 @@ export default function StationPage() {
             )}
           </div>
 
-          <div className="station-cols">
-            <section>
-              <div className="section-title">Station</div>
-              <div className="kv">
-                <span className="k">Lines</span>
-                <span className="v station-lines">
-                  {(meta?.routes_served ?? coord?.daytime_routes ?? []).map((r) => (
-                    <RouteBullet key={r} snap={snap} route={r} size={22} href={`/lines/${r}`} />
-                  ))}
-                </span>
-              </div>
-              {(meta?.borough ?? coord?.borough) && (
-                <div className="kv">
-                  <span className="k">Borough</span>
-                  <span className="v">{meta?.borough ?? coord?.borough}</span>
-                </div>
-              )}
-              {coord?.structure && (
-                <div className="kv">
-                  <span className="k">Structure</span>
-                  <span className="v">{coord.structure}</span>
-                </div>
-              )}
-              {coord?.line && (
-                <div className="kv">
-                  <span className="k">Trunk</span>
-                  <span className="v">{coord.line}</span>
-                </div>
-              )}
-              {coord && (
-                <div className="kv">
-                  <span className="k">Location</span>
-                  <span className="v">
-                    {coord.lat.toFixed(4)}, {coord.lon.toFixed(4)}
-                  </span>
-                </div>
-              )}
-              <div className="kv">
-                <span className="k">GTFS id</span>
-                <span className="v">{id}</span>
-              </div>
-            </section>
-
-            <section>
-              <div className="section-title">Accessibility</div>
-              <div className="kv">
-                <span className="k">ADA</span>
-                <span className="v">
-                  {meta?.ada === 1
-                    ? "Fully accessible"
-                    : meta?.ada === 2
-                      ? "Partially accessible"
-                      : "Not accessible"}
-                </span>
-              </div>
-              {coord && (
-                <>
-                  <div className="kv">
-                    <span className="k">{coord.north_label ?? "Northbound"}</span>
-                    <span className="v">{meta?.ada_northbound ? "accessible" : "—"}</span>
-                  </div>
-                  <div className="kv">
-                    <span className="k">{coord.south_label ?? "Southbound"}</span>
-                    <span className="v">{meta?.ada_southbound ? "accessible" : "—"}</span>
-                  </div>
-                </>
-              )}
-              {status && (
-                <>
-                  <div className="kv">
-                    <span className="k">Elevators</span>
-                    <span className="v">
-                      {status.elevators_out}/{status.elevators_total} out
+          <div className="section-title">Live status</div>
+          {movement.length > 0 ? (
+            <ul className="movelist">
+              {movement.map((m) => {
+                const compass = m.dir === "north" ? "Northbound" : "Southbound";
+                const label = m.dir === "north" ? northLabel : southLabel;
+                const cls = m.disrupted ? "disrupted" : m.judged ? "normal" : "unknown";
+                const text = m.disrupted ? "disrupted" : m.judged ? "moving" : "no live read";
+                return (
+                  <li key={m.dir} className="move-row">
+                    <span className="move-dir">
+                      {compass}
+                      {label !== compass && <span className="move-to"> · toward {label}</span>}
                     </span>
-                  </div>
-                  <div className="kv">
-                    <span className="k">Escalators</span>
-                    <span className="v">
-                      {status.escalators_out}/{status.escalators_total} out
-                    </span>
-                  </div>
-                  {status.earliest_elevator_return != null && (
-                    <div className="kv">
-                      <span className="k">Est. return</span>
-                      <span className="v">
-                        {fmtAgo(status.earliest_elevator_return, Math.floor(Date.now() / 1000))}
-                      </span>
-                    </div>
-                  )}
-                </>
-              )}
-            </section>
-          </div>
-
-          <div className="section-title">Service flow</div>
-          {flow ? (
+                    <span className={`cond ${cls}`}>{text}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="note muted">No live movement judged through this station right now.</div>
+          )}
+          {flow && flow.status === "degraded" && (
             <div className="kv-block">
-              <div className="kv">
-                <span className="k">Status</span>
-                <span className="v">{flow.status}</span>
-              </div>
               <div className="kv">
                 <span className="k">Worst deficit</span>
                 <span className="v">{(flow.worst_deficit * 100).toFixed(0)}%</span>
@@ -183,14 +138,40 @@ export default function StationPage() {
                 <div className="kv">
                   <span className="k">Worst segment</span>
                   <span className="v">
-                    {undirected(flow.worst_segment[0])} → {undirected(flow.worst_segment[1])}
+                    {nameOf(flow.worst_segment[0])} → {nameOf(flow.worst_segment[1])}
                   </span>
                 </div>
               )}
               {flow.worst_recovery && <RecoveryLine rec={flow.worst_recovery} />}
             </div>
-          ) : (
-            <div className="note muted">No live movement judged through this station right now.</div>
+          )}
+          {status && (status.elevators_total > 0 || status.escalators_total > 0) && (
+            <div className="kv-block">
+              {status.elevators_total > 0 && (
+                <div className="kv">
+                  <span className="k">Elevators out</span>
+                  <span className="v">
+                    {status.elevators_out}/{status.elevators_total}
+                  </span>
+                </div>
+              )}
+              {status.escalators_total > 0 && (
+                <div className="kv">
+                  <span className="k">Escalators out</span>
+                  <span className="v">
+                    {status.escalators_out}/{status.escalators_total}
+                  </span>
+                </div>
+              )}
+              {status.earliest_elevator_return != null && (
+                <div className="kv">
+                  <span className="k">Est. return</span>
+                  <span className="v">
+                    {fmtEta(status.earliest_elevator_return, Math.floor(Date.now() / 1000))}
+                  </span>
+                </div>
+              )}
+            </div>
           )}
 
           <div className="section-title crowd-title">
@@ -202,8 +183,8 @@ export default function StationPage() {
           <WaitingRiders
             pc={snap.platform_crowding}
             stopId={id}
-            northLabel={coord?.north_label ?? "Northbound"}
-            southLabel={coord?.south_label ?? "Southbound"}
+            northLabel={northLabel}
+            southLabel={southLabel}
           />
 
           <div className="section-title">Segments</div>
@@ -217,8 +198,8 @@ export default function StationPage() {
                   <span className="seg-dir">{a.direction}</span>
                   <span className="seg-path">
                     {a.incoming
-                      ? `${undirected(a.from)} → ${id}`
-                      : `${id} → ${undirected(a.to)}`}
+                      ? `${nameOf(a.from)} → ${name}`
+                      : `${name} → ${nameOf(a.to)}`}
                   </span>
                   {a.status && <span className={`cond ${a.status}`}>{a.status}</span>}
                 </li>
@@ -236,6 +217,80 @@ export default function StationPage() {
               </ul>
             </>
           )}
+
+          {/* The reference sheet, demoted below the live answer: identifiers and
+              static facts a reader looks up rather than leads with. */}
+          <div className="station-facts">
+            <div className="station-cols">
+              <section>
+                <div className="section-title">Station</div>
+                <div className="kv">
+                  <span className="k">Lines</span>
+                  <span className="v station-lines">
+                    {(meta?.routes_served ?? coord?.daytime_routes ?? []).map((r) => (
+                      <RouteBullet key={r} snap={snap} route={r} size={20} href={`/lines/${r}`} />
+                    ))}
+                  </span>
+                </div>
+                {(meta?.borough ?? coord?.borough) && (
+                  <div className="kv">
+                    <span className="k">Borough</span>
+                    <span className="v">{meta?.borough ?? coord?.borough}</span>
+                  </div>
+                )}
+                {coord?.structure && (
+                  <div className="kv">
+                    <span className="k">Structure</span>
+                    <span className="v">{coord.structure}</span>
+                  </div>
+                )}
+                {coord?.line && (
+                  <div className="kv">
+                    <span className="k">Trunk</span>
+                    <span className="v">{coord.line}</span>
+                  </div>
+                )}
+                {coord && (
+                  <div className="kv">
+                    <span className="k">Location</span>
+                    <span className="v">
+                      {coord.lat.toFixed(4)}, {coord.lon.toFixed(4)}
+                    </span>
+                  </div>
+                )}
+                <div className="kv">
+                  <span className="k">GTFS id</span>
+                  <span className="v">{id}</span>
+                </div>
+              </section>
+
+              <section>
+                <div className="section-title">Accessibility</div>
+                <div className="kv">
+                  <span className="k">ADA</span>
+                  <span className="v">
+                    {meta?.ada === 1
+                      ? "Fully accessible"
+                      : meta?.ada === 2
+                        ? "Partially accessible"
+                        : "Not accessible"}
+                  </span>
+                </div>
+                {coord && (
+                  <>
+                    <div className="kv">
+                      <span className="k">Northbound</span>
+                      <span className="v">{meta?.ada_northbound ? "step-free" : "—"}</span>
+                    </div>
+                    <div className="kv">
+                      <span className="k">Southbound</span>
+                      <span className="v">{meta?.ada_southbound ? "step-free" : "—"}</span>
+                    </div>
+                  </>
+                )}
+              </section>
+            </div>
+          </div>
         </>
       )}
     </div>

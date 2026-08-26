@@ -192,13 +192,18 @@ export interface PlatformCrowdingEstimate {
 // published rather than documented so a reader can reproduce the arithmetic.
 export interface PlatformCrowdingMethod {
   formula: string;
-  split_basis: "uniform_over_served_platforms";
+  split_basis:
+    | "uniform_over_served_platforms"
+    | "scheduled_service_over_served_platforms";
   max_gap_minutes: number;
   served_window_minutes: number;
   excludes: string[];
   baseline_generated_at: number;
   baseline_window_start: string;
   baseline_window_end: string;
+  // Present since the scheduled-service split; older snapshots omit them.
+  service_weight_generated_at?: number | null;
+  service_weight_feed_version?: string | null;
 }
 
 export interface PlatformCrowding {

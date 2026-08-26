@@ -1,0 +1,35 @@
+name: Scheduled-service baseline (weekly)
+
+# Refresh state/service_weight_baseline.json -- the per-directional-platform
+# scheduled-train counts the live platform-crowding estimate splits a complex's
+# entry demand by (training/service_weight.py), instead of splitting evenly and
+# over-allocating a low-service platform at a busy complex.
+#
+# WEEKLY, alongside the ridership baseline. The source is the static GTFS
+# schedule, which MTA republishes only on a service change (every few months),
+# so a tighter cadence would re-fetch an unchanged zip; weekly keeps the
+# baseline current relative to how fast the schedule actually moves.
+on:
+  schedule:
+    - cron: '30 6 * * 0'  # 06:30 UTC every Sunday, after the ridership run.
+  workflow_dispatch:      # manual refresh
+
+concurrency:
+  group: service-weight-baseline
+  cancel-in-progress: false
+
+jobs:
+  service-weight-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Refresh the scheduled-service baseline
+        run: uv run python -m training.service_weight
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}

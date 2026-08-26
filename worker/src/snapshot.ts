@@ -20,7 +20,7 @@ import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
-import type { DwellQuantiles, RidershipBaselineDoc, TrainedParams } from './params';
+import type { DwellQuantiles, RidershipBaselineDoc, ServiceWeightBaselineDoc, TrainedParams } from './params';
 import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
@@ -268,13 +268,23 @@ interface PlatformCrowdingEstimateOut {
 
 interface PlatformCrowdingMethodOut {
   formula: string;
-  split_basis: 'uniform_over_served_platforms';
+  // Which rule split each complex's rate across its served platforms.
+  // 'scheduled_service_over_served_platforms' when the service_weight baseline
+  // is loaded (weighted where a complex is fully covered this hour, even
+  // otherwise); 'uniform_over_served_platforms' when it is absent and every
+  // complex splits evenly. See crowding.ts derivePlatformCrowding.
+  split_basis: 'uniform_over_served_platforms' | 'scheduled_service_over_served_platforms';
   max_gap_minutes: number;
   served_window_minutes: number;
   excludes: string[];
   baseline_generated_at: number;
   baseline_window_start: string;
   baseline_window_end: string;
+  // Provenance of the scheduled-service split weights: the service_weight
+  // baseline's own generated_at and GTFS feed_version, or null when the
+  // baseline was absent and the split fell back to uniform.
+  service_weight_generated_at: number | null;
+  service_weight_feed_version: string | null;
 }
 
 interface PlatformCrowdingOut {
@@ -382,6 +392,13 @@ export function buildSnapshot(args: {
    * until the trainer's first run, or when the document fails validation;
    * platform_crowding then publishes null rather than estimate off nothing. */
   ridershipBaseline?: RidershipBaselineDoc | null;
+  /** Per-directional-platform scheduled-service baseline from
+   * training/service_weight.py. Read fresh each tick, not tick-lagged — it
+   * only changes weekly. Null before the first run or when the document fails
+   * validation; the crowding split then falls back to even-over-served rather
+   * than abstaining (unlike a missing ridership baseline, which is fatal to
+   * the surface). */
+  serviceWeightBaseline?: ServiceWeightBaselineDoc | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -429,6 +446,7 @@ export function buildSnapshot(args: {
       ? buildPlatformCrowdingOut(
           args.stationWait,
           args.ridershipBaseline,
+          args.serviceWeightBaseline ?? null,
           args.stations ?? {},
           args.generatedAt,
         )
@@ -1218,21 +1236,32 @@ function buildStationFlowOut(
 function buildPlatformCrowdingOut(
   stationWait: StationWaitDoc,
   ridershipBaseline: RidershipBaselineDoc,
+  serviceWeights: ServiceWeightBaselineDoc | null,
   stations: Record<string, StationOut>,
   now: number,
 ): PlatformCrowdingOut {
-  const result = derivePlatformCrowding(stationWait, ridershipBaseline, stations, now);
+  const result = derivePlatformCrowding(
+    stationWait,
+    ridershipBaseline,
+    serviceWeights,
+    stations,
+    now,
+  );
   return {
     ...result,
     method: {
       formula: 'entries_per_min * minutes_since_last_train',
-      split_basis: 'uniform_over_served_platforms',
+      split_basis: serviceWeights
+        ? 'scheduled_service_over_served_platforms'
+        : 'uniform_over_served_platforms',
       max_gap_minutes: CROWDING_MAX_GAP_MINUTES,
       served_window_minutes: CROWDING_SERVED_WINDOW_MINUTES,
       excludes: ['in-system transfers', 'exits'],
       baseline_generated_at: ridershipBaseline.generated_at,
       baseline_window_start: ridershipBaseline.source.window_start,
       baseline_window_end: ridershipBaseline.source.window_end,
+      service_weight_generated_at: serviceWeights?.generated_at ?? null,
+      service_weight_feed_version: serviceWeights?.source.feed_version ?? null,
     },
   };
 }

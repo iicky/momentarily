@@ -216,7 +216,7 @@ _DAY_COLUMNS = (
 
 
 @dataclass(frozen=True)
-class _Weekly:
+class Weekly:
     """One calendar.txt row: the weekdays a service runs and its date range."""
 
     service_id: str
@@ -226,10 +226,10 @@ class _Weekly:
 
 
 @dataclass(frozen=True)
-class _Calendar:
+class Calendar:
     """calendar.txt with its calendar_dates.txt exceptions applied."""
 
-    weekly: tuple[_Weekly, ...]
+    weekly: tuple[Weekly, ...]
     added: Mapping[str, frozenset[str]]
     removed: Mapping[str, frozenset[str]]
 
@@ -253,9 +253,9 @@ def _rows(zf: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
         return list(csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8-sig")))
 
 
-def _read_calendar(zf: zipfile.ZipFile) -> _Calendar:
+def read_calendar(zf: zipfile.ZipFile) -> Calendar:
     weekly = tuple(
-        _Weekly(
+        Weekly(
             service_id=row["service_id"],
             weekdays=frozenset(
                 i for i, col in enumerate(_DAY_COLUMNS) if row[col] == "1"
@@ -270,7 +270,7 @@ def _read_calendar(zf: zipfile.ZipFile) -> _Calendar:
     for row in _rows(zf, "calendar_dates.txt"):
         target = added if row["exception_type"] == "1" else removed
         target[row["date"]].add(row["service_id"])
-    return _Calendar(
+    return Calendar(
         weekly=weekly,
         added={k: frozenset(v) for k, v in added.items()},
         removed={k: frozenset(v) for k, v in removed.items()},
@@ -311,7 +311,7 @@ def _feed_date(value: str) -> date | None:
         return None
 
 
-def _read_version(zf: zipfile.ZipFile) -> FeedVersion:
+def read_version(zf: zipfile.ZipFile) -> FeedVersion:
     rows = _rows(zf, "feed_info.txt")
     row = rows[0] if rows else {}
     return FeedVersion(
@@ -426,7 +426,7 @@ class Timetable:
         self,
         hop_samples: Mapping[str, Mapping[HopKey, tuple[int, ...]]],
         patterns: Mapping[str, Mapping[str, Pattern]],
-        calendar: _Calendar,
+        calendar: Calendar,
         version: FeedVersion,
     ) -> None:
         self._hop_samples = hop_samples
@@ -569,8 +569,8 @@ def timetable(zf: zipfile.ZipFile) -> Timetable:
             for service, keys in hop_samples.items()
         },
         patterns=patterns,
-        calendar=_read_calendar(zf),
-        version=_read_version(zf),
+        calendar=read_calendar(zf),
+        version=read_version(zf),
     )
 
 

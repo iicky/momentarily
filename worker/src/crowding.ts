@@ -20,8 +20,8 @@
  * is moving, this tracks how long a PLATFORM has sat empty.
  */
 
-import { ridershipRateFor } from './params';
-import type { RidershipBaselineDoc } from './params';
+import { ridershipRateFor, serviceWeightFor } from './params';
+import type { RidershipBaselineDoc, ServiceWeightBaselineDoc } from './params';
 import { stationId } from './segment_flow';
 import type { StationWaitDoc } from './state';
 import type { StationOut } from './stations_static';
@@ -157,11 +157,22 @@ export interface PlatformCrowdingResult {
  * For every platform in `wait.platforms`: resolve its parent station
  * (stationId — strip a trailing N/S), that station's complex id, and the
  * complex's usual entries/min for the current (weekday/weekend, hour) cell.
- * Split that rate evenly across however many of the complex's platforms
- * have themselves seen a train within CROWDING_SERVED_WINDOW_MINUTES — an
- * ASSUMPTION (see PlatformCrowdingMethod.split_basis in the schema): no feed
- * says which platform a rider actually walked to. Multiply the platform's
+ * Split that rate across the complex's platforms that have themselves seen a
+ * train within CROWDING_SERVED_WINDOW_MINUTES, then multiply the platform's
  * own share by minutes since ITS last train.
+ *
+ * The split is SCHEDULED-SERVICE weighted (see PlatformCrowdingMethod
+ * .split_basis in the schema): a platform's share of the complex's demand is
+ * its share of the complex's scheduled trains at this (day, hour) cell —
+ * demand tracks service far better than it tracks platform count, so an even
+ * split over-allocates a low-service platform at a busy complex (the 42 St
+ * Shuttle at Grand Central). It is still an ASSUMPTION: no feed says which
+ * platform a rider walked to. Weighting requires `serviceWeights` AND that
+ * EVERY served platform in the complex carry a positive scheduled count this
+ * hour; otherwise that complex falls back to the even split, because a missing
+ * or zero count is a hole we refuse to impute a weight into. So a complex is
+ * weighted or even as a whole, never a blend of a real weight and a made-up
+ * one.
  *
  * Abstains rather than fabricates, with the exact reason:
  *   - 'unknown_stop': the platform's parent station isn't in `stations`, or
@@ -180,18 +191,31 @@ export interface PlatformCrowdingResult {
 export function derivePlatformCrowding(
   wait: StationWaitDoc,
   baseline: RidershipBaselineDoc,
+  serviceWeights: ServiceWeightBaselineDoc | null,
   stations: Record<string, StationOut>,
   now: number,
 ): PlatformCrowdingResult {
   const servedWindowSeconds = CROWDING_SERVED_WINDOW_MINUTES * 60;
 
-  // How many platforms per complex currently sit within the served window —
-  // the shared denominator every platform in that complex divides by.
+  // Per complex, over the platforms currently inside the served window: how
+  // many there are (the even-split denominator), the sum of their scheduled
+  // trains this hour (the weighted-split denominator), and whether EVERY one
+  // carries a positive scheduled count. A complex short of that full coverage
+  // — or with no service_weight baseline at all — splits evenly; a hole is
+  // never imputed a weight (see the split basis in the docstring).
   const servedByComplex: Record<string, number> = {};
+  const weightSumByComplex: Record<string, number> = {};
+  const coveredByComplex: Record<string, boolean> = {};
   for (const [stopId, lastAt] of Object.entries(wait.platforms)) {
     const complexId = stations[stationId(stopId)]?.station_complex_id;
-    if (complexId != null && now - lastAt <= servedWindowSeconds) {
-      servedByComplex[complexId] = (servedByComplex[complexId] ?? 0) + 1;
+    if (complexId == null || now - lastAt > servedWindowSeconds) continue;
+    servedByComplex[complexId] = (servedByComplex[complexId] ?? 0) + 1;
+    const weight = serviceWeightFor(serviceWeights, stopId, now);
+    if (weight != null && weight > 0) {
+      weightSumByComplex[complexId] = (weightSumByComplex[complexId] ?? 0) + weight;
+      coveredByComplex[complexId] = coveredByComplex[complexId] ?? true;
+    } else {
+      coveredByComplex[complexId] = false;
     }
   }
 
@@ -219,12 +243,21 @@ export function derivePlatformCrowding(
       abstained.gap_exceeds_cap = (abstained.gap_exceeds_cap ?? 0) + 1;
       continue;
     }
-    // Round the published rate, but compute the count off the unrounded one.
-    // `rate / served` is a mean of hourly sums divided by a small integer, so
-    // it lands on values like 50.819800000000004 — float noise in a public
-    // contract that ~900 platforms then pay for in bytes. Two decimals is
-    // 0.6 riders/hour, already finer than a 90-day mean can support.
-    const entriesPerMin = rate / served;
+    // A platform's share of the complex demand: its scheduled trains over the
+    // complex's served total when the whole complex is covered, else an even
+    // 1/served. Round the published rate but compute the count off the
+    // unrounded one — `rate * share` is a mean of hourly sums times a ratio, so
+    // it lands on values like 50.819800000000004, float noise a public contract
+    // with ~900 platforms pays for in bytes. Two decimals is 0.6 riders/hour,
+    // finer than a 90-day mean can support.
+    const weight = serviceWeightFor(serviceWeights, stopId, now);
+    const weightSum = weightSumByComplex[complexId] ?? 0;
+    let entriesPerMin: number;
+    if ((coveredByComplex[complexId] ?? false) && weight != null && weight > 0 && weightSum > 0) {
+      entriesPerMin = rate * (weight / weightSum);
+    } else {
+      entriesPerMin = rate / served;
+    }
     platforms[stopId] = {
       last_train_at: lastAt,
       entries_per_min: Math.round(entriesPerMin * 100) / 100,

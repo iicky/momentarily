@@ -16,14 +16,14 @@
  * against `now` to decide whether to fetch the E&E feeds this tick.
  */
 
-import { z } from 'zod';
+import { z } from "zod";
 
 import { conditionalPut } from './r2';
 import type { VersionedRead } from './r2';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
 
-export const STATE_KEY = 'state/last_seen.json';
+export const STATE_KEY = "state/last_seen.json";
 
 // Cached station_status derivations, refreshed when E&E fetches succeed.
 // Stored here (vs recomputed each tick) because E&E only updates hourly while
@@ -32,7 +32,7 @@ export const STATE_KEY = 'state/last_seen.json';
 const StationStatusEntrySchema = z.object({
   station_complex_id: z.string(),
   alerts: z.array(z.string()).default([]),
-  ada_status: z.enum(['operational', 'ada_degraded', 'non_ada']),
+  ada_status: z.enum(["operational", "ada_degraded", "non_ada"]),
   elevators_total: z.number().int().nonnegative(),
   elevators_out: z.number().int().nonnegative(),
   escalators_total: z.number().int().nonnegative(),
@@ -45,7 +45,7 @@ const StationStatusEntrySchema = z.object({
 // hourly E&E fetch and republished each tick for the same reason.
 const EquipmentEntrySchema = z.object({
   equipment_id: z.string(),
-  type: z.enum(['elevator', 'escalator']),
+  type: z.enum(["elevator", "escalator"]),
   station_complex_id: z.string().nullable(),
   location_text: z.string().nullable(),
   ada_pathway: z.boolean(),
@@ -98,7 +98,7 @@ export async function readLastSeen(
     const data = await obj.json();
     return { state: LastSeenSchema.parse(data), etag: obj.etag };
   } catch (err) {
-    console.error('last_seen.json corrupt; resetting:', err);
+    console.error("last_seen.json corrupt; resetting:", err);
     return { state: emptyLastSeen(), etag: obj.etag };
   }
 }
@@ -113,8 +113,8 @@ export async function writeLastSeen(
   etag: string | null,
 ): Promise<boolean> {
   return conditionalPut(bucket, STATE_KEY, JSON.stringify(state), etag, {
-    contentType: 'application/json',
-    cacheControl: 'no-store',
+    contentType: "application/json",
+    cacheControl: "no-store",
   });
 }
 
@@ -124,7 +124,7 @@ export async function writeLastSeen(
 // tick, so folding it in would compound the JSON cost that has caused CPU-limit
 // outages before. Plain put (no CAS) — step 8b is already gated on the alpha
 // winner, so only one run writes it per tick.
-export const VEHICLE_STOPS_KEY = 'state/vehicle_stops.json';
+export const VEHICLE_STOPS_KEY = "state/vehicle_stops.json";
 
 const VehicleStopsSchema = z.record(z.string(), z.string());
 
@@ -138,7 +138,7 @@ export async function readVehicleStops(
   try {
     return VehicleStopsSchema.parse(await obj.json());
   } catch (err) {
-    console.error('vehicle_stops.json corrupt; resetting:', err);
+    console.error("vehicle_stops.json corrupt; resetting:", err);
     return {};
   }
 }
@@ -148,7 +148,7 @@ export async function writeVehicleStops(
   stops: Record<string, string>,
 ): Promise<void> {
   await bucket.put(VEHICLE_STOPS_KEY, JSON.stringify(stops), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
   });
 }
 
@@ -157,13 +157,13 @@ export async function writeVehicleStops(
 // way keeps the vehicle fetch off the time-to-publish path; the route's current
 // state is published one tick (~5 min) stale, which a slow freeze/recovery
 // regime tolerates. Its own small object (~28 routes), like vehicle_stops.json.
-export const MOVEMENT_STATE_KEY = 'state/movement_state.json';
+export const MOVEMENT_STATE_KEY = "state/movement_state.json";
 
 const MovementConditionSchema = z.enum([
-  'normal',
-  'disrupted',
-  'suspended',
-  'not_scheduled',
+  "normal",
+  "disrupted",
+  "suspended",
+  "not_scheduled",
 ]);
 
 // The debounced regime and its clock, per route. `state` is what the snapshot
@@ -181,7 +181,7 @@ const MovementRegimeSchema = z.object({
 // Service-level regime, a SUPPLY axis beside the movement (flow) regimes above.
 // 'unknown' is permitted so the type lines up with deriveServiceStates' return,
 // but is never actually committed — unknown ticks abstain from the clock.
-const ServiceConditionSchema = z.enum(['normal', 'degraded', 'unknown']);
+const ServiceConditionSchema = z.enum(["normal", "degraded", "unknown"]);
 const ServiceRegimeSchema = z.object({
   state: ServiceConditionSchema,
   entered_at: z.number(),
@@ -224,7 +224,7 @@ export async function readMovementState(
   try {
     return MovementStateSchema.parse(await obj.json());
   } catch (err) {
-    console.error('movement_state.json corrupt; resetting:', err);
+    console.error("movement_state.json corrupt; resetting:", err);
     return null;
   }
 }
@@ -234,7 +234,7 @@ export async function writeMovementState(
   doc: MovementStateDoc,
 ): Promise<void> {
   await bucket.put(MOVEMENT_STATE_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
   });
 }
 
@@ -244,7 +244,7 @@ export async function writeMovementState(
 // tick — a ~5-min lag ("option B") that keeps the vehicle fetch off the
 // publish path. By-direction so a future per-direction filter can split it;
 // the route-level filter aggregates both. Its own small object (~28 routes).
-export const MOVEMENT_METRIC_KEY = 'state/movement_metric.json';
+export const MOVEMENT_METRIC_KEY = "state/movement_metric.json";
 
 const DirCountsSchema = z.object({
   advanced_n: z.number().int().nonnegative(),
@@ -269,7 +269,7 @@ export async function readMovementMetric(
   try {
     return MovementMetricSchema.parse(await obj.json());
   } catch (err) {
-    console.error('movement_metric.json corrupt; resetting:', err);
+    console.error("movement_metric.json corrupt; resetting:", err);
     return null;
   }
 }
@@ -279,7 +279,7 @@ export async function writeMovementMetric(
   observedAt: number,
   moveRows: Map<string, MovementRow>,
 ): Promise<void> {
-  const rows: MovementMetricDoc['rows'] = {};
+  const rows: MovementMetricDoc["rows"] = {};
   for (const [route, row] of moveRows) {
     rows[route] = {
       north: {
@@ -294,14 +294,14 @@ export async function writeMovementMetric(
   }
   const doc: MovementMetricDoc = { observed_at: observedAt, rows };
   await bucket.put(MOVEMENT_METRIC_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
   });
 }
 
 // Per-route assigned_n (dispatched trains), carried one tick forward to feed the
 // HMM service emission at derive time. Written at step 8b, read before the filter
 // next tick (option B lag), like movement_metric.json. Its own small object.
-export const SERVICE_METRIC_KEY = 'state/service_metric.json';
+export const SERVICE_METRIC_KEY = "state/service_metric.json";
 
 const ServiceMetricSchema = z.object({
   observed_at: z.number(),
@@ -319,7 +319,7 @@ export async function readServiceMetric(
   try {
     return ServiceMetricSchema.parse(await obj.json());
   } catch (err) {
-    console.error('service_metric.json corrupt; resetting:', err);
+    console.error("service_metric.json corrupt; resetting:", err);
     return null;
   }
 }
@@ -329,13 +329,13 @@ export async function writeServiceMetric(
   observedAt: number,
   svcRows: Map<string, ServiceRow>,
 ): Promise<void> {
-  const rows: ServiceMetricDoc['rows'] = {};
+  const rows: ServiceMetricDoc["rows"] = {};
   for (const [route, row] of svcRows) {
     rows[route] = row.assigned_n;
   }
   const doc: ServiceMetricDoc = { observed_at: observedAt, rows };
   await bucket.put(SERVICE_METRIC_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
   });
 }
 
@@ -345,25 +345,28 @@ export async function writeServiceMetric(
 // Topology (adjacency) comes from the static GTFS timetable when the trainer's
 // feed fetch succeeds, falling back to observed cross-tick adjacency otherwise
 // — see training/gtfs_static.py + training/train_em.py write_segment_params.
-export const SEGMENT_PARAMS_KEY = 'state/segment_params.json';
+export const SEGMENT_PARAMS_KEY = "state/segment_params.json";
 
 const SegmentParamsSchema = z.object({
-  schema_version: z.literal('1'),
+  schema_version: z.literal("1"),
   trained_at: z.number(),
   min_share: z.number().min(0).max(1),
   // Absent on segment_params.json written before the static-GTFS switchover;
   // those docs are entirely observed-adjacency, hence that default.
-  topology_source: z.enum(['gtfs_static', 'observed']).default('observed'),
+  topology_source: z.enum(["gtfs_static", "observed"]).default("observed"),
   cells: z.record(
     z.string(),
-    z.object({ p0: z.number().min(0).max(1), n: z.number().int().nonnegative() }),
+    z.object({
+      p0: z.number().min(0).max(1),
+      n: z.number().int().nonnegative(),
+    }),
   ),
   adjacency: z.record(
     z.string(),
     z.object({
       to: z.string(),
       // Same default reasoning as topology_source, per entry.
-      source: z.enum(['gtfs_static', 'observed']).default('observed'),
+      source: z.enum(["gtfs_static", "observed"]).default("observed"),
       // The observed cross-tick reliability ANNOTATION now, not an existence
       // gate: absent when static topology names a segment the vehicle
       // archive never (or too rarely) saw advance out of.
@@ -373,7 +376,9 @@ const SegmentParamsSchema = z.object({
       // one), for path queries — `to` is just the highest-n_trips entry.
       // Absent on observed-sourced (fallback) entries.
       successors: z
-        .array(z.object({ to: z.string(), n_trips: z.number().int().nonnegative() }))
+        .array(
+          z.object({ to: z.string(), n_trips: z.number().int().nonnegative() }),
+        )
         .optional(),
     }),
   ),
@@ -414,7 +419,7 @@ export async function readSegmentParams(
   try {
     return SegmentParamsSchema.parse(await obj.json());
   } catch (err) {
-    console.error('segment_params.json corrupt; station flow off:', err);
+    console.error("segment_params.json corrupt; station flow off:", err);
     return null;
   }
 }
@@ -426,7 +431,7 @@ export async function readSegmentParams(
 // changes params.json's trained_at, so it never reseeds the filter or splits the
 // grader's params-version window. The Worker prefers this object and falls back
 // to params.json's legacy service_baseline_hourly when it's absent.
-export const SERVICE_BASELINE_KEY = 'state/service_baseline.json';
+export const SERVICE_BASELINE_KEY = "state/service_baseline.json";
 
 // route -> schedule_bin -> {p10, p90} of assigned_n at that cell, same units
 // and the same min_samples gate as `baseline` — a cell present in `baseline`
@@ -439,7 +444,7 @@ const ServiceQuantilesSchema = z.record(
 export type ServiceQuantiles = z.infer<typeof ServiceQuantilesSchema>;
 
 const ServiceBaselineDocSchema = z.object({
-  schema_version: z.literal('1'),
+  schema_version: z.literal("1"),
   // The sidecar's OWN publication stamp, and its versioned-snapshot key. Kept
   // distinct from params.json's trained_at: each refresh gets a fresh stamp so
   // it never overwrites a prior immutable copy nor moves the model version.
@@ -466,20 +471,23 @@ export async function readServiceBaseline(
   try {
     return ServiceBaselineDocSchema.parse(await obj.json());
   } catch (err) {
-    console.error('service_baseline.json corrupt; supply axis falls back to params:', err);
+    console.error(
+      "service_baseline.json corrupt; supply axis falls back to params:",
+      err,
+    );
     return null;
   }
 }
 
 // Decaying per-segment advance/matched accumulator, carried tick to tick so a
 // ~1-train-per-tick segment accrues enough to judge. Its own object, step 8b.
-export const SEGMENT_FLOW_KEY = 'state/segment_flow.json';
+export const SEGMENT_FLOW_KEY = "state/segment_flow.json";
 
 // Segment cell's debounced regime and its clock — same shape as
 // MovementRegimeSchema (mirrors RegimeEntry in regime.ts), scoped to the two
 // calls classifyAdvance can make for a segment cell. No suspended/
 // not_scheduled: those come from the route's own schedule, not a segment.
-const SegmentConditionSchema = z.enum(['normal', 'disrupted']);
+const SegmentConditionSchema = z.enum(["normal", "disrupted"]);
 
 const SegmentRegimeSchema = z.object({
   state: SegmentConditionSchema,
@@ -508,7 +516,7 @@ export async function readSegmentFlow(
   try {
     return SegmentFlowSchema.parse(await obj.json());
   } catch (err) {
-    console.error('segment_flow.json corrupt; resetting:', err);
+    console.error("segment_flow.json corrupt; resetting:", err);
     return null;
   }
 }
@@ -518,7 +526,7 @@ export async function writeSegmentFlow(
   doc: SegmentFlowDoc,
 ): Promise<void> {
   await bucket.put(SEGMENT_FLOW_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
   });
 }
 
@@ -528,7 +536,7 @@ export async function writeSegmentFlow(
 // — segment episodes are short and the ~1.8k-cell curve set never touches the
 // hot per-tick params parse. No writer here: the trainer publishes it
 // directly, same as SEGMENT_PARAMS_KEY.
-export const SEGMENT_DWELL_KEY = 'state/segment_dwell.json';
+export const SEGMENT_DWELL_KEY = "state/segment_dwell.json";
 
 // Mirrors training.dwell.DwellQuantiles exactly. A fresh object with no
 // params.json back-compat baggage, so unlike params.ts's older DwellQuantiles
@@ -549,9 +557,12 @@ const SegmentDwellQuantilesSchema = z.object({
 export type SegmentDwellQuantiles = z.infer<typeof SegmentDwellQuantilesSchema>;
 
 const SegmentDwellSchema = z.object({
-  schema_version: z.literal('1'),
+  schema_version: z.literal("1"),
   trained_at: z.number(),
-  cells: z.record(z.string(), z.record(z.string(), SegmentDwellQuantilesSchema)),
+  cells: z.record(
+    z.string(),
+    z.record(z.string(), SegmentDwellQuantilesSchema),
+  ),
 });
 export type SegmentDwellDoc = z.infer<typeof SegmentDwellSchema>;
 
@@ -565,21 +576,24 @@ export async function readSegmentDwell(
   try {
     return SegmentDwellSchema.parse(await obj.json());
   } catch (err) {
-    console.error('segment_dwell.json corrupt; segment dwell curves unavailable:', err);
+    console.error(
+      "segment_dwell.json corrupt; segment dwell curves unavailable:",
+      err,
+    );
     return null;
   }
 }
 
 // Per-station service-flow, computed at step 8b and read by the next tick's
 // snapshot build (one tick / ~5-min lag, like movement_state).
-export const STATION_FLOW_KEY = 'state/station_flow.json';
+export const STATION_FLOW_KEY = "state/station_flow.json";
 
 const StationFlowSchema = z.object({
   observed_at: z.number(),
   stations: z.record(
     z.string(),
     z.object({
-      status: z.enum(['flowing', 'degraded']),
+      status: z.enum(["flowing", "degraded"]),
       worst_deficit: z.number(),
       worst_segment: z.tuple([z.string(), z.string()]).nullable(),
       routes: z.array(z.string()),
@@ -599,7 +613,7 @@ export async function readStationFlow(
   try {
     return StationFlowSchema.parse(await obj.json());
   } catch (err) {
-    console.error('station_flow.json corrupt; resetting:', err);
+    console.error("station_flow.json corrupt; resetting:", err);
     return null;
   }
 }
@@ -609,7 +623,7 @@ export async function writeStationFlow(
   doc: StationFlowDoc,
 ): Promise<void> {
   await bucket.put(STATION_FLOW_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
   });
 }
 

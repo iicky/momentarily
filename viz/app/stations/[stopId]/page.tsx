@@ -37,7 +37,7 @@ export default function StationPage() {
 
   // Every judged segment touching this station, in either direction.
   const adj = useMemo<AdjRow[]>(() => {
-    if (!topo?.configured || !snap) return [];
+    if (!topo || !snap) return [];
     const rows: AdjRow[] = [];
     for (const e of topo.edges) {
       const out = undirected(e.from) === id;
@@ -207,11 +207,7 @@ export default function StationPage() {
           />
 
           <div className="section-title">Segments</div>
-          {topo && !topo.configured ? (
-            <div className="note muted">
-              Segment topology needs the R2 vault — run the viz under <code>murk exec</code>.
-            </div>
-          ) : adj.length === 0 ? (
+          {adj.length === 0 ? (
             <div className="note muted">No segments recorded for this station.</div>
           ) : (
             <ul className="seglist">

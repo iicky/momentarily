@@ -34,12 +34,24 @@ import { updateStationWait } from './crowding';
 import type { RouteSnapshot } from './derive';
 import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
-import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, fetchJson, fetchProtobuf } from './fetch';
+import {
+  FEEDS,
+  STATIONS_FEED,
+  TRIP_UPDATE_FEEDS,
+  TRIP_UPDATE_FEED_NAMES,
+  fetchJson,
+  fetchProtobuf,
+} from './fetch';
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import { deriveRouteServiceMetric } from './trip_updates';
 import type { TraceRow } from './vehicles';
-import { deriveRouteMovementMetric, deriveTrace, stopPositions } from './vehicles';
+import {
+  deriveRouteMovementMetric,
+  deriveTrace,
+  stopPositions,
+  trainPositions,
+} from './vehicles';
 import {
   MOVEMENT_STATE_PUBLISH,
   deriveMovementStates,
@@ -70,7 +82,13 @@ import {
 import { loadParams, loadRidershipBaseline, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
-import { TICK_SECONDS, buildSnapshot, publishSnapshot } from './snapshot';
+import {
+  TICK_SECONDS,
+  buildSnapshot,
+  buildTrains,
+  publishSnapshot,
+  publishTrains,
+} from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import {
@@ -574,6 +592,54 @@ export default {
         console.error('snapshot publish failed:', err);
       }
       step('6b-publish-snapshot');
+
+      // Aggregated live train positions for the /map overlay, published as
+      // its own object (v1/trains.json) rather than embedded in the
+      // snapshot — see snapshot.ts's file header for the size/consumer
+      // rationale. Built from this tick's already-decoded vehicle-position
+      // fetch (step 0 above, `vehicles`/`vehicleFreshFeeds`), so it costs no
+      // extra request, and published on the same tick as snapshot.json,
+      // right after it. Fully independent of the snapshot publish above: a
+      // failure on either side never blocks or fails the other, and never
+      // fails the tick.
+      //
+      // vehicleFreshFeeds can be a STRICT SUBSET of TRIP_UPDATE_FEED_NAMES —
+      // Promise.allSettled above logs and SKIPS a rejected feed rather than
+      // throwing, so a partial vehicle set never reaches this try/catch as
+      // an exception. Two cases, not one:
+      //   - NO feed decoded (vehicleFreshFeeds empty): skip the publish
+      //     entirely. Calling buildTrains/publishTrains here would write
+      //     {positions: []} — indistinguishable from "zero trains in NYC",
+      //     exactly the fabrication this surface exists to avoid. The
+      //     object is left un-rewritten; a consumer sees the last-good read
+      //     with its own observed_at, never a fabricated empty one.
+      //   - SOME feeds decoded: publish normally, flagged partial via
+      //     fresh_feeds/expected_feeds (see PublishedTrains's doc comment)
+      //     rather than withheld — a partial map is still useful, as long
+      //     as it says so.
+      if (vehicleFreshFeeds.length > 0) {
+        try {
+          await publishTrains(
+            env.MOMENTARILY,
+            buildTrains(
+              observedAt,
+              trainPositions(vehicles),
+              vehicleFreshFeeds,
+              TRIP_UPDATE_FEED_NAMES,
+            ),
+          );
+        } catch (err) {
+          console.error(
+            'trains publish failed; leaving v1/trains.json unrewritten this tick:',
+            err,
+          );
+        }
+      } else {
+        console.warn(
+          'trains: no vehicle feed decoded this tick, leaving v1/trains.json unrewritten',
+        );
+      }
+      step('6c-publish-trains');
 
       // --- Step 7: grading streams ---
       const predictions: PredictionRecord[] = [];

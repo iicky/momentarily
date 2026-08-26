@@ -15,6 +15,10 @@ const fetchState = vi.hoisted(() => ({
   jsonByUrl: new Map<string, unknown>(),
   protobufByUrl: new Map<string, Uint8Array>(),
   protobufCalls: [] as string[],
+  // Urls that should reject this test, simulating a real fetchProtobuf
+  // network/upstream failure rather than an empty-but-successful feed —
+  // Promise.allSettled in index.ts treats these two very differently.
+  protobufFailUrls: new Set<string>(),
 }));
 
 vi.mock('../src/fetch', async (importOriginal) => {
@@ -24,6 +28,7 @@ vi.mock('../src/fetch', async (importOriginal) => {
     fetchJson: async (url: string) => fetchState.jsonByUrl.get(url) ?? {},
     fetchProtobuf: async (url: string) => {
       fetchState.protobufCalls.push(url);
+      if (fetchState.protobufFailUrls.has(url)) throw new Error(`mock fetch failure: ${url}`);
       return fetchState.protobufByUrl.get(url) ?? new Uint8Array();
     },
   };
@@ -163,6 +168,7 @@ beforeEach(() => {
   fetchState.jsonByUrl.clear();
   fetchState.protobufByUrl.clear();
   fetchState.protobufCalls = [];
+  fetchState.protobufFailUrls.clear();
 });
 
 describe('tickMinute', () => {
@@ -379,6 +385,70 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     ]);
     expect(traceRowsAt(store, traceKeys[1]!)).toEqual([
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: true, stop_seq: 1 }),
+    ]);
+  });
+});
+
+describe('scheduled: trains.json publish (fail-soft on the vehicle feed)', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  test('all vehicle feeds failing: v1/trains.json is left un-rewritten, never published as a fabricated empty read', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    for (const [, url] of TRIP_UPDATE_FEEDS) fetchState.protobufFailUrls.add(url);
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // The snapshot still publishes — a trains.json failure must never block
+    // or fail the tick it rides alongside.
+    expect(store.has('v1/snapshot.json')).toBe(true);
+    // trains.json is simply absent, not written as {positions: []} — that
+    // would assert "zero trains in NYC" when the true state is "unknown".
+    expect(store.has('v1/trains.json')).toBe(false);
+  });
+
+  test('one of eight vehicle feeds failing: v1/trains.json IS published, flagged partial via fresh_feeds', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufFailUrls.add(TRIP_UPDATE_FEEDS[0]![1]); // 'ace' fails
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[1]![1], // 'bdfm' decodes normally
+      vehicleFeed({ tripId: 'a', routeId: 'F', stopId: 'A09N' }),
+    );
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(store.has('v1/trains.json')).toBe(true);
+    const trains = jsonAt(store, 'v1/trains.json') as {
+      fresh_feeds: string[];
+      expected_feeds: string[];
+      positions: unknown[];
+    };
+    // expected_feeds is the full constant set regardless of what failed —
+    // it's what a consumer diffs fresh_feeds against.
+    expect(trains.expected_feeds).toEqual(TRIP_UPDATE_FEEDS.map(([name]) => name));
+    // fresh_feeds names only the survivors: 'ace' is silently excluded, the
+    // other seven decoded and are named.
+    expect(trains.fresh_feeds).not.toContain('ace');
+    expect(trains.fresh_feeds).toHaveLength(TRIP_UPDATE_FEEDS.length - 1);
+    // The published positions still reflect exactly what DID decode — the
+    // 'ace' gap doesn't zero out the routes that came through on other feeds.
+    expect(trains.positions).toEqual([
+      { route: 'F', direction: 'north', stop: 'A09N', stopped: false, n: 1 },
     ]);
   });
 });

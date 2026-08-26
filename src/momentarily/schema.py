@@ -488,6 +488,10 @@ class SegmentStatus(BaseModel):
     # When this regime began (the segment clock the recovery is conditioned
     # on). 0 before the clock has ever started.
     entered_at: int
+    # Null on a NORMAL cell -- a healthy segment has nothing to forecast, so
+    # this is never fabricated for one. Populated on a DISRUPTED cell only
+    # once a trained dwell curve exists for it and its regime clock has
+    # started (entered_at > 0); see segmentRecovery in the Worker.
     recovery: SegmentRecovery | None = None
 
 
@@ -505,12 +509,114 @@ class SegmentFlow(BaseModel):
     """The segment-flow surface: per-segment verdicts and when they were
     computed (one tick / ~5 min lagged, like station_flow). Sibling of
     StationFlow, keyed by the same `route|direction|from_stop` cell id used
-    throughout the segment movement model."""
+    throughout the segment movement model.
+
+    `segments` carries EVERY judged cell, normal and disrupted alike -- a
+    key absent from it was never judged this tick, never a healthy read by
+    omission. That single-dict membership check is the whole honesty
+    property this surface rests on.
+
+    SIZING, recorded so this isn't re-split without new evidence: a
+    normal/disrupted split (full `segments` records for disrupted cells, a
+    separate bare key -> successor collection for normal ones) shipped and
+    was reverted the same day (2026-08-23) it was proposed, sized against a
+    policy (decay=0.98, ~1199 judged cells/tick -- see
+    worker/src/segment_flow.ts's module docstring) that was measured and
+    REJECTED before it shipped. At the policy actually shipped (decay=0.94,
+    ~701 judged cells/tick), the union fits: measured on the live feed the
+    same day -- base snapshot minus segment_flow 179.9 KB, a bare segment
+    record (incl. its key) 151 B, a record carrying a recovery block 382 B.
+    A normal cell is always bare (SegmentStatus.recovery is null on healthy
+    track), so 701 cells with their usual ~3 disrupted total ~284.0 KB,
+    under the 300 KB line. The base (179.9 KB) leaves ~120 KB of budget --
+    room for ~814 bare records before 300 KB is even in question, ~16%
+    above today's population. Revisit the split only if judged volume
+    climbs toward that ceiling, or the disrupted share grows well past
+    today's ~0.4%; not before."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     observed_at: int
     segments: dict[str, SegmentStatus] = Field(default_factory=dict)
+
+
+class TrainPosition(BaseModel):
+    """One map dot: every train sharing this (route, direction, stop, stopped)
+    tuple, folded into a single aggregated entry by the worker's
+    vehicles.ts::trainPositions() from the ~700 concurrent in-service trips.
+
+    `stop` carries NYCT's usual GTFS-RT duality, the same one documented on
+    the worker's per-trip trace: it is the stop a train is *heading to*
+    while still in transit (stopped=False) and the stop it is *at* once
+    STOPPED_AT (stopped=True) — not a fixed "current location" in one sense.
+
+    This surface deliberately does NOT report which segment a moving train
+    occupies. Inferring that would mean guessing a direction of travel at
+    every branch or express point (e.g. a train signed for a shared trunk
+    could still be running local or express past the fork) where stop_id
+    alone doesn't disambiguate — an assertion Momentarily isn't willing to
+    fabricate. Consumers place the dot at the station for `stop` and use
+    `stopped` to distinguish at-platform from approaching.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    route: str  # base route id; 6X/7X/FX fold to 6/7/F, same as route_status keys
+    direction: Literal["north", "south"] | None = None
+    stop: str  # directional stop_id exactly as the feed reports it
+    stopped: bool  # True = at the platform, False = heading toward it
+    n: int  # how many trains share this exact tuple
+
+
+class Trains(BaseModel):
+    """The published sibling artifact to Snapshot, served at
+    https://feed.momentarily.nyc/v1/trains.json — aggregated live train
+    positions for the /map overlay, kept OUT of the snapshot itself.
+
+    At ~700 concurrent trips this would add ~36KB (measured on a realistic
+    vehicle set, see the worker's vehicles.test.ts) to every snapshot fetch,
+    and the canonical snapshot consumer (homeassistant-mta-subway, polling
+    many installs every few minutes) never reads it — charging every
+    install that bandwidth forever for a feature only the /map overlay uses
+    is the wrong trade, so it is its own fetch instead.
+
+    Self-describing like Snapshot itself: carries its own `observed_at` and
+    the same `provenance` block (code_sha/dirty/producer), so a consumer
+    holding only this object can still say which build produced it and how
+    stale it is. Unlike station_flow/segment_flow this is NOT one-tick
+    lagged: built fresh every tick from the same vehicle-position fetch the
+    tick already made for movement inference, at zero extra fetch cost, and
+    published on the same tick as snapshot.json.
+
+    There is no established schema.py convention for a second published
+    root distinct from Snapshot (scripts/export_schema.py hardcodes
+    Snapshot as the JSON Schema root), so this model is not wired into the
+    generated schema/snapshot.schema.json; it documents the v1/trains.json
+    shape directly.
+
+    fresh_feeds/expected_feeds exist because `positions` alone cannot
+    distinguish "zero trains right now" from "some NYCT line-group feeds
+    failed to decode, so those routes are silently missing" — the worker
+    treats a rejected feed as a skip, not an exception, so a partial vehicle
+    set is never itself an error. fresh_feeds names which feeds decoded this
+    tick (the same convention the worker's archive/vehicles and
+    archive/trip_updates objects already use); expected_feeds is the full
+    constant set, same order, so a consumer can tell a partial read from a
+    complete one without hardcoding NYCT's feed grouping itself.
+    fresh_feeds shorter than expected_feeds means `positions` is a PARTIAL
+    read. On a tick where NO feed decodes at all (fresh_feeds would be
+    empty), the Worker skips publishing entirely rather than writing that
+    fabrication — the object is simply left un-rewritten in R2, never a
+    failed tick, never a false empty read.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    observed_at: int
+    provenance: Provenance = Field(default_factory=Provenance)
+    fresh_feeds: list[str] = []
+    expected_feeds: list[str] = []
+    positions: list[TrainPosition] = []
 
 
 class PlatformCrowdingEstimate(BaseModel):

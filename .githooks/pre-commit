@@ -83,10 +83,14 @@ for pkg in worker trainer; do
   fi
 done
 
-# --- viz (TS, npm): typecheck ------------------------------------------------
+# --- viz (TS, npm): typecheck + CSS parse ------------------------------------
+# The CSS check is not redundant with typecheck: tsc never reads a stylesheet,
+# so an unclosed block passes every other gate here and then 500s every route
+# at request time.
 if has_prefix "viz/"; then
-  echo "pre-commit: viz — typecheck…" >&2
+  echo "pre-commit: viz — typecheck + css…" >&2
   ( cd viz && npm run --silent typecheck ) || fail=1
+  ( cd viz && npm run --silent css-check ) || fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then

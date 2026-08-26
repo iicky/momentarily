@@ -31,11 +31,12 @@ function LineView() {
   const dir: Dir = qp.get("dir") === "south" ? "south" : "north";
   const setDir = (d: Dir) => router.replace(`/lines/${encodeURIComponent(route)}?dir=${d}`);
 
-  // Canonical order from the trainer's published patterns (falling back to an
-  // adjacency walk) when topology is loaded; otherwise every station that names
-  // this line, alphabetized, so the page is still useful with no R2.
+  // Canonical order from the diagram asset's published patterns (falling back
+  // to an adjacency walk) once topology has loaded; otherwise every station
+  // that names this line, alphabetized, so the page is still useful before
+  // that fetch resolves.
   const { stops, ordered } = useMemo<{ stops: string[]; ordered: boolean }>(() => {
-    if (topo?.configured) {
+    if (topo) {
       const s = orderTrip(topo.routeStops, topo.edges, route, dir);
       if (s.length) return { stops: s, ordered: true };
     }
@@ -59,7 +60,7 @@ function LineView() {
         subtitle={
           <>
             <Link href="/lines">Lines</Link> · {stops.length} stations ·{" "}
-            <Link href={`/map?route=${route}&dir=${dir}`}>view on map</Link>
+            <Link href={`/map/trip?route=${route}&dir=${dir}`}>view on map</Link>
           </>
         }
       />

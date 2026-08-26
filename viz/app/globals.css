@@ -39,6 +39,17 @@
      so "model forecast" / "what really happened" never reads as a line state. */
   --forecast: #4493f8;
   --realized: #56d364;
+  /* Sequential ramp for magnitude scales (map: scheduled segment time).
+     Deliberately shares no hue with the state trio above — a magnitude painted
+     in --normal/--disrupted reads as health. Violet -> sky, monotonic in
+     relative luminance (0.13, 0.18, 0.26, 0.37, 0.62) so the order survives
+     red-green colour blindness on lightness alone, and the low end clears 3:1
+     against --bg so a thin stroke is still visible. */
+  --ramp-1: #6a52b8;
+  --ramp-2: #5f6fc6;
+  --ramp-3: #4e8fcd;
+  --ramp-4: #58aed2;
+  --ramp-5: #9ed8e8;
 }
 
 * {
@@ -713,6 +724,22 @@ code {
 .legend i.lg-dot {
   border-radius: 50%;
 }
+/* Dashed swatch: the value came from a COARSER spatial unit than the stroke it
+   paints (the map's per-route supply overlay). Pattern set inline so it takes
+   the item's own colour. */
+.legend i.lg-dash {
+  height: 3px;
+  border-radius: 2px;
+}
+/* Outline-only swatch: a count that includes things not yet arrived (trains
+   heading to a stop, as opposed to standing at it). */
+.legend i.lg-ring {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text);
+  background: none;
+}
 
 /* Metadata footer: compact chips for source/unit/n/exclusions/censoring. */
 .chart-meta {
@@ -1155,5 +1182,162 @@ code {
   }
   .station-cols {
     grid-template-columns: 1fr;
+  }
+}
+
+/* --- Segment map --- */
+
+.controls button.active {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+}
+/* Segmented control: one exclusive choice, joined so the group reads as a
+   single control rather than four independent toggles. */
+.seg {
+  display: inline-flex;
+}
+.seg button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+.seg button:first-child {
+  border-radius: 7px 0 0 7px;
+  margin-left: 0;
+}
+.seg button:last-child {
+  border-radius: 0 7px 7px 0;
+}
+/* The active segment's border has to win over its neighbours' shared edge. */
+.seg button.active {
+  position: relative;
+  z-index: 1;
+}
+.maprow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+  align-items: start;
+}
+.mapframe {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px 10px;
+  min-width: 0;
+}
+/* Height-driven: the aspect comes from the asset (set inline from its view
+   box), so the SVG takes exactly the width its geometry needs and centres in
+   the column rather than letterboxing a near-square map in a wide one. */
+.diagram {
+  display: block;
+  height: 76vh;
+  width: auto;
+  max-width: 100%;
+  margin: 0 auto;
+  touch-action: none;
+  cursor: grab;
+}
+.diagram:active {
+  cursor: grabbing;
+}
+.stationdot {
+  fill: var(--text);
+  opacity: 0.3;
+  pointer-events: none;
+}
+/* Train markers. Filled disc = standing at this platform; the ring around it
+   adds the trains the feed reports heading here. Both are pointer-transparent
+   so the edge hit targets underneath still answer a hover. */
+.trainlayer {
+  pointer-events: none;
+}
+.traindot {
+  fill: var(--text);
+}
+.trainring {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.2;
+  stroke-opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+/* Invisible hit target: wide enough to catch a dimmed ghost, and non-scaling so
+   it stays the same grab width at every zoom level. */
+.edgehit {
+  stroke: transparent;
+  stroke-width: 7;
+  fill: none;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+/* Inset frame: a hairline box and a label, so a component drawn away from its
+   true position is visibly declared as such rather than quietly relocated. */
+.inset rect {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.inset text {
+  fill: var(--muted);
+  font-family: var(--mono);
+}
+.legend i.ghost {
+  background: var(--text);
+  opacity: 0.34;
+}
+/* Wraps: a quintile ramp legend is six items wide, more than one line fits. */
+.legend-wrap {
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+/* The active overlay's spatial unit and source, attached to the picture rather
+   than buried in a tooltip. Four overlays read the same geometry at four
+   different units, and a map that doesn't say which is a map that lies. */
+.mapcaption {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 720px;
+}
+.mapdetail {
+  cursor: default;
+  min-height: 132px;
+}
+.mapdetail p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.segpair {
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.segrow {
+  display: grid;
+  grid-template-columns: 16px auto;
+  gap: 2px 8px;
+  margin: 12px 0 0;
+  font-size: 12.5px;
+}
+.segrow .k {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.segrow .muted {
+  grid-column: 2;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+@media (max-width: 980px) {
+  .maprow {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

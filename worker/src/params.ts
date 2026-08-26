@@ -10,7 +10,7 @@
 import { z } from 'zod';
 
 import type { EmissionParams, HMMParams } from './hmm';
-import { N_TOD_BINS } from './hmm';
+import { N_TOD_BINS, schedule_bin } from './hmm';
 
 const PARAMS_KEY = 'state/params.json';
 
@@ -561,4 +561,96 @@ export function movementDwellFor(
   state: string,
 ): DwellQuantiles | null {
   return trained?.dwellMovement?.[routeId]?.[state] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Ridership baseline: per-station-complex entries/min by
+// (weekday/weekend, hour) cell, written weekly by training/ridership.py from
+// the MTA hourly ridership dataset (5wq4-mkjj). Its own R2 object, like
+// segment_params.json — never folded into params.json, so a late or failed
+// ridership run can never perturb the HMM filter's params version. Read
+// fresh each tick alongside the other baselines; feeds the live per-platform
+// crowding estimate (crowding.ts).
+// ---------------------------------------------------------------------------
+
+const RIDERSHIP_BASELINE_KEY = 'state/ridership_baseline.json';
+
+// Complex-wide entries/min for each of the 24 local hours, one array per
+// weekday/weekend class. Always exactly 24 long — the trainer emits one
+// cell per hour whether or not that hour had enough samples (see
+// training/ridership.py); a document that's short an hour is malformed,
+// not merely sparse, and must be rejected rather than index out of range.
+const HourlyRatesSchema = z.array(nonNeg).length(24);
+
+const RidershipComplexSchema = z.object({
+  name: z.string(),
+  borough: z.string().nullable(),
+  entries_per_min: z.object({
+    wd: HourlyRatesSchema,
+    we: HourlyRatesSchema,
+  }),
+  entries_total: nonNeg,
+  transfers_total: nonNeg,
+  rank: z.number().int().positive(),
+  n_cells: z.number().int().nonnegative(),
+});
+
+const RidershipBaselineSchema = z.object({
+  schema_version: z.string(),
+  generated_at: z.number(),
+  source: z.object({
+    dataset: z.string(),
+    url: z.string(),
+    transit_mode: z.string(),
+    window_start: z.string(),
+    window_end: z.string(),
+    latest_hour: z.string(),
+    weekday_days: z.number().int().nonnegative(),
+    weekend_days: z.number().int().nonnegative(),
+  }),
+  complexes: z.record(z.string(), RidershipComplexSchema),
+  n_complexes: z.number().int().nonnegative(),
+});
+export type RidershipBaselineDoc = z.infer<typeof RidershipBaselineSchema>;
+
+/**
+ * Load the ridership baseline from R2. Null when absent (before the first
+ * weekly training/ridership.py run) or malformed — a bad complex row, a
+ * short entries_per_min array, a negative rate all fail semantic bounds, not
+ * just shape. The crowding surface then abstains entirely rather than
+ * publish off a document that failed validation. Never throws into the tick.
+ */
+export async function loadRidershipBaseline(
+  bucket: R2Bucket,
+): Promise<RidershipBaselineDoc | null> {
+  const obj = await bucket.get(RIDERSHIP_BASELINE_KEY);
+  if (!obj) return null;
+  try {
+    return RidershipBaselineSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('ridership_baseline.json invalid; platform crowding off:', err);
+    return null;
+  }
+}
+
+/**
+ * Entries/min for a station complex at the current (weekday/weekend, hour)
+ * cell, or null when the baseline has no rate for that complex — the
+ * crowding surface then abstains with 'no_baseline' for every platform in
+ * it, never fabricating a rate. Parses schedule_bin's `wd06`/`we22` key
+ * rather than re-deriving the weekday/local-hour split: this is the only
+ * place that rule is applied to ridership, so it can never drift from the
+ * HMM's own notion of the current schedule cell.
+ */
+export function ridershipRateFor(
+  baseline: RidershipBaselineDoc | null,
+  complexId: string,
+  epochSeconds: number,
+): number | null {
+  const complex = baseline?.complexes?.[complexId];
+  if (!complex) return null;
+  const bin = schedule_bin(epochSeconds);
+  const cls = bin.slice(0, 2) as 'wd' | 'we';
+  const hour = parseInt(bin.slice(2), 10);
+  return complex.entries_per_min[cls][hour] ?? null;
 }

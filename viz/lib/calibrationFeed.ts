@@ -138,9 +138,43 @@ export interface CalibrationDoc {
     horizons: CalibrationHorizon[];
   };
   recovery: {
+    // Which arm the recovery block graded. Absent on feeds published before the
+    // label rode along; the block is the alert-shadow one either way, because
+    // the exit lookup is keyed on the filter's own regime clock.
+    graded_arm?: string;
     overall: CalibrationRecoveryStats;
     per_regime: CalibrationRecoveryStats;
   };
+  // The running model's own grade, isolated from the retrains before it. The
+  // pooled `recovery` block above mixes every params version in the window — at
+  // 28 days and a weekly retrain that is three or four models — so it cannot
+  // answer whether the last retrain helped. Absent on older feeds, null when no
+  // prediction in the window carried a version tag.
+  current_params?: {
+    trained_at: number;
+    n_predictions: number;
+    // Ticks that survived into a graded pair.
+    n_graded: number;
+    // Incidents behind those ticks, graded on the same (shadow) arm. This, not
+    // n_graded, is the segment's independent weight: ticks inside one regime are
+    // almost perfectly autocorrelated. Deliberately not episode_support's count,
+    // which is a movement-arm figure and sizes a different metric.
+    n_regimes: number;
+    // Set when n_regimes is under min_regimes. Thin by construction: the newest
+    // version holds roughly a quarter of the window. A flagged segment is still
+    // shown — the thinness is the point — but must never read as a clean win.
+    low_sample: boolean;
+    min_regimes: number;
+    calibration: CalibrationHorizon[];
+    // The segment's movement-arm incident count. Reported for context, never as
+    // the sizing for `recovery` below — that block grades the shadow arm.
+    episode_support?: EpisodeSupport | null;
+    recovery: {
+      graded_arm?: string;
+      overall: CalibrationRecoveryStats;
+      per_regime: CalibrationRecoveryStats;
+    };
+  } | null;
   transition_matrices: {
     trained_at: number | null;
     states: string[];

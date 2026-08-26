@@ -12,8 +12,11 @@ import { describe, expect, test } from 'vitest';
 import schema from '../../schema/snapshot.schema.json';
 import { buildAlertList, buildRoutes } from '../src/derive';
 import type { ActiveOutage, EquipmentCatalogEntry } from '../src/ene';
+import type { RidershipBaselineDoc } from '../src/params';
 import { TICK_SECONDS, buildSnapshot, snapshotConsistencyWarnings } from '../src/snapshot';
 import { buildEquipmentList } from '../src/stations';
+import type { StationOut } from '../src/stations_static';
+import type { StationWaitDoc } from '../src/state';
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validate = ajv.compile(schema);
@@ -199,6 +202,69 @@ describe('snapshotConsistencyWarnings', () => {
     expect(snap.equipment.length).toBe(1);
     expect(Object.keys(snap.routes).length).toBeGreaterThan(20);
     expect(snapshotConsistencyWarnings(snap)).toEqual([]);
+    expect(validate(snap), JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+});
+
+describe('platform_crowding validates against schema/snapshot.schema.json', () => {
+  test('a populated platform_crowding surface validates', () => {
+    const ridershipBaseline: RidershipBaselineDoc = {
+      schema_version: '1',
+      generated_at: NOW - 3600,
+      source: {
+        dataset: '5wq4-mkjj',
+        url: 'https://data.ny.gov/resource/5wq4-mkjj.json',
+        transit_mode: 'subway',
+        window_start: '2026-05-01T00:00:00',
+        window_end: '2026-07-29T00:00:00',
+        latest_hour: '2026-07-28T23:00:00',
+        weekday_days: 63,
+        weekend_days: 26,
+      },
+      complexes: {
+        C1: {
+          name: 'Times Sq-42 St',
+          borough: 'Manhattan',
+          entries_per_min: { wd: Array(24).fill(60), we: Array(24).fill(40) },
+          entries_total: 12_345_678,
+          transfers_total: 234_567,
+          rank: 1,
+          n_cells: 48,
+        },
+      },
+      n_complexes: 1,
+    };
+    const stations: Record<string, StationOut> = {
+      '127': {
+        gtfs_stop_id: '127',
+        station_complex_id: 'C1',
+        name: 'Times Sq-42 St',
+        borough: 'Manhattan',
+        routes_served: ['1', '2', '3'],
+        ada: 1,
+        ada_northbound: true,
+        ada_southbound: true,
+      },
+    };
+    const stationWait: StationWaitDoc = {
+      observed_at: NOW,
+      platforms: { '127N': NOW - 5 * 60 },
+      trips: {},
+    };
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      stations,
+      stationWait,
+      ridershipBaseline,
+    });
+    expect(snap.platform_crowding).not.toBeNull();
+    expect(snap.platform_crowding?.n_platforms).toBe(1);
+    expect(snap.platform_crowding?.platforms['127N']?.waiting_riders).toBe(300);
     expect(validate(snap), JSON.stringify(validate.errors, null, 2)).toBe(true);
   });
 });

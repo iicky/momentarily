@@ -873,6 +873,119 @@
       "title": "Observation",
       "type": "object"
     },
+    "PlatformCrowding": {
+      "description": "Estimated riders waiting on each platform: the platform's assumed share\nof its complex's usual entry rate for this hour, times how long it has been\nsince a train cleared it.\n\nThis is an ESTIMATE built on an admitted assumption (see `method`), not a\nmeasurement \u2014 nothing counts people on platforms. Keys are DIRECTIONAL GTFS\nstop ids ('127N'), so the parent station is the key with its N/S suffix\nstripped and its metadata is in the `stations` surface under that id.\n\nPlatforms that cannot be estimated are absent, not zeroed, and the reason\nis counted in `abstained`.",
+      "properties": {
+        "abstained": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Abstained",
+          "type": "object"
+        },
+        "method": {
+          "$ref": "#/$defs/PlatformCrowdingMethod"
+        },
+        "n_platforms": {
+          "title": "N Platforms",
+          "type": "integer"
+        },
+        "observed_at": {
+          "title": "Observed At",
+          "type": "integer"
+        },
+        "platforms": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PlatformCrowdingEstimate"
+          },
+          "title": "Platforms",
+          "type": "object"
+        }
+      },
+      "required": [
+        "observed_at",
+        "method",
+        "n_platforms"
+      ],
+      "title": "PlatformCrowding",
+      "type": "object"
+    },
+    "PlatformCrowdingEstimate": {
+      "description": "One platform's estimate. Carries the two inputs alongside the answer so a\nlive consumer can re-derive it against its own clock \u2014 the crowd grows at\n`entries_per_min` and `waiting_riders` is only correct as of `observed_at`,\nwhich by publish time is already minutes old.",
+      "properties": {
+        "entries_per_min": {
+          "title": "Entries Per Min",
+          "type": "number"
+        },
+        "last_train_at": {
+          "title": "Last Train At",
+          "type": "integer"
+        },
+        "waiting_riders": {
+          "title": "Waiting Riders",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "last_train_at",
+        "entries_per_min",
+        "waiting_riders"
+      ],
+      "title": "PlatformCrowdingEstimate",
+      "type": "object"
+    },
+    "PlatformCrowdingMethod": {
+      "description": "The constants and admitted assumptions behind every estimate in this\nsurface. Published rather than documented so a consumer can reproduce the\narithmetic and see what it does not know.",
+      "properties": {
+        "baseline_generated_at": {
+          "title": "Baseline Generated At",
+          "type": "integer"
+        },
+        "baseline_window_end": {
+          "title": "Baseline Window End",
+          "type": "string"
+        },
+        "baseline_window_start": {
+          "title": "Baseline Window Start",
+          "type": "string"
+        },
+        "excludes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Excludes",
+          "type": "array"
+        },
+        "formula": {
+          "default": "entries_per_min * minutes_since_last_train",
+          "title": "Formula",
+          "type": "string"
+        },
+        "max_gap_minutes": {
+          "title": "Max Gap Minutes",
+          "type": "integer"
+        },
+        "served_window_minutes": {
+          "title": "Served Window Minutes",
+          "type": "integer"
+        },
+        "split_basis": {
+          "const": "uniform_over_served_platforms",
+          "default": "uniform_over_served_platforms",
+          "title": "Split Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "max_gap_minutes",
+        "served_window_minutes",
+        "baseline_generated_at",
+        "baseline_window_start",
+        "baseline_window_end"
+      ],
+      "title": "PlatformCrowdingMethod",
+      "type": "object"
+    },
     "Provenance": {
       "description": "Which code produced this snapshot. code_sha is the git commit verbatim;\ndirty is null when it couldn't be determined (e.g. a clean-checkout build).",
       "properties": {
@@ -1701,6 +1814,17 @@
       },
       "title": "Observations",
       "type": "array"
+    },
+    "platform_crowding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlatformCrowding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "provenance": {
       "$ref": "#/$defs/Provenance"

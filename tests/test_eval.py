@@ -531,6 +531,150 @@ def test_build_eval_segments_by_latest_params_version():
     assert cal30["n"] == 6
 
 
+def test_current_params_calibration_grades_across_a_retrain_boundary():
+    """A forecast whose T+horizon outcome was written under a different params
+    version must still be graded.
+
+    Version rollout is not instantaneous, so rows near a publish interleave: a
+    v200 forecast can have its only T+30min row tagged v100. Indexing the
+    outcome lookup on the segment alone drops exactly those forecasts — the ones
+    made at the boundary, which is where a retrain's effect is most visible.
+    `coverage_predictions` is the whole stream for that reason.
+    """
+    t0 = 1_700_000_100  # already snapped
+    # The forecast under grade, and its T+30min outcome row left on the old
+    # version. Nothing else exists, so segment-only indexing grades zero.
+    forecast = _pred(ts=t0, params_version=200)
+    outcome = _pred(ts=t0 + 1800, params_version=100)
+    doc = build_eval([forecast, outcome], [], window_start=t0, window_end=t0 + 86400)
+
+    cp = doc["current_params"]
+    assert cp["trained_at"] == 200
+    assert cp["n_predictions"] == 1
+    cal30 = next(c for c in cp["calibration"] if c["horizon_min"] == 30)
+    assert cal30["n"] == 1
+
+
+def _exit_at(t0: int, *, route: str, entered: int, exited: int) -> TransitionRecord:
+    return TransitionRecord(
+        ts=exited,
+        route=route,
+        prev_state="disrupted",
+        new_state="normal",
+        regime_entered_at=entered,
+        exited_at=exited,
+        dwell_sec=exited - entered,
+    )
+
+
+def test_recovery_by_params_version_sizes_segments_in_incidents_not_ticks():
+    """The reason this segmentation exists, and the reason the flag counts
+    incidents.
+
+    v200 here has MORE graded ticks than v100 (50 vs 44) and is nonetheless the
+    thin one: all 50 ticks sit inside a single disruption, so they are one
+    observation repeated, while v100's 44 ticks span 22 separate incidents. A
+    threshold on graded ticks would wave v200 through and rebuild exactly the
+    error this work exists to fix — advertising a tick count as statistical
+    support.
+
+    Reported, flagged, never dropped: the thinness is the finding.
+    """
+    t0 = 1_700_000_000
+    # 22 separate short incidents, one per route, two graded ticks each.
+    v100 = [
+        _pred(
+            ts=t0 + i * 300,
+            route=f"R{r}",
+            condition="disrupted",
+            regime_entered_at=t0,
+            recovery_minutes=(600 - i * 300) // 60,
+            params_version=100,
+        )
+        for r in range(22)
+        for i in range(2)
+    ]
+    # One long incident under v200: more ticks, a single observation.
+    v200 = [
+        _pred(
+            ts=t0 + 20_000 + i * 300,
+            route="Z",
+            condition="disrupted",
+            regime_entered_at=t0 + 20_000,
+            recovery_minutes=(50 * 300 - i * 300) // 60,
+            params_version=200,
+        )
+        for i in range(50)
+    ]
+    transitions = [
+        _exit_at(t0, route=f"R{r}", entered=t0, exited=t0 + 600) for r in range(22)
+    ] + [_exit_at(t0, route="Z", entered=t0 + 20_000, exited=t0 + 20_000 + 50 * 300)]
+    doc = build_eval(v100 + v200, transitions, window_start=t0, window_end=t0 + 86400)
+
+    by_version = doc["recovery_by_params_version"]
+    assert set(by_version) == {"100", "200"}
+    # The tick counts point the wrong way on purpose.
+    assert by_version["100"]["n_graded"] == 44
+    assert by_version["200"]["n_graded"] == 50
+    # The incident counts are what the flag reads.
+    assert by_version["100"]["n_regimes"] == 22
+    assert by_version["100"]["low_sample"] is False
+    assert by_version["200"]["n_regimes"] == 1
+    assert by_version["200"]["low_sample"] is True
+
+    # The pooled block mixes both and belongs to neither model.
+    assert doc["recovery"]["overall"]["n"] == 94
+
+    # current_params points at the newest segment and carries its own verdict,
+    # so a reader is never left inferring weight from n_predictions.
+    cp = doc["current_params"]
+    assert cp["trained_at"] == 200
+    assert cp["n_graded"] == 50
+    assert cp["n_regimes"] == 1
+    assert cp["low_sample"] is True
+    assert cp["recovery"] == by_version["200"]["recovery"]
+
+
+def test_recovery_by_params_version_scopes_support_to_the_segment_span():
+    """An older version's incidents must not be spread over the whole window.
+
+    episode_support reports the span its evidence covers. Handing every segment
+    the window end would claim a version that stopped publishing on day 3 backed
+    its numbers across all 28 days.
+    """
+    t0 = 1_700_000_000
+    old = [
+        replace(
+            _pred(
+                ts=t0 + i * 300, route="A", condition="disrupted", params_version=100
+            ),
+            published_condition="disrupted",
+        )
+        for i in range(10)
+    ]
+    new = [
+        replace(
+            _pred(
+                ts=t0 + 50_000 + i * 300,
+                route="A",
+                condition="disrupted",
+                params_version=200,
+            ),
+            published_condition="disrupted",
+        )
+        for i in range(10)
+    ]
+    doc = build_eval(old + new, [], window_start=t0, window_end=t0 + 86_400)
+
+    by_version = doc["recovery_by_params_version"]
+    # Each segment's covered span ends at its own last prediction, not the
+    # window's end.
+    assert by_version["100"]["episode_support"]["covered"]["end"] == t0 + 9 * 300
+    assert (
+        by_version["200"]["episode_support"]["covered"]["end"] == t0 + 50_000 + 9 * 300
+    )
+
+
 def test_schedule_rows_excluded_from_calibration_and_recovery():
     # A schedule-recovery row is a deterministic resume lookup, not an HMM
     # forecast — it must not be graded for calibration or recovery (it would
@@ -601,8 +745,9 @@ def test_calibrate_skips_withheld_30min_forecast():
 
 
 def test_build_calibration_is_compact_subset():
-    # build_calibration keeps the window-aggregate reliability + recovery but
-    # drops the per-route/per-alert/per-version breakdowns that bloat eval.json.
+    # build_calibration keeps the window-aggregate reliability + recovery and the
+    # running model's own segment, but drops the per-route/per-alert breakdowns
+    # and the full per-version index that bloat eval.json.
     t0 = 1_700_000_000
     preds = [_pred(ts=t0 + i * 300, params_version=200) for i in range(24)]
     eval_doc = build_eval(preds, [], window_start=t0, window_end=t0 + 86400)
@@ -616,10 +761,19 @@ def test_build_calibration_is_compact_subset():
     assert {c["horizon_min"] for c in calib["calibration"]} == {30, 60, 120}
     assert calib["predictions_seen"] == eval_doc["predictions_seen"]
     assert calib["transition_matrices"] == matrices
-    # Aggregate recovery only — no route/alert/version explosion.
-    assert set(calib["recovery"]) == {"overall", "per_regime"}
+    # Aggregate recovery only — no route/alert explosion. The arm label stays:
+    # an unlabelled MAE next to a movement-arm reliability chart reads as the
+    # movement grade, and recovery_metrics can only grade the shadow.
+    assert set(calib["recovery"]) == {"graded_arm", "overall", "per_regime"}
     assert "by_route" not in calib["recovery"]
-    assert "current_params" not in calib
+    # The current model's segment ships, trimmed to the pooled block's shape: a
+    # page with only the pooled numbers cannot say whether a retrain helped,
+    # because the pooled block is a mixture over every version in the window.
+    cp = calib["current_params"]
+    assert cp["trained_at"] == 200
+    assert set(cp["recovery"]) == {"graded_arm", "overall", "per_regime"}
+    # The heavy per-version index stays behind.
+    assert "recovery_by_params_version" not in calib
 
 
 def test_build_calibration_publishes_both_graded_arms():

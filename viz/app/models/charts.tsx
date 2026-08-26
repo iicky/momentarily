@@ -596,25 +596,96 @@ export interface AggregateRecoveryStats {
 }
 
 export interface AggregateRecovery {
+  // Which condition arm produced the grade. Always the alert-shadow one here —
+  // the exit lookup is keyed on the filter's own regime clock — but the label
+  // ships so the table never implies the movement grade sitting above it.
+  graded_arm?: string;
   overall: AggregateRecoveryStats;
   per_regime: AggregateRecoveryStats;
 }
 
-export function RecoverySummary({ result }: { result: AggregateRecovery }) {
+export interface CurrentParamsRecovery {
+  trained_at: number;
+  n_predictions: number;
+  // Graded ticks, and the incidents behind them. n_regimes is the segment's
+  // real weight — ticks inside one regime are autocorrelated — and it is what
+  // low_sample is measured against.
+  n_graded: number;
+  n_regimes: number;
+  low_sample: boolean;
+  min_regimes: number;
+  recovery: AggregateRecovery;
+}
+
+export function RecoverySummary({
+  result,
+  currentParams,
+}: {
+  result: AggregateRecovery;
+  currentParams?: CurrentParamsRecovery | null;
+}) {
   const fmtPct = (x: number | null) =>
     x == null ? "—" : `${(x * 100).toFixed(0)}%`;
   const fmtMin = (x: number | null) => (x == null ? "—" : `${Math.round(x)}m`);
-  const rows: { label: string; s: AggregateRecoveryStats; note: string }[] = [
-    { label: "Per-tick", s: result.overall, note: "every prediction tick weighted equally" },
-    { label: "Per-regime", s: result.per_regime, note: "each disruption weighted equally" },
+  // params trained_at is a unix second; the params version is a day in practice.
+  const trainedDay = currentParams
+    ? new Date(currentParams.trained_at * 1000).toISOString().slice(0, 10)
+    : null;
+
+  type Row = {
+    key: string;
+    scope: string;
+    scopeNote: string;
+    label: string;
+    s: AggregateRecoveryStats;
+    note: string;
+    thin?: boolean;
+  };
+
+  const weightings: { label: string; pick: keyof AggregateRecovery & ("overall" | "per_regime"); note: string }[] = [
+    { label: "Per-tick", pick: "overall", note: "every prediction tick weighted equally" },
+    { label: "Per-regime", pick: "per_regime", note: "each disruption weighted equally" },
   ];
+
+  // The pooled block spans every retrain in the window. At 28 days and a weekly
+  // retrain that is three or four models averaged together, so a move in these
+  // numbers can be composition rather than anything the model did — which is
+  // why the current segment sits beside them rather than replacing them.
+  const rows: Row[] = weightings.map((w) => ({
+    key: `pooled-${w.pick}`,
+    scope: "All retrains",
+    scopeNote:
+      "every params version active in the window, pooled — belongs to no single model",
+    label: w.label,
+    s: result[w.pick],
+    note: w.note,
+  }));
+
+  if (currentParams) {
+    for (const w of weightings) {
+      rows.push({
+        key: `current-${w.pick}`,
+        scope: `Current model · ${trainedDay}`,
+        scopeNote:
+          `Only predictions from the params trained ${trainedDay}: ` +
+          `${currentParams.n_graded} of ${currentParams.n_predictions} ticks graded, ` +
+          `over ${currentParams.n_regimes} incidents.`,
+        label: w.label,
+        s: currentParams.recovery[w.pick],
+        note: w.note,
+        thin: currentParams.low_sample,
+      });
+    }
+  }
+
+  const arm = currentParams?.recovery.graded_arm ?? result.graded_arm;
 
   return (
     <ChartFrame
       title="Recovery accuracy"
       titleMeta="IQR coverage target ~50% · MAE/RMSE of recovery_minutes vs argmax return"
       meta={{
-        source: "the model's own status stream",
+        source: arm ?? "the model's own status stream",
         independent: false,
         unit: "5 min / per incident",
       }}
@@ -622,6 +693,7 @@ export function RecoverySummary({ result }: { result: AggregateRecovery }) {
       <table className="mini-table">
         <thead>
           <tr>
+            <th>scope</th>
             <th>weighting</th>
             <th>n</th>
             <th>IQR coverage</th>
@@ -631,7 +703,11 @@ export function RecoverySummary({ result }: { result: AggregateRecovery }) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.label}>
+            <tr key={r.key}>
+              <td title={r.scopeNote}>
+                {r.scope}
+                {r.thin ? " †" : ""}
+              </td>
               <td title={r.note}>{r.label}</td>
               <td>{r.s.n}</td>
               <td>{fmtPct(r.s.iqr_coverage)}</td>
@@ -641,6 +717,21 @@ export function RecoverySummary({ result }: { result: AggregateRecovery }) {
           ))}
         </tbody>
       </table>
+      {currentParams?.low_sample && (
+        <p className="chart-note">
+          † The current model has been graded on {currentParams.n_regimes}{" "}
+          {currentParams.n_regimes === 1 ? "incident" : "incidents"}, under the{" "}
+          {currentParams.min_regimes} needed to stand on its own — the newest
+          params version only covers the tail of the window, and ticks inside one
+          incident all move together. Read it as a direction, not a result.
+        </p>
+      )}
+      {!currentParams && (
+        <p className="chart-note">
+          No per-retrain split in this feed, so these numbers pool every params
+          version in the window.
+        </p>
+      )}
     </ChartFrame>
   );
 }

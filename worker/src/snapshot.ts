@@ -25,6 +25,7 @@
 import type { RouteRoll } from './alpha';
 import type { Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
+import { CROWDING_MAX_GAP_MINUTES, CROWDING_SERVED_WINDOW_MINUTES, derivePlatformCrowding } from './crowding';
 import type {
   AlertOut,
   AlertRef,
@@ -36,7 +37,7 @@ import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
-import type { DwellQuantiles, TrainedParams } from './params';
+import type { DwellQuantiles, RidershipBaselineDoc, TrainedParams } from './params';
 import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
@@ -45,6 +46,7 @@ import type {
   SegmentFlowDoc,
   SegmentParamsDoc,
   StationFlowDoc,
+  StationWaitDoc,
 } from './state';
 import type { TrainPosition } from './vehicles';
 
@@ -317,6 +319,36 @@ interface TrainPositionOut {
   n: number;
 }
 
+// The platform-crowding surface: entries_per_min * minutes_since_last_train,
+// split evenly across a station complex's currently-served platforms. See
+// the crowding contract for the full derivation; crowding.ts computes
+// everything here except `method`, which this module attaches from its own
+// constants plus the baseline document's provenance.
+interface PlatformCrowdingEstimateOut {
+  last_train_at: number;
+  entries_per_min: number;
+  waiting_riders: number;
+}
+
+interface PlatformCrowdingMethodOut {
+  formula: string;
+  split_basis: 'uniform_over_served_platforms';
+  max_gap_minutes: number;
+  served_window_minutes: number;
+  excludes: string[];
+  baseline_generated_at: number;
+  baseline_window_start: string;
+  baseline_window_end: string;
+}
+
+interface PlatformCrowdingOut {
+  observed_at: number;
+  method: PlatformCrowdingMethodOut;
+  platforms: Record<string, PlatformCrowdingEstimateOut>;
+  n_platforms: number;
+  abstained: Record<string, number>;
+}
+
 interface Snapshot {
   schema_version: string;
   generated_at: number;
@@ -340,6 +372,11 @@ interface Snapshot {
   // Per-segment service flow ("is this stretch of track moving"), the same
   // segment movement model station_flow rolls up. Null when absent or stale.
   segment_flow: SegmentFlowOut | null;
+  // Estimated riders waiting per platform, derived from the ridership
+  // baseline and this tick's platform-wait state. Null before the ridership
+  // baseline is published, before the first vehicle tick after deploy, or
+  // when stale.
+  platform_crowding: PlatformCrowdingOut | null;
   system: SystemStatus;
   compat: Compat;
 }
@@ -399,6 +436,17 @@ export function buildSnapshot(args: {
    * until the trainer publishes segment_dwell.json — segments then publish
    * status without recovery, never a fabricated number. */
   segmentDwell?: SegmentDwellDoc | null;
+  /** This tick's own platform-wait state (state/station_wait.json),
+   * threaded through in-memory from index.ts step 0 rather than read back
+   * from R2 — unlike stationFlow/segmentFlow, it is NOT one-tick-lagged.
+   * Null/undefined before the first vehicle tick after deploy, or when
+   * step 0's read/update/write failed this tick. */
+  stationWait?: StationWaitDoc | null;
+  /** Per-station-complex entries/min baseline from training/ridership.py.
+   * Read fresh each tick, not tick-lagged — it only changes weekly. Null
+   * until the trainer's first run, or when the document fails validation;
+   * platform_crowding then publishes null rather than estimate off nothing. */
+  ridershipBaseline?: RidershipBaselineDoc | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -429,6 +477,28 @@ export function buildSnapshot(args: {
   const stationFlowOut =
     stationFlowFresh && args.stationFlow != null
       ? buildStationFlowOut(args.stationFlow, segmentFlowOut)
+      : null;
+
+  // The freshest-decaying published surface: unlike stationFlow/segmentFlow
+  // (a one-tick-lagged read, gated the same way), stationWait is this same
+  // tick's own just-written doc, so under normal operation this gate is
+  // never the reason it's absent — it exists to catch the case step 0's
+  // read/write failed and left stationWait stale or null. The gate matters
+  // more here than anywhere else: a stale station_flow just shows a wrong
+  // status, but a stale platform_crowding shows a wrong and ever-more-wrong
+  // number, because the crowd it describes keeps growing at entries_per_min
+  // for every minute it goes unrefreshed.
+  const stationWaitFresh =
+    args.stationWait != null
+    && args.generatedAt - args.stationWait.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+  const platformCrowdingOut =
+    stationWaitFresh && args.stationWait != null && args.ridershipBaseline != null
+      ? buildPlatformCrowdingOut(
+          args.stationWait,
+          args.ridershipBaseline,
+          args.stations ?? {},
+          args.generatedAt,
+        )
       : null;
 
   // Publish every route we have alpha for — good-service lines get their
@@ -530,6 +600,7 @@ export function buildSnapshot(args: {
     station_status: args.stationStatuses ?? {},
     station_flow: stationFlowOut,
     segment_flow: segmentFlowOut,
+    platform_crowding: platformCrowdingOut,
     system,
     compat,
   };
@@ -1243,6 +1314,33 @@ function buildStationFlowOut(
     };
   }
   return { observed_at: stationFlow.observed_at, stations };
+}
+
+/**
+ * Attach `method` (the constants plus the baseline's own provenance) to
+ * crowding.ts's per-platform derivation, producing the published
+ * PlatformCrowdingOut surface. Caller gates freshness before calling this.
+ */
+function buildPlatformCrowdingOut(
+  stationWait: StationWaitDoc,
+  ridershipBaseline: RidershipBaselineDoc,
+  stations: Record<string, StationOut>,
+  now: number,
+): PlatformCrowdingOut {
+  const result = derivePlatformCrowding(stationWait, ridershipBaseline, stations, now);
+  return {
+    ...result,
+    method: {
+      formula: 'entries_per_min * minutes_since_last_train',
+      split_basis: 'uniform_over_served_platforms',
+      max_gap_minutes: CROWDING_MAX_GAP_MINUTES,
+      served_window_minutes: CROWDING_SERVED_WINDOW_MINUTES,
+      excludes: ['in-system transfers', 'exits'],
+      baseline_generated_at: ridershipBaseline.generated_at,
+      baseline_window_start: ridershipBaseline.source.window_start,
+      baseline_window_end: ridershipBaseline.source.window_end,
+    },
+  };
 }
 
 function argmaxOf(v: readonly [number, number, number]): 0 | 1 | 2 {

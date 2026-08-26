@@ -4675,3 +4675,72 @@ model contingent on the two-timescale formulation; the filtering machinery
 prototyped here (Binomial obs, particle filter) is reusable when that is built.
 The advance signal it all rests on is now honest (pooled baseline + through-
 filtered counts on both sides), so A can be built on solid ground.
+
+## 2026-08-26 — Option A calibration: the cut is already well-placed and the classifier does not flap, so A's win is corrected detection, not a retuned cut or a debounce
+
+origin: agent
+
+Built the offline cut/debounce calibration harness (`training/movement_calibrate.py`)
+and swept it over a causal window (advance baseline fitted on 2026-07-26..07-30,
+swept on 07-31..08-09, through-stop filtered on both sides). It reconstructs the
+live classifier per tick across the three cut constants, runs the real regime
+clock, and reports each setting's structure and corroboration. Two references,
+which are NOT interchangeable:
+
+- **Structural-consistency anchors** — disrupted base rate, per-tick stickiness
+  P(dis next | dis now), dwell. These come from the classifier's OWN calls, so
+  they show an operating point reproduces the population structure the
+  state-space study described; they are self-referential, never independent
+  validation. (The study's own 0.21% / 0.639 were likewise classifier-derived.)
+- **Trip-updates corroboration** — overlap with `derive_actual_recovery`'s
+  assigned_n disruptions. Independent in derivation from vehicle positions, so
+  the only independent reference — and weak, because supply level and advance
+  quality are different things (2026-08-20).
+
+**The cut is already well-placed.** At the shipped constants (prior_strength=8,
+disrupted_ratio=0.5, alpha=0.05) the reconstructed signal runs base rate 0.30%
+and stickiness 0.648 — matching the study's 0.21% / 0.639 structure — at the
+lowest churn on the grid (6 oscillations over 10 days × 27 routes). Along the
+prior_strength=8 axis dr=0.5 is the sweet spot: dr=0.4 collapses to 6 episodes,
+dr=0.6 or prior_strength=5 run 3–4× the base rate and churn for marginal
+trip-updates precision on a weak signal. `alpha` is not load-bearing at typical
+depths (0.01/0.05/0.10 are indistinguishable — deep freezes have binomial tail
+≈0 at n≈10). Operating point CONFIRMED, unchanged; the old alert-label eval only
+made it look untunable because it was the wrong truth.
+
+**The debounce delta was rejected on evidence.** The handoff's premise — a noisy
+single tick flips the committed condition and flaps — is false post-correction.
+Churn is ~0.02 flips/route/day. The single-tick episodes (64% of the population)
+are not noise: median binomial tail 0.0000, depth 0.47·p0 — statistically real
+brief partial freezes (they differ from the persistent multi-tick freezes only
+in being partial, 6% vs 52% zero-advance). Every damping variant hurts:
+symmetric debounce=2 erases ~70% of real episodes and adds a tick of latency;
+asymmetric exit-hysteresis barely changes anything (the episodes are genuinely
+isolated, not fragments); a recover-ratio band (mirroring the service axis)
+over-persists to 0.9% base rate. So `DEBOUNCE_TICKS=1` stays — the 2026-08-11
+call, now for a stronger reason than "not noise-dominated": not flapping at all.
+
+**A's real win is detection, and it is large.** On the same window the OLD live
+signal (saturated baseline) saw 14 disrupted episodes, all ≤15 min, with a
+quarter of ticks unjudgeable (`unknown`). The corrected signal (pooled baseline
+desaturates cells ≥0.99 from 76% to ~16% here; through-filtered counts) recovers
+56 episodes INCLUDING the persistent deep tail the old cut was blind to (seven
+~45-min, one ~160-min), and its completed-episode dwell MEAN is 14.2 min —
+matching the study's implied persistence. The correction restores the current
+state the product shows; the cut and debounce were hypotheses the calibration
+refuted.
+
+**Acceptance is blocked, honestly.** The literal target — movement-arm recovery
+beats status quo on the independent eval — cannot be established: over 14 days
+`recovery_independent` has n=1 gradeable sample, because movement disruptions and
+trip-updates disruptions overlap almost never. And recovery FORECASTING here is
+inherently low-skill: 64% of disruptions are 5-min partial freezes, so a
+conditional dwell adds no skill over predicting the unconditional median (a
+self-consistent leave-one-episode-out diagnostic, not acceptance). This is the
+same wall B hit. So B stays parked, and the residual is not a two-timescale
+pattern to fix — it is the floor predictability of short partial freezes.
+
+**Unshipped delta that remains: the publish.** The corrected params (pooled
+baseline + through-filtered counts + fitted movement emission) are validated
+offline but not published; moving the live operating point is the params-review
+step, gated on the lead. No constants or debounce changed in this session.

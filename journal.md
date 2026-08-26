@@ -4630,3 +4630,48 @@ signal, so its findings (continuum, not clusters; rare but ~14-min-sticky
 regimes) stand. B's machinery is sound and now runs on an honest signal; with
 the skew closed it is a live contender, calibration (φ, σ, per-route) being the
 next real step before it could be trusted for forecasts.
+
+## 2026-08-25 — calibration verdict: Option B's single-AR(1) form is misspecified — the advance signal is two-timescale (a ~3.4-hour drift plus ~minute-scale excursions), so a one-timescale continuous filter can't beat base rate; this tilts the near-term choice to A
+
+origin: agent
+
+Tried to calibrate B properly rather than hand-set φ/σ. Model: advance rate
+θ_t = μ + φ(θ_{t-1}-μ) + N(0,σ²), advanced_n ~ Binomial(matched_n, θ_t), on the
+RATE scale (logit blows up at the frequent k=0 / k=n boundaries at n≈10).
+
+**Estimating φ, carefully.** The errors-in-variables route —
+Var(θ) = Var(p̂) − E[obs noise], φ = autocov(1)/Var(θ) — is unreliable here
+because the plug-in obs-noise term p̂(1-p̂)/n is exactly 0 at the k=0/k=n
+boundaries and understates sampling noise; it gives φ=1.11, and a
+Laplace-smoothed noise term makes it 1.37 — i.e. this estimator is dominated by
+how you handle boundary noise, so it can't be trusted. The robust estimate needs
+no obs-noise term at all: lags ≥1 of the autocovariance are white-noise-free, so
+a geometric fit of autocov(k) over k=1..8 gives φ directly. That fit is
+**φ ≈ 0.975**, a **~3.4-hour** timescale (autocov barely decays: .0148 at 5 min
+to .0126 at 40 min, per-step ratio ~0.98). Stationary, but very slow. Reverting
+to a time-of-day mean instead of one p0 doesn't change it (only 16% of advance
+variance is time-of-day).
+
+**Two timescales, and that is the point.** The bulk signal drifts slowly
+(~3.4 h); the deep disruption excursions the discrete classifier measured are
+short (~14-min dwell). A single AR(1) can hold only one timescale, and it lands
+on the slow bulk. Run end to end with the calibrated φ=0.975 (σ≈0.027), its
+30-minute recovery forecast has no skill: over 98 onsets every forecast squashes
+into one low bin (mean predicted 0.08) while 0.15 actually recover — Brier 0.143
+vs a base-rate 0.130, i.e. slightly WORSE than a constant. It systematically
+under-calls fast recoveries because its one timescale expects disruptions to last
+hours. That is the model class being wrong for this signal, not a tuning miss.
+
+**Verdict on A vs B.** A trustworthy continuous B needs a two-timescale /
+local-level-plus-excursion state-space model (a slow drifting level and a fast
+excursion component), which is a real research build, not a calibration tweak.
+Option A sidesteps the whole problem: discretizing to normal / degraded /
+suspended means the slow within-normal drift never crosses a threshold and does
+not matter, and the ~14-min disruption dwell is exactly what A's learned
+per-state dwell captures. So the near-term recommendation is A — a 2-running-state
+(normal/degraded on an advance-vs-baseline cut) + suspended (presence) discrete
+model with learned dwell/transitions. B is parked as the more faithful long-term
+model contingent on the two-timescale formulation; the filtering machinery
+prototyped here (Binomial obs, particle filter) is reusable when that is built.
+The advance signal it all rests on is now honest (pooled baseline + through-
+filtered counts on both sides), so A can be built on solid ground.

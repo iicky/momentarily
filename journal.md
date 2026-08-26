@@ -4917,3 +4917,53 @@ real `station_wait` + ridership baseline in R2, which this worktree cannot
 decrypt — and actually publishing the baseline + deploying. The share
 reduction is the mechanism of the fix and it is measured; the absolute
 per-tick number wants that replay before a production sign-off.
+
+
+## 2026-08-25 — parked the direction axis as a diagnostic, not a split input; the demand asymmetry is real and large, but nothing here maps it onto a physical platform
+
+origin: agent
+
+Decision was to park the OD direction axis as a validation instrument rather
+than wire it into the live split. Built `training/od_direction.py` for it: a
+manual diagnostic (no cron, no R2, no Worker, no published artifact) that, per
+origin complex, measures the share of demand heading to a destination north vs
+south of it by (weekday/weekend, hour) from OD `28vm-gjqr`, reported at each
+complex's own busiest weekday hour so the headline is a real peak, not a thin
+overnight cell. Pure reduction unit-tested; the per-origin query is origin-
+filtered (the only shape the public endpoint serves without timing out — a
+global group-by-origin scan times out, and even filtered runs 20-40s, so a full
+425-complex sweep is a slow manual job, which is the honest reason it stays a
+diagnostic).
+
+Measured, weekday busiest hour, share north / south:
+
+    Astoria-Ditmars (N W)        h08   6% / 94%
+    Atlantic-Barclays (B Q ...)  h08  78% / 22%
+    Flushing-Main St (7)         h07  25% / 75%
+    Grand Central (4/5/6, 7, S)  h17  38% / 62%
+    W 4 St (A C E ...)           h17  50% / 50%
+
+So the asymmetry the live 50/50 split assumes away is real and sometimes huge:
+Astoria at the AM peak is 6/94, a 0.44 departure from even. That is the size of
+the bias we are choosing not to correct, now on the record.
+
+**What this does NOT establish, and the metric I built and then deleted.** I
+first added a `lat_dominance` number — the share of a complex's demand spread
+that is latitudinal vs longitudinal — and used it as a "is the N/S geometry
+trustworthy" gate. That was wrong and I removed it. It measures the DESTINATION
+TRAJECTORY, not the LINE's orientation: an Astoria rider bound for Manhattan
+travels south and west, so the trajectory reads half-longitudinal (lat_dominance
+~0.36) even though the N W line itself runs north-south and the 6/94 asymmetry
+is genuine. The metric cannot tell "crosstown line, N/S label is nominal" (the 7
+at Flushing) apart from "N/S line, diagonal destinations" (Astoria) — it lands
+low in both — so it can neither certify nor discard a reading. Do not re-add it
+as a guard. Certifying that a measured N/S demand share maps onto a physical
+platform needs each line's own direction geometry, which none of this reads;
+until then these are demand asymmetries, not per-platform corrections.
+
+That is the whole case for parking, and it is not "the bias is small" — it is
+large. It is that (1) there is no per-platform ground truth to grade a direction
+split against, (2) the source is a 43-day-lagged estimate-on-an-estimate, and
+(3) turning a complex-level N/S demand share into a platform correction needs
+line geometry we have not built. The instrument stays as the thing a future
+direction split would be graded against.

@@ -5661,3 +5661,75 @@ That is enough to retune the shipped pair to decay 0.94 / matched floor 3. The
 window-only arm remains rejected: it publishes the weakest, non-significant
 separation and the slowest onset despite judging 41% of the cells. The win comes
 from the cross, not from accepting that branch unchanged.
+
+## 2026-08-26 — reconciled onto main: throughput and the 0.94/83-min window ship, span-crediting is dropped by main's own grade, and the pair re-grades at 5.6x on the rebased tree
+
+origin: agent
+
+`feat/segment-throughput-branch` was cut before `feat/segment-status-map` (PR #6,
+da5383a) landed on main, and the two overlapped hard — a straight merge produced
+55 conflict blocks across 12 files. Rebased instead, semantically, one mechanism
+at a time. Main advanced twice more during the work (segment-status-map, then
+journey-enumeration + status-first pages + the HMM movement-emission fit); the
+final branch sits on `2d7de2f` and fast-forwards.
+
+**Two of the three commits carried over unchanged in intent.** Main had
+independently adopted decay 0.94 / floor 3 (the same retune this branch reached
+from the other direction), so the window question was already settled the same
+way on both sides. The throughput branch layered on top with no contest: main's
+segment core (`segment_flow.ts`, `state.ts`, `vehicles.ts`) was untouched by
+every main commit after the fork, so the only real integration work was threading
+the new `quiet` state through main's rewritten viz — the `@/lib/overlays` +
+octilinear-diagram map architecture that replaced the old `projector` map this
+branch had modified. `quiet` is now a first-class `SegmentState` (muted, ranked
+above `normal` so a sparse overnight map never reads as a green all-clear, below
+`unmeasured` since no verdict is more conservative than a benign one) across
+`segments.ts`, `overlays.ts`, the trip page, and the station roll-up.
+
+**The third commit — span crediting (`hops`) — was dropped, by main's grade and
+not by merge order.** Main's `training/segment_coverage.py` had already measured
+pattern-confirmed multi-stop hop crediting as its `expand` lever and rejected
+shipping it: "EXPAND costs recall at every decay tested (0.80: 0.05% -> 0.03%;
+0.94: 0.17% -> 0.10%; 0.98: 0.22% -> 0.13%) in exchange for coverage -- the
+opposite of what the retune was for. Not shipped for that reason, not for the
+~685KB trainer-side hop map it would additionally need." This branch had shipped
+exactly that mechanism to the Worker (a live `PathPatternIndex` in `vehicles.ts`
+feeding a `hops` field `segment_flow.ts` read in place of `transitions`), with no
+countervailing grade. The throughput grade that justifies the whole branch was
+itself measured on the TRANSITIONS stream — the graded windows all predate the
+`hops` deploy and the production Worker never wrote a v2 archive — and the fit
+(`lam`) and the observation (`matched`) must share one credit rule or the
+expectation stops matching what gets counted. So the graded, self-consistent
+configuration is throughput-on-transitions; keeping `hops` would have been
+keeping it against the only grade that touches it. Reverted to `transitions`.
+
+The repo's adversarial pre-commit reviewer flagged the removal on exactly the
+right instinct: without `hops`, a 5-minute-cadence jump A>C credits only the
+A-keyed cell, so an intervening cell B reads `matched = 0` against a real
+expectation and could false-disrupt — and at this cadence ~90% of moves span
+several stops. It is neutralized by the credit-rule coupling it could not see:
+B's `lam` is fit from the same transitions stream that rarely credits B, so B's
+expectation is correspondingly low and it reads `quiet`/`normal`, not
+`disrupted`. The fresh grade below carries the proof — the shipped pair's
+normal-run false-alarm share is 0.063, not inflated.
+
+**Re-graded on the rebased tree** (transitions, published/debounced surface,
+fit causally on the vehicle archive 2026-08-06..08-19 and scored on
+08-20..08-26; 2,013 scored ticks, 114 assigned_n episodes, 202 normal runs, 16
+routes):
+
+| arm | decay | window | judged/tick | coverage | gradeable eps | pub episode share | pub normal share | ratio | CIs disjoint |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| status quo | 0.80 | 25 min | 20.3 | 28.9% | 34 | 0.279 [0.173, 0.443] | 0.056 [0.035, 0.082] | 5.00 | yes |
+| window | 0.94 | 83 min | 690 | 93.5% | 84 | 0.012 [0.005, 0.029] | 0.006 [0.004, 0.008] | 2.04 | **no** |
+| throughput | 0.80 | 25 min | 1,658 | 100% | 59 | 0.475 [0.380, 0.517] | 0.129 [0.100, 0.166] | 3.67 | yes |
+| **both (shipped)** | 0.94 | 83 min | 1,652 | 100% | **91** | 0.350 [0.190, 0.454] | **0.063 [0.055, 0.071]** | **5.59** | yes |
+
+The pairing that ships — decay 0.94, floor 3, throughput on transitions —
+publishes a 5.6x episode/normal separation with disjoint CIs and full coverage on
+91 gradeable episodes, against 34 for the status quo. The throughput arm
+reproduces the pre-rebase 3.65x at 3.67x, so the mechanism came through the
+rebase and the `hops` removal intact. The window-only arm remains exactly what
+the earlier bakeoff called it: the weakest and only non-significant separation
+(2.04x, overlapping CIs) despite judging 93% of cells. The win is still the
+cross, and it survives dropping the axis main had already graded away.

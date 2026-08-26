@@ -4323,3 +4323,24 @@ not settled, and this channel has already produced one confident wrong number
 To close it, the trainer has to report what the params cannot: per-state
 `mov_n` — responsibility-weighted matched trips — and the global prior's own
 `advance_rate`. That is instrumentation in the fit, not analysis of its output.
+
+## 2026-08-25 — correction to the heading above: "prior-dominated either way" is wrong, and the error inverts the entry's own evidence
+
+origin: agent
+
+The entry above is headed "...and the serialized number is prior-dominated
+either way". That phrase is wrong, and its own body says so two paragraphs
+later: with κ=100, a state accumulating `mov_n` in the thousands would swamp the
+prior, not be dominated by it. The number is prior-dominated only in the
+low-`mov_n` case.
+
+The correct statement is narrower: per-route fits run at `prior_strength=100`,
+so the κ-blended M-step `(κ·prior + mov_k)/(κ + mov_n)` (`hmm.py:794-796`) can
+return the prior exactly without `mov_n` being zero — it does so whenever
+`mov_k = prior·mov_n`. That is what breaks the proof.
+
+The distinction matters because it runs the other way too. Prior-domination is
+not a symmetric escape hatch: it is exactly the low-`mov_n` regime, which is the
+conclusion the entry was reaching for. Writing "either way" in the heading threw
+away the entry's only real evidence — that a well-fed state would have moved off
+`0.3`, so 56 of 56 sitting on it is informative, just not conclusive.

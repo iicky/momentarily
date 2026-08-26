@@ -4209,6 +4209,7 @@ whose incident count is computed on the published movement arm and therefore
 sizes a different metric. Reaching for the adjacent number would have rebuilt
 the same arm-mismatch error class one field over, inside the very instrument
 built to find it.
+
 ## 2026-08-24 — the crowding estimate's unit was wrong by 10x, and the version people actually want doesn't need the ridership feed at all
 
 origin: self
@@ -5270,3 +5271,171 @@ pattern to fix — it is the floor predictability of short partial freezes.
 baseline + through-filtered counts + fitted movement emission) are validated
 offline but not published; moving the live operating point is the params-review
 step, gated on the lead. No constants or debounce changed in this session.
+
+## 2026-08-25 — the platform-split bug's own premise is wrong: the shuttle's "low volume" was a feed stall, not low service, so observed-volume weighting keys on the one signal that collapses exactly when it's stalled
+
+origin: agent
+
+Went to build the deferred fix for the uniform complex-to-platform demand
+split (the Grand Central shuttle publishing 951 waiting riders). The fix as
+filed — weight the split by OBSERVED train volume per platform (the trace) —
+does not survive the schedule. Measured this session against public data only
+(GTFS static `rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip`, NYS `39hk-dx4f`
+for the complex→stop join, OD `28vm-gjqr`); the real-trace replay the earlier
+entries used is not reachable from this worktree — its key is not a recipient
+of the murk vault, so R2 (`state/station_wait.json`, `state/ridership_baseline
+.json`, `archive/`) cannot be decrypted here. So these are public-data proxies,
+not the production replay.
+
+**The premise, falsified.** The observed-volume idea came from the 08-24 replay
+finding route GS carried 70 trace rows over two hours against 2,793 for the 1 —
+read as "the shuttle runs little service, so weight it down". GTFS static says
+otherwise: the 42 St Shuttle runs **254 scheduled weekday trips at stop 901,
+~18 in the 08:00 hour**, comparable to the 7 (321 / 27) and about half the
+4/5/6 (598 / 39–41). The 70 rows was the vehicle-feed stall the same entry
+documented (32 of those 70 were one stuck vehicle), not low service. So
+observed volume keys the split on the exact signal that collapses during a feed
+stall — it would underweight a platform precisely when its feed stalls, which
+is uncorrelated with real demand. That is the opposite of robust.
+
+**Scheduled-service weighting is the stable substitute, and it is a real but
+partial fix.** Splitting a complex's entry rate by each directional platform's
+share of scheduled trips (rush hour) instead of uniformly across served
+platforms:
+
+    complex 610 Grand Central, 08:00   uniform   sched-service
+      901N/901S (shuttle)               16.7%      10.5%   (×0.63)
+      631N/631S (4/5/6)                 16.7%      22.8/24.0%
+      723N/723S (7)                     16.7%      15.8/16.4%
+    complex 611 Times Sq, 08:00
+      902N/902S (shuttle)               10.0%       6.0%   (×0.60)
+
+So the shuttle reading drops ~40% (901S ~951 → ~600 riders), a genuine
+improvement, but nowhere near the "3–5x too high" the 08-24 entry claimed —
+because that claim was itself sized off the stalled trace.
+
+**A residual the split basis probably cannot close, though this part is not
+measured.** The likely reason scheduled-service weighting still leaves the
+shuttle high is that its platform crowd is largely IN-SYSTEM TRANSFERS —
+riders coming off the 4/5/6/7 to cross to Times Sq — which are never
+fare-swiped and are absent from the entry-rate feed entirely. If so, no
+reallocation of *entries* reaches a demand that isn't entries. That is a
+hypothesis consistent with the transfer blind spot logged on 08-24, not a
+measurement: this session established schedules (GTFS) and direction (OD), not
+the shuttle's transfer share. Quantifying it would need a transfer-flow
+estimate the OD matrix explicitly discards, so the size of this residual is
+currently unknown, not "well under X%".
+
+**Direction asymmetry is a separate axis, and it reproduces.** OD `28vm-gjqr`
+for origin 610, Wednesday 08:00, destinations bucketed N/S by complex latitude:
+**31.4% north / 68.6% south**, matching the 08-24 entry's 30.7/69.3. The split
+assumes 50/50 across a stop's two directions, so it overstates northbound at
+rush. Correcting it needs OD-derived direction shares (43-day lag, 72.6M rows),
+independent of the platform/line split above.
+
+So the deferral's missing acceptance criterion now exists, and measuring it
+flipped the recommended basis: NOT observed volume (unstable, and the number
+that motivated it was an artifact), but scheduled service — a stable, public,
+partial fix — with direction as a second axis and the transfer flow as an
+un-instrumented floor. Whether the ~40% shuttle reduction earns a new
+GTFS-derived baseline artifact + Worker loader, and whether to add the OD
+direction axis, is a scope call, and the production sign-off still wants the
+real-trace replay that this worktree cannot run.
+
+
+## 2026-08-25 — implemented the scheduled-service split (local, uncommitted): a GTFS-derived per-platform weight, all-or-nothing per complex, pooling Saturday and Sunday like the ridership `we` cell
+
+origin: agent
+
+Owner picked scheduled-service weighting over the (falsified) observed-volume
+basis, direction axis deferred. Written and locally verified; NOT committed or
+deployed, and no baseline artifact is published yet. Changes:
+
+- New ingest `training/service_weight.py` builds
+  `state/service_weight_baseline.json` from the static GTFS zip: scheduled
+  departures per DIRECTIONAL stop (`901S`) by (wd/we, hour), keyed the same way
+  the trace keys platforms so it joins with no crosswalk. Weekly cron
+  (`service-weight-weekly.yml`), mirroring the ridership ingest.
+- The Worker (`crowding.ts`) splits a complex's entry rate by each served
+  platform's share of scheduled trains, replacing the even split. Published
+  `split_basis` flips to `scheduled_service_over_served_platforms` when the
+  baseline is loaded, `uniform_over_served_platforms` when it is absent.
+
+Three design points worth keeping, each forced by a review challenge:
+
+1. **No imputation.** A complex weights by schedule ONLY if every one of its
+   currently-served platforms carries a positive scheduled count this hour;
+   otherwise that whole complex falls back to the even split. A missing or
+   zero count is a hole, never filled with a mean — so a partial baseline can
+   never masquerade as a valid weighted split.
+2. **Calendar, not calendar.txt flags.** Weekday/weekend classes are resolved
+   through `gtfs_static._Calendar.active()` on representative in-service dates
+   carrying no `calendar_dates` exception, not a raw weekday-flag union — which
+   would fold a holiday timetable into the regular one. The `-H-` services turn
+   out to be small seasonal supplements (166 trips) layered on the full base
+   Saturday (6020), so `active()` summing them is real service, not a double
+   count.
+3. **`we` pools Saturday and Sunday**, because `schedule_bin` maps both onto
+   `we` and the ridership `we` rate the split multiplies is itself pooled;
+   a Saturday-only weight would misread every Sunday.
+
+Verified locally on real public data (GTFS + the artifact through the Worker's
+own zod loader) and deterministic unit tests: the GC shuttle platform's share
+drops 16.7% -> 10.5% and Times Sq's 10.0% -> 6.0%, demand is conserved across
+the reweight, and partial/zero/out-of-service platforms fall back cleanly.
+Worker suite 413 pass, viz 117, python green, all typechecks clean. What is
+still NOT closed: the end-to-end published `waiting_riders` replay against the
+real `station_wait` + ridership baseline in R2, which this worktree cannot
+decrypt — and actually publishing the baseline + deploying. The share
+reduction is the mechanism of the fix and it is measured; the absolute
+per-tick number wants that replay before a production sign-off.
+
+
+## 2026-08-25 — parked the direction axis as a diagnostic, not a split input; the demand asymmetry is real and large, but nothing here maps it onto a physical platform
+
+origin: agent
+
+Decision was to park the OD direction axis as a validation instrument rather
+than wire it into the live split. Built `training/od_direction.py` for it: a
+manual diagnostic (no cron, no R2, no Worker, no published artifact) that, per
+origin complex, measures the share of demand heading to a destination north vs
+south of it by (weekday/weekend, hour) from OD `28vm-gjqr`, reported at each
+complex's own busiest weekday hour so the headline is a real peak, not a thin
+overnight cell. Pure reduction unit-tested; the per-origin query is origin-
+filtered (the only shape the public endpoint serves without timing out — a
+global group-by-origin scan times out, and even filtered runs 20-40s, so a full
+425-complex sweep is a slow manual job, which is the honest reason it stays a
+diagnostic).
+
+Measured, weekday busiest hour, share north / south:
+
+    Astoria-Ditmars (N W)        h08   6% / 94%
+    Atlantic-Barclays (B Q ...)  h08  78% / 22%
+    Flushing-Main St (7)         h07  25% / 75%
+    Grand Central (4/5/6, 7, S)  h17  38% / 62%
+    W 4 St (A C E ...)           h17  50% / 50%
+
+So the asymmetry the live 50/50 split assumes away is real and sometimes huge:
+Astoria at the AM peak is 6/94, a 0.44 departure from even. That is the size of
+the bias we are choosing not to correct, now on the record.
+
+**What this does NOT establish, and the metric I built and then deleted.** I
+first added a `lat_dominance` number — the share of a complex's demand spread
+that is latitudinal vs longitudinal — and used it as a "is the N/S geometry
+trustworthy" gate. That was wrong and I removed it. It measures the DESTINATION
+TRAJECTORY, not the LINE's orientation: an Astoria rider bound for Manhattan
+travels south and west, so the trajectory reads half-longitudinal (lat_dominance
+~0.36) even though the N W line itself runs north-south and the 6/94 asymmetry
+is genuine. The metric cannot tell "crosstown line, N/S label is nominal" (the 7
+at Flushing) apart from "N/S line, diagonal destinations" (Astoria) — it lands
+low in both — so it can neither certify nor discard a reading. Do not re-add it
+as a guard. Certifying that a measured N/S demand share maps onto a physical
+platform needs each line's own direction geometry, which none of this reads;
+until then these are demand asymmetries, not per-platform corrections.
+
+That is the whole case for parking, and it is not "the bias is small" — it is
+large. It is that (1) there is no per-platform ground truth to grade a direction
+split against, (2) the source is a 43-day-lagged estimate-on-an-estimate, and
+(3) turning a complex-level N/S demand share into a platform correction needs
+line geometry we have not built. The instrument stays as the thing a future
+direction split would be graded against.

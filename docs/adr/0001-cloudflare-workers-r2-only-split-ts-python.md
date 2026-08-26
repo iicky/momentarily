@@ -32,11 +32,14 @@ per-alert; R2 has no such write-count limit and the state we need is small.
 Build on **all Cloudflare, R2 as the only state store, split by language**:
 
 - **Live path — TypeScript on a Cloudflare Worker.** A Workers Cron Trigger
-  fires every 5 minutes (`worker/wrangler.toml`, `crons = ["*/5 * * * *"]`),
-  reads rolling state from R2, advances the HMM forward filter per route, and
-  publishes the snapshot + grading streams back to R2. The forward filter is a
-  TypeScript port of the Python reference (`worker/src/hmm.ts`). Inference only —
-  no training in the Worker.
+  fires every minute (`worker/wrangler.toml`, `crons = ["* * * * *"]`); the
+  5-minute alerts/HMM/snapshot pipeline is gated inside the scheduled handler
+  (`index.ts`, on 5-minute boundaries) while the every-minute cadence drives
+  the per-minute vehicle movement trace. Each pipeline tick reads rolling
+  state from R2, advances the HMM forward filter per route, and publishes the
+  snapshot + grading streams back to R2. The forward filter is a TypeScript
+  port of the Python reference (`worker/src/hmm.ts`). Inference only — no
+  training in the Worker.
 
 - **Training path — Python in a Cloudflare Container.** A separate cron-only
   Worker (`trainer/`) starts a container weekly (Sunday 05:00 UTC,
@@ -154,13 +157,24 @@ port) and the two must be kept in step by hand.
 2. **Worker CPU is enough for inference, not training.** A forward filter is
    microseconds; Baum-Welch EM is not. Splitting inference (Worker) from
    training (weekly container) keeps the hot path tiny and the heavy job off it.
-3. **Workers Cron is a real scheduler.** Every-5-minute firing with low jitter,
+3. **Workers Cron is a real scheduler.** Every-minute firing with low jitter,
    versus GitHub Actions cron's best-effort minute-plus jitter.
 4. **It stays in the free tier.** The trainer container is "1/4 vCPU / 1 GiB —
    overkill for a ~90s EM run, and \$0 marginal inside the Workers Paid free
-   allowance" (`trainer/wrangler.toml`). The Worker's ~288 invocations/day sit
-   well under the 100K/day allowance, and public reads are R2 bytes-out behind
-   the CDN edge cache, not Worker invocations.
+   allowance" (`trainer/wrangler.toml`). The scheduled path is the only Worker
+   cost we can bound from config: the cron fires every minute — ~1,440
+   invocations/day, far under the 100K/day allowance. Public reads no longer
+   bypass the Worker the way the original decision assumed: `feed.momentarily
+   .nyc` is a `custom_domain` route on the Worker (`worker/wrangler.toml`), not
+   a direct binding to the bucket, and the public-read handler does an R2 GET
+   on every invocation with no Cache API short-circuit (`index.ts`
+   `handlePublicRead`). So a public read the Worker serves costs a Worker
+   invocation and an R2 read both. What share of public requests Cloudflare's
+   edge cache absorbs ahead of the Worker — via the `max-age`/`s-maxage` the
+   snapshot is written with — is the only thing holding those down, and that
+   share, like the public request volume itself, is unmeasured, so no allowance
+   guarantee attaches to it; see "Public read traffic at scale" under
+   Consequences.
 
 ## Consequences
 
@@ -179,10 +193,13 @@ Negative / watch items:
 - **state.json single-writer assumption.** Only the Worker writes `state/alpha.json`
   and `state/last_seen.json`; correctness relies on the cron firing sequentially.
   The etag compare-and-swap is the guard if that assumption is ever violated.
-- **Public read traffic at scale.** If many consumers poll `v1/snapshot.json`
-  every minute, R2 Class B (read) ops could pressure the free tier; the custom
-  domain's CDN edge cache (via the cache-control headers the Worker sets) is what
-  keeps origin reads low. Monitor.
+- **Public read traffic at scale.** `feed.momentarily.nyc` is served by the
+  Worker (`custom_domain`), not bound to the bucket, and the read handler does
+  an R2 GET on every invocation (no Cache API; `index.ts` `handlePublicRead`).
+  So each public read the Worker serves costs a Worker invocation and an R2
+  Class B (read) op both; how many reach the Worker, versus being absorbed by
+  Cloudflare's edge cache via the stored `max-age`/`s-maxage`, is unverified,
+  and the public request volume is unmeasured. Monitor.
 - **Archive is deduped-by-version, not per-tick.** `archive/alerts/` rows are
   every distinct `(alert_id, updated_at)`, not every alert at every poll;
   training code reconstructs per-tick state from `active_period` intersections.

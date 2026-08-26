@@ -79,7 +79,7 @@ import {
   movementChannelActive,
   stationaryDistribution,
 } from './hmm';
-import { loadParams, loadRidershipBaseline, paramsForRoute } from './params';
+import { loadParams, loadRidershipBaseline, loadServiceWeightBaseline, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
 import {
@@ -324,6 +324,7 @@ export default {
       prevMovementMetric,
       prevServiceMetric,
       ridershipBaseline,
+      serviceWeightBaseline,
     ] = await Promise.all([
       readLastSeen(env.MOMENTARILY),
       readAlphaState(env.MOMENTARILY),
@@ -331,6 +332,7 @@ export default {
       readMovementMetric(env.MOMENTARILY),
       readServiceMetric(env.MOMENTARILY),
       loadRidershipBaseline(env.MOMENTARILY),
+      loadServiceWeightBaseline(env.MOMENTARILY),
     ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
@@ -581,6 +583,7 @@ export default {
         segmentDwell,
         stationWait: stationWaitDoc,
         ridershipBaseline,
+        serviceWeightBaseline,
       });
       step('6a-build-snapshot');
       try {

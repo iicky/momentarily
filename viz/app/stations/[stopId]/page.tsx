@@ -289,7 +289,16 @@ function WaitingRiders({
       <div className="section-note crowd-note">
         Riders who have entered this complex since a train last cleared the
         platform. Nobody counts people on platforms: this is the complex&apos;s usual
-        entry rate for this hour, <b>split evenly across the platforms in service</b>{" "}
+        entry rate for this hour,{" "}
+        {pc.method.split_basis === "scheduled_service_over_served_platforms" ? (
+          <b>
+            split across the platforms in service in proportion to how many trains
+            the schedule runs at each (or evenly, at a complex the schedule
+            doesn&apos;t fully cover this hour)
+          </b>
+        ) : (
+          <b>split evenly across the platforms in service</b>
+        )}{" "}
         — an assumption of ours, because the ridership feed counts fare swipes per
         complex and no feed says which platform a rider walked to. It also cannot
         see {pc.method.excludes.join(" or ")}: anyone transferring in for free, and

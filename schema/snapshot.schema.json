@@ -969,9 +969,36 @@
           "title": "Served Window Minutes",
           "type": "integer"
         },
+        "service_weight_feed_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Weight Feed Version"
+        },
+        "service_weight_generated_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Weight Generated At"
+        },
         "split_basis": {
-          "const": "uniform_over_served_platforms",
           "default": "uniform_over_served_platforms",
+          "enum": [
+            "uniform_over_served_platforms",
+            "scheduled_service_over_served_platforms"
+          ],
           "title": "Split Basis",
           "type": "string"
         }

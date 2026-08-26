@@ -80,7 +80,11 @@ function LineView() {
       {snap?.platform_crowding && (
         <div className="section-note crowd-note">
           Rider counts are <b>estimates</b>, not measurements: each platform&apos;s
-          assumed even share of its complex&apos;s usual entry rate for this hour,
+          assumed share of its complex&apos;s usual entry rate for this hour{" "}
+          {snap.platform_crowding.method.split_basis ===
+          "scheduled_service_over_served_platforms"
+            ? "— weighted by how many trains the schedule runs at each platform, or evenly where it doesn't cover them all —"
+            : "— split evenly across the platforms in service —"}{" "}
           times how long it has been since a train cleared it. Transfers and exits
           are invisible to it. Full method on any station page.
         </div>

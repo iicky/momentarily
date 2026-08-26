@@ -654,3 +654,90 @@ export function ridershipRateFor(
   const hour = parseInt(bin.slice(2), 10);
   return complex.entries_per_min[cls][hour] ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Scheduled-service baseline: per-directional-platform scheduled train counts
+// by (weekday/weekend, hour) cell, written weekly by training/service_weight.py
+// from the static GTFS schedule. Its own R2 object, read fresh each tick
+// alongside the ridership baseline; feeds the platform-crowding split
+// (crowding.ts) so a complex's entry demand divides in proportion to how much
+// service each platform gets, not evenly by platform count.
+// ---------------------------------------------------------------------------
+
+const SERVICE_WEIGHT_BASELINE_KEY = 'state/service_weight_baseline.json';
+
+// Scheduled departures for each of the 24 local hours, one array per
+// weekday/weekend class. Exactly 24 long, integer counts (>= 0). A 0 is an
+// hour the schedule does not serve this platform — meaningful, and distinct
+// from a stop absent from the document. A short array is malformed, not sparse.
+const HourlyCountsSchema = z.array(z.number().int().nonnegative()).length(24);
+
+const ServiceWeightStopSchema = z.object({
+  wd: HourlyCountsSchema,
+  we: HourlyCountsSchema,
+});
+
+const ServiceWeightBaselineSchema = z.object({
+  schema_version: z.string(),
+  generated_at: z.number(),
+  source: z.object({
+    dataset: z.string(),
+    url: z.string(),
+    feed_version: z.string().nullable(),
+    weekday_services: z.array(z.string()),
+    weekend_services: z.array(z.string()),
+  }),
+  stops: z.record(z.string(), ServiceWeightStopSchema),
+  n_stops: z.number().int().nonnegative(),
+});
+export type ServiceWeightBaselineDoc = z.infer<typeof ServiceWeightBaselineSchema>;
+
+/**
+ * Load the scheduled-service baseline from R2. Null when absent (before the
+ * first weekly training/service_weight.py run) or malformed — a short counts
+ * array or a negative/fractional count fails semantic bounds, not just shape.
+ * A null here is not fatal to crowding the way a null ridership baseline is:
+ * the split simply falls back to the even-over-served-platforms basis. Never
+ * throws into the tick.
+ */
+export async function loadServiceWeightBaseline(
+  bucket: R2Bucket,
+): Promise<ServiceWeightBaselineDoc | null> {
+  // The whole read, not just the parse, is inside the catch: this baseline is
+  // optional (a null falls back to the even split), so an R2 read that rejects
+  // must degrade to uniform, never reject the tick's Promise.all and block the
+  // snapshot. That's why the get is inside the try, unlike the load helpers
+  // whose absence is fatal to their surface.
+  try {
+    const obj = await bucket.get(SERVICE_WEIGHT_BASELINE_KEY);
+    if (!obj) return null;
+    return ServiceWeightBaselineSchema.parse(await obj.json());
+  } catch (err) {
+    console.error(
+      'service_weight_baseline.json unavailable or invalid; crowding split falls back to uniform:',
+      err,
+    );
+    return null;
+  }
+}
+
+/**
+ * Scheduled trains at a directional platform (`631N`) for the current
+ * (weekday/weekend, hour) cell, or null when the schedule has no entry for
+ * that stop. The caller treats both null and 0 as "not covered this hour",
+ * which forces the platform's whole complex back to the even split rather than
+ * weighting off a hole. Parses schedule_bin's `wd06`/`we22` key, the same rule
+ * ridershipRateFor uses, so the two baselines never disagree on the cell.
+ */
+export function serviceWeightFor(
+  baseline: ServiceWeightBaselineDoc | null,
+  stopId: string,
+  epochSeconds: number,
+): number | null {
+  const stop = baseline?.stops?.[stopId];
+  if (!stop) return null;
+  const bin = schedule_bin(epochSeconds);
+  const cls = bin.slice(0, 2) as 'wd' | 'we';
+  const hour = parseInt(bin.slice(2), 10);
+  return stop[cls][hour] ?? null;
+}

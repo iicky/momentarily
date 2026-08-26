@@ -648,10 +648,15 @@ class PlatformCrowdingMethod(BaseModel):
     # The ridership feed counts entries per station COMPLEX, not per platform.
     # Splitting a complex's demand across the platforms currently in service is
     # an assumption, not a measurement: nothing in any feed says which platform
-    # a rider walked to.
-    split_basis: Literal["uniform_over_served_platforms"] = (
-        "uniform_over_served_platforms"
-    )
+    # a rider walked to. "scheduled_service_over_served_platforms" splits it in
+    # proportion to each platform's scheduled trains this hour (weighted where
+    # the complex is fully covered, even otherwise); "uniform_over_served
+    # _platforms" splits evenly and is what publishes when no service_weight
+    # baseline is loaded.
+    split_basis: Literal[
+        "uniform_over_served_platforms",
+        "scheduled_service_over_served_platforms",
+    ] = "uniform_over_served_platforms"
     # Platforms whose last train is older than this get no estimate at all.
     # Beyond a few headways the linear accumulation stops describing a crowd —
     # people give up and leave, and the platform is usually out of service
@@ -669,6 +674,11 @@ class PlatformCrowdingMethod(BaseModel):
     baseline_generated_at: int
     baseline_window_start: str
     baseline_window_end: str
+    # Provenance of the scheduled-service split weights: the service_weight
+    # baseline's generated_at and GTFS feed_version, or null when it was absent
+    # and the split fell back to uniform.
+    service_weight_generated_at: int | None = None
+    service_weight_feed_version: str | None = None
 
 
 class PlatformCrowding(BaseModel):

@@ -1034,3 +1034,35 @@ def fit_em(
         prev = log_lik
 
     return canonicalize_states(params), log_liks
+
+
+def advance_responsibility(
+    observations: list[Observation],
+    params: HMMParams,
+) -> list[tuple[float, float]]:
+    """Per-state (mov_n, mov_k): responsibility-weighted (matched, advanced)
+    trips over movement-available ticks, under `params`.
+
+    This is the M-step's own `mov_n`/`mov_k` (hmm.py advance-rate branch), read
+    off a single E-step at the given params. `mov_n[s]` is the effective sample
+    size the advance-rate estimate for state `s` was fitted on; when it is small
+    relative to `prior_strength`, that state's serialized `advance_rate` reflects
+    the prior, not observed movement. Diagnostic only — never called in the fit.
+    """
+    emis, _ = _per_tick_emissions(observations, params)
+    alpha, scales = _forward_scaled(emis, params)
+    beta = _backward_scaled(emis, scales, params)
+    out: list[tuple[float, float]] = []
+    mov_n = [0.0] * N_STATES
+    mov_k = [0.0] * N_STATES
+    for t, obs in enumerate(observations):
+        if not obs.has_movement:
+            continue
+        z = sum(alpha[t][s] * beta[t][s] for s in range(N_STATES)) or 1e-300
+        for s in range(N_STATES):
+            g = alpha[t][s] * beta[t][s] / z
+            mov_n[s] += g * obs.matched_n
+            mov_k[s] += g * obs.advanced_n
+    for s in range(N_STATES):
+        out.append((mov_n[s], mov_k[s]))
+    return out

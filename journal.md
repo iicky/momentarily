@@ -4871,3 +4871,402 @@ own defect — `compute_advance_baseline` takes `p0` as a median of per-tick
 advance fractions rather than the cell's pooled advanced/matched rate, which
 saturates at 0.9990 where the pooled rate is 0.9443 — is the single number
 setting the movement channel's entire behaviour on 20 of 28 routes.
+## 2026-08-25 — settled: the two `advance_rate` orderings are a canonicalization artifact, because the HMM training observations carry no movement channel at all — `mov_n = 0` on every route and every state
+
+origin: agent
+
+Closed the ordering question the two entries above left open. It needed the one
+thing the serialized params cannot show — the fit's own per-state movement
+responsibility — so I instrumented the fit and ran it on the exact published
+window (`2026-07-31..08-13`, `prior_strength=100`, `min_ticks=288`, the corpus
+behind `state/params.json` trained_at 1786581775).
+
+**Instrumentation.** `advance_responsibility(observations, params)`
+(`hmm.py`) reads the M-step's own `mov_n`/`mov_k` — the responsibility-weighted
+matched/advanced trips, `Σ_t γ[t][s]·matched_n` over `has_movement` ticks — off a
+single E-step at the fitted params. `train_em --diagnose-advance` prints it per
+route beside the fitted rate and the prior it blends against, plus the global
+prior's own `advance_rate`. (Sanity-checked the reader on synthetic
+movement-bearing data: total `mov_n` came back exactly `20×40`, split across
+states by responsibility, so a zero is a real zero, not a skipped loop.)
+
+**The measurement.** Global prior `advance_rate = (0.600, 0.300, 0.020)` — the
+bootstrap default (`run_filter.BOOTSTRAP_PARAMS`, unset → dataclass default
+`hmm.py:131`) verbatim. And across all 28 routes × 3 states:
+
+    mov_n = 0.00,  mov_k = 0.00   — every cell, no exception.
+
+Every fitted `advance_rate` equals its prior to the last digit. `normal` differs
+by route only because `_apply_advance_prior` injects the movement-baseline route
+rate into the *normal* prior alone (`train_em.py:272-277,292-300`); the
+18-vs-10 group each route falls into is exactly whether the other two states'
+`0.3`/`0.02` came through canonicalization straight or swapped.
+
+**Why `mov_n` is literally zero.** The HMM training observations are
+reconstructed from the *alerts* archive only. Both constructors —
+`load.build_observations` and `load_r2.build_tick_observations` — build
+`Observation(...)` with `advanced_n`/`matched_n`/`has_movement` left at their
+defaults (`0/0/False`); nothing downstream joins movement counts in
+(`load_series_by_route` just quiet-fills and hands the alert observations to
+`train`). So `has_movement` is False on every training tick, the M-step's
+`mov_k`/`mov_n` sums are empty, and the κ-blend `(κ·prior + 0)/(κ + 0)` returns
+the prior identically for all three states. The global fit is pure MLE and sees
+the same empty channel, so its `elif mov_n > 0` branch never fires and disrupted/
+suspended fall to the bootstrap fallback `0.3`/`0.02` — which is why the anchor
+every route inherits is the default, not a learned rate.
+
+**The answer.** Canonicalization artifact, not a fit. `canonicalize_states`
+orders the two non-normal states by the alert channels — lowest `poisson_lambda`
+takes normal, higher suspended-alert `bernoulli_p` of the rest takes suspended
+(`hmm.py:232-240`) — with `advance_rate` only a second sort key behind
+`bernoulli_p`. That tiebreak never fires here: in the published params
+`bernoulli_p[suspended] > bernoulli_p[disrupted]` *strictly* on all 28 routes
+(closest margin 0.0244 vs 0.0244-to-4dp on D, still separated beyond 1e-12; no
+exact tie anywhere), so the disrupted/suspended assignment is decided entirely by
+the fitted suspended-alert channel and `advance_rate` contributes nothing, not
+even as a tiebreak. The two advance constants ride along as whatever raw EM
+cluster they initialized on. The 3.25× per-advancing-trip gap the 2026-08-25
+attribution entry measured is real arithmetic on the shipped params, but it is
+the *live* forward filter applying a movement emission whose parameters were
+never trained on movement — the split between adjacent routes is only whether the
+higher-`bernoulli_p` cluster landed on the raw index carrying the `0.3` prior or
+the one carrying `0.02`, relabeled by canonicalization. Nothing about observed
+advancing behaviour moved it.
+
+This also resolves the earlier worry about `mov_n` "small relative to κ=100": it
+was not small, it was zero, by construction. The circumstantial reading (a
+well-fed state would have left `0.3`) was pointing the right way for the wrong
+reason — no state on this channel is fed at all during training.
+
+**The median normal-baseline is upstream, and now precisely so.**
+`compute_advance_baseline_by_route` (the median-of-tick-fractions estimator that
+saturates to 0.999 where most ticks are stall-free) is the *only* movement
+information that reaches the HMM, and it reaches only the normal-state prior. Its
+median-vs-pooled-rate defect therefore biases the one channel input that isn't
+inert; disrupted/suspended never see movement by any path.
+
+**Left untouched, deliberately.** Did not re-order states, rescale the binomial,
+or wire the movement channel into training. The finding is bigger than the
+ordering — the advance/movement emission ships as pure priors and is untrained —
+but that is a design change, not this determination. The `--diagnose-advance`
+instrument stays as the reproducer.
+
+## 2026-08-25 — fix: wire the movement counts into HMM training, so the advance emission is fitted instead of inherited — `mov_n` 0 → 1.66M matched trips, disrupted/suspended rates now learned
+
+origin: agent
+
+Follow-up to the determination above. The advance/movement emission shipped as a
+pure prior because the training observations never carried the channel; the live
+filter has applied it since 2026-06-22 (`3fe5891`) against parameters EM never
+saw movement to fit. This wires the counts in.
+
+**What the live filter does, mirrored.** `worker/src/movement_state.ts`
+`movementObservationFields` folds the *previous* tick's cross-tick counts (option
+B lag) into each observation — both directions summed off the raw route counters
+— and abstains (channel off) on a stale carry (>600s), fewer than
+`MIN_MATCHED_TRIPS`, or no published baseline cell for the current tod_bin. The
+training side now reconstructs exactly that: `load_r2.movement_observation_fields`
+is a straight port of those gates, fed the raw per-`(route, tick)` counts
+(`build_movement_series`, unfiltered — the live filter reads unfiltered counters,
+so the emission is fitted on the same population) and the fitted baseline's cell
+key set. `_movement_baseline` now returns a `MovementInputs` carrying the raw
+per-tick counts and baseline key set alongside the serialized baseline;
+`load_series_by_route` takes a `movement_fields` callable and folds the fields in
+while the tick tag is still on the observation, before it is dropped; `main`
+computes the movement inputs before loading the series so the callable is ready.
+No train/serve skew: the lag, the summing, and all three abstain gates match the
+worker line for line, with a unit test pinning each (previous-tick only, ≤2-tick
+lag, min-matched, baseline-present).
+
+**Measured on the published window** (`2026-07-31..08-13`, `--diagnose-advance`):
+per-state `mov_n` went from 0 on all 84 route-states to nonzero on 62. The 22
+that stay zero split two ways, both correct: routes with no movement coverage at
+all — no published baseline cell, so the gate holds the whole route off (the
+shuttles and low-frequency lines, e.g. 6X, 7X) — and individual states inside
+otherwise well-fed routes that simply draw ~zero responsibility on the
+movement-available ticks (7's suspended, L's disrupted, E's normal each sit at 0
+while the same route's other states carry thousands). It is posterior mass and
+the has_movement gate, not route thinness — every route shown cleared min_ticks.
+Both keep the prior, correctly. 1.66M matched trips now enter the fit. Where
+`mov_n > 50` the fitted rate tracks the data rate `k/n` (only 2 states deviate
+>0.02, the prior pulling on modest-mass states, as intended at
+`prior_strength=100`). The global prior's advance_rate moved off the bootstrap
+default to a fitted `(0.632, 0.617, 0.644)`.
+
+**What that last number means, and the honest limit.** The three fitted rates
+are close — normal 0.756 median, disrupted 0.551, suspended 0.570 across routes
+with mass — and disrupted/suspended overlap. The movement channel is now trained,
+but the HMM's hidden state is still *alert-defined*, and physical advance is only
+weakly separated by it: a route flagged disrupted/suspended by alerts is often
+still advancing near normally. So this fix removes a real defect (an untrained,
+prior-only emission scored live) and is a prerequisite for trusting the movement
+term, but it does not by itself make movement a sharp discriminator on the
+alert-HMM. The larger value of movement is as its own axis (the movement-primary
+condition already in `movement_state.ts`) — this change makes the shared advance
+parameters honest either way.
+
+**Not published.** Verified by dry-run only; no R2 write. Wiring the channel
+moves the live operating point, so publishing waits on a review of the fitted
+params against the current ones. Full Python suite green.
+
+## 2026-08-25 — fix: the advance baseline is a trimmed pooled rate, not a median of tick fractions — p0 desaturates (cells ≥0.99: 76% → 8%), so "normal" is a rate cells actually run at
+
+origin: agent
+
+Shipped the estimator fix the 2026-08-13 entry measured and deferred. `p0` is the
+cell's normal cross-tick advance rate, and it anchors both the movement
+trip-wire (`classify_direction`, `disrupted ≤ 0.5·p0` plus a binomial
+significance gate against p0) and the HMM's advance prior. It was the *median of
+per-tick advance fractions*: with ~71% of through-filtered ticks stall-free and
+small per-tick denominators (~10 trips) quantising to 1.0, the median sat on the
+ceiling and floored to 0.999 — a rate no cell actually ran at, which made the
+significance test read a single stall in ten as significant.
+
+**The fix.** `compute_advance_baseline` and `compute_advance_baseline_by_route`
+now pool: p0 = Σadvanced / Σmatched over the cell's ticks
+(`_trimmed_pooled_advance_rate`), a proper rate that doesn't quantise. Measured
+on the published window (`2026-07-31..08-13`):
+
+    estimator                    cells  median p0   ≥0.99   ≥0.999
+    OLD median-of-fractions       210     0.9990    76.2%   76.2%
+    NEW pooled (trim 0)           210     0.9370     8.1%    0.0%
+
+That reproduces the deferred measurement (median 0.999 → ~0.94, ≥0.99 76% → 8%)
+and matches the physical reality — a subway's normal advance is ~94%, not 100%.
+
+**On the trim.** The original note proposed a one-sided lower trim (drop the
+worst ticks) to stop outages dragging the pooled rate down. Measured, that is
+the wrong instinct on this data: any trim>0 walks p0 straight back into
+saturation (cells ≥0.999 go 0% → 19% at trim 0.1 → 37% at 0.2), because the
+dropped low tail is mostly the ordinary stalls, not outages — real disruption is
+rare enough that the raw pooled rate is barely dragged (0.937). So the trim is a
+kept knob defaulting to 0; it earns its keep only against a movement-truth eval
+that doesn't exist yet.
+
+**Behavioural check.** Over 189k movement ticks the trip-wire's disrupted-fire
+count barely moves (242 → 195). That is the point, not a shortfall: the old
+fires were largely noise — at p0=0.999 a single stall reads significant — while
+at a realistic p0≈0.9 a genuine freeze still fires (`P(0/10 | 0.9) ≈ 3.5e-5`)
+but an ordinary single stall does not. The fix recalibrates *what* fires onto a
+real normal rate; it is not a standalone accuracy jump (graded against the
+alert-derived label it buys nothing — that label is the wrong truth). Its value
+is that the quantity every movement-defined call rests on is now correct, which
+is the prerequisite for the movement-native state work.
+
+**Not published.** Same as the movement-wiring change: verified offline, no R2
+write; this shifts the live operating point (the trip-wire fires ~0.14% vs
+0.17%) and should go out with a params review. Tests updated to lock the
+no-saturation property and the pooled/trim behaviour; suite green.
+
+## 2026-08-25 — study: movement's own structure says the degradation axis is a continuum, not three states — but disruptions are rare, sticky regimes (dwell ~14 min), so a stateful model is warranted
+
+origin: agent
+
+Before reshaping the model around movement, asked the (now pooled, correct)
+advance distribution how many states it wants. Window 2026-07-31..08-13,
+through-filtered, 189k (route, direction, tick) cells. Clustering is on the
+BASELINE-RELATIVE signal (advance fraction / cell p0) so routes with different
+normals are comparable; persistence is measured only across genuinely adjacent
+5-minute ticks (a judged tick whose t+300 is also judged), not across gaps.
+
+**Presence (the suspended axis).** 97.8% of cells have trains present; of those
+76.2% clear the 3-match floor, 23.8% are present-but-sparse (overnight / low
+frequency). No trains at all: ~2%. "Suspended / no-service" is a real but small
+state and it is a *presence* distinction — trains absent — not a point on the
+advance axis.
+
+**The degradation axis is a continuum, not clusters.** Baseline-relative advance
+is one dominant mass at/above 1.0 (peak 39% in [1.00,1.05), ~80% of mass in
+[0.9,1.15]) with a smooth thin left tail to 0 — no valley. A Gaussian-mixture BIC
+keeps "preferring" more components (k=4 over k=3 over k=2), but the components
+expose it as shape-fitting: every one added past the first is either a
+near-duplicate normal sliver at ~1.0 or the single small tail blob at ~0.5
+(weight ~6-7%). There is no clean multi-modal separation. On the advance axis the
+most the data supports is TWO running states — normal (~1.0 of its own baseline)
+and a small-mass degraded tail (~0.5) — not the alert model's three.
+
+**But disruptions are rare, sticky regimes.** Over 73,741 genuinely adjacent
+(t, t+5min) judged pairs, the movement-disrupted base rate is only 0.21%, yet
+P(disrupted next | disrupted now) = 63.9% (99/155) vs P(disrupted next | normal
+now) = 0.076% (56/73,586) — 839× stickier to stay than to enter, an implied dwell
+of ~2.8 ticks (~14 min). Small disrupted sample (155 pairs), rare events, but the
+asymmetry is unambiguous: a memoryless per-tick threshold (today's
+`movement_state.ts`) throws away that persistence; a stateful model with learned
+dwell/transitions is warranted.
+
+**What this means for the state space.** The alert model's three states don't
+transfer as-is. Movement has a *presence* axis (running / sparse / absent) and a
+*continuous* degradation axis when running. A discrete label can carry at most:
+suspended = trains absent (presence), normal vs degraded = one chosen cut on the
+continuous advance-vs-baseline axis. There is no movement evidence for a third
+*advancing* regime — the disrupted/suspended split the alert model draws is an
+alert distinction, not a movement one. Two candidate architectures, to decide
+deliberately: a 2-running-state + presence discrete HMM with a threshold cut and
+learned dwell, vs a continuous-severity semi-Markov model. The data leans toward
+"few coarse states are enough on the advance axis; spend the modelling on
+persistence/dwell, not on more emission clusters."
+
+## 2026-08-25 — experiment: a continuous-severity filter (Option B) demonstrates the mechanics, and running it caught a train/serve skew in today's movement-wiring — the offline emission was fitted on unfiltered counts while the live worker filters
+
+origin: agent
+
+Prototyped Option B to see it, not describe it: latent per-tick advance rate
+θ_t, observed advanced_n ~ Binomial(matched_n, θ_t), logit(θ) a mean-reverting
+AR(1) toward the route's normal (persistence = the transition model). Particle
+filter, numpy only, on the real window.
+
+**The mechanics work; calibration is deferred.** The filter tracks the signal
+and smooths single-tick Binomial noise (a lone 0-of-13 tick dips within its band
+instead of snapping to 0). It is NOT yet calibrated: φ=0.75 and σ=0.45 were
+hand-set, and its 15-minute recovery forecast failed on the showcase, so treat
+this as a demonstration of the filtering machinery, not of its uncertainty or
+forecasts. Calibration waits until the signal it runs on is trustworthy. The
+empirical lag-1 autocorr of logit(advance) on high-n adjacent ticks is 0.86 —
+the real transition is stickier than the prototype assumed.
+
+**What running it caught — a skew I introduced earlier today.** The showcase
+picked route G's "longest sub-0.6·p0 run" and it came back 661 ticks (~55 hours)
+of raw advance at 15–25% against baseline 0.609. Not a disruption — an artifact.
+The live worker filters the advance counters to scheduled through-stops
+(`worker/src/vehicles.ts deriveRouteMovementMetric`, since 8e88644, 2026-08-12:
+a terminal/layover stall is not signal), and the baseline is fitted the same
+way. But my movement-wiring change (earlier today) reconstructed the offline
+training counts with `build_movement_series(bodies)` — the RAW unfiltered route
+counters — so the HMM movement emission was fitted on a population the live
+classifier never feeds it, and the prototype inherited the same raw counts.
+Measured, the raw-vs-filtered gap is systematic (median 0.258; Z 0.473 vs 0.946,
+E 0.461 vs 0.921), and it vanishes when the reconstruction is filtered the way
+the worker filters (median gap to the baseline 0.258 → 0.001).
+
+Not a live bug: production has been consistent (filtered vs filtered) since the
+worker filter landed. The bug was entirely in the offline reconstruction I added.
+
+**Fix.** `_movement_baseline` now builds `movement_by_tick` with the same
+`counts_from_stop` the baseline uses, so training, the baseline, and the live
+worker all score one population. Re-verified on the window: normal-state fitted
+advance now tracks each route's filtered baseline (Z 0.95=0.946, A 0.88, C 0.99,
+Q 0.92) instead of the skewed ~0.5, and the global prior advance_rate is
+(0.91, 0.85, 0.88) — correcting the (0.63, 0.62, 0.64) the earlier wiring entry
+reported, which was that entry's skewed fit (its "fitted rates overlap ~0.55"
+read was the same artifact). Test locks that the per-tick counts get the same
+filter as the baseline.
+
+**Bearing on A vs B.** The state-space study above already ran on the filtered
+signal, so its findings (continuum, not clusters; rare but ~14-min-sticky
+regimes) stand. B's machinery is sound and now runs on an honest signal; with
+the skew closed it is a live contender, calibration (φ, σ, per-route) being the
+next real step before it could be trusted for forecasts.
+
+## 2026-08-25 — calibration verdict: Option B's single-AR(1) form is misspecified — the advance signal is two-timescale (a ~3.4-hour drift plus ~minute-scale excursions), so a one-timescale continuous filter can't beat base rate; this tilts the near-term choice to A
+
+origin: agent
+
+Tried to calibrate B properly rather than hand-set φ/σ. Model: advance rate
+θ_t = μ + φ(θ_{t-1}-μ) + N(0,σ²), advanced_n ~ Binomial(matched_n, θ_t), on the
+RATE scale (logit blows up at the frequent k=0 / k=n boundaries at n≈10).
+
+**Estimating φ, carefully.** The errors-in-variables route —
+Var(θ) = Var(p̂) − E[obs noise], φ = autocov(1)/Var(θ) — is unreliable here
+because the plug-in obs-noise term p̂(1-p̂)/n is exactly 0 at the k=0/k=n
+boundaries and understates sampling noise; it gives φ=1.11, and a
+Laplace-smoothed noise term makes it 1.37 — i.e. this estimator is dominated by
+how you handle boundary noise, so it can't be trusted. The robust estimate needs
+no obs-noise term at all: lags ≥1 of the autocovariance are white-noise-free, so
+a geometric fit of autocov(k) over k=1..8 gives φ directly. That fit is
+**φ ≈ 0.975**, a **~3.4-hour** timescale (autocov barely decays: .0148 at 5 min
+to .0126 at 40 min, per-step ratio ~0.98). Stationary, but very slow. Reverting
+to a time-of-day mean instead of one p0 doesn't change it (only 16% of advance
+variance is time-of-day).
+
+**Two timescales, and that is the point.** The bulk signal drifts slowly
+(~3.4 h); the deep disruption excursions the discrete classifier measured are
+short (~14-min dwell). A single AR(1) can hold only one timescale, and it lands
+on the slow bulk. Run end to end with the calibrated φ=0.975 (σ≈0.027), its
+30-minute recovery forecast has no skill: over 98 onsets every forecast squashes
+into one low bin (mean predicted 0.08) while 0.15 actually recover — Brier 0.143
+vs a base-rate 0.130, i.e. slightly WORSE than a constant. It systematically
+under-calls fast recoveries because its one timescale expects disruptions to last
+hours. That is the model class being wrong for this signal, not a tuning miss.
+
+**Verdict on A vs B.** A trustworthy continuous B needs a two-timescale /
+local-level-plus-excursion state-space model (a slow drifting level and a fast
+excursion component), which is a real research build, not a calibration tweak.
+Option A sidesteps the whole problem: discretizing to normal / degraded /
+suspended means the slow within-normal drift never crosses a threshold and does
+not matter, and the ~14-min disruption dwell is exactly what A's learned
+per-state dwell captures. So the near-term recommendation is A — a 2-running-state
+(normal/degraded on an advance-vs-baseline cut) + suspended (presence) discrete
+model with learned dwell/transitions. B is parked as the more faithful long-term
+model contingent on the two-timescale formulation; the filtering machinery
+prototyped here (Binomial obs, particle filter) is reusable when that is built.
+The advance signal it all rests on is now honest (pooled baseline + through-
+filtered counts on both sides), so A can be built on solid ground.
+
+## 2026-08-26 — Option A calibration: the cut is already well-placed and the classifier does not flap, so A's win is corrected detection, not a retuned cut or a debounce
+
+origin: agent
+
+Built the offline cut/debounce calibration harness (`training/movement_calibrate.py`)
+and swept it over a causal window (advance baseline fitted on 2026-07-26..07-30,
+swept on 07-31..08-09, through-stop filtered on both sides). It reconstructs the
+live classifier per tick across the three cut constants, runs the real regime
+clock, and reports each setting's structure and corroboration. Two references,
+which are NOT interchangeable:
+
+- **Structural-consistency anchors** — disrupted base rate, per-tick stickiness
+  P(dis next | dis now), dwell. These come from the classifier's OWN calls, so
+  they show an operating point reproduces the population structure the
+  state-space study described; they are self-referential, never independent
+  validation. (The study's own 0.21% / 0.639 were likewise classifier-derived.)
+- **Trip-updates corroboration** — overlap with `derive_actual_recovery`'s
+  assigned_n disruptions. Independent in derivation from vehicle positions, so
+  the only independent reference — and weak, because supply level and advance
+  quality are different things (2026-08-20).
+
+**The cut is already well-placed.** At the shipped constants (prior_strength=8,
+disrupted_ratio=0.5, alpha=0.05) the reconstructed signal runs base rate 0.30%
+and stickiness 0.648 — matching the study's 0.21% / 0.639 structure — at the
+lowest churn on the grid (6 oscillations over 10 days × 27 routes). Along the
+prior_strength=8 axis dr=0.5 is the sweet spot: dr=0.4 collapses to 6 episodes,
+dr=0.6 or prior_strength=5 run 3–4× the base rate and churn for marginal
+trip-updates precision on a weak signal. `alpha` is not load-bearing at typical
+depths (0.01/0.05/0.10 are indistinguishable — deep freezes have binomial tail
+≈0 at n≈10). Operating point CONFIRMED, unchanged; the old alert-label eval only
+made it look untunable because it was the wrong truth.
+
+**The debounce delta was rejected on evidence.** The handoff's premise — a noisy
+single tick flips the committed condition and flaps — is false post-correction.
+Churn is ~0.02 flips/route/day. The single-tick episodes (64% of the population)
+are not noise: median binomial tail 0.0000, depth 0.47·p0 — statistically real
+brief partial freezes (they differ from the persistent multi-tick freezes only
+in being partial, 6% vs 52% zero-advance). Every damping variant hurts:
+symmetric debounce=2 erases ~70% of real episodes and adds a tick of latency;
+asymmetric exit-hysteresis barely changes anything (the episodes are genuinely
+isolated, not fragments); a recover-ratio band (mirroring the service axis)
+over-persists to 0.9% base rate. So `DEBOUNCE_TICKS=1` stays — the 2026-08-11
+call, now for a stronger reason than "not noise-dominated": not flapping at all.
+
+**A's real win is detection, and it is large.** On the same window the OLD live
+signal (saturated baseline) saw 14 disrupted episodes, all ≤15 min, with a
+quarter of ticks unjudgeable (`unknown`). The corrected signal (pooled baseline
+desaturates cells ≥0.99 from 76% to ~16% here; through-filtered counts) recovers
+56 episodes INCLUDING the persistent deep tail the old cut was blind to (seven
+~45-min, one ~160-min), and its completed-episode dwell MEAN is 14.2 min —
+matching the study's implied persistence. The correction restores the current
+state the product shows; the cut and debounce were hypotheses the calibration
+refuted.
+
+**Acceptance is blocked, honestly.** The literal target — movement-arm recovery
+beats status quo on the independent eval — cannot be established: over 14 days
+`recovery_independent` has n=1 gradeable sample, because movement disruptions and
+trip-updates disruptions overlap almost never. And recovery FORECASTING here is
+inherently low-skill: 64% of disruptions are 5-min partial freezes, so a
+conditional dwell adds no skill over predicting the unconditional median (a
+self-consistent leave-one-episode-out diagnostic, not acceptance). This is the
+same wall B hit. So B stays parked, and the residual is not a two-timescale
+pattern to fix — it is the floor predictability of short partial freezes.
+
+**Unshipped delta that remains: the publish.** The corrected params (pooled
+baseline + through-filtered counts + fitted movement emission) are validated
+offline but not published; moving the live operating point is the params-review
+step, gated on the lead. No constants or debounce changed in this session.

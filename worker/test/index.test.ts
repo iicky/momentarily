@@ -200,14 +200,43 @@ describe('scheduled: the 5-minute pipeline gate', () => {
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: false }),
     ]);
 
-    // Nothing else did: the trace never writes ANY state/ object (it is a
-    // pure function of the feed, not a carry), no 5-minute pipeline state,
-    // no snapshot, no vehicles/trip-updates archive.
-    expect(keysWithPrefix(store, 'state/')).toHaveLength(0);
+    // Nothing else did — with one deliberate exception: the per-minute
+    // platform-wait carry (state/station_wait.json) is allowed
+    // off the 5-minute boundary too, for the same reason the trace itself
+    // is — 1-minute resolution on when a train cleared a platform. No other
+    // state/ object moves: no 5-minute pipeline state (vehicle_stops.json
+    // included), no snapshot, no vehicles/trip-updates archive.
+    expect(keysWithPrefix(store, 'state/')).toEqual(['state/station_wait.json']);
     expect(store.has('v1/snapshot.json')).toBe(false);
     expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(0);
     expect(keysWithPrefix(store, 'archive/trip_updates/')).toHaveLength(0);
     expect(keysWithPrefix(store, 'v1/')).toHaveLength(0);
+  });
+
+  test('a tick with no trace rows leaves the platform-wait carry untouched', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    // A total vehicle-feed outage: every feed fails, so deriveTrace yields
+    // zero rows. Folding that in as an observation would prune the whole
+    // trip -> stop carry (blinding the departure rule for the tick after the
+    // feed returns) and stamp a fresh observed_at over frozen platform
+    // timestamps, so the surface would keep publishing an ageing crowd as if
+    // it were current. The prior doc must survive byte-for-byte instead.
+    const prior = JSON.stringify({
+      observed_at: NON_BOUNDARY_AT - 600,
+      platforms: { A01N: NON_BOUNDARY_AT - 700 },
+      trips: { a: 'A01N' },
+    });
+    store.set('state/station_wait.json', { body: prior, etag: 'w0' });
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(NON_BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(store.get('state/station_wait.json')?.body).toBe(prior);
   });
 
   test('boundary minute (minute % 5 === 0): the 5-minute pipeline runs as before, AND the trace also runs', async () => {

@@ -4209,3 +4209,456 @@ whose incident count is computed on the published movement arm and therefore
 sizes a different metric. Reaching for the adjacent number would have rebuilt
 the same arm-mismatch error class one field over, inside the very instrument
 built to find it.
+## 2026-08-24 — the crowding estimate's unit was wrong by 10x, and the version people actually want doesn't need the ridership feed at all
+
+origin: self
+
+Building the hourly-ridership ingest and the platform-crowding estimate off
+it. The design as written was "entry rate x time since last train, published
+as '~3 trains' worth waiting'". Both halves of that survived
+contact with the data; the copy did not.
+
+Replayed the real trace for 2026-08-20 07:00-11:00 ET (240 minutes, 982
+directional platforms) against per-complex hourly entry rates aggregated from
+data.ny.gov 5wq4-mkjj over a 4-week window, splitting each complex's rate
+evenly across the platforms observed in service. 28,670 observed platform gaps:
+p50 6.0 min, p90 13, p99 31, max 232. Implied riders waiting, with gaps over 30
+minutes abstained: **p50 28, p90 86, p99 270, max 1302**. A ten-car train holds
+roughly 1,000 riders, so p99 is 0.27 of a train and 0.018% of published
+estimates reach one train load at all. "~3 trains' worth" is not a rounding
+difference from "~28 people" — it is the wrong unit by an order of magnitude.
+The surface publishes riders.
+
+The cap is load-bearing, and the reason is the same degenerate-baseline
+failure class the movement classifier's terminal over-flagging already names. Uncapped, the top implied-crowding platforms in the window are
+G21N Queens Plaza (median gap 232 min, 3,142 riders), R31N Atlantic Av (231
+min, 2,049) and A24N 59 St-Columbus Circle (208 min, 2,037) — terminal and
+relay platforms whose "gap" is an artifact of not being a through-service
+platform in that direction, not a crowd. A 30-minute cap abstains 296 of 28,670
+gaps (1.04%) and takes the maximum estimate from 3,142 to 1,302.
+
+The finding that changes what to build next: **expressing crowding relative to
+the same platform's own usual crowd cancels the ridership baseline exactly.**
+crowd_now / crowd_usual = (rate x minutes_since) / (rate x usual_headway) =
+minutes_since / usual_headway. The rate divides out. So the "how bad is it right
+now vs usual" gauge needs a scheduled-headway baseline (not implemented) and
+needs nothing at all from the ridership feed. The ridership ingest
+earns its keep on exactly two things the ratio cannot do: the absolute
+headcount, and ranking platforms against each other at one instant. Worth
+knowing before anyone wires the ridership artifact into a percentile gauge.
+
+Third thing, a collection footgun. Deriving "a train cleared this platform"
+from `stopped === true` sightings alone misses **7.0% of station departures**
+(1,078 of 15,382 measured over a 3-hour window): NYCT dwells are frequently
+shorter than the 1-minute poll, so a train can arrive and leave between two
+snapshots and never be seen stopped. A stopped-only rule therefore reports
+last_train_at one full headway stale on 7% of platforms, which roughly doubles
+the estimate there. `crowding.ts` carries its own trip->stop map and counts a
+departure when a trip's stop_id changes, which by construction catches every
+observed departure. That carry is deliberately NOT vehicle_stops.json — see the
+step-0 hazard comment in index.ts; it lives in state/station_wait.json, is
+updated with `max`, and is therefore idempotent under a retried cron minute.
+
+Two things the estimate structurally cannot see, both published in
+`platform_crowding.method.excludes` rather than left as folklore: free
+in-system transfers are never fare-swiped, so a transfer complex undercounts;
+and the hourly feed has no exits column at all (the legacy 4-hour turnstile
+data that had one was retired end-2022), so a platform crushed by an arriving
+train letting out reads as empty.
+
+Postscript, because the departure rule got challenged in review and the
+challenge was reasonable-sounding. The objection was that stamping a platform
+on every `stopped === true` sighting measures time since ARRIVAL, and that a
+departure should instead be counted only when the immediately preceding
+observation had the trip stopped there. Both halves are wrong, and the second
+is wrong in a measurable way. Same window, 2026-08-20 07:00-11:00 ET, 47,936
+stop transitions: only **44,441 (92.71%)** had the trip caught STOPPED_AT on
+the preceding observation, so that rule loses **3,495 departures** — the same
+7% class as above, arrived at independently. And the stamp cannot conflate
+arrival with departure, because the stop-change branch writes the departure
+poll, which is always at or after any earlier stopped sighting at that
+platform, so `max()` resolves to the departure whenever one is observed; the
+stopped branch only governs the interval while a train is physically standing
+there, where zero waiting is the reading we want. The one ordering that could
+strand a departure — same stop_id going stopped -> moving — occurs 79 times in
+those 47,936 transitions (0.16%) and only defers detection by one poll.
+
+
+## 2026-08-24 — running the finished crowding path end to end put two feed-stall artifacts at the top of the whole system, and exposed that the even split is wrong by 3-5x at the two busiest complexes every tick
+
+origin: artifact
+
+Ran the finished path end to end: the real ridership artifact (425 complexes,
+90-day window) through the Worker's zod validator, against a platform-wait doc
+replayed from the real 1-minute trace for 2026-08-20 08:59 ET. It works — 934
+platforms estimated, 48 abstained (unknown_stop 7, no_baseline 40,
+gap_exceeds_cap 1).
+
+Instantaneous distribution of waiting_riders: **p50 0, p90 22, p99 59**. The
+p50 of 0 is not a bug and is worth internalising: sampled at an INSTANT rather
+than per gap, roughly a third of platforms have a train standing at them or
+just departed, so all the content of this surface is in its tail. The earlier
+per-gap p50 of 28 was the crowd just BEFORE each train arrives — the cycle
+peak, about twice the time-average. Two different questions, 28x apart at the
+median.
+
+The tail is where it fell over. The top two readings in the entire system were
+**901S Grand Central 951 riders** and **902N Times Sq 665 riders** — the 42 St
+Shuttle platforms — against a third place of 87. A 10x jump to the rest of the
+distribution is a mechanism, not a crowd, and it was two mechanisms stacked.
+
+**One: the vehicle feed stalls, and the cap does not catch it.** Over the same
+two hours the trace carries **70 rows for route GS** against 2,793 for the 1
+and 7,107 for the F, and 32 of those 70 are a single vehicle reported in
+transit to 902N without ever arriving. So those gaps (27.0 and exactly 30.0
+minutes) are a stuck report, not an empty platform — the same vehicle-stall
+defect already logged against that feed. Both artifacts sat just INSIDE the
+30-minute cap, which is the useful part: a cap calibrated on the real gap
+distribution does not protect you from a defect that clusters just under it.
+Fixed, and without a new threshold: a trip reported as heading to a platform
+whose stop_id has not advanced for longer than the cap is a stalled report, so
+the platform abstains with reason `stalled_inbound`. The rule is restricted to
+trips that are NOT stopped, because a train standing at a terminal for 40
+minutes also has an unadvancing stop_id but re-stamps its platform every minute
+and correctly reads ~0 waiting. The cap boundary also went inclusive; 902N sat
+at exactly 30.0 and passed a `>` test.
+
+**Two: the even split is not merely uncertain, it is biased, in the same
+direction, forever, at the highest-traffic stations.** Complex 610 (Grand
+Central, ridership rank 2) contains three parent stops — 631 (4/5/6), 723 (7)
+and 901 (the shuttle) — so six directional platforms, five in service at that
+instant, and the shuttle platform therefore receives **one fifth of the entire
+complex's entry demand**, 35.2 riders/min. Complex 611 (Times Sq, rank 1)
+splits five ways and hands its shuttle platform 22.2/min. Nobody entering
+Grand Central at 09:00 boards the shuttle in anything like that proportion;
+this is off by roughly 3-5x, and unlike noise it is off by that amount the same
+way on every tick, at the two most-viewed stations in the system.
+
+No fix applied to the split, deliberately — `split_basis` is published in
+`platform_crowding.method` precisely so it can be replaced, and the replacement
+needs a criterion I have not measured. The cheap defensible successor is to
+weight the split by observed train volume per platform (supply, which the trace
+already sees) rather than by platform count, since demand tracks service far
+better than it tracks platform arithmetic. The number to chase first is the
+ratio between a complex's per-platform train volume and its per-platform entry
+share, on any complex where both are observable. Until then the surface is
+labelled an estimate and publishes the assumption, which is the honest state
+but not a good one.
+
+
+## 2026-08-24 — correction: the stall gate in the entry above was rejected on measurement. It abstained 23 platforms with live service and never fired on the case it was written for
+
+origin: self
+
+The previous entry claimed the feed-stall artifact was "Fixed, and without a
+new threshold" by abstaining platforms with a trip reported inbound whose
+stop_id had not advanced past the cap. Built it, then folded the real
+120-minute trace (2026-08-20 07:00-09:00 ET, 89,352 rows) through the real
+per-minute update and graded it. It does not hold, in both directions at once:
+
+- It abstained **23 platforms**, and of the platforms it gated, **25 had their
+  own gap under the 30-minute cap and 24 of those were under 10 minutes**. A
+  vehicle stuck inbound on one route does not invalidate a departure another
+  route genuinely made two minutes ago, and on a shared platform that is the
+  common case, not the corner.
+- It never fired on **901S**, the reading that motivated it. The trip inbound
+  there reports `since` = 0.0 minutes: the shuttle's trip_ids churn and its
+  stop_id alternates, so the elapsed clock resets before it can ever cross the
+  cap. The gate is blind to exactly the feed pathology it was aimed at,
+  because that pathology is churn rather than a clean freeze.
+
+Reverted, including the `{stop, since, moving}` carry that existed only to feed
+it — 3x the state for a dead rule. The note above CROWDING_MAX_GAP_MINUTES now
+records the rejection so nobody reaches for it again.
+
+What survived from that attempt is one line: the cap boundary is inclusive.
+902N sat at exactly 30.0 minutes and passed a `>` test; `gap_exceeds_cap` went
+from 1 to 2 and that reading is gone.
+
+So the state after all this: 933 platforms estimated, abstained {unknown_stop
+7, no_baseline 40, gap_exceeds_cap 2}, waiting_riders p50 0 / p90 22 / p99 58,
+and **901S Grand Central still publishes 951 riders**. That number is not a
+code defect, it is the uniform complex-to-platform split's worst case at the
+system's second-busiest complex, and it stands until the split basis changes.
+The lesson worth keeping is the shape of the mistake: I reached for an
+observation-quality gate because the number looked wrong, when the number was
+wrong for a demand-allocation reason the gate could not touch. A gate that
+cannot articulate which of the two it is testing will grade badly on both.
+
+
+## 2026-08-24 — exits really are gone, but the origin-destination estimate hands us the thing we actually needed: departing riders split by direction, and the even split is off by 8x at a terminal
+
+origin: self
+
+Asked whether exits exist and whether modelling them would improve the platform
+crowding estimate. Searched the whole data.ny.gov catalog rather than guessing.
+
+**Exits: no, and confirmed dead.** Cumulative ENTRIES/EXITS registers exist only
+in the legacy per-turnstile, 4-hour `Turnstile Usage Data` sets, which stop at
+2022 and are flagged static. No current dataset exposes exits, egress or
+alighting under any name. The hourly feed we ingest is entry-side by
+construction.
+
+**But modelling it is possible, via `28vm-gjqr` (MTA Subway Origin-Destination
+Ridership Estimate: Beginning 2026).** 72.6M rows, coverage 2026-01-05 to
+2026-07-12, so a **43-day lag** against the hourly feed's 11. One row is
+(origin complex, destination complex, month, day_of_week, hour_of_day) ->
+`estimated_average_ridership`. Origin complex ids run 1..636 with **425
+distinct** — exactly the 425 our ridership baseline carries, so it joins with no
+crosswalk. Server-side SoQL aggregation works the same way.
+
+Summing over origins for a destination gives estimated arrivals. Wednesday
+08:00, system total: departures 434,861 = arrivals 434,861 (it is an OD matrix,
+so this is conserved by construction, and it also proves the arrivals side is
+NOT shifted to actual arrival time — see the caveat below). Per complex, the
+arrivals/entries ratio separates residential origins from job destinations
+cleanly: **Astoria-Ditmars 0.13, Atlantic Av 0.61, Times Sq 1.20, W 4 St 1.50,
+Grand Central 1.77, Union Sq 2.54.**
+
+**The finding that matters is not the exits, though — it is the direction
+split.** Bucketing each origin's destinations by whether they lie north or
+south of it, Wednesday 08:00:
+
+    Astoria-Ditmars    5.8% north / 94.2% south
+    W 4 St-Wash Sq    79.1% north / 20.9% south
+    14 St-Union Sq    69.7% north / 30.3% south
+    Times Sq-42 St    40.6% north / 59.4% south
+    Grand Central     30.7% north / 69.3% south
+
+We currently assume 50/50. At Astoria-Ditmars at rush hour that overstates the
+northbound platform's crowd by **8.6x** and understates the southbound one by
+1.9x. This is demand-side evidence, derived from where riders actually went,
+and it is what the split-basis work was missing: not platform-level ground
+truth, but direction-level demand truth, which is most of the gap. It also
+gives the previously-absent acceptance criterion — a supply-weighted split can
+now be graded against an independent demand-side estimate instead of against
+nothing.
+
+Three caveats, all from MTA's own documentation of the method:
+
+- It is an estimate on an estimate. Destination is INFERRED as the station
+  where the rider next taps; only ~80% of trips link that way and the remaining
+  20% are allocated using the distribution of the linked ones. A fare-evasion
+  scaling factor is applied on top.
+- `timestamp` is the hour of the ENTRY tap, rounded down — not the hour of
+  arrival. So "arrivals at D in hour H" really means "trips entering anywhere in
+  hour H that end at D", displaced earlier by the ride time. The identical
+  departures/arrivals totals above confirm no arrival-time shift is applied.
+  At hourly granularity that matters most on the rush shoulders.
+- Complexes hide platforms. Direction comes out; LINE does not, because MTA
+  runs a path-assignment model (shortest perceived time, with transfer and
+  crowding penalties) and then drops the paths before publishing. Several lines
+  serving the same destination stay ambiguous.
+
+**And the reason exits would not have helped anyway, which is worth stating
+plainly:** riders who alight do not wait. They walk out or transfer, so
+alightings do not accumulate on a platform the way boarding demand does, and
+adding them to a "who is waiting" count would be wrong. What alightings would
+buy is a transient unloading pulse measured in seconds, not the accumulating
+queue this surface estimates. The real entry-side blind spot is IN-SYSTEM
+TRANSFERS, which are never fare-swiped and are a large share of platform
+occupancy at exactly the complexes where our split is worst — and the OD matrix
+cannot close that either, because "changed trains at Z" is precisely the path
+information MTA discards. Closing it needs our own routing model over the
+topology.
+
+
+## 2026-08-24 — for station VOLUME the origin-destination dataset adds nothing: over a month every station's arrivals/entries collapses to 1.0, the ranking moves a median of 1 place, and total volume is exactly 2.0x entries
+
+origin: artifact
+
+Follow-up to the entry above, which found arrivals/entries ratios spread from
+0.13 to 2.54 across complexes and treated that as a reason to ingest the
+origin-destination estimate. Checked whether it survives aggregation, because
+"station volume" is a monthly-scale statistic, not an hourly one. It does not.
+
+Ranked all 425 complexes by entries alone, then by volume (entries + arrivals),
+over June, all hours, all days:
+
+    rank shift: median 1 place, p90 4, max 36
+    complexes moving more than 20 places: 1 of 425
+    system-wide volume / entries: 2.000
+
+The one real mover is Howard Beach-JFK (entries #302 -> volume #338, arr/ent
+0.59) with Far Rockaway-Mott Av next (-11, 0.88) — genuinely asymmetric
+stations where riders arrive by some other mode and leave by subway. Everything
+else is noise.
+
+The reason is obvious in hindsight and worth writing down so nobody re-derives
+it: over a long enough window almost everyone who enters a station also comes
+back to it, so entries and arrivals converge station by station. The same
+complexes that looked wildly asymmetric at one rush hour are flat over a month:
+
+    station              Wed 08:00    June, all hours
+    Astoria-Ditmars           0.13               1.00
+    14 St-Union Sq            2.54               1.07
+    Grand Central             1.77               0.97
+    Times Sq                  1.20               0.97
+    W 4 St-Wash Sq            1.50               1.05
+    Atlantic Av               0.61               1.00
+
+So arrivals change WHEN a station is busy, not HOW busy it is. For a volume or
+ridership-rank metric, the hourly entries feed we already ingest is sufficient
+and strictly better operationally: 11-day lag against 43, and ~10k aggregated
+rows per query against a 72.6M-row table. The `rank` field already published in
+`state/ridership_baseline.json` is the right instrument and needs no second
+source.
+
+This does not retract the direction finding in the previous entry. That one is
+an hourly, within-complex allocation question, which is exactly the regime where
+the asymmetry is real (0.13 vs 2.54) — and it is measured on the departure side
+regardless. Volume is the case where aggregation destroys the signal; the
+platform split is the case where it does not.
+
+
+## 2026-08-24 — the 49 crowding abstentions are almost all correct: 38 are SIR stations that collect no fares, 7 are yard trackage in no station reference and not in GTFS at all, and only 2 complexes were ours to recover
+
+origin: self
+
+Diagnosed every abstention from the real replay rather than assuming they were
+coverage gaps. Breakdown of the 49: `no_baseline` 40, `unknown_stop` 7,
+`gap_exceeds_cap` 2.
+
+**`no_baseline` 40 = 20 Staten Island Railway complexes, and only 2 were a bug
+of ours.** SIR trains ARE in our trace (route 'SI', 1,307 rows in a two-hour
+window) while the ingest filtered `transit_mode='subway'`, so we were tracking
+SIR trains and refusing to estimate their platforms. Widened to
+`transit_mode IN ('subway','staten_island_railway')`. It recovers exactly TWO
+complexes, and that is not the filter's fault: **SIR collects fares at St George
+and Tompkinsville only**, so those are the sole SIR complexes with any rows in
+the dataset at all (July 2026: St George 249,980 entries, Tompkinsville 20,481,
+nothing anywhere else). St George lands at system rank 175 with a 16.23/min
+weekday peak, which is a real station we were silently dropping. The other 19
+SIR complexes have no entry data in any published dataset and keep abstaining.
+Measured end to end: `no_baseline` 40 -> 38, platforms estimated 933 -> 935.
+Roosevelt Island tram deliberately still excluded — its complex ids are 'TRAM1'
+/ 'TRAM2', which join to no GTFS stop, and it is not in the subway trace.
+
+**`unknown_stop` 7 = non-revenue trackage, and it took the canonical feed to
+prove it.** The ids are F10S, H19N/S, R60N/S, R65N/S. None appears in
+39hk-dx4f, none in the newer stations-and-complexes dataset, and — decisively —
+none in GTFS `stops.txt` (1,488 stops) or `stop_times.txt` (989 scheduled ids).
+A review challenge asserted F10 was Jamaica-179 St; it is not. Canonical GTFS
+says **Jamaica-179 St is F01**, the F series runs F01-F07, F09, F11, F12 with no
+F08 or F10, the H series ends at **H15 Rockaway Park-Beach 116 St** so there is
+no H19, and there are no three-digit R ids anywhere near 60-65. The occupancy
+confirms what they are: **H19N holds up to 10 trains stopped simultaneously and
+is present 119 of 120 minutes**, sitting right past the Rockaway Park terminal.
+That is a layup yard. Worth recording that the weak version of this argument
+(observed occupancy) only settled H19 and R60S — the other five showed a single
+train for a handful of minutes, which proves nothing. Absence from GTFS
+`stop_times` is the test that actually settles it.
+
+No code change for those seven. They already fail to resolve to a complex, so
+they were never in the served-platform denominator and cannot dilute anyone's
+share; the abstention is bookkeeping, not contamination.
+
+**`gap_exceeds_cap` 2**, both correct: 902N at exactly 30.0 minutes (the shuttle
+feed-stall artifact) and H11S Far Rockaway-Mott Av at 90 minutes (a genuinely
+sparse terminal).
+
+So the honest total: of 49 abstentions, 2 were recoverable and are recovered,
+45 are the absence of data that does not exist, and 2 are the cap doing its job.
+The lesson for next time is the order of the checks: I reached for "which
+station reference is stale" first, when the question was answerable from the
+schedule feed we already download every night.
+
+
+## 2026-08-24 — a zero-row trace tick would have wiped the departure carry and stamped a fresh timestamp on a frozen crowd, turning a feed outage into confident wrong numbers
+
+origin: agent
+
+Caught by the adversarial pre-commit review, not by any test I wrote, and it is
+the sharpest bug in this whole body of work.
+
+`updateStationWait` prunes trips absent from the rows it is given — correct on a
+normal tick, since a trip that stopped appearing has finished. But the step ran
+unconditionally, including on a tick where `deriveTrace` threw or every vehicle
+feed failed and `rows` was `[]`. Folding zero rows in does three things at once,
+measured directly against the real function:
+
+    prior : {observed_at: …66780, platforms: {A01N: …66680}, trips: {a: 'A01N'}}
+    folded: {observed_at: …67380, platforms: {A01N: …66680}, trips: {}}
+
+The trip carry is wiped, so the departure rule is blind for the tick after the
+feed returns (and that rule is the thing worth 7% of departures — see above).
+`observed_at` jumps forward ten minutes. The platform timestamps stay frozen.
+That combination is exactly what the snapshot's freshness gate exists to catch,
+and it defeats it: the surface would keep publishing an ageing crowd stamped as
+current, growing more wrong every tick of the outage, which is strictly worse
+than publishing nothing.
+
+Fixed by skipping the update entirely when `rows` is empty and falling back to
+the stored document unmodified, so the gate ages the surface out on its own over
+~30 minutes while the cap retires individual platforms as their gaps grow. Zero
+rows means a total feed outage or a throw, never a real empty system.
+
+Two things to keep from this. First, the general shape: a carry that prunes on
+absence must never be fed an empty observation, because "nothing was observed"
+and "nothing is there" are the same input and opposite facts. The same hazard
+lives in any decayed or pruned accumulator in this repo. Second, my own test
+suite had 407 passing tests over this code and none of them covered a zero-row
+tick — every fixture supplied rows, because supplying rows is what you think to
+do. The new test asserts the stored document is byte-identical after an
+all-feeds-fail tick, and it fails against the old code on all three counts.
+
+
+## 2026-08-24 — the Worker's per-tick CPU goes to zod validation, not to JSON or to the maths: 3.4ms to validate an artifact that parses in 0.94ms, and serialising the whole 109KB snapshot costs 0.11ms
+
+origin: artifact
+
+Asked whether the new crowding surface needs trimming to fit a free tier.
+Measured rather than guessed, running the real Worker modules over the real
+artifacts.
+
+What the platform-crowding feature costs:
+
+    per ordinary minute   updateStationWait          0.23 ms  (746 trace rows)
+    per ordinary minute   wait-doc parse+stringify   0.21 ms  (35 KB)
+    per boundary minute   load+validate baseline     6.34 ms  (454 KB)
+    per boundary minute   derivePlatformCrowding     1.52 ms
+    -------------------------------------------------------------
+    added per ordinary minute                        0.44 ms
+    added per boundary minute                        8.29 ms
+
+Against the documented cron CPU budgets (Workers limits, retrieved 2026-08-24):
+**Workers Free is 10 ms per cron trigger, Workers Paid is 30 s.** We are on Paid
+(ADR 0001 says so, and the trainer container requires it), so 8.29 ms is 0.03%
+of budget and there is nothing to fix. Free was never reachable for this
+pipeline: this one feature is 8.29 of the 10 ms on its own.
+
+The reusable finding is where the time actually goes, because it is not where I
+assumed. Decomposing the 454 KB artifact load:
+
+    JSON.parse full artifact (454 KB)      0.94 ms
+    zod validate full artifact             3.37 ms
+    JSON.parse lean (rates only, 129 KB)   0.68 ms
+    zod validate lean                       1.63 ms
+    JSON.stringify the 109 KB snapshot     0.11 ms
+
+**Serialisation is nearly free and schema validation is the cost.** V8 stringifies
+the entire published snapshot in 0.11 ms; zod spends 3.4 ms walking 425 complexes
+x 48 numbers applying `finite().nonnegative()` per element. So the lever for
+Worker CPU in this repo is the AMOUNT OF ZOD WORK per tick, not payload bytes —
+which inverts the intuition that shipping fewer bytes is what makes a tick
+cheaper. Anyone optimising a tick should count validated array elements, not KB.
+
+The available saving, not taken: the Worker reads only
+`complexes[cx].entries_per_min`. The name/borough/rank/entries_total/n_cells
+fields exist for the station fact sheet, a build-time consumer. Splitting a lean
+worker-facing rates document out of the full artifact is 72% smaller and roughly
+halves validation, about 4 ms off a boundary tick. Left undone deliberately: it
+is a refactor across ingest, Worker and tests to reclaim 4 ms of a 30,000 ms
+budget.
+
+Two cost notes in ADR 0001 that are now stale, both from the cron moving to
+every minute and the domain moving onto the Worker:
+
+- "The Worker's ~288 invocations/day" is now ~1,440/day (`crons = ["* * * * *"]`).
+  Still far under any request limit.
+- "public reads are R2 bytes-out behind the CDN edge cache, not Worker
+  invocations" no longer holds: `wrangler.toml` routes feed.momentarily.nyc
+  THROUGH the Worker (`custom_domain = true`), so a cache miss is a Worker
+  invocation. That also means the crowding surface's +8 KB gzipped on the
+  snapshot costs nothing in Worker terms — Workers bill requests, not bytes — so
+  the size flag I raised on it was aimed at the wrong resource.

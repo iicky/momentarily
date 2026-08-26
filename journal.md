@@ -4344,3 +4344,77 @@ not a symmetric escape hatch: it is exactly the low-`mov_n` regime, which is the
 conclusion the entry was reaching for. Writing "either way" in the heading threw
 away the entry's only real evidence — that a well-fed state would have moved off
 `0.3`, so 56 of 56 sitting on it is informative, just not conclusive.
+
+## 2026-08-25 — settled structurally: the training corpus is alerts-only, so `advance_rate` and `service_mu/sigma` can never be fitted — 0 movement ticks in 6,993, and the 10 routes canonicalisation swapped carry BOTH channels' constants transposed
+
+origin: agent
+
+The two entries above failed to settle this from serialized params, twice, and
+both times the hole was the same: an exact value can mean "no data" or "prior
+coincidence" and the numbers alone cannot separate them. The answer was never in
+the params. It is in what the trainer feeds the fit.
+
+**`load_series_by_route` (`train_em.py:173-239`) builds its observations from the
+alerts archive only** — `list_alert_keys`, `fetch_objects`,
+`build_tick_observations`, `fill_quiet_ticks`. It never reads
+`archive/vehicles/` or any movement or service metric. Those two channels exist
+only on the live Worker's observation, folded in at `index.ts` from the previous
+tick's metric docs. So every training tick has `has_movement = False` and
+`has_service = False`.
+
+Measured, running the repo's own E-step (`_per_tick_emissions`,
+`_forward_scaled`, `_backward_scaled`) over the archived series under the
+published params:
+
+| route | ticks | ticks with movement | `mov_n` per state |
+| --- | --- | --- | --- |
+| 1 | 2,212 | **0** | 0.0, 0.0, 0.0 |
+| 2 | 2,312 | **0** | 0.0, 0.0, 0.0 |
+| G | 2,469 | **0** | 0.0, 0.0, 0.0 |
+
+Zero movement mass in 6,993 ticks, so the advance-rate M-step
+(`hmm.py:794-801`) can only ever take the prior or fallback branch, and
+`svc_w = 0` does the same to `service_mu/sigma`. **These parameters are not
+badly fitted. They are structurally unfittable in the current training path.**
+That is why no amount of float comparison could distinguish the cases: both
+branches were the same branch.
+
+What corroborates it, from the params:
+
+| | |
+| --- | --- |
+| `advance_rate` idx1/idx2 exactly the defaults | **28 / 28** |
+| `advance_rate[normal]` exactly equal to one of that route's baseline `p0` | 20 / 28 |
+| ...or the raw `0.6` default | 6 / 28 |
+| `poisson_lambda` moved off bootstrap (the ALERT channel really is fitted) | **28 / 28** |
+
+The only movement information reaching training is `advance_priors` →
+`_apply_advance_prior` (`train_em.py:247-274, 292`), which sets the NORMAL
+state's rate from the measured baseline and leaves the other two alone. Hence
+20/28 exact `p0` matches on normal and 28/28 untouched defaults beside them.
+
+**The clincher for the ordering question.** `service_mu` is exactly the default
+`(1.0, 0.6, 0.05)` on 18 routes. The other 10 are not fitted values — they are
+`(1.0, 0.05, 0.6)`, the same constants transposed. Those 10 routes
+(2 C D E F G J L M FS) are precisely the routes whose `advance_rate` is
+transposed. `canonicalize_states` permutes every emission field through
+`_reorder_emissions`, and it chooses the permutation from `poisson_lambda` and
+`bernoulli_p` — the channels that ARE fitted (`hmm.py:232-241`). So a relabel
+justified by alert statistics silently transposes two channels' hardcoded
+constants, and the live filter then scores real movement and service
+observations against whichever constant landed on `disrupted`.
+
+That is the mechanism behind the 3.25x per-trip evidence gap and the 42.6 vs
+151.7 nat suppression split measured earlier. It is an artifact — not of a buggy
+canonicalisation, which is doing exactly what it says, but of canonicalising
+parameters that carry no information, using a channel that does.
+
+**Consequences for the fix, which is now a different fix.** Rescaling the
+binomial per-tick, proposed on 2026-08-23, would rescale a constant. The real
+options are to feed movement and service into the training corpus so the two
+channels can be fitted, or to stop treating them as likelihood channels and use
+them only where they are measured. Until one of those happens, the baseline's
+own defect — `compute_advance_baseline` takes `p0` as a median of per-tick
+advance fractions rather than the cell's pooled advanced/matched rate, which
+saturates at 0.9990 where the pooled rate is 0.9443 — is the single number
+setting the movement channel's entire behaviour on 20 of 28 routes.

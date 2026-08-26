@@ -70,6 +70,80 @@ export function impliedCondition(category: string | null | undefined): string {
   return "disrupted";
 }
 
+// Plain-English badge text for a route's published condition. Raw codes like
+// "not_scheduled" would render with an underscore under the capitalize style.
+// Shared by the Status cards, the line page verdict, and the lines triage board
+// so the three never word the same state differently.
+export function conditionLabel(condition: string): string {
+  switch (condition) {
+    case "normal":
+      return "Normal";
+    case "disrupted":
+      return "Disrupted";
+    case "suspended":
+      return "Suspended";
+    case "not_scheduled":
+      return "Not scheduled";
+    default:
+      return "No signal";
+  }
+}
+
+// One plain sentence for how a line is moving right now — the movement status,
+// never the MTA alert (that is a separate clause a caller may add). Shared with
+// the Status cards' headline so the verdict header reads identically.
+export function conditionLead(condition: string): string {
+  switch (condition) {
+    case "normal":
+      return "Trains are moving normally.";
+    case "disrupted":
+      return "Trains are moving slowly or stalling.";
+    case "suspended":
+      return "No trains are running on this line.";
+    case "not_scheduled":
+      return "Not scheduled to run right now.";
+    default:
+      return "No live signal from this line's trains.";
+  }
+}
+
+// The state class name a condition paints with. Maps not_scheduled/unknown onto
+// the muted "unknown" swatch the .cond badge already defines.
+export function conditionClass(condition: string): string {
+  if (condition === "disrupted" || condition === "suspended" || condition === "normal") {
+    return condition;
+  }
+  return "unknown";
+}
+
+// Whether a route deserves the reader's attention right now: its flow is
+// disrupted or suspended, or its supply has dropped below the degrade floor.
+// The triage board leads with exactly these — a normally-running, normally-
+// supplied line is not one, and an unknown-signal line is an absence of a
+// reading, not a disruption to surface.
+export function isServiceFlagged(r: RouteStatus): boolean {
+  return (
+    r.condition === "disrupted" ||
+    r.condition === "suspended" ||
+    r.service_condition === "degraded"
+  );
+}
+
+// The one-sentence takeaway for a line, resolving the two axes the model keeps
+// separate: a disrupted or suspended FLOW leads with how trains are moving; a
+// line whose flow is fine but whose SUPPLY has dropped below the floor says
+// that instead, so a "Normal" badge never sits over a red supply number with no
+// account of why the line is flagged. Every other line gets its plain flow lead.
+export function serviceLead(r: RouteStatus): string {
+  if (r.condition === "disrupted" || r.condition === "suspended") {
+    return conditionLead(r.condition);
+  }
+  if (r.service_condition === "degraded") {
+    return "Trains are moving, but the line is running fewer than usual.";
+  }
+  return conditionLead(r.condition);
+}
+
 // Fallback colors for routes the compat layer doesn't carry. Standard MTA hues.
 const FALLBACK_COLOR = "#6e6e73";
 
@@ -102,6 +176,20 @@ export function fmtAgo(epochSec: number | null | undefined, nowSec: number): str
   if (d < 5400) return `${Math.round(d / 60)}m ago`;
   if (d < 172800) return `${Math.round(d / 3600)}h ago`;
   return `${Math.round(d / 86400)}d ago`;
+}
+
+// Countdown to a future epoch — the mirror of fmtAgo, for a time that has not
+// happened yet (an announced elevator return). fmtAgo clamped every future
+// instant to "0s ago"; a return estimate is always ahead of now, so it needs
+// its own direction. A time already past means the estimate lapsed with the
+// outage still up, which is a fact worth naming rather than rounding to zero.
+export function fmtEta(epochSec: number | null | undefined, nowSec: number): string {
+  if (epochSec == null) return "—";
+  const d = epochSec - nowSec;
+  if (d <= 0) return "overdue";
+  if (d < 5400) return `in ${Math.round(d / 60)}m`;
+  if (d < 172800) return `in ${Math.round(d / 3600)}h`;
+  return `in ${Math.round(d / 86400)}d`;
 }
 
 export function fmtMinutes(min: number): string {

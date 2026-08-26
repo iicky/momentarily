@@ -16,6 +16,9 @@ import {
   SUPPLY_DEGRADE_RATIO,
   SUPPLY_RECOVER_RATIO,
   isRunningHigh,
+  conditionLabel,
+  conditionLead,
+  conditionClass,
 } from "@/lib/feed";
 import type { SupplyBand } from "@/lib/feed";
 import type { Snapshot, RouteStatus, Inference } from "@/lib/types";
@@ -164,29 +167,6 @@ function FreshnessStrip({ snap, now }: { snap: Snapshot; now: number }) {
       })}
     </div>
   );
-}
-
-function condClass(r: RouteStatus): string {
-  return r.condition || "unknown";
-}
-
-// Human-readable badge text for a route's published condition. Raw codes like
-// "not_scheduled" would render with an underscore under the capitalize style.
-// Kept short: the badge shares one card-head row with the train glyph, and
-// "No live signal" was long enough to push the glyph onto a second line.
-function condLabel(r: RouteStatus): string {
-  switch (r.condition) {
-    case "normal":
-      return "Normal";
-    case "disrupted":
-      return "Disrupted";
-    case "suspended":
-      return "Suspended";
-    case "not_scheduled":
-      return "Not scheduled";
-    default:
-      return "No signal";
-  }
 }
 
 // Two-car brand mark. The gap between the cars encodes delay and the bars drop
@@ -418,21 +398,11 @@ function headline(r: RouteStatus): { lead: string; alt?: string } {
     r.category !== "none" && r.primary_alert_type
       ? `The MTA has a “${r.primary_alert_type}” advisory up.`
       : undefined;
-  switch (r.condition) {
-    case "normal":
-      return { lead: "Trains are moving normally.", alt: alert };
-    case "disrupted":
-      return { lead: "Trains are moving slowly or stalling.", alt: alert };
-    case "suspended":
-      return { lead: "No trains are running on this line.", alt: alert };
-    case "not_scheduled":
-      return { lead: "Not scheduled to run right now." };
-    default:
-      return {
-        lead: "No live signal from this line's trains.",
-        alt: alert,
-      };
-  }
+  return {
+    lead: conditionLead(r.condition),
+    // Not-scheduled is a plan, not an incident, so it never carries the alert.
+    alt: r.condition === "not_scheduled" ? undefined : alert,
+  };
 }
 
 function RouteCard({
@@ -459,7 +429,7 @@ function RouteCard({
           {routeLabel(snap, r.route_id)}
         </span>
         <StateMark kind={markKind(r)} />
-        <span className={`cond ${condClass(r)}`}>{condLabel(r)}</span>
+        <span className={`cond ${conditionClass(r.condition)}`}>{conditionLabel(r.condition)}</span>
       </div>
 
       {inf && (
@@ -685,8 +655,8 @@ function RouteDrawer({
           {routeLabel(snap, r.route_id)}
         </span>
         <StateMark kind={markKind(r)} size={22} />
-        <span className={`cond ${condClass(r)}`}>
-          {condLabel(r)}
+        <span className={`cond ${conditionClass(r.condition)}`}>
+          {conditionLabel(r.condition)}
         </span>
         <span className="src-tag">{sourceTag(r)}</span>
       </h2>

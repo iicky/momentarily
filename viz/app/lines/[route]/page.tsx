@@ -6,7 +6,16 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected, orderTrip } from "@/lib/stations";
-import { fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
+import {
+  fmtMinutes,
+  fmtRiders,
+  platformCrowding,
+  serviceLead,
+  conditionLabel,
+  conditionClass,
+  supplyBand,
+  isRunningHigh,
+} from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 
 type Dir = "north" | "south";
@@ -77,6 +86,8 @@ function LineView() {
         </div>
       </div>
 
+      {snap && <RouteVerdict snap={snap} route={route} />}
+
       {snap?.platform_crowding && (
         <div className="section-note crowd-note">
           Rider counts are <b>estimates</b>, not measurements: each platform&apos;s
@@ -108,6 +119,40 @@ function LineView() {
           ))}
         </ol>
       )}
+    </div>
+  );
+}
+
+// The route-level takeaway, above the 59 station rows: the same three facts the
+// Status card reads for this line — the published movement condition, how many
+// trains are running against this hour's usual, and the recovery estimate when
+// it is disrupted — stated once, in one sentence plus compact stats. Silent for
+// a line the snapshot carries no status for (the S/SIR shuttle badges).
+function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
+  const r = snap.route_status[route];
+  if (!r) return null;
+  const inf = r.inference;
+  const cls = conditionClass(r.condition);
+  const supplyTone = isRunningHigh(r) ? "high" : supplyBand(r);
+  const recovery =
+    inf && inf.is_disrupted
+      ? inf.recovery_indeterminate
+        ? "recovery runs past our forecast"
+        : `~${fmtMinutes(inf.recovery_minutes)} to recover`
+      : null;
+  return (
+    <div className={`verdict ${cls}`}>
+      <p className="verdict-lead">{serviceLead(r)}</p>
+      <div className="verdict-stats">
+        <span className={`cond ${cls}`}>{conditionLabel(r.condition)}</span>
+        {r.service_ratio != null && (
+          <span className="verdict-stat">
+            <b className={supplyTone}>{(r.service_ratio * 100).toFixed(0)}%</b> of
+            usual trains
+          </span>
+        )}
+        {recovery && <span className="verdict-stat">{recovery}</span>}
+      </div>
     </div>
   );
 }

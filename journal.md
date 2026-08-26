@@ -4601,3 +4601,64 @@ suite had 407 passing tests over this code and none of them covered a zero-row
 tick — every fixture supplied rows, because supplying rows is what you think to
 do. The new test asserts the stored document is byte-identical after an
 all-feeds-fail tick, and it fails against the old code on all three counts.
+
+
+## 2026-08-24 — the Worker's per-tick CPU goes to zod validation, not to JSON or to the maths: 3.4ms to validate an artifact that parses in 0.94ms, and serialising the whole 109KB snapshot costs 0.11ms
+
+origin: artifact
+
+Asked whether the new crowding surface needs trimming to fit a free tier.
+Measured rather than guessed, running the real Worker modules over the real
+artifacts.
+
+What the platform-crowding feature costs:
+
+    per ordinary minute   updateStationWait          0.23 ms  (746 trace rows)
+    per ordinary minute   wait-doc parse+stringify   0.21 ms  (35 KB)
+    per boundary minute   load+validate baseline     6.34 ms  (454 KB)
+    per boundary minute   derivePlatformCrowding     1.52 ms
+    -------------------------------------------------------------
+    added per ordinary minute                        0.44 ms
+    added per boundary minute                        8.29 ms
+
+Against the documented cron CPU budgets (Workers limits, retrieved 2026-08-24):
+**Workers Free is 10 ms per cron trigger, Workers Paid is 30 s.** We are on Paid
+(ADR 0001 says so, and the trainer container requires it), so 8.29 ms is 0.03%
+of budget and there is nothing to fix. Free was never reachable for this
+pipeline: this one feature is 8.29 of the 10 ms on its own.
+
+The reusable finding is where the time actually goes, because it is not where I
+assumed. Decomposing the 454 KB artifact load:
+
+    JSON.parse full artifact (454 KB)      0.94 ms
+    zod validate full artifact             3.37 ms
+    JSON.parse lean (rates only, 129 KB)   0.68 ms
+    zod validate lean                       1.63 ms
+    JSON.stringify the 109 KB snapshot     0.11 ms
+
+**Serialisation is nearly free and schema validation is the cost.** V8 stringifies
+the entire published snapshot in 0.11 ms; zod spends 3.4 ms walking 425 complexes
+x 48 numbers applying `finite().nonnegative()` per element. So the lever for
+Worker CPU in this repo is the AMOUNT OF ZOD WORK per tick, not payload bytes —
+which inverts the intuition that shipping fewer bytes is what makes a tick
+cheaper. Anyone optimising a tick should count validated array elements, not KB.
+
+The available saving, not taken: the Worker reads only
+`complexes[cx].entries_per_min`. The name/borough/rank/entries_total/n_cells
+fields exist for the station fact sheet, a build-time consumer. Splitting a lean
+worker-facing rates document out of the full artifact is 72% smaller and roughly
+halves validation, about 4 ms off a boundary tick. Left undone deliberately: it
+is a refactor across ingest, Worker and tests to reclaim 4 ms of a 30,000 ms
+budget.
+
+Two cost notes in ADR 0001 that are now stale, both from the cron moving to
+every minute and the domain moving onto the Worker:
+
+- "The Worker's ~288 invocations/day" is now ~1,440/day (`crons = ["* * * * *"]`).
+  Still far under any request limit.
+- "public reads are R2 bytes-out behind the CDN edge cache, not Worker
+  invocations" no longer holds: `wrangler.toml` routes feed.momentarily.nyc
+  THROUGH the Worker (`custom_domain = true`), so a cache miss is a Worker
+  invocation. That also means the crowding surface's +8 KB gzipped on the
+  snapshot costs nothing in Worker terms — Workers bill requests, not bytes — so
+  the size flag I raised on it was aimed at the wrong resource.

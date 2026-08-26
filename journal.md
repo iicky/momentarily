@@ -4482,3 +4482,52 @@ parameters honest either way.
 **Not published.** Verified by dry-run only; no R2 write. Wiring the channel
 moves the live operating point, so publishing waits on a review of the fitted
 params against the current ones. Full Python suite green.
+
+## 2026-08-25 — fix: the advance baseline is a trimmed pooled rate, not a median of tick fractions — p0 desaturates (cells ≥0.99: 76% → 8%), so "normal" is a rate cells actually run at
+
+origin: agent
+
+Shipped the estimator fix the 2026-08-13 entry measured and deferred. `p0` is the
+cell's normal cross-tick advance rate, and it anchors both the movement
+trip-wire (`classify_direction`, `disrupted ≤ 0.5·p0` plus a binomial
+significance gate against p0) and the HMM's advance prior. It was the *median of
+per-tick advance fractions*: with ~71% of through-filtered ticks stall-free and
+small per-tick denominators (~10 trips) quantising to 1.0, the median sat on the
+ceiling and floored to 0.999 — a rate no cell actually ran at, which made the
+significance test read a single stall in ten as significant.
+
+**The fix.** `compute_advance_baseline` and `compute_advance_baseline_by_route`
+now pool: p0 = Σadvanced / Σmatched over the cell's ticks
+(`_trimmed_pooled_advance_rate`), a proper rate that doesn't quantise. Measured
+on the published window (`2026-07-31..08-13`):
+
+    estimator                    cells  median p0   ≥0.99   ≥0.999
+    OLD median-of-fractions       210     0.9990    76.2%   76.2%
+    NEW pooled (trim 0)           210     0.9370     8.1%    0.0%
+
+That reproduces the deferred measurement (median 0.999 → ~0.94, ≥0.99 76% → 8%)
+and matches the physical reality — a subway's normal advance is ~94%, not 100%.
+
+**On the trim.** The original note proposed a one-sided lower trim (drop the
+worst ticks) to stop outages dragging the pooled rate down. Measured, that is
+the wrong instinct on this data: any trim>0 walks p0 straight back into
+saturation (cells ≥0.999 go 0% → 19% at trim 0.1 → 37% at 0.2), because the
+dropped low tail is mostly the ordinary stalls, not outages — real disruption is
+rare enough that the raw pooled rate is barely dragged (0.937). So the trim is a
+kept knob defaulting to 0; it earns its keep only against a movement-truth eval
+that doesn't exist yet.
+
+**Behavioural check.** Over 189k movement ticks the trip-wire's disrupted-fire
+count barely moves (242 → 195). That is the point, not a shortfall: the old
+fires were largely noise — at p0=0.999 a single stall reads significant — while
+at a realistic p0≈0.9 a genuine freeze still fires (`P(0/10 | 0.9) ≈ 3.5e-5`)
+but an ordinary single stall does not. The fix recalibrates *what* fires onto a
+real normal rate; it is not a standalone accuracy jump (graded against the
+alert-derived label it buys nothing — that label is the wrong truth). Its value
+is that the quantity every movement-defined call rests on is now correct, which
+is the prerequisite for the movement-native state work.
+
+**Not published.** Same as the movement-wiring change: verified offline, no R2
+write; this shifts the live operating point (the trip-wire fires ~0.14% vs
+0.17%) and should go out with a params review. Tests updated to lock the
+no-saturation property and the pooled/trim behaviour; suite green.

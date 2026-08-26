@@ -19,6 +19,7 @@ from training.load_r2 import (
     ServiceQuantiles,
     _binom_lower_tail,  # pyright: ignore[reportPrivateUsage]
     _snap_tick,  # pyright: ignore[reportPrivateUsage]
+    _trimmed_pooled_advance_rate,  # pyright: ignore[reportPrivateUsage]
     advance_baseline_to_json,
     build_movement_series,
     build_movement_series_by_direction,
@@ -26,6 +27,7 @@ from training.load_r2 import (
     build_tick_observations,
     classify_direction,
     compute_advance_baseline,
+    compute_advance_baseline_by_route,
     compute_baseline,
     compute_service_quantiles,
     input_manifest_hash,
@@ -535,28 +537,67 @@ def test_segment_series_missing_transitions_or_by_direction_yields_nothing():
     assert build_segment_series(bodies) == {}
 
 
-def test_advance_baseline_median_resists_disrupted_minority():
-    """Mostly-healthy north ticks (advance ~0.9) with a frozen minority should
-    still yield a high p0 — the median ignores the disrupted tail."""
+def test_advance_baseline_pools_and_does_not_saturate_on_stall_free_majority():
+    """The fix: a cell whose ticks are mostly perfectly stall-free must NOT read
+    p0=1.0. The old median of per-tick fractions saturated there (small per-tick
+    denominators quantise to 1.0); the pooled rate reads the true advance rate
+    over all matched trips, the ordinary stalls included."""
     bodies: list[dict[str, Any]] = []
-    # 24 healthy ticks: 9 of 10 advanced. 6 frozen ticks: 0 of 10 advanced.
-    for i in range(24):
-        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 9, 1)))
-    for i in range(24, 30):
-        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 0, 10)))
+    # 20 flawless ticks (10/10 advance) + 10 with ordinary stalls (7/10). The old
+    # median of [1.0]*20 + [0.7]*10 saturates to 1.0; the pooled rate is 0.9.
+    for i in range(20):
+        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 10, 0)))
+    for i in range(20, 30):
+        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 7, 3)))
     series = build_movement_series_by_direction(bodies)
-    baseline = compute_advance_baseline(series, prior_strength=50.0, min_samples=20)
-    cell = baseline[("A", "north", tod_bin(T0))]
-    assert cell.p0 == 0.9  # median of the per-tick fractions, frozen tail ignored
+    cell = compute_advance_baseline(series, prior_strength=50.0, min_samples=20)[
+        ("A", "north", tod_bin(T0))
+    ]
+    assert cell.p0 == 0.9  # (20*10 + 10*7) / (30*10), not the saturated 0.999
     assert cell.n == 30
-    # Beta prior carries p0 at the chosen strength (alpha+beta = prior_strength).
     assert abs(cell.alpha - 45.0) < 1e-9
     assert abs(cell.beta - 5.0) < 1e-9
 
 
+def test_trimmed_pooled_advance_rate_pools_then_trims_the_low_tail():
+    ticks = [(9, 10)] * 8 + [(0, 10), (0, 10)]  # 8 healthy, 2 frozen
+    assert _trimmed_pooled_advance_rate(ticks, 0.0) == 0.72  # 72/100, all pooled
+    assert _trimmed_pooled_advance_rate(ticks, 0.2) == 0.9  # drop 2 frozen -> 72/80
+
+
+def test_trimmed_pooled_advance_rate_rejects_out_of_range_trim():
+    ticks = [(9, 10), (8, 10)]
+    for bad in (1.0, 1.5, -0.1):
+        with pytest.raises(ValueError, match="trim must be in"):
+            _trimmed_pooled_advance_rate(ticks, bad)
+
+
+def test_advance_baseline_trim_off_by_default_keeps_outage_ticks():
+    """Default trim=0 pools every tick, so a real outage minority lowers p0 (a
+    truth that sees freezing); a trim>0 would drop them and lift p0 back up."""
+    bodies = [_movement_body(T0 + i * TICK, "A", north=(10, 10, 0)) for i in range(24)]
+    for i in range(24, 30):  # 6 frozen ticks
+        bodies.append(_movement_body(T0 + i * TICK, "A", north=(10, 0, 10)))
+    series = build_movement_series_by_direction(bodies)
+    key = ("A", "north", tod_bin(T0))
+    assert compute_advance_baseline(series, min_samples=20)[key].p0 == 0.8  # 240/300
+    trimmed = compute_advance_baseline(series, min_samples=20, trim=0.2)[key].p0
+    assert trimmed > 0.99  # drops the 6 frozen -> 240/240, floored off the endpoint
+
+
+def test_advance_baseline_by_route_pools_over_both_directions():
+    bodies = [
+        _movement_body(T0 + i * TICK, "A", north=(10, 8, 2), south=(10, 6, 4))
+        for i in range(20)
+    ]
+    series = build_movement_series_by_direction(bodies)
+    rates = compute_advance_baseline_by_route(series, min_samples=20)
+    assert rates["A"] == 0.7  # (20*8 + 20*6) / (20*10 + 20*10) = 280/400
+
+
 def test_advance_baseline_keeps_beta_shapes_positive_at_endpoints():
-    """A perfectly healthy line (every matched trip advances → median 1.0) must
-    not produce a degenerate Beta(strength, 0); p0 is clamped off the endpoint."""
+    """A perfectly healthy line (every matched trip advances → pooled rate 1.0)
+    must not produce a degenerate Beta(strength, 0); p0 is clamped off the endpoint."""
     bodies = [_movement_body(T0 + i * TICK, "A", north=(10, 10, 0)) for i in range(24)]
     series = build_movement_series_by_direction(bodies)
     cell = compute_advance_baseline(series, prior_strength=50.0, min_samples=20)[

@@ -993,6 +993,16 @@ ADVANCE_PRIOR_STRENGTH = 50.0
 # otherwise). Mirrors hmm.py's BERNOULLI_FLOOR on the emission's advance_rate.
 P0_FLOOR = 1e-3
 
+# One-sided lower trim (fraction of a cell's worst ticks, by advance fraction,
+# dropped before pooling) for the advance baseline. Defaults OFF. The trim was
+# meant to stop outage ticks dragging the normal rate down, but measured on
+# 2026-07-31..08-13 the drag is small (median p0 0.937 at trim 0) while any
+# trim>0 re-creates the exact saturation this fix removes — most ticks are
+# legitimately stall-free, so trimming the low tail walks p0 back toward 1.0
+# (>=0.999 cells: 0% at trim 0, 19% at 0.1, 37% at 0.2). Kept as a knob to
+# recalibrate against a movement-truth eval; 0 is correct on today's data.
+ADVANCE_TRIM = 0.0
+
 
 @dataclass(frozen=True)
 class AdvanceBaseline:
@@ -1005,10 +1015,34 @@ class AdvanceBaseline:
     consumes, with alpha + beta = the prior strength in pseudo-trials.
     """
 
-    p0: float  # baseline advance rate (median over the cell's ticks)
+    p0: float  # baseline advance rate (trimmed pooled rate over the cell's ticks)
     n: int  # ticks contributing to the cell
     alpha: float  # Beta prior successes: prior_strength * p0
     beta: float  # Beta prior failures: prior_strength * (1 - p0)
+
+
+def _trimmed_pooled_advance_rate(ticks: list[tuple[int, int]], trim: float) -> float:
+    """Pooled Σadvanced / Σmatched over a cell's ticks, after dropping the lowest
+    `trim` fraction of ticks by advance fraction.
+
+    A one-sided (lower) trim: the dropped ticks are the cell's worst — outages and
+    frozen stretches — so they can't drag the *normal* rate down, the job the old
+    median did by construction. Unlike the median it does not saturate to ~1.0
+    when most ticks are stall-free, because pooling keeps the ordinary
+    few-percent stall rate in the denominator. `trim=0` is the raw pooled rate;
+    each tick is (advanced_n, matched_n) with matched_n > 0. `trim` must be in
+    [0, 1) — a trim that dropped every tick would leave nothing to pool and
+    silently floor the baseline.
+    """
+    if not 0.0 <= trim < 1.0:
+        raise ValueError(f"trim must be in [0, 1), got {trim!r}")
+    kept = ticks
+    if trim > 0.0 and len(ticks) > 1:
+        ordered = sorted(ticks, key=lambda t: t[0] / t[1])
+        kept = ordered[int(len(ordered) * trim) :]
+    matched = sum(m for _a, m in kept)
+    advanced = sum(a for a, _m in kept)
+    return advanced / matched if matched > 0 else 0.0
 
 
 def compute_advance_baseline(
@@ -1017,33 +1051,39 @@ def compute_advance_baseline(
     prior_strength: float = ADVANCE_PRIOR_STRENGTH,
     min_matched: int = MIN_MATCHED_TRIPS,
     min_samples: int = 20,
+    trim: float = ADVANCE_TRIM,
 ) -> dict[tuple[str, str, int], AdvanceBaseline]:
     """Per (route, direction, tod_bin) baseline advance rate, as a Beta prior.
 
-    For each tick with at least `min_matched` cross-tick matches, the advance
-    fraction is advanced_n / (advanced_n + stalled_n). The cell's p0 is the
-    *median* of those fractions — like compute_baseline for assigned_n, the
-    median resists the disrupted minority, so a line that mostly runs well keeps
-    a high baseline even with occasional frozen stretches. Cells below
-    `min_samples` ticks are omitted (callers treat a missing baseline as "no
-    prior", and the emission channel drops out — see hmm.py has_movement).
+    For each tick with at least `min_matched` cross-tick matches we keep its
+    (advanced_n, matched_n). The cell's p0 is the trimmed *pooled* rate
+    Σadvanced / Σmatched over those ticks (_trimmed_pooled_advance_rate) — the
+    rate the cell actually ran at in normal operation. This replaces a median of
+    per-tick fractions, which saturated to ~1.0 wherever most ticks were
+    stall-free and published a p0 no cell truly ran at, making the downstream
+    binomial significance test fire on a single stall (journal 2026-08-13). Cells
+    below `min_samples` ticks are omitted (callers treat a missing baseline as
+    "no prior", and the emission channel drops out — see hmm.py has_movement).
     """
-    buckets: dict[tuple[str, str, int], list[float]] = {}
+    buckets: dict[tuple[str, str, int], list[tuple[int, int]]] = {}
     for (route, direction, tick), row in series.items():
-        matched = row.get("advanced_n", 0) + row.get("stalled_n", 0)
+        advanced = row.get("advanced_n", 0)
+        matched = advanced + row.get("stalled_n", 0)
         if matched < min_matched:
             continue
-        frac = row.get("advanced_n", 0) / matched
-        buckets.setdefault((route, direction, tod_bin(tick)), []).append(frac)
+        buckets.setdefault((route, direction, tod_bin(tick)), []).append(
+            (advanced, matched)
+        )
 
     out: dict[tuple[str, str, int], AdvanceBaseline] = {}
-    for key, fracs in buckets.items():
-        if len(fracs) < min_samples:
+    for key, ticks in buckets.items():
+        if len(ticks) < min_samples:
             continue
-        p0 = min(max(statistics.median(fracs), P0_FLOOR), 1.0 - P0_FLOOR)
+        rate = _trimmed_pooled_advance_rate(ticks, trim)
+        p0 = min(max(rate, P0_FLOOR), 1.0 - P0_FLOOR)
         out[key] = AdvanceBaseline(
             p0=p0,
-            n=len(fracs),
+            n=len(ticks),
             alpha=prior_strength * p0,
             beta=prior_strength * (1.0 - p0),
         )
@@ -1103,28 +1143,31 @@ def compute_advance_baseline_by_route(
     *,
     min_matched: int = MIN_MATCHED_TRIPS,
     min_samples: int = 20,
+    trim: float = ADVANCE_TRIM,
 ) -> dict[str, float]:
-    """Per-route baseline (normal) advance rate — the median cross-tick advance
-    fraction pooled over both directions and all times of day.
+    """Per-route baseline (normal) advance rate — the trimmed pooled cross-tick
+    advance rate over both directions and all times of day.
 
     Coarser than compute_advance_baseline: the trained emissions aren't
     TOD-conditioned, so the EM prior anchors one normal-state advance_rate per
-    route, not a per-(direction, tod) grid. Same median-of-fractions estimator
-    and P0 floor. Routes below min_samples ticks are omitted so a route with
-    thin movement data gets no fabricated prior (the fit keeps the default).
+    route, not a per-(direction, tod) grid. Same trimmed-pooled estimator and P0
+    floor. Routes below min_samples ticks are omitted so a route with thin
+    movement data gets no fabricated prior (the fit keeps the default).
     """
-    buckets: dict[str, list[float]] = {}
+    buckets: dict[str, list[tuple[int, int]]] = {}
     for (route, _direction, _tick), row in series.items():
-        matched = row.get("advanced_n", 0) + row.get("stalled_n", 0)
+        advanced = row.get("advanced_n", 0)
+        matched = advanced + row.get("stalled_n", 0)
         if matched < min_matched:
             continue
-        buckets.setdefault(route, []).append(row.get("advanced_n", 0) / matched)
+        buckets.setdefault(route, []).append((advanced, matched))
 
     out: dict[str, float] = {}
-    for route, fracs in buckets.items():
-        if len(fracs) < min_samples:
+    for route, ticks in buckets.items():
+        if len(ticks) < min_samples:
             continue
-        out[route] = min(max(statistics.median(fracs), P0_FLOOR), 1.0 - P0_FLOOR)
+        rate = _trimmed_pooled_advance_rate(ticks, trim)
+        out[route] = min(max(rate, P0_FLOOR), 1.0 - P0_FLOOR)
     return out
 
 

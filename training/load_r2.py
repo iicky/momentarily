@@ -1050,6 +1050,54 @@ def compute_advance_baseline(
     return out
 
 
+# A carried movement snapshot older than this (seconds) is a feed gap, not "now"
+# — mirrors worker/src/movement_state.ts MAX_MOVEMENT_METRIC_LAG_SECONDS. The
+# live filter folds the PREVIOUS tick's counts into an observation (option B
+# lag) and drops anything staler than this; training admits the same window so
+# the emission is fitted on exactly the samples inference will score it against.
+MAX_MOVEMENT_METRIC_LAG_SECONDS = 600
+
+
+def movement_observation_fields(
+    movement_by_tick: dict[tuple[str, int], dict[str, int]],
+    baseline_cells: set[tuple[str, str, int]],
+    route: str,
+    tick: int,
+    *,
+    min_matched: int = MIN_MATCHED_TRIPS,
+) -> dict[str, Any] | None:
+    """Movement fields for one (route, tick) HMM observation, reconstructing what
+    the live filter folds in at that tick: the previous tick's cross-tick counts,
+    both directions summed off the raw route counters. Returns None — channel
+    stays off — exactly where the live filter abstains: no carried snapshot within
+    the lag window, fewer than `min_matched` cross-tick matches, or no published
+    baseline cell for the current tick's tod_bin. Straight port of
+    worker/src/movement_state.ts movementObservationFields, so training and
+    inference admit and score the same samples (no train/serve skew).
+    """
+    row: dict[str, int] | None = None
+    lag = TICK_SECONDS
+    while lag <= MAX_MOVEMENT_METRIC_LAG_SECONDS:
+        row = movement_by_tick.get((route, tick - lag))
+        if row is not None:
+            break
+        lag += TICK_SECONDS
+    if row is None:
+        return None
+    advanced_n = int(row.get("advanced_n") or 0)
+    matched_n = advanced_n + int(row.get("stalled_n") or 0)
+    if matched_n < min_matched:
+        return None
+    tb = tod_bin(tick)
+    if (route, "north", tb) not in baseline_cells and (
+        route,
+        "south",
+        tb,
+    ) not in baseline_cells:
+        return None
+    return {"advanced_n": advanced_n, "matched_n": matched_n, "has_movement": True}
+
+
 def compute_advance_baseline_by_route(
     series: dict[tuple[str, str, int], dict[str, int]],
     *,

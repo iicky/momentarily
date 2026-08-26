@@ -4344,3 +4344,141 @@ not a symmetric escape hatch: it is exactly the low-`mov_n` regime, which is the
 conclusion the entry was reaching for. Writing "either way" in the heading threw
 away the entry's only real evidence — that a well-fed state would have moved off
 `0.3`, so 56 of 56 sitting on it is informative, just not conclusive.
+
+## 2026-08-25 — settled: the two `advance_rate` orderings are a canonicalization artifact, because the HMM training observations carry no movement channel at all — `mov_n = 0` on every route and every state
+
+origin: agent
+
+Closed the ordering question the two entries above left open. It needed the one
+thing the serialized params cannot show — the fit's own per-state movement
+responsibility — so I instrumented the fit and ran it on the exact published
+window (`2026-07-31..08-13`, `prior_strength=100`, `min_ticks=288`, the corpus
+behind `state/params.json` trained_at 1786581775).
+
+**Instrumentation.** `advance_responsibility(observations, params)`
+(`hmm.py`) reads the M-step's own `mov_n`/`mov_k` — the responsibility-weighted
+matched/advanced trips, `Σ_t γ[t][s]·matched_n` over `has_movement` ticks — off a
+single E-step at the fitted params. `train_em --diagnose-advance` prints it per
+route beside the fitted rate and the prior it blends against, plus the global
+prior's own `advance_rate`. (Sanity-checked the reader on synthetic
+movement-bearing data: total `mov_n` came back exactly `20×40`, split across
+states by responsibility, so a zero is a real zero, not a skipped loop.)
+
+**The measurement.** Global prior `advance_rate = (0.600, 0.300, 0.020)` — the
+bootstrap default (`run_filter.BOOTSTRAP_PARAMS`, unset → dataclass default
+`hmm.py:131`) verbatim. And across all 28 routes × 3 states:
+
+    mov_n = 0.00,  mov_k = 0.00   — every cell, no exception.
+
+Every fitted `advance_rate` equals its prior to the last digit. `normal` differs
+by route only because `_apply_advance_prior` injects the movement-baseline route
+rate into the *normal* prior alone (`train_em.py:272-277,292-300`); the
+18-vs-10 group each route falls into is exactly whether the other two states'
+`0.3`/`0.02` came through canonicalization straight or swapped.
+
+**Why `mov_n` is literally zero.** The HMM training observations are
+reconstructed from the *alerts* archive only. Both constructors —
+`load.build_observations` and `load_r2.build_tick_observations` — build
+`Observation(...)` with `advanced_n`/`matched_n`/`has_movement` left at their
+defaults (`0/0/False`); nothing downstream joins movement counts in
+(`load_series_by_route` just quiet-fills and hands the alert observations to
+`train`). So `has_movement` is False on every training tick, the M-step's
+`mov_k`/`mov_n` sums are empty, and the κ-blend `(κ·prior + 0)/(κ + 0)` returns
+the prior identically for all three states. The global fit is pure MLE and sees
+the same empty channel, so its `elif mov_n > 0` branch never fires and disrupted/
+suspended fall to the bootstrap fallback `0.3`/`0.02` — which is why the anchor
+every route inherits is the default, not a learned rate.
+
+**The answer.** Canonicalization artifact, not a fit. `canonicalize_states`
+orders the two non-normal states by the alert channels — lowest `poisson_lambda`
+takes normal, higher suspended-alert `bernoulli_p` of the rest takes suspended
+(`hmm.py:232-240`) — with `advance_rate` only a second sort key behind
+`bernoulli_p`. That tiebreak never fires here: in the published params
+`bernoulli_p[suspended] > bernoulli_p[disrupted]` *strictly* on all 28 routes
+(closest margin 0.0244 vs 0.0244-to-4dp on D, still separated beyond 1e-12; no
+exact tie anywhere), so the disrupted/suspended assignment is decided entirely by
+the fitted suspended-alert channel and `advance_rate` contributes nothing, not
+even as a tiebreak. The two advance constants ride along as whatever raw EM
+cluster they initialized on. The 3.25× per-advancing-trip gap the 2026-08-25
+attribution entry measured is real arithmetic on the shipped params, but it is
+the *live* forward filter applying a movement emission whose parameters were
+never trained on movement — the split between adjacent routes is only whether the
+higher-`bernoulli_p` cluster landed on the raw index carrying the `0.3` prior or
+the one carrying `0.02`, relabeled by canonicalization. Nothing about observed
+advancing behaviour moved it.
+
+This also resolves the earlier worry about `mov_n` "small relative to κ=100": it
+was not small, it was zero, by construction. The circumstantial reading (a
+well-fed state would have left `0.3`) was pointing the right way for the wrong
+reason — no state on this channel is fed at all during training.
+
+**The median normal-baseline is upstream, and now precisely so.**
+`compute_advance_baseline_by_route` (the median-of-tick-fractions estimator that
+saturates to 0.999 where most ticks are stall-free) is the *only* movement
+information that reaches the HMM, and it reaches only the normal-state prior. Its
+median-vs-pooled-rate defect therefore biases the one channel input that isn't
+inert; disrupted/suspended never see movement by any path.
+
+**Left untouched, deliberately.** Did not re-order states, rescale the binomial,
+or wire the movement channel into training. The finding is bigger than the
+ordering — the advance/movement emission ships as pure priors and is untrained —
+but that is a design change, not this determination. The `--diagnose-advance`
+instrument stays as the reproducer.
+
+## 2026-08-25 — fix: wire the movement counts into HMM training, so the advance emission is fitted instead of inherited — `mov_n` 0 → 1.66M matched trips, disrupted/suspended rates now learned
+
+origin: agent
+
+Follow-up to the determination above. The advance/movement emission shipped as a
+pure prior because the training observations never carried the channel; the live
+filter has applied it since 2026-06-22 (`3fe5891`) against parameters EM never
+saw movement to fit. This wires the counts in.
+
+**What the live filter does, mirrored.** `worker/src/movement_state.ts`
+`movementObservationFields` folds the *previous* tick's cross-tick counts (option
+B lag) into each observation — both directions summed off the raw route counters
+— and abstains (channel off) on a stale carry (>600s), fewer than
+`MIN_MATCHED_TRIPS`, or no published baseline cell for the current tod_bin. The
+training side now reconstructs exactly that: `load_r2.movement_observation_fields`
+is a straight port of those gates, fed the raw per-`(route, tick)` counts
+(`build_movement_series`, unfiltered — the live filter reads unfiltered counters,
+so the emission is fitted on the same population) and the fitted baseline's cell
+key set. `_movement_baseline` now returns a `MovementInputs` carrying the raw
+per-tick counts and baseline key set alongside the serialized baseline;
+`load_series_by_route` takes a `movement_fields` callable and folds the fields in
+while the tick tag is still on the observation, before it is dropped; `main`
+computes the movement inputs before loading the series so the callable is ready.
+No train/serve skew: the lag, the summing, and all three abstain gates match the
+worker line for line, with a unit test pinning each (previous-tick only, ≤2-tick
+lag, min-matched, baseline-present).
+
+**Measured on the published window** (`2026-07-31..08-13`, `--diagnose-advance`):
+per-state `mov_n` went from 0 on all 84 route-states to nonzero on 62. The 22
+that stay zero split two ways, both correct: routes with no movement coverage at
+all — no published baseline cell, so the gate holds the whole route off (the
+shuttles and low-frequency lines, e.g. 6X, 7X) — and individual states inside
+otherwise well-fed routes that simply draw ~zero responsibility on the
+movement-available ticks (7's suspended, L's disrupted, E's normal each sit at 0
+while the same route's other states carry thousands). It is posterior mass and
+the has_movement gate, not route thinness — every route shown cleared min_ticks.
+Both keep the prior, correctly. 1.66M matched trips now enter the fit. Where
+`mov_n > 50` the fitted rate tracks the data rate `k/n` (only 2 states deviate
+>0.02, the prior pulling on modest-mass states, as intended at
+`prior_strength=100`). The global prior's advance_rate moved off the bootstrap
+default to a fitted `(0.632, 0.617, 0.644)`.
+
+**What that last number means, and the honest limit.** The three fitted rates
+are close — normal 0.756 median, disrupted 0.551, suspended 0.570 across routes
+with mass — and disrupted/suspended overlap. The movement channel is now trained,
+but the HMM's hidden state is still *alert-defined*, and physical advance is only
+weakly separated by it: a route flagged disrupted/suspended by alerts is often
+still advancing near normally. So this fix removes a real defect (an untrained,
+prior-only emission scored live) and is a prerequisite for trusting the movement
+term, but it does not by itself make movement a sharp discriminator on the
+alert-HMM. The larger value of movement is as its own axis (the movement-primary
+condition already in `movement_state.ts`) — this change makes the shared advance
+parameters honest either way.
+
+**Not published.** Verified by dry-run only; no R2 write. Wiring the channel
+moves the live operating point, so publishing waits on a review of the fitted
+params against the current ones. Full Python suite green.

@@ -34,6 +34,7 @@ from training.train_em import (
     SCHEMA_VERSION,
     VERSIONED_PARAMS_PREFIX,
     CorpusStats,
+    MovementInputs,
     _apply_advance_prior,  # pyright: ignore[reportPrivateUsage]
     _cap_self_loops,  # pyright: ignore[reportPrivateUsage]
     _movement_baseline,  # pyright: ignore[reportPrivateUsage]
@@ -498,10 +499,22 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
         baseline_seen.append(baseline)
         return sentinel_json
 
+    sentinel_by_tick: dict[tuple[str, int], dict[str, int]] = {
+        ("A", 0): {"advanced_n": 5, "stalled_n": 1}
+    }
+
+    def _fake_build_by_tick(
+        bodies: list[dict[str, Any]],
+        *,
+        counts_from_stop: object = None,
+    ) -> dict[tuple[str, int], dict[str, int]]:
+        return sentinel_by_tick
+
     monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _fake_fetch)
     monkeypatch.setattr(
         "training.train_em.build_movement_series_by_direction", _fake_build_series
     )
+    monkeypatch.setattr("training.train_em.build_movement_series", _fake_build_by_tick)
     monkeypatch.setattr(
         "training.train_em.compute_advance_baseline", _fake_compute_baseline
     )
@@ -516,16 +529,20 @@ def test_movement_baseline_uses_explicit_window_and_threads_result(
     start = date(2026, 6, 1)
     end = date(2026, 6, 14)
 
-    result, n_cells, route_rates = _movement_baseline(cfg, client, start, end, None)
+    result = _movement_baseline(cfg, client, start, end, None)
 
     assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
     assert bodies_seen == [sentinel_bodies]
     assert series_seen == [sentinel_series]
     assert route_series_seen == [sentinel_series]
     assert baseline_seen == [sentinel_baseline]
-    assert result == sentinel_json
-    assert n_cells == 2
-    assert route_rates == sentinel_route_rates
+    assert result.baseline_json == sentinel_json
+    assert result.n_cells == 2
+    assert result.route_rates == sentinel_route_rates
+    # New: the raw per-tick counts and the baseline key set thread through for the
+    # HMM movement emission and its has_movement gate.
+    assert result.baseline_cells == set(sentinel_baseline.keys())
+    assert result.movement_by_tick == sentinel_by_tick
     assert filters_seen == [None]  # no through set -> every stop counted
 
 
@@ -591,7 +608,7 @@ def test_movement_baseline_fails_soft_on_archive_error(
 
     monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _raise_fetch)
 
-    result, n_cells, route_rates = _movement_baseline(
+    result = _movement_baseline(
         _r2_config(),
         cast("S3Client", _FakeS3()),
         date(2026, 6, 1),
@@ -599,9 +616,11 @@ def test_movement_baseline_fails_soft_on_archive_error(
         None,
     )
 
-    assert result == {}
-    assert n_cells == 0
-    assert route_rates == {}
+    assert result.baseline_json == {}
+    assert result.n_cells == 0
+    assert result.route_rates == {}
+    assert result.baseline_cells == set()
+    assert result.movement_by_tick == {}
     assert "movement baseline skipped" in capsys.readouterr().err
 
 
@@ -953,7 +972,7 @@ def test_main_passes_movement_baseline_through_to_write_params(
         return fake_client
 
     def _fake_load_series_by_route(
-        cfg_arg: R2Config, start: date, end: date
+        cfg_arg: R2Config, start: date, end: date, **_: object
     ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
         return series, corpus, {}
 
@@ -973,8 +992,8 @@ def test_main_passes_movement_baseline_through_to_write_params(
         start_date: date,
         end_date: date,
         through: frozenset[tuple[str, str, str]] | None,
-    ) -> tuple[dict[str, Any], int, dict[str, float]]:
-        return sentinel_baseline, 3, {}
+    ) -> MovementInputs:
+        return MovementInputs(sentinel_baseline, 3, {}, set(), {})
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         captured_kwargs.update(kwargs)
@@ -1034,7 +1053,7 @@ def test_main_threads_service_baselines_to_their_writers(
         return fake_client
 
     def _fake_load_series_by_route(
-        cfg_arg: R2Config, start: date, end: date
+        cfg_arg: R2Config, start: date, end: date, **_: object
     ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
         return series, corpus, {}
 
@@ -1139,7 +1158,7 @@ def test_main_passes_advance_priors_through_to_train(
         return fake_client
 
     def _fake_load_series_by_route(
-        cfg_arg: R2Config, start: date, end: date
+        cfg_arg: R2Config, start: date, end: date, **_: object
     ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
         return series, corpus, {}
 
@@ -1159,8 +1178,8 @@ def test_main_passes_advance_priors_through_to_train(
         start_date: date,
         end_date: date,
         through: frozenset[tuple[str, str, str]] | None,
-    ) -> tuple[dict[str, Any], int, dict[str, float]]:
-        return {}, 0, sentinel_route_rates
+    ) -> MovementInputs:
+        return MovementInputs({}, 0, sentinel_route_rates, set(), {})
 
     def _fake_train(
         series_by_route: dict[str, list[Observation]],
@@ -1221,7 +1240,7 @@ def test_main_refuses_empty_movement_baseline(
         return fake_client
 
     def _fake_load_series_by_route(
-        cfg_arg: R2Config, start: date, end: date
+        cfg_arg: R2Config, start: date, end: date, **_: object
     ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
         return series, corpus, {}
 
@@ -1241,8 +1260,8 @@ def test_main_refuses_empty_movement_baseline(
         start_date: date,
         end_date: date,
         through: frozenset[tuple[str, str, str]] | None,
-    ) -> tuple[dict[str, Any], int, dict[str, float]]:
-        return {}, 0, {}
+    ) -> MovementInputs:
+        return MovementInputs({}, 0, {}, set(), {})
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         published.append("wrote")
@@ -1304,7 +1323,7 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
         return fake_client
 
     def _fake_load_series_by_route(
-        cfg_arg: R2Config, start: date, end: date
+        cfg_arg: R2Config, start: date, end: date, **_: object
     ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
         return series, corpus, {}
 
@@ -1324,8 +1343,8 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
         start_date: date,
         end_date: date,
         through: frozenset[tuple[str, str, str]] | None,
-    ) -> tuple[dict[str, Any], int, dict[str, float]]:
-        return {}, 0, {}
+    ) -> MovementInputs:
+        return MovementInputs({}, 0, {}, set(), {})
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         captured.update(kwargs)
@@ -1669,7 +1688,7 @@ def test_main_passes_movement_dwell_through_to_write_params(
         return fake_client
 
     def _fake_load_series_by_route(
-        cfg_arg: R2Config, start: date, end: date
+        cfg_arg: R2Config, start: date, end: date, **_: object
     ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
         return series, corpus, {}
 
@@ -1694,8 +1713,8 @@ def test_main_passes_movement_dwell_through_to_write_params(
         start_date: date,
         end_date: date,
         through: frozenset[tuple[str, str, str]] | None,
-    ) -> tuple[dict[str, Any], int, dict[str, float]]:
-        return {}, 0, {}
+    ) -> MovementInputs:
+        return MovementInputs({}, 0, {}, set(), {})
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:
         captured.update(kwargs)

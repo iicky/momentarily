@@ -25,15 +25,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from momentarily.hmm import (
+    STATES,
     EmissionParams,
     HMMParams,
     Observation,
+    advance_responsibility,
     fit_em,
     schedule_bin,
 )
@@ -57,6 +59,7 @@ from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     StopFilter,
     advance_baseline_to_json,
+    build_movement_series,
     build_movement_series_by_direction,
     build_segment_baseline,
     build_service_series,
@@ -71,6 +74,7 @@ from training.load_r2 import (
     fetch_vehicle_metrics,
     input_manifest_hash,
     list_alert_keys,
+    movement_observation_fields,
     presence_mask_from_predictions,
     schedule_rate_to_json,
     service_baseline_to_json,
@@ -174,6 +178,8 @@ def load_series_by_route(
     cfg: R2Config,
     start: date,
     end: date,
+    *,
+    movement_fields: Callable[[str, int], dict[str, Any] | None] | None = None,
 ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
     """Single R2 pass: fetch alerts, build per-route quiet-filled series.
 
@@ -183,6 +189,12 @@ def load_series_by_route(
     we have. The publish gate and the params.json audit block both need the
     unpadded view. `input_profile` is the emission-channel reference profile (over
     the real ticks) that the eval job's drift check compares against.
+
+    `movement_fields(route, tick)` folds the movement channel into each
+    observation before the tick tag is dropped: it returns the
+    advanced_n/matched_n/has_movement for that cell (or None to leave the channel
+    off), reconstructing exactly what the live filter carries in. Without it the
+    series is alerts-only, as before.
     """
     client = make_client(cfg)
     # Hash the exact key set we fetch — the manifest fingerprint and the training
@@ -235,7 +247,15 @@ def load_series_by_route(
         filled: list[TickObservation] = fill_quiet_ticks(
             all_ticks, route, start_tick=start_tick, end_tick=last_tick
         )
-        by_route[route] = [t.observation for t in filled]
+        if movement_fields is None:
+            by_route[route] = [t.observation for t in filled]
+        else:
+            by_route[route] = [
+                replace(t.observation, **mv)
+                if (mv := movement_fields(route, t.tick))
+                else t.observation
+                for t in filled
+            ]
     return by_route, corpus, input_profile
 
 
@@ -307,6 +327,61 @@ def _apply_advance_prior(params: HMMParams, normal_rate: float) -> HMMParams:
     return replace(
         params, emissions=override(params.emissions), emissions_by_bin=by_bin
     )
+
+
+def _report_advance_diagnostics(
+    series_by_route: dict[str, list[Observation]],
+    global_prior: HMMParams,
+    per_route: dict[str, HMMParams],
+    advance_priors: dict[str, float],
+    *,
+    min_ticks: int,
+) -> None:
+    """Print, per fitted route, each canonical state's advance-rate movement
+    responsibility (mov_n/mov_k), the rate the data alone implies (k/n), and the
+    fitted rate — all read off one E-step at the canonical fitted params, so the
+    three agree by construction.
+
+    Reading: a state with large mov_n whose fitted rate tracks k/n is genuinely
+    fitted on movement; a state with mov_n≈0 simply carries whatever prior it
+    inherited (fitted==prior), and its index<->label slot is then set by
+    canonicalize_states on the alert channels, not by movement.
+
+    The pre-fit anchor triple printed per route is the RAW prior EM started from
+    (normal seeded by the route's movement baseline, disrupted/suspended by the
+    global prior). It is deliberately NOT lined up against the fitted rows: final
+    canonicalization may permute a zero-mass state, so a per-canonical-state prior
+    column would compare across frames. mov_n is the honest per-state signal.
+    """
+    gp = global_prior.emissions.advance_rate
+    print("=== advance-rate diagnostics ===")
+    print(
+        "global prior advance_rate "
+        f"(normal, disrupted, suspended) = ({gp[0]:.6f}, {gp[1]:.6f}, {gp[2]:.6f})"
+    )
+    print(
+        f"{'route':<5} {'state':<10} {'mov_n':>10} {'mov_k':>10} {'k/n':>7} {'fitted':>8}"
+    )
+    for route in sorted(per_route):
+        series = series_by_route.get(route, [])
+        if len(series) < min_ticks:
+            continue  # inherited the prior unfitted; no per-route responsibility
+        params = per_route[route]
+        resp = advance_responsibility(series, params)
+        fitted = params.emissions.advance_rate
+        route_rate = advance_priors.get(route)
+        anchor_normal = route_rate if route_rate is not None else gp[0]
+        print(
+            f"{route:<5} pre-fit anchor (raw): "
+            f"normal={anchor_normal:.4f} disrupted={gp[1]:.4f} suspended={gp[2]:.4f}"
+        )
+        for s in range(len(STATES)):
+            mov_n, mov_k = resp[s]
+            kn = f"{mov_k / mov_n:.3f}" if mov_n > 0 else "--"
+            print(
+                f"{route:<5} {STATES[s]:<10} {mov_n:>10.2f} {mov_k:>10.2f} "
+                f"{kn:>7} {fitted[s]:>8.4f}"
+            )
 
 
 def _params_to_json(params: HMMParams) -> dict[str, Any]:
@@ -713,33 +788,57 @@ def write_segment_dwell(
         return 0, empty_stats
 
 
+@dataclass(frozen=True)
+class MovementInputs:
+    """Everything the movement channel needs from one vehicle-archive fetch.
+
+    `baseline_json`/`n_cells`/`route_rates` are the published baseline and the
+    per-route normal-state prior seeds (as before). `baseline_cells` is the raw
+    (route, direction, tod_bin) key set of the fitted baseline — the presence
+    gate the live filter keys `has_movement` on. `movement_by_tick` is the raw,
+    unfiltered per-(route, tick) counts the live filter folds into an
+    observation; the emission is fitted on these, not on the through-filtered
+    baseline population, so training scores what inference scores.
+    """
+
+    baseline_json: dict[str, Any]
+    n_cells: int
+    route_rates: dict[str, float]
+    baseline_cells: set[tuple[str, str, int]]
+    movement_by_tick: dict[tuple[str, int], dict[str, int]]
+
+
 def _movement_baseline(
     cfg: R2Config,
     client: S3Client,
     start_date: date,
     end_date: date,
     through: frozenset[tuple[str, str, str]] | None,
-) -> tuple[dict[str, Any], int, dict[str, float]]:
-    """Advance-rate baseline over the training window, in the two shapes the
-    pipeline needs from one vehicle-archive fetch:
+) -> MovementInputs:
+    """Advance-rate baseline + raw movement counts over the training window, from
+    one vehicle-archive fetch:
 
     - the per-(route, direction, tod) baseline, serialized for params.json
-      delivery to the Worker's movement posterior;
-    - the per-route normal advance rate that seeds each route's EM prior.
+      delivery to the Worker's movement posterior, plus its raw cell key set;
+    - the per-route normal advance rate that seeds each route's EM prior;
+    - the raw per-(route, tick) counts, both directions summed off the route
+      counters, that the HMM movement emission is now fitted on.
 
-    `through` restricts both to trips whose from_stop has a scheduled predecessor
-    and successor. Without it the rate blends two physically different
-    populations: measured over 2026-08-05..08-11, chain endpoints stall 89.0% of
-    the time and stops the timetable never names stall 77.9%, together 83% of all
-    stall mass, against 11.6% mid-line. None means the static feed was
+    `through` restricts the *baseline* to trips whose from_stop has a scheduled
+    predecessor and successor. Without it the rate blends two physically
+    different populations: measured over 2026-08-05..08-11, chain endpoints stall
+    89.0% of the time and stops the timetable never names stall 77.9%, together
+    83% of all stall mass, against 11.6% mid-line. None means the static feed was
     unavailable, and then nothing is filtered — the published stop set and this
-    fit have to agree.
+    fit have to agree. The raw per-tick counts are deliberately NOT through-
+    filtered: the live filter reads the unfiltered route counters, so the
+    training emission must see the same population (the baseline it is scored
+    against stays through-filtered either way — a pre-existing asymmetry).
 
     Uses the explicit training window — fetch_vehicle_metrics defaults to
     yesterday..today, too narrow for a stable prior. Fail-soft: any
-    vehicle-archive error returns empty baselines so a movement hiccup never
-    blocks the params publish (the channel is optional and back-compat). Returns
-    (serialized, n_cells, route_advance_rates)."""
+    vehicle-archive error returns empty inputs so a movement hiccup never blocks
+    the params publish and the emission channel simply stays off."""
     counts_from_stop: StopFilter | None = (
         None
         if through is None
@@ -754,10 +853,16 @@ def _movement_baseline(
         )
         baseline = compute_advance_baseline(series)
         route_rates = compute_advance_baseline_by_route(series)
-        return advance_baseline_to_json(baseline), len(baseline), route_rates
+        return MovementInputs(
+            baseline_json=advance_baseline_to_json(baseline),
+            n_cells=len(baseline),
+            route_rates=route_rates,
+            baseline_cells=set(baseline.keys()),
+            movement_by_tick=build_movement_series(bodies),
+        )
     except Exception as exc:
         print(f"movement baseline skipped ({exc})", file=sys.stderr)
-        return {}, 0, {}
+        return MovementInputs({}, 0, {}, set(), {})
 
 
 def _service_baseline(
@@ -953,6 +1058,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         help="publish even if the movement advance-baseline is empty (0 cells); "
         "the movement-primary condition stays off. Default: refuse to publish.",
     )
+    parser.add_argument(
+        "--diagnose-advance",
+        action="store_true",
+        help="after fitting, report per-route per-state advance-rate movement "
+        "responsibility (mov_n/mov_k), the fitted rate, and the prior it blends "
+        "against, then exit without writing. Answers whether a state's serialized "
+        "advance_rate reflects observed movement mass or just its prior.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -962,7 +1075,36 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.start
         else end_date - timedelta(days=args.days - 1)
     )
-    series, corpus, input_profile = load_series_by_route(cfg, start_date, end_date)
+    client = make_client(cfg)
+    # One static-timetable fetch for the whole run: it decides which stops the
+    # advance baseline is fitted on, which set ships to the Worker, and the
+    # published segment topology.
+    static_successors, static_patterns, topology_source = _static_topology()
+    through = None if static_successors is None else through_stops(static_successors)
+    # Movement advance-rate baseline + raw per-tick counts over the window. The
+    # baseline ships to the Worker and seeds each route's normal-state prior; the
+    # raw counts feed the HMM movement emission below (fail-soft — see helper).
+    mv = _movement_baseline(cfg, client, start_date, end_date, through)
+    movement_baseline = mv.baseline_json
+    n_baseline_cells = mv.n_cells
+    route_advance_rates = mv.route_rates
+    # Fold the movement channel into each observation the way the live filter
+    # does — previous tick's counts, same match/baseline gates — so the emission
+    # is fitted on the samples inference will score it against, not left inert.
+    # None when no counts were fetched: the series stays alerts-only.
+    movement_fields: Callable[[str, int], dict[str, Any] | None] | None = None
+    if mv.movement_by_tick:
+
+        def _movement_fields(route: str, tick: int) -> dict[str, Any] | None:
+            return movement_observation_fields(
+                mv.movement_by_tick, mv.baseline_cells, route, tick
+            )
+
+        movement_fields = _movement_fields
+
+    series, corpus, input_profile = load_series_by_route(
+        cfg, start_date, end_date, movement_fields=movement_fields
+    )
     if not series:
         print("no observations in archive — skipping training", file=sys.stderr)
         return 1
@@ -976,20 +1118,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-
-    client = make_client(cfg)
-    # One static-timetable fetch for the whole run: it decides which stops the
-    # advance baseline is fitted on, which set ships to the Worker, and the
-    # published segment topology.
-    static_successors, static_patterns, topology_source = _static_topology()
-    through = None if static_successors is None else through_stops(static_successors)
-    # Movement advance-rate baseline over the training window: the per-cell form
-    # ships to the Worker in params.json; the per-route rates seed each route's
-    # normal-state advance prior below (fail-soft — see helper).
-    movement_baseline, n_baseline_cells, route_advance_rates = _movement_baseline(
-        cfg, client, start_date, end_date, through
-    )
-    if n_baseline_cells == 0 and not (args.dry_run or args.allow_empty_baseline):
+    if n_baseline_cells == 0 and not (
+        args.dry_run or args.allow_empty_baseline or args.diagnose_advance
+    ):
         print(
             "ERROR: movement advance-baseline is EMPTY (0 cells) -- refusing to "
             "publish params that would silently disable the movement-primary "
@@ -1024,6 +1155,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         min_ticks=args.min_ticks,
         advance_priors=route_advance_rates,
     )
+
+    if args.diagnose_advance:
+        _report_advance_diagnostics(
+            series,
+            global_prior,
+            per_route,
+            route_advance_rates,
+            min_ticks=args.min_ticks,
+        )
+        return 0
 
     # Empirical dwell quantiles from the regime_transitions stream over the
     # same window. Cells below MIN_SAMPLES_FOR_EMPIRICAL fall back to the

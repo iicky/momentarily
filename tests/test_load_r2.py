@@ -29,6 +29,7 @@ from training.load_r2 import (
     compute_baseline,
     compute_service_quantiles,
     input_manifest_hash,
+    movement_observation_fields,
     presence_mask_from_predictions,
     service_baseline_to_json,
     service_quantiles_to_json,
@@ -406,6 +407,58 @@ def test_filtered_movement_series_ignores_a_row_with_no_transitions():
         "advanced_n": 0,
         "stalled_n": 0,
     }
+
+
+# --- movement_observation_fields: the training-side mirror of the live filter's
+# movementObservationFields (worker/src/movement_state.ts). ---
+
+_TB = tod_bin(T0)
+_BASE = {("A", "north", _TB)}
+
+
+def test_movement_fields_folds_previous_tick_counts():
+    """The observation at tick T carries the PREVIOUS tick's cross-tick counts
+    (option B lag), both directions already summed into the route row."""
+    mv = {("A", T0 - TICK): {"advanced_n": 18, "stalled_n": 4}}
+    assert movement_observation_fields(mv, _BASE, "A", T0) == {
+        "advanced_n": 18,
+        "matched_n": 22,
+        "has_movement": True,
+    }
+
+
+def test_movement_fields_ignores_same_tick_counts():
+    """A snapshot at the current tick is not yet 'carried in' live, so training
+    must not fold it either — only lagged counts count."""
+    mv = {("A", T0): {"advanced_n": 18, "stalled_n": 4}}
+    assert movement_observation_fields(mv, _BASE, "A", T0) is None
+
+
+def test_movement_fields_allows_two_tick_lag_but_not_three():
+    """Carrying a snapshot up to MAX_MOVEMENT_METRIC_LAG_SECONDS (two ticks) is a
+    feed-gap tolerance; older than that is stale and the channel stays off."""
+    two = {("A", T0 - 2 * TICK): {"advanced_n": 18, "stalled_n": 4}}
+    assert movement_observation_fields(two, _BASE, "A", T0) == {
+        "advanced_n": 18,
+        "matched_n": 22,
+        "has_movement": True,
+    }
+    three = {("A", T0 - 3 * TICK): {"advanced_n": 18, "stalled_n": 4}}
+    assert movement_observation_fields(three, _BASE, "A", T0) is None
+
+
+def test_movement_fields_gates_below_min_matched():
+    mv = {("A", T0 - TICK): {"advanced_n": 1, "stalled_n": 1}}  # matched 2 < 3
+    assert movement_observation_fields(mv, _BASE, "A", T0) is None
+
+
+def test_movement_fields_requires_a_published_baseline_cell():
+    """No baseline cell for this route+tod_bin (either direction) → off, matching
+    the live filter, so a sample is never scored under a bin it wasn't fitted on."""
+    mv = {("A", T0 - TICK): {"advanced_n": 18, "stalled_n": 4}}
+    assert movement_observation_fields(mv, set(), "A", T0) is None
+    south_only = {("A", "south", _TB)}
+    assert movement_observation_fields(mv, south_only, "A", T0) is not None
 
 
 # --- Per-(route,direction,from,to,tick) segment leaf ---

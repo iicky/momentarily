@@ -4209,3 +4209,117 @@ whose incident count is computed on the published movement arm and therefore
 sizes a different metric. Reaching for the adjacent number would have rebuilt
 the same arm-mismatch error class one field over, inside the very instrument
 built to find it.
+
+## 2026-08-25 — first production attribution: advance_rate comes back in two state orderings across routes, worth 3.91 vs 1.20 nats per advancing trip, and the published suppression clusters with them at 152 vs 43 nats
+
+origin: agent
+
+Predictions now carry `matched_n`/`advanced_n` (c34ae98), so the movement
+channel can be priced against the fitted params instead of the bootstrap ones.
+The result corrects both quantitative guesses in the 2026-08-23 entry above.
+
+**What that entry got wrong.** It sized the channel with the bootstrap
+emissions and back-solved `matched_n ≈ 161` from a published
+`p_disrupted = 2.69e-17`. Neither survives contact:
+
+| | 2026-08-23 assumed | production |
+| --- | --- | --- |
+| `advance_rate[normal]` | 0.6 (dataclass default) | **0.8 – 0.999** (fitted) |
+| `matched_n` | ~161, inferred | **8 – 26**, measured |
+| per-advancing-trip LLR | 0.192 nats | **1.20 or 3.91 nats** |
+
+The 0.192 was `KL(0.6 || 0.3)`, the *expected* per-trip divergence. The filter
+never sees the expectation, it sees the realised count, and trips almost all
+advance (`k = n` on 9 of 20 routes, `k >= n-2` on 17). The right quantity is
+`ln(rate_normal / rate_other)` per advancing trip. The mechanism the entry
+named — one channel growing with the trip count while six do not — holds; its
+coefficient was wrong by roughly an order of magnitude, and the fleet-size
+story was wrong the other way: `matched_n` never exceeds 26 on any route.
+
+**The measurement.** `advance_rate` is indexed `(normal, disrupted,
+suspended)`. Across the 20 routes carrying counts in tick 1787682922 it comes
+back in two orderings:
+
+| ordering | routes | per-advancing-trip LLR vs index 1 | movement nats (median) | observed suppression (median) |
+| --- | --- | --- | --- | --- |
+| `(0.8–0.999, 0.3, 0.02)` | 1 3 4 5 6 7 A B N Q R (11) | 1.20 | 17.5 | **42.6** |
+| `(0.8–0.999, 0.02, 0.3)` | 2 C D E F G J L M (9) | 3.91 | 47.7 | **151.7** |
+
+In the second group index 1 carries 0.02 and index 2 carries 0.3, so an
+ordinary advancing trip is 3.25x more evidence against index 1 than it is on
+the routes beside it. The published posterior clusters the same way: a 3.6x gap
+in total suppression between lines running comparable service.
+
+**Not established: whether that is wrong.** Two readings fit the data equally
+well so far. Either those routes legitimately fit a near-frozen disrupted state
+— plausible where a route's alert-disrupted episodes are mostly suspensions —
+or the orderings disagree because `canonicalize_states` sorts states by the
+ALERT channels (lowest `poisson_lambda`, highest `bernoulli_p`;
+`hmm.py:951-995`) and constrains nothing about the movement channel, leaving
+whichever permutation the fit landed on. The one suggestive fact is that in both
+groups index 1 and index 2 hold the dataclass defaults (`hmm.py:131`, `(0.6,
+0.3, 0.02)`) merely permuted, with only the normal state moved off its prior —
+consistent with those two states never being separated by movement evidence, but
+equally consistent with a prior-dominated fit. Separating the two needs the EM
+run's own state assignments and per-state responsibility mass, not the published
+params. Do not treat the split as a defect until that is read.
+
+**Method, and what is exact in it.** The movement column is the shipped
+`_log_emission` evaluated on the persisted counts and the fitted params, no
+reconstruction. The transition floor (`ln(A[0][0]/A[0][1])`, median 4.6 nats)
+comes from the same params. The alert and service columns computed alongside are
+NOT sound and back none of the numbers above: the service channel is one tick
+lagged by construction (`index.ts`, "fold in the previous tick's service
+level"), so the current snapshot's ratio is the wrong tick, and the alert flags
+were re-derived from alert-type substrings rather than through `derive.ts`.
+Pricing those two needs them persisted the way the movement counts now are.
+
+So the ranking question remains open for the alert and service channels. What is
+settled: movement is a large term (17.5 of ~43 nats where index 1 is 0.3), and
+parameter ordering rather than observed evidence moves it by 3.25x between
+adjacent routes.
+
+## 2026-08-25 — negative result: exact-default `advance_rate` values cannot establish zero movement responsibility, because per-route fits run at `prior_strength=100` and the serialized number is prior-dominated either way
+
+origin: agent
+
+Attempt to settle the ordering question above from the published params alone,
+without a trainer run. It does not close, and the reason is worth writing down
+so the next attempt does not spend the same hour.
+
+The measurement that looked decisive: across all 28 routes in
+`state/params.json`, both non-normal states hold their initialization constant
+**exactly** — `0.3` and `0.02` (`hmm.py:131`), 56 of 56 route-states — while the
+normal state moved on 22 of 28, landing on `0.999` (16 routes) or on small
+rationals (`2/3`, `4/5`, `5/6`, `7/8`, `11/12`). The obvious reading is that the
+fit had movement evidence, spent it all on the normal state, and never separated
+`disrupted` from `suspended` on this channel anywhere.
+
+**Why that reading does not hold up.** Per-route fitting calls `fit_hmm` with
+`prior_params=global` and `prior_strength=100.0`
+(`training/train_em.py:244-288`), so `use_prior` is true and the advance-rate
+M-step is the κ-blended branch `(κ·prior + mov_k)/(κ + mov_n)`
+(`hmm.py:794-796`), not the plain `mov_k/mov_n` I assumed. Two consequences:
+
+  - That branch returns the prior exactly whenever `mov_k = prior·mov_n`, not
+    only when `mov_n = 0`. Exact equality is therefore not proof of zero
+    responsibility.
+  - The clean rationals do not prove the plain branch was taken either. `fit_hmm`
+    also accepts `advance_priors` — per-route normal advance rates injected from
+    the movement baseline (`train_em.py:247,1025`), themselves ratios of archive
+    counts, so `11/12` is as likely to be an injected prior as an MLE output.
+
+There is also a whole-prior escape at `hmm.py:711-714`: a subset below
+`MIN_EFFECTIVE_OBS` returns the prior emission set entire, which would produce
+exact defaults on every channel at once.
+
+What survives: with κ=100 and per-tick `matched_n` of 8–26 over a 28-day corpus,
+a state receiving real movement responsibility would accumulate `mov_n` in the
+thousands and swamp the prior, so exact defaults on 56 of 56 remain strong
+circumstantial evidence that these two states get ~no movement mass. Strong is
+not settled, and this channel has already produced one confident wrong number
+(the 0.192 nats of 2026-08-23), so it is not being written down as fact.
+
+To close it, the trainer has to report what the params cannot: per-state
+`mov_n` — responsibility-weighted matched trips — and the global prior's own
+`advance_rate`. That is instrumentation in the fit, not analysis of its output.

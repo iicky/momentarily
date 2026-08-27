@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useSnapshot, useCoords, useTopology } from "../../useData";
+import { useSnapshot, useCoords, useTopology, useStationFacts } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
@@ -11,6 +11,7 @@ import { fmtAgo, fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
 import type { PlatformCrowdingView } from "@/lib/feed";
 import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
+import type { StationFactsEntry } from "@/lib/facts";
 
 interface AdjRow {
   route: string;
@@ -27,13 +28,14 @@ export default function StationPage() {
   const { data: snap } = useSnapshot();
   const { data: coords } = useCoords();
   const { data: topo } = useTopology();
-
+  const { data: facts } = useStationFacts();
   const meta = snap?.stations[id] ?? null;
   const coord: StationCoord | null = coords?.[id] ?? null;
   const flow = snap?.station_flow?.stations[id] ?? null;
   const status = meta?.station_complex_id
     ? snap?.station_status[meta.station_complex_id] ?? null
     : null;
+  const fx = facts?.stations[id] ?? null;
 
   // Every judged segment touching this station, in either direction.
   const adj = useMemo<AdjRow[]>(() => {
@@ -236,6 +238,8 @@ export default function StationPage() {
               </ul>
             </>
           )}
+
+          <StationFactsSection fx={fx} name={name} />
         </>
       )}
     </div>
@@ -356,5 +360,128 @@ function WaitingRow({
             : `no ridership baseline for this complex, or no train seen on this platform in the last ${method.served_window_minutes} min`}
       </div>
     </div>
+  );
+}
+
+// Reference facts about the stop, below the live-status content: a Commons
+// photo, the year it opened, a landmark designation, public-art credits, and
+// where it ranks by annual ridership. All build-time joined (station_facts.json)
+// and carried as a static asset — nothing here is fetched live per request.
+function StationFactsSection({ fx, name }: { fx: StationFactsEntry | null; name: string }) {
+  if (!fx) return null;
+  const hasArt = (fx.art?.length ?? 0) > 0;
+  const hasLandmark = (fx.heritage?.length ?? 0) > 0;
+  const hasKv = fx.opened_year != null || hasLandmark || fx.ridership != null;
+  if (!fx.photo && !hasKv && !hasArt) return null;
+
+  const photo = fx.photo;
+  const m = fx.match;
+  return (
+    <>
+      <div className="section-title">Station facts</div>
+
+      {photo && (
+        <figure className="facts-photo">
+          {/* eslint-disable-next-line @next/next/no-img-element -- Commons photo,
+              no build-time dimensions; next/image would need remote host config. */}
+          <img
+            src={photo.thumb_url ?? photo.image_url}
+            alt={photo.title || `${name} station`}
+            loading="lazy"
+          />
+          <figcaption>
+            <a href={photo.source} target="_blank" rel="noopener noreferrer">
+              {photo.artist ? `Photo: ${photo.artist}` : "Photo via Wikimedia Commons"}
+            </a>
+            {photo.license && (
+              <>
+                {" · "}
+                {photo.license_url ? (
+                  <a href={photo.license_url} target="_blank" rel="noopener noreferrer">
+                    {photo.license}
+                  </a>
+                ) : (
+                  photo.license
+                )}
+              </>
+            )}
+          </figcaption>
+        </figure>
+      )}
+
+      {hasKv && (
+        <div className="kv-block">
+          {fx.opened_year != null && (
+            <div className="kv">
+              <span className="k">Opened</span>
+              <span className="v">{fx.opened_year}</span>
+            </div>
+          )}
+          {hasLandmark && (
+            <div className="kv">
+              <span className="k">Landmark</span>
+              <span className="v">
+                <span className="landmark-badge" title={fx.heritage?.join("; ")}>
+                  ★ designated
+                </span>
+              </span>
+            </div>
+          )}
+          {fx.ridership && (
+            <div className="kv">
+              <span className="k">Ridership</span>
+              <span className="v">
+                #{fx.ridership.rank} of {fx.ridership.of}
+                <span className="facts-sub">
+                  {" "}
+                  · {fx.ridership.annual_entries.toLocaleString("en-US")} entries/yr
+                </span>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {hasArt && (
+        <>
+          <div className="section-title facts-art-title">Public art</div>
+          <ul className="artlist">
+            {fx.art?.map((a, i) => (
+              <li key={`${a.title ?? ""}${i}`}>
+                <span className="art-title">
+                  {a.link ? (
+                    <a href={a.link} target="_blank" rel="noopener noreferrer">
+                      {a.title ?? "Untitled"}
+                    </a>
+                  ) : (
+                    (a.title ?? "Untitled")
+                  )}
+                </span>
+                <span className="art-meta">
+                  {[a.artist, a.year, a.material].filter(Boolean).join(" · ")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {m && (
+        <div className="facts-src">
+          {fx.wikidata_qid && (
+            <a
+              href={`https://www.wikidata.org/wiki/${fx.wikidata_qid}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Wikidata
+            </a>
+          )}
+          {" · matched by "}
+          {m.authoritative ? "Onestop ID" : m.method === "coordinate" ? "coordinates" : "Onestop location"}
+          {!m.authoritative && " (approx.)"}
+        </div>
+      )}
+    </>
   );
 }

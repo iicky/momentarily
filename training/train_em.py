@@ -86,6 +86,11 @@ from training.load_r2 import (
 from training.pooled_dwell import MIN_VOTER_EVENTS, pooled_dwell_cells
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
+from training.recovery_recalibration import (
+    fit_published_recovery_gamma,
+    recalibrate_dwell_cells,
+    recalibrate_dwell_cells_by_key,
+)
 from training.reliability import MIN_SHARE
 from training.run_filter import BOOTSTRAP_PARAMS
 from training.segment_dwell import SegmentDwellStats, build_segment_dwell
@@ -1266,6 +1271,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     n_movement_dwell_cells = sum(len(by_state) for by_state in dwell_movement.values())
 
+    # Grade-driven recovery recalibration: the alert-shadow dwell quantiles run
+    # systematically optimistic (predicted recover-by-H above the observed
+    # clearance rate, worst at 60-120min). Fit a monotone CDF warp F' = F**gamma
+    # on a HELD-OUT tail of this window's incidents and apply it to the published
+    # curves, so recover-by drops toward reality. gamma 1.0 (identity) when the
+    # tail is too short/thin or already calibrated — the Worker reads the
+    # reshaped quantiles unchanged. The movement dwell block is a separate arm
+    # with its own point-mass calibration and is left untouched here.
+    recovery_gamma, recovery_recalib = fit_published_recovery_gamma(
+        cfg, client, start_date, end_date
+    )
+    if recovery_gamma != 1.0:
+        dwell_q = recalibrate_dwell_cells(dwell_q, recovery_gamma)
+        dwell_q_by_alert = recalibrate_dwell_cells_by_key(
+            dwell_q_by_alert, recovery_gamma
+        )
+        dwell_q_by_cause = recalibrate_dwell_cells_by_key(
+            dwell_q_by_cause, recovery_gamma
+        )
+
     if args.dry_run:
         dry_routes = {r: _params_to_json(p) for r, p in per_route.items()}
         for r, by_state in dwell_q.items():
@@ -1313,6 +1338,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "prior_strength": args.prior_strength,
         "min_ticks": args.min_ticks,
         "routes": sorted(args.routes.split(",")) if args.routes else None,
+        "recovery_recalibration": recovery_recalib,
     }
     trained_at = int(datetime.now(UTC).timestamp())
     versioned_key = write_params(
@@ -1362,6 +1388,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"(prior_strength={args.prior_strength}, dwell_cells={n_dwell_cells}, "
         f"dwell_alert_cells={n_dwell_alert_cells}, "
         f"dwell_cause_cells={n_dwell_cause_cells}, "
+        f"recovery_gamma={recovery_gamma}, "
         f"dwell_movement_cells={n_movement_dwell_cells} "
         f"[own={movement_dwell_stats['n_own']}, pooled={movement_dwell_stats['n_pooled']}, "
         f"atom={movement_dwell_stats['n_atom']}, "

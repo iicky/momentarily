@@ -309,6 +309,73 @@ def _dwell_quantile(curve_sec: list[int], p: float) -> float:
     return curve_sec[i] + frac * (curve_sec[i + 1] - curve_sec[i])
 
 
+# --- Grade-driven recovery recalibration ---
+#
+# The published recovery quantiles run systematically optimistic — graded against
+# held-out incident episodes (full-label boundaries, severe-peak criterion) the
+# recover-by-H forecast sits above the observed clearance rate, worst at the 60-
+# 120min horizons ("back to normal in two hours" more often than reality). The
+# correction is a monotone recalibration of the predictive dwell CDF itself,
+# F'(t) = F(t)**gamma with gamma >= 1, fit from the grades. Raising a CDF value
+# in (0, 1) to gamma > 1 lowers it, so recover-by drops toward the observed rate;
+# gamma = 1 is the identity.
+#
+# Because curve_sec is a quantile function (F sampled at p_k = k/(K-1)), the warp
+# ships as a pure reshape: the recalibrated knot at p_k is the OLD dwell time
+# whose CDF value is p_k**(1/gamma). The endpoints (p=0, p=1) are fixed, so the
+# floor and the longest observed dwell are untouched and only interior mass moves
+# outward in time. The Worker reads the reshaped curve unchanged — zero worker-
+# side change is the whole point of shipping the recalibration as adjusted
+# quantiles.
+
+
+def recalibrate_curve(curve_sec: list[int], gamma: float) -> list[int]:
+    """Reshape a dwell quantile curve by the recovery recalibration F' = F**gamma.
+
+    The recalibrated knot at probability p_k = k/(K-1) is _dwell_quantile at
+    p_k**(1/gamma): the old time whose old CDF equals the value the new CDF must
+    read there. gamma > 1 pushes interior knots to later times (less optimistic);
+    the endpoints are fixed points of the map. Monotone in, monotone out.
+    """
+    k = len(curve_sec)
+    if gamma == 1.0 or k < 2:
+        return list(curve_sec)
+    inv = 1.0 / gamma
+    return [round(_dwell_quantile(curve_sec, (i / (k - 1)) ** inv)) for i in range(k)]
+
+
+def recalibrate_cell(cell: DwellQuantiles, gamma: float) -> DwellQuantiles:
+    """Apply the recovery recalibration to a whole dwell cell: reshape curve_sec
+    and recompute the quantile/recover-by summaries the Worker and Models page
+    read off it.
+
+    `tail_ll` is left untouched on purpose. It governs only the Worker's past-the-
+    curve conditional splice, which the onset recover-by grade that fits gamma
+    never exercises — scaling it would ship an ungraded change. And the warp fixes
+    the endpoints (p=0 and p=1), so the splice point curve_sec[-1] does not move:
+    the fitted tail still attaches exactly where it did, and the body below it is
+    the only thing that shifts.
+
+    A point-mass mixture cell (atom_p/atom_sec present) is graded through its
+    closed form, which never consults curve_sec, so a curve reshape could not
+    reach it; those are returned unchanged. The systematically-optimistic cells
+    this corrects — the alert-shadow disrupted/suspended dwells — carry no atom.
+    """
+    curve = cell["curve_sec"]
+    if gamma == 1.0 or len(curve) < 2 or "atom_p" in cell:
+        return cell
+    new_curve = recalibrate_curve(curve, gamma)
+    out: DwellQuantiles = dict(cell)  # type: ignore[assignment]
+    out["curve_sec"] = new_curve
+    out["q25_sec"] = round(_dwell_quantile(new_curve, 0.25))
+    out["median_sec"] = round(_dwell_quantile(new_curve, 0.50))
+    out["q75_sec"] = round(_dwell_quantile(new_curve, 0.75))
+    out["recover_by_30"] = dwell_cdf(new_curve, 1800)
+    out["recover_by_60"] = dwell_cdf(new_curve, 3600)
+    out["recover_by_120"] = dwell_cdf(new_curve, 7200)
+    return out
+
+
 def conditional_recover_by(
     curve_sec: list[int], elapsed_sec: float, horizon_sec: float
 ) -> float | None:

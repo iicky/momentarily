@@ -66,6 +66,12 @@ export interface RouteStatus {
   // Cell's own p90/median at this hour — this route's usual high end. Null
   // under the same conditions as service_low_ratio.
   service_high_ratio: number | null;
+  // Where service_ratio sits within this cell's own same-daypart baseline, as a
+  // 0-100 percentile (worker movement_state.servicePercentile). Low = fewer
+  // trains than usual for this time of week; exact at the cell's p10/median/p90,
+  // saturating at 90 above its p90. A percentile of the baseline, NOT a forecast.
+  // Null under the same conditions as service_low_ratio.
+  service_percentile: number | null;
   category: string;
   primary_alert_type: string | null;
   label: string;
@@ -290,6 +296,17 @@ export interface Provenance {
   code_sha: string;
   dirty: boolean | null;
   producer: string;
+  // Identity of the trained params behind the snapshot's inference — trained_at
+  // is the model version stamp, key the immutable versioned R2 object it maps to
+  // (state/params/v<trained_at>.json). Both null means bootstrap params (no
+  // params.json published yet). Present on the snapshot; absent on trains.json,
+  // which carries no model, so it stays optional on this shared shape.
+  params?: ParamsProvenance | null;
+}
+
+export interface ParamsProvenance {
+  trained_at: number | null;
+  key: string | null;
 }
 
 // Its own clock. On a tick where every vehicle feed fails the Worker skips
@@ -318,6 +335,10 @@ export interface Trains {
 export interface Snapshot {
   schema_version: string;
   generated_at: number;
+  // Which code and which trained params produced this snapshot — see Provenance.
+  // params.trained_at names the model version live right now, verifiable straight
+  // off the public feed without reading R2.
+  provenance: Provenance;
   attribution: string;
   freshness: Freshness;
   alerts: Alert[];

@@ -88,6 +88,34 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       code_sha: 'unknown',
       dirty: null,
       producer: 'worker',
+      // Bootstrap params (trainedParams: null): the identity block is present
+      // but null, an honest "no model version" rather than a missing field.
+      params: { trained_at: null, key: null },
+    });
+  });
+
+  test('provenance names the params version and its immutable versioned key', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: {
+        schema_version: '1',
+        trained_at: 1787787983,
+        routes: {},
+        dwell: {},
+        dwellByAlert: {},
+        movementBaseline: {},
+        throughStops: null,
+        serviceBaselineHourly: null,
+      } as unknown as Parameters<typeof buildSnapshot>[0]['trainedParams'],
+      tickSeconds: TICK_SECONDS,
+    });
+    check(snap);
+    expect(snap.provenance.params).toEqual({
+      trained_at: 1787787983,
+      key: 'state/params/v1787787983.json',
     });
   });
 

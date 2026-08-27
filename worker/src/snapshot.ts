@@ -23,7 +23,7 @@
  */
 
 import type { RouteRoll } from './alpha';
-import type { Provenance } from './buildinfo';
+import type { ParamsProvenance, Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
 import { CROWDING_MAX_GAP_MINUTES, CROWDING_SERVED_WINDOW_MINUTES, derivePlatformCrowding } from './crowding';
 import type {
@@ -38,7 +38,8 @@ import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { DwellQuantiles, RidershipBaselineDoc, ServiceWeightBaselineDoc, TrainedParams } from './params';
-import { dwellForRouteState, movementDwellFor, paramsForRoute } from './params';
+import { dwellForRouteState, movementDwellFor, paramsForRoute, versionedParamsKey } from './params';
+import { servicePercentile } from './movement_state';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
 import type {
@@ -165,6 +166,12 @@ interface RouteStatusOut {
   // would be null, plus one more case: the cell has no published quantiles.
   service_low_ratio: number | null;
   service_high_ratio: number | null;
+  // Where service_ratio sits within this cell's own same-daypart baseline, as a
+  // 0-100 percentile (movement_state.servicePercentile). Low = fewer trains than
+  // usual for this daypart; exact at the cell's p10/median/p90, saturating at 90
+  // above its p90. A percentile of the baseline, NOT a forecast. null under the
+  // same conditions as service_low_ratio (no reading or no published quantiles).
+  service_percentile: number | null;
   // Cause axis — our vocabulary, derived from the MTA alert_type.
   category: string;
   primary_alert_type: string | null;
@@ -396,6 +403,19 @@ interface Snapshot {
   compat: Compat;
 }
 
+// Identity of the trained params behind this snapshot's inference, for the
+// provenance block. Both fields null means the Worker fell back to bootstrap
+// params (no params.json published yet) — an honest "no model version", not a
+// missing field. `key` is derived, never read: the versioned object the live
+// pointer's trained_at maps to, so a consumer can pin the exact params.
+function paramsProvenance(trained: TrainedParams | null): ParamsProvenance {
+  if (trained === null) return { trained_at: null, key: null };
+  return {
+    trained_at: trained.trained_at,
+    key: versionedParamsKey(trained.trained_at),
+  };
+}
+
 export function buildSnapshot(args: {
   generatedAt: number;
   alertsFreshness: number;
@@ -569,15 +589,25 @@ export function buildSnapshot(args: {
       schedule,
       movementRegime,
     );
+    const serviceRatio = movementStates?.service_ratios?.[routeId] ?? null;
+    const serviceLowRatio =
+      movementStates?.service_quantile_ratios?.[routeId]?.low ?? null;
+    const serviceHighRatio =
+      movementStates?.service_quantile_ratios?.[routeId]?.high ?? null;
     route_status[routeId] = {
       route_id: routeId,
       alerts: activeAlerts,
       condition,
       condition_source,
       service_condition: serviceRegime?.state ?? "unknown",
-      service_ratio: movementStates?.service_ratios?.[routeId] ?? null,
-      service_low_ratio: movementStates?.service_quantile_ratios?.[routeId]?.low ?? null,
-      service_high_ratio: movementStates?.service_quantile_ratios?.[routeId]?.high ?? null,
+      service_ratio: serviceRatio,
+      service_low_ratio: serviceLowRatio,
+      service_high_ratio: serviceHighRatio,
+      service_percentile: servicePercentile(
+        serviceRatio,
+        serviceLowRatio,
+        serviceHighRatio,
+      ),
       category: categoryForLabel(label),
       primary_alert_type: snap?.primary_alert_type ?? null,
       label,
@@ -599,7 +629,7 @@ export function buildSnapshot(args: {
   return {
     schema_version: SCHEMA_VERSION,
     generated_at: args.generatedAt,
-    provenance: codeProvenance(),
+    provenance: { ...codeProvenance(), params: paramsProvenance(args.trainedParams) },
     attribution: ATTRIBUTION,
     supported_modes: ["subway"],
     freshness: {

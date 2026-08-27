@@ -347,6 +347,53 @@ export function deriveServiceQuantileRatios(
   return out;
 }
 
+// Where this tick's supply reading sits within its OWN same-daypart baseline
+// distribution, as a 0-100 percentile — the "how bad is it right now vs usual"
+// gauge. All three inputs are on the ratio scale serviceRatioFor/
+// serviceQuantileRatiosFor already publish: `ratio` = assigned_n / median,
+// `low` = p10 / median, `high` = p90 / median. It places `ratio` by
+// piecewise-linear interpolation through the three anchors the baseline carries
+// — (low, 10), (1.0, 50), (high, 90) — so the reading is EXACT at each real
+// quantile and approximate only between them.
+//
+// The tails are handled deliberately, not by extrapolating a fabricated slope
+// (journal 2026-08-22: a p50->p90 multiple can't represent a bimodal cell and
+// mis-ranks an ordinary second mode above a genuine outlier). Below p10 it
+// interpolates toward the one anchor that is not a guess — zero assigned trains,
+// the hard floor of a non-negative count, at the 0th percentile — so the "bad"
+// direction keeps its resolution. Above p90 it SATURATES at 90 rather than
+// projecting past the last observed quantile: the reading is honestly "in this
+// cell's own top decile", no finer. A LOW percentile means fewer trains than
+// usual for this daypart; it is a percentile of the baseline, never a forecast.
+//
+// null whenever any input is null (no reading, or no published quantile spread),
+// so a route absent here publishes service_percentile null — the same lifecycle
+// as service_ratio. null too when the cell is degenerate (p10 >= median or
+// p90 <= median): the anchors aren't ordered, so no honest placement exists.
+export function servicePercentile(
+  ratio: number | null,
+  low: number | null,
+  high: number | null,
+): number | null {
+  if (ratio === null || low === null || high === null) return null;
+  if (!(low < 1 && high > 1)) return null;
+  let pct: number;
+  if (ratio <= 0) {
+    pct = 0;
+  } else if (ratio < low) {
+    // (0, 0) -> (low, 10): a real floor, not an extrapolated slope.
+    pct = (ratio / low) * 10;
+  } else if (ratio < 1) {
+    pct = 10 + ((ratio - low) / (1 - low)) * 40;
+  } else if (ratio < high) {
+    pct = 50 + ((ratio - 1) / (high - 1)) * 40;
+  } else {
+    // At or above the cell's own p90: saturate, do not project past it.
+    pct = 90;
+  }
+  return Math.round(Math.max(0, Math.min(100, pct)));
+}
+
 /**
  * Seed every newly observed route as 'normal' before the service regime clock.
  *

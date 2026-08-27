@@ -227,6 +227,12 @@ class RouteStatus(BaseModel):
     # leaves both None, exactly like service_ratio.
     service_low_ratio: float | None = None
     service_high_ratio: float | None = None
+    # Where service_ratio sits within this cell's own same-daypart baseline, as a
+    # 0-100 percentile (worker movement_state.servicePercentile). Low = fewer
+    # trains than usual for this daypart; exact at the cell's p10/median/p90,
+    # saturating at 90 above its p90. A percentile of the baseline, NOT a
+    # forecast. None under the same conditions as service_low_ratio.
+    service_percentile: float | None = None
     # Cause axis — our stable vocabulary, derived from the MTA alert_type.
     #   "none" | "planned_work" | "delays" | "service_change" |
     #   "service_suspension" | "slow_speeds" | "information" | "other"
@@ -423,6 +429,21 @@ class Compat(BaseModel):
     subwaynow_routes: dict[str, CompatRoute] = Field(default_factory=dict)
 
 
+class ParamsProvenance(BaseModel):
+    """Identity of the trained params.json behind this snapshot's inference — the
+    one thing code_sha can't say, since the model version moves independently of
+    the deployed Worker. trained_at is the trainer's own version stamp; key is the
+    immutable versioned R2 object it maps to (state/params/v<trained_at>.json), so
+    a consumer can pin the exact params without a LIST. Both null means the Worker
+    is on BOOTSTRAP params (no params.json published yet), not that identity was
+    unavailable."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    trained_at: int | None = None
+    key: str | None = None
+
+
 class Provenance(BaseModel):
     """Which code produced this snapshot. code_sha is the git commit verbatim;
     dirty is null when it couldn't be determined (e.g. a clean-checkout build)."""
@@ -432,6 +453,9 @@ class Provenance(BaseModel):
     code_sha: str = "unknown"
     dirty: bool | None = None
     producer: str = "unknown"
+    # Identity of the trained params behind the inference. Present on the snapshot
+    # (always, even on bootstrap); absent on trains.json, which carries no model.
+    params: ParamsProvenance | None = None
 
 
 class SegmentRecovery(BaseModel):

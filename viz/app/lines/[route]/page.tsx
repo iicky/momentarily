@@ -13,10 +13,10 @@ import {
   serviceLead,
   conditionLabel,
   conditionClass,
-  supplyBand,
-  isRunningHigh,
+  gaugeTone,
 } from "@/lib/feed";
 import type { SegmentStatus, Snapshot } from "@/lib/types";
+import { Gauge } from "../../Gauge";
 
 type Dir = "north" | "south";
 
@@ -137,7 +137,7 @@ function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
   if (!r) return null;
   const inf = r.inference;
   const cls = conditionClass(r.condition);
-  const supplyTone = isRunningHigh(r) ? "high" : supplyBand(r);
+  const supplyTone = gaugeTone(r);
   const recovery =
     inf && inf.is_disrupted
       ? inf.recovery_indeterminate
@@ -146,17 +146,22 @@ function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
       : null;
   return (
     <div className={`verdict ${cls}`}>
-      <p className="verdict-lead">{serviceLead(r)}</p>
-      <div className="verdict-stats">
-        <span className={`cond ${cls}`}>{conditionLabel(r.condition)}</span>
-        {r.service_ratio != null && (
-          <span className="verdict-stat">
-            <b className={supplyTone}>{(r.service_ratio * 100).toFixed(0)}%</b> of
-            usual trains
-          </span>
-        )}
-        {recovery && <span className="verdict-stat">{recovery}</span>}
+      <div className="verdict-main">
+        <p className="verdict-lead">{serviceLead(r)}</p>
+        <div className="verdict-stats">
+          <span className={`cond ${cls}`}>{conditionLabel(r.condition)}</span>
+          {r.service_ratio != null && (
+            <span className="verdict-stat">
+              <b className={supplyTone}>{(r.service_ratio * 100).toFixed(0)}%</b> of
+              usual trains
+            </span>
+          )}
+          {recovery && <span className="verdict-stat">{recovery}</span>}
+        </div>
       </div>
+      {r.service_percentile != null && (
+        <Gauge percentile={r.service_percentile} tone={supplyTone} size={140} />
+      )}
     </div>
   );
 }

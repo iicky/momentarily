@@ -14,6 +14,20 @@ import { N_TOD_BINS, schedule_bin } from './hmm';
 
 const PARAMS_KEY = 'state/params.json';
 
+// The trainer writes state/params.json (the live pointer the Worker reads) plus
+// an immutable per-run snapshot under this prefix as v<trained_at>.json — see
+// training/train_em.py write_params (VERSIONED_PARAMS_PREFIX). Kept in lockstep
+// with it so the snapshot's provenance can name the exact object a `trained_at`
+// maps to without a LIST.
+export const VERSIONED_PARAMS_PREFIX = 'state/params/';
+
+/** The immutable versioned R2 key for a given params version, mirroring the
+ * trainer's own layout. Pure string derivation — no read — so provenance can
+ * carry it for free. */
+export function versionedParamsKey(trainedAt: number): string {
+  return `${VERSIONED_PARAMS_PREFIX}v${trainedAt}.json`;
+}
+
 // Semantic bounds, not just finiteness: a malformed-but-finite trainer upload
 // (negative mass, a transition row that doesn't sum to 1, a probability > 1)
 // would otherwise pass shape validation and feed invalid numbers straight into

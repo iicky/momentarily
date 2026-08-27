@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/lines", label: "Lines" },
   { href: "/map", label: "Map" },
   { href: "/trip", label: "Trip" },
+  { href: "/commutes", label: "Commutes" },
   { href: "/models", label: "Models" },
 ];
 

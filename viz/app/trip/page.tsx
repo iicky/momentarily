@@ -26,6 +26,7 @@ import { alightStop, boardStop, journeyId } from "@/lib/journeys";
 import type { Journey, JourneyLeg } from "@/lib/journeys";
 import type { Snapshot, SegmentStatus } from "@/lib/types";
 import type { Topology } from "@/lib/stations";
+import { SaveJourney } from "@/app/commutes/SaveJourney";
 
 // One selectable endpoint: a station complex as the snapshot groups it, with a
 // display name and the routes it serves to disambiguate same-named complexes.
@@ -131,7 +132,10 @@ function TripView() {
             onPick={(id) => setParams({ from, to, via: id })}
           />
           {selected ? (
-            <StripMap snap={snap} journey={selected} />
+            <div className="trip-strip-col">
+              <StripMap snap={snap} journey={selected} />
+              <SaveJourney key={via} snap={snap} journey={selected} />
+            </div>
           ) : (
             <div className="note muted trip-strip-empty">
               Pick a journey on the left to see its segments.

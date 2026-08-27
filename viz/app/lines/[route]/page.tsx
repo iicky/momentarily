@@ -16,9 +16,53 @@ import {
   supplyBand,
   isRunningHigh,
 } from "@/lib/feed";
-import type { SegmentStatus, Snapshot } from "@/lib/types";
+import type { Snapshot } from "@/lib/types";
 
 type Dir = "north" | "south";
+
+// The stop-rail connector between a stop and the next, coloured by the best
+// signal we have for that stretch and drawn so precision is legible — a hop we
+// actually watched reads apart from one we only know the whole line's condition
+// for:
+//   1. segment — segment_flow's verdict for this exact hop+direction (solid),
+//   3. route   — the line's overall condition, on every stretch we have no
+//                closer read for (dotted and dimmed).
+// Tier 2 would be the per-direction MOVEMENT call, but the snapshot publishes
+// none: by_direction carries alerts only, not a movement regime. There is
+// nothing to consult, so the connector falls from the segment verdict straight
+// to the line-wide condition. That gap is left explicit here rather than filled
+// with a substitute signal. Tier 1 needs the stops in ride order; the route
+// tier is order-independent.
+type SpineTier = "segment" | "route" | "none";
+
+function spineFor(
+  snap: Snapshot,
+  route: string,
+  dir: Dir,
+  fromStop: string,
+  ordered: boolean,
+): { tier: SpineTier; cls: string } {
+  if (ordered) {
+    const seg = snap.segment_flow?.segments[`${route}|${dir}|${fromStop}`];
+    if (seg) return { tier: "segment", cls: seg.status };
+  }
+  const r = snap.route_status[route];
+  if (r) return { tier: "route", cls: conditionClass(r.condition) };
+  return { tier: "none", cls: "" };
+}
+
+// Compact three-line key for the rail. Neutral strokes — hue on the rail is the
+// state (green normal, amber slowing, grey quiet) — so the key teaches only the
+// precision axis: solid watched, dotted line-wide, faint no read.
+function SpineLegend() {
+  return (
+    <div className="spine-legend" aria-hidden>
+      <span><i className="conn-key seg" /> Watched — this stretch&apos;s own verdict</span>
+      <span><i className="conn-key line" /> Line-wide — the route&apos;s condition, no stretch read</span>
+      <span><i className="conn-key none" /> No signal — not judged</span>
+    </div>
+  );
+}
 
 export default function LinePage() {
   return (
@@ -106,22 +150,23 @@ function LineView() {
         <div className="note">No stations found for this line and direction.</div>
       )}
       {snap && stops.length > 0 && (
-        <ol className="stoplist">
-          {stops.map((stop, i) => (
-            <StopRow
-              key={stop}
-              snap={snap}
-              route={route}
-              dir={dir}
-              stop={stop}
-              // The segment leaving this stop, when the model judged it live.
-              segStatus={snap.segment_flow?.segments[`${route}|${dir}|${stop}`]?.status ?? null}
-              last={i === stops.length - 1}
-              ordered={!!ordered}
-              now={now}
-            />
-          ))}
-        </ol>
+        <>
+          <SpineLegend />
+          <ol className="stoplist">
+            {stops.map((stop, i) => (
+              <StopRow
+                key={stop}
+                snap={snap}
+                route={route}
+                dir={dir}
+                stop={stop}
+                last={i === stops.length - 1}
+                ordered={!!ordered}
+                now={now}
+              />
+            ))}
+          </ol>
+        </>
       )}
     </div>
   );
@@ -166,7 +211,6 @@ function StopRow({
   route,
   dir,
   stop,
-  segStatus,
   last,
   ordered,
   now,
@@ -175,7 +219,6 @@ function StopRow({
   route: string;
   dir: Dir;
   stop: string;
-  segStatus: SegmentStatus["status"] | null;
   last: boolean;
   ordered: boolean;
   now: number;
@@ -184,9 +227,9 @@ function StopRow({
   const meta = snap.stations[id];
   const name = meta?.name ?? id;
   const flow = snap.station_flow?.stations[id] ?? null;
-  // Station status -> badge/node class. 'quiet' keeps its own class: a station
-  // with nothing scheduled through it is not the same claim as one we watched
-  // trains move through.
+  // Station-flow status still labels the row's badge; the per-stop node dot it
+  // used to colour is gone — the movement read now lives on the connectors,
+  // tiered by precision, so the rail is no longer a column of grey dots.
   const flowClass = flow ? FLOW_CLASS[flow.status] : null;
   const others = (meta?.routes_served ?? []).filter((r) => r !== route);
   const adaLabel = meta?.ada === 1 ? "ADA" : meta?.ada === 2 ? "ADA partial" : null;
@@ -195,13 +238,14 @@ function StopRow({
   // the badge keeps the only colour on the row. The estimate is for the
   // platform in the direction this page is showing.
   const crowd = platformCrowding(snap.platform_crowding, stop, now);
+  // The connector leaving this stop, coloured by the best available signal.
+  const spine = spineFor(snap, route, dir, stop, ordered);
 
   return (
     <li className="stop">
-      <span className={`stop-node ${flowClass ?? "unknown"}`} />
       {!last && (
         <span
-          className={`stop-conn ${ordered ? segStatus ?? "topology" : "topology"}`}
+          className={`stop-conn ${spine.tier}${spine.cls ? ` ${spine.cls}` : ""}`}
           aria-hidden
         />
       )}

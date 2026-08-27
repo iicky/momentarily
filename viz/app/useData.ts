@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { fetchSnapshot } from "@/lib/feed";
 import { fetchDiagram } from "@/lib/diagram";
+import { fetchStationFacts } from "@/lib/facts";
 import type { Snapshot } from "@/lib/types";
+import type { StationFacts } from "@/lib/facts";
 import type { StationCoord, Topology } from "@/lib/stations";
 
 const SNAP_POLL_MS = 60_000;
@@ -85,6 +87,28 @@ export function useTopology(): Async<Topology> {
           },
           error: null,
         });
+      },
+      (e: Error) => {
+        if (alive) setState({ data: null, error: e.message });
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return state;
+}
+
+/** Station reference facts (opening year, photo, landmark, art, ridership rank),
+ * read off the committed station_facts.json asset (viz/lib/facts.ts) — one fetch
+ * shared across the session via fetchStationFacts's module cache, never polled. */
+export function useStationFacts(): Async<StationFacts> {
+  const [state, setState] = useState<Async<StationFacts>>({ data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    fetchStationFacts().then(
+      (d) => {
+        if (alive) setState({ data: d, error: null });
       },
       (e: Error) => {
         if (alive) setState({ data: null, error: e.message });

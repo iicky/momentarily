@@ -159,3 +159,43 @@ routed on its own, so a long diagonal run still shows shallow sawtooth. Fixing
 that means moving stations so consecutive hops share a bearing — a global
 layout solve. Edges carry a `path` polyline, so when that lands it's a change
 to `training/diagram.py` alone and the renderer doesn't move.
+
+## The station-facts asset
+
+`public/station_facts.json` is reference facts about each stop — opening year, a
+Wikimedia Commons photo (with license + attribution), landmark designation,
+public-art credits, and annual ridership rank — joined at build time from
+Wikidata and NYS Open Data and committed as a static asset. The Station page
+fetches it (`lib/facts.ts`) exactly the way the map fetches `diagram.json`;
+nothing about it is a live per-request dependency.
+
+```bash
+uv run python -m scripts.gen_station_facts          # from the repo root
+TRANSITLAND_API_KEY=… uv run python -m scripts.gen_station_facts
+```
+
+Each station carries how it was tied to its Wikidata item, in priority order:
+
+1. **`transitland_onestop`** — the authoritative join. A Wikidata Onestop ID
+   (P11109) is resolved to the exact GTFS `stop_id` of the NYCT feed through the
+   Transitland API. This is the only tier that reads a real stop id; it needs
+   `TRANSITLAND_API_KEY` (a free key from transit.land) and is used when set.
+2. **`onestop_geohash`** — fallback. The Onestop ID embeds a geohash of
+   Transitland's own per-platform coordinate (sub-metre against this feed);
+   decoded and nearest-matched. A spatial join on the Onestop ID's location, not
+   a stop-id read.
+3. **`coordinate`** — fallback. Nearest item-level P625, for items with no
+   Onestop ID.
+
+A separate OpenStreetMap-node cross-check (P11693) records whether an
+independent source agrees. When two distinct items sit on one stop with no way
+to tell them apart (some share an identical geohash), the spatial fallbacks
+abstain and the stop is logged unmatched rather than guessed — only the
+authoritative tier resolves those. The MTA Permanent Art Catalog carries no
+image and no stable station id, so it ships as text credits joined by name, and
+unplaced pieces are logged.
+
+Output is deterministic — no timestamp, sorted keys — so a re-run with unchanged
+upstream data is an empty diff. Regenerate after a service change (a new
+station) or to refresh ridership; the producer is `scripts/gen_station_facts.py`
+and `lib/facts.ts` is the one place that types what the page reads.

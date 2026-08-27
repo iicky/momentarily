@@ -7,6 +7,7 @@ const LINKS = [
   { href: "/", label: "Status" },
   { href: "/lines", label: "Lines" },
   { href: "/map", label: "Map" },
+  { href: "/trip", label: "Trip" },
   { href: "/models", label: "Models" },
 ];
 

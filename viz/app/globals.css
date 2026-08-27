@@ -1577,3 +1577,262 @@ code {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* --- Isolated trip view (/trip) ---------------------------------------- */
+
+.trip-pickers {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.complex-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 260px;
+  min-width: 240px;
+}
+.complex-picker-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.complex-picker-box {
+  position: relative;
+}
+.complex-picker-input {
+  width: 100%;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.complex-picker-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.picker-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.picker-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.picker-list li:hover,
+.picker-list li.active {
+  background: var(--panel-2);
+}
+.picker-name {
+  color: var(--text);
+  font-size: 13.5px;
+}
+.picker-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trip-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.cand-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+.cand-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+.cand {
+  width: 100%;
+  text-align: left;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cand:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.cand.active {
+  border-color: var(--accent);
+}
+.cand-routes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.cand-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cand-arrow {
+  color: var(--muted);
+  font-size: 12px;
+}
+.cand-meta {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* The strip-map itself: a node per stop, connectors colored by the live status
+   of the segment leading into each stop, grouped by leg with a transfer break. */
+.trip-strip {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 16px 16px;
+}
+.trip-strip-empty {
+  align-self: start;
+}
+.trip-leg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 6px;
+}
+.trip-dir {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.trip-toward {
+  color: var(--muted);
+  font-size: 12px;
+}
+.trip-segs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.trip-board,
+.trip-seg {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+.trip-board {
+  min-height: 22px;
+}
+.trip-seg {
+  min-height: 40px;
+}
+.trip-rail {
+  flex: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.trip-rail-board {
+  justify-content: flex-end;
+}
+.trip-conn {
+  flex: 1 1 auto;
+  width: 3px;
+  min-height: 16px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.trip-conn.normal {
+  background: var(--normal);
+}
+.trip-conn.quiet {
+  background: var(--muted);
+}
+.trip-conn.disrupted {
+  background: var(--disrupted);
+}
+.trip-conn.unknown {
+  background: var(--border);
+}
+.trip-node {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-top: 2px;
+}
+.trip-node.board {
+  background: var(--accent);
+  margin-top: 0;
+}
+.trip-stop-name {
+  flex: 1;
+  align-self: center;
+  color: var(--text);
+  font-size: 14px;
+}
+a.trip-stop-name:hover {
+  color: var(--accent);
+}
+.trip-seg .cond,
+.trip-board .cond {
+  align-self: center;
+}
+.trip-transfer {
+  position: relative;
+  margin: 2px 0;
+  padding: 8px 0 8px 24px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.trip-transfer::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 3px dashed var(--border);
+}
+.trip-transfer-mark {
+  margin-right: 6px;
+  color: var(--accent);
+}
+
+@media (max-width: 760px) {
+  .trip-layout {
+    grid-template-columns: 1fr;
+  }
+}

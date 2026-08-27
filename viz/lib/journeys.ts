@@ -75,6 +75,14 @@ export const alightStop = (leg: JourneyLeg): string =>
 export const journeyHopKeys = (journey: Journey): string[] =>
   journey.segments.map((s) => s.key);
 
+/** One journey's stable identity: its route sequence alone, matching the
+ * enumerator's dedup key (opposite directions of one sequence collapse to a
+ * single candidate). Route ids never contain a hyphen, so this round-trips as
+ * a URL param. Shared by the trip page's selection and the ranking surface so
+ * both address a candidate by exactly the same key. */
+export const journeyId = (journey: Journey): string =>
+  journey.legs.map((l) => l.route).join("-");
+
 // A group is identified by the lexicographically-smallest undirected stop id it
 // contains — stable, and independent of the order stops were listed in.
 const groupKeyOf = (stops: Iterable<string>): string => {

@@ -1884,6 +1884,91 @@ a.trip-stop-name:hover {
   color: var(--accent);
 }
 
+/* The verdict banner: one ranked recommendation with its evidence, above the
+   candidate list. The left border carries the severity tone of the reason it
+   gives (lib/rankJourneys.ts VerdictTone), matching the shared state colours so
+   an amber bar always means "disruption drove this call", red "a line is down". */
+.trip-verdict {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.trip-verdict:hover {
+  background: var(--panel-2);
+}
+.trip-verdict.tone-disrupted,
+.trip-verdict.tone-supply {
+  border-left-color: var(--disrupted);
+}
+.trip-verdict.tone-suspended {
+  border-left-color: var(--suspended);
+}
+.trip-verdict.tone-unknown,
+.trip-verdict.tone-quiet {
+  border-left-color: var(--muted);
+}
+.trip-verdict.tone-clear,
+.trip-verdict.tone-even {
+  border-left-color: var(--normal);
+}
+.verdict-tag {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.verdict-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.verdict-take {
+  font-weight: 600;
+}
+.verdict-sep {
+  color: var(--muted);
+}
+.verdict-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.verdict-run-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.verdict-run-arrow {
+  color: var(--muted);
+  font-size: 12px;
+}
+.verdict-caveat {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.verdict-crumb {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
 @media (max-width: 760px) {
   .trip-layout {
     grid-template-columns: 1fr;

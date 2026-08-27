@@ -502,7 +502,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--out",
         type=Path,
         default=None,
-        help="output dir (default docs/review/<today>-shadow-hmm/)",
+        help="output dir (default docs/review/<end-date>-shadow-hmm/)",
     )
     parser.add_argument(
         "--severity-floor",
@@ -521,20 +521,47 @@ def main(argv: Iterable[str] | None = None) -> int:
         "always counts every stop regardless — see build_movement_truth's "
         "call site below.",
     )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="window end as an ISO datetime/date (UTC assumed if naive); "
+        "defaults to now. Predictions and transitions at or after this instant "
+        "are dropped, so the review grades only the model live before it — use "
+        "the params-publish timestamp to grade the pre-cutover window.",
+    )
     args = parser.parse_args(argv)
 
-    today = datetime.now(UTC).date()
-    start_date = today - timedelta(days=args.days - 1)
-    out_dir = args.out or Path("docs/review") / f"{today.isoformat()}-shadow-hmm"
+    if args.end:
+        end_dt = datetime.fromisoformat(args.end)
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=UTC)
+    else:
+        end_dt = datetime.now(UTC)
+    end_date = end_dt.date()
+    end_ts = int(end_dt.timestamp())
+    start_date = end_date - timedelta(days=args.days - 1)
+    out_dir = args.out or Path("docs/review") / f"{end_date.isoformat()}-shadow-hmm"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = load_config()
     client = make_client(cfg)
     counts_from_stop = resolve_stop_filter(args.stop_scope)
 
-    print(f"loading predictions/transitions {start_date}..{today}")
-    preds = load_predictions(client, cfg.bucket, start_date, today)
-    trans = load_transitions(client, cfg.bucket, start_date, today)
+    print(f"loading predictions/transitions {start_date}..{end_date} (< {end_dt})")
+    # Drop anything at or after the window end so a params cutover inside the
+    # last archived day can't leak the fresh version into current_params (which
+    # is max(params_version) over the loaded stream) or into any truth path.
+    preds = [
+        p
+        for p in load_predictions(client, cfg.bucket, start_date, end_date)
+        if p.ts < end_ts
+    ]
+    trans = [
+        t
+        for t in load_transitions(client, cfg.bucket, start_date, end_date)
+        if t.ts < end_ts
+    ]
     print(f"  {len(preds)} predictions, {len(trans)} transitions")
     print("loading alerts archive for MTA-state truth")
     mask = presence_mask_from_predictions(preds)
@@ -548,7 +575,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "raw (over-extended) alert tails; severe episodes may not close."
         )
     truth_obs = load_truth_observations(
-        client, cfg.bucket, start_date, today, mask=mask
+        client, cfg.bucket, start_date, end_date, mask=mask
     )
     truth = mta_truth(truth_obs, severity_floor=args.severity_floor)
     truth_breadth = mta_truth(truth_obs, severity_floor=1)
@@ -581,9 +608,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             "  WARNING: empty advance baseline (archive may not reach that far "
             "back) -> movement truth will be mostly/entirely unjudgeable"
         )
-    vehicle_bodies = fetch_vehicle_metrics(
-        cfg, start_date=start_date, end_date=today, client=client
-    )
+    vehicle_bodies = [
+        b
+        for b in fetch_vehicle_metrics(
+            cfg, start_date=start_date, end_date=end_date, client=client
+        )
+        if int(b.get("observed_at") or 0) < end_ts
+    ]
     movement_truth = build_movement_truth(
         vehicle_bodies,
         movement_baseline=movement_baseline,
@@ -600,9 +631,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     # reference, so it is fit on the review window itself, matching
     # degradation_label's own measurement.
     print("loading trip-updates archive for independent assigned_n degraded-now truth")
-    tu_bodies = fetch_trip_update_metrics(
-        cfg, start_date=start_date, end_date=today, client=client
-    )
+    tu_bodies = [
+        b
+        for b in fetch_trip_update_metrics(
+            cfg, start_date=start_date, end_date=end_date, client=client
+        )
+        if int(b.get("observed_at") or 0) < end_ts
+    ]
     tu_series = build_service_series(tu_bodies)
     tu_baseline = compute_baseline(tu_series, bin_fn=BIN_FN)
     degradation_state = degraded_now_truth(tu_series, tu_baseline)
@@ -662,7 +697,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"/{len(station_flows)} stations degraded"
     )
 
-    window_end = int(datetime.now(UTC).timestamp())
+    window_end = end_ts
     window_start = int(
         datetime(
             start_date.year, start_date.month, start_date.day, tzinfo=UTC

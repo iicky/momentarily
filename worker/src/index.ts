@@ -899,12 +899,12 @@ export default {
                 deriveSegmentStates(flow, segParams),
                 observedAt,
               );
-              // A cell updateSegmentFlow just pruned (decayed matched below
-              // PRUNE_MATCHED) must not keep its regime alive through
-              // advanceRegimes' idle-abstention grace (up to MAX_IDLE_SEC)
-              // as if merely unheard from this tick — pruning already means
-              // gone.
-              flow.regimes = pruneSegmentRegimes(entries, flow.cells);
+              // Regimes are pruned against the trainer's baselined cell set,
+              // not the accumulator: every baselined cell is judged every tick
+              // now, so the only stale entry left is one whose cell a retrain
+              // dropped. A cell that merely abstains this tick keeps
+              // advanceRegimes' idle grace.
+              flow.regimes = pruneSegmentRegimes(entries, segParams.cells);
               await writeSegmentFlow(env.MOMENTARILY, flow);
               await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
               try {

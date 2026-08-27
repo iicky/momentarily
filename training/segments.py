@@ -24,6 +24,7 @@ Two Phase-3 primitives on top of the hierarchical segment baseline
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
@@ -64,6 +65,81 @@ def classify_segment(
         min_matched=min_matched,
         alpha=alpha,
     )
+
+
+# --- Throughput branch -----------------------------------------------------
+#
+# Mirrors worker/src/segment_flow.ts. classify_segment above answers "of the
+# trains that were here, did they move on" and needs accumulated counts to say
+# anything; this branch answers "did the trains the timetable promised show up",
+# which an empty window answers on its own. Keep the two files in lockstep —
+# tests/fixtures/parity_segment_flow.json pins them.
+
+# Poisson lower-tail threshold, deliberately the same number as CLASSIFY_ALPHA
+# so both branches call a cell disrupted at one nominal strictness.
+THROUGHPUT_ALPHA = 0.05
+
+# Expected effective traversals a window needs before absence can be judged at
+# all. Below -ln(THROUGHPUT_ALPHA) even a completely empty window sits above the
+# tail threshold, so the test provably has no power there.
+QUIET_MAX_EXPECTED = -math.log(THROUGHPUT_ALPHA)
+
+
+def pois_lower_tail(k: int, mu: float) -> float:
+    """P(X <= k) for X ~ Poisson(mu) via an iterative pmf sum, sibling of
+    _binom_lower_tail and mirroring the Worker's poisLowerTail 1:1. mu here is
+    expected traversals out of ONE stop on ONE route-direction over a ~25-minute
+    window, bounded by physical headway at well under 50, so exp(-mu) never
+    approaches underflow."""
+    if k < 0:
+        return 0.0
+    if mu <= 0:
+        return 1.0
+    pmf = math.exp(-mu)
+    cdf = pmf
+    for i in range(1, k + 1):
+        pmf *= mu / i
+        cdf += pmf
+    return min(1.0, cdf)
+
+
+def classify_throughput(
+    matched: float,
+    expected: float,
+    route_seen: bool,
+    *,
+    eff_count_scale: float,
+    alpha: float = THROUGHPUT_ALPHA,
+    quiet_max_expected: float = QUIET_MAX_EXPECTED,
+) -> str | None:
+    """quiet / normal / disrupted / None for one segment's decayed window,
+    judged against the decayed expectation over that same window.
+
+      quiet     — the window expected less than `quiet_max_expected` traversals,
+                  so no observation could reach the tail. Normal for now, by
+                  timetable, and saying so beats abstaining.
+      None      — the expectation is real but the vehicle feed said nothing about
+                  this route at all, so the silence is unattributable.
+      disrupted — Poisson lower tail at or under `alpha`.
+      normal    — enough of the promised trains arrived.
+
+    `eff_count_scale` converts the decayed sums onto the effective-Poisson
+    scale; it is a property of the accumulator's decay, so the caller that owns
+    the accumulator owns it (training.segment_replay.EFF_COUNT_SCALE for the
+    Worker's EWMA).
+
+    The effective count FLOORS: it is "how many complete traversals the window
+    can account for", and rounding a fractional decayed remnant up to a whole
+    traversal credits evidence never observed. Flooring also makes the call
+    monotone in `matched`, which matters at the edge of the quiet band.
+    """
+    mu = expected * eff_count_scale
+    if mu < quiet_max_expected:
+        return "quiet"
+    if not route_seen:
+        return None
+    k = math.floor(matched * eff_count_scale)
+    return "disrupted" if pois_lower_tail(k, mu) <= alpha else "normal"
 
 
 @dataclass(frozen=True)

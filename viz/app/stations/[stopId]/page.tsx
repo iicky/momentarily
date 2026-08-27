@@ -4,12 +4,12 @@ import { useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useSnapshot, useCoords, useTopology } from "../../useData";
-import { PageHeader, RouteBullet } from "../../ui";
+import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
 import { fmtEta, fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
 import type { PlatformCrowdingView } from "@/lib/feed";
-import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery } from "@/lib/types";
+import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery, SegmentStatus } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
 
 interface AdjRow {
@@ -18,7 +18,7 @@ interface AdjRow {
   from: string;
   to: string;
   incoming: boolean;
-  status: "normal" | "disrupted" | null;
+  status: SegmentStatus["status"] | null;
 }
 
 export default function StationPage() {
@@ -100,7 +100,7 @@ export default function StationPage() {
           <div className="line-head">
             <h2>{name}</h2>
             {flow && (
-              <span className={`cond ${flow.status === "degraded" ? "disrupted" : "normal"}`}>
+              <span className={`cond ${FLOW_CLASS[flow.status]}`}>
                 {flow.status}
               </span>
             )}

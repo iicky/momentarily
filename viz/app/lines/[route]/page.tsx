@@ -4,7 +4,7 @@ import { Suspense, useMemo } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../../useData";
-import { PageHeader, RouteBullet } from "../../ui";
+import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
 import { undirected, orderTrip } from "@/lib/stations";
 import {
   fmtMinutes,
@@ -16,7 +16,7 @@ import {
   supplyBand,
   isRunningHigh,
 } from "@/lib/feed";
-import type { Snapshot } from "@/lib/types";
+import type { SegmentStatus, Snapshot } from "@/lib/types";
 
 type Dir = "north" | "south";
 
@@ -175,7 +175,7 @@ function StopRow({
   route: string;
   dir: Dir;
   stop: string;
-  segStatus: "normal" | "disrupted" | null;
+  segStatus: SegmentStatus["status"] | null;
   last: boolean;
   ordered: boolean;
   now: number;
@@ -184,7 +184,10 @@ function StopRow({
   const meta = snap.stations[id];
   const name = meta?.name ?? id;
   const flow = snap.station_flow?.stations[id] ?? null;
-  const flowClass = flow ? (flow.status === "degraded" ? "disrupted" : "normal") : null;
+  // Station status -> badge/node class. 'quiet' keeps its own class: a station
+  // with nothing scheduled through it is not the same claim as one we watched
+  // trains move through.
+  const flowClass = flow ? FLOW_CLASS[flow.status] : null;
   const others = (meta?.routes_served ?? []).filter((r) => r !== route);
   const adaLabel = meta?.ada === 1 ? "ADA" : meta?.ada === 2 ? "ADA partial" : null;
   // Secondary signal, so it rides in front of the flow badge rather than

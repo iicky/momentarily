@@ -26,12 +26,15 @@ interface Seg {
   y1: number;
   x2: number;
   y2: number;
-  status: "normal" | "disrupted" | null;
+  status: "normal" | "quiet" | "disrupted" | null;
   recoveryMin: number | null;
 }
 
 const STROKE: Record<string, string> = {
   normal: "var(--normal)",
+  // Quiet-normal: judged, "little runs here right now" — muted, not green, so a
+  // sparse trip doesn't read as a system-wide all-clear.
+  quiet: "var(--muted)",
   disrupted: "var(--disrupted)",
   topology: "var(--border)",
 };
@@ -260,6 +263,7 @@ function MapCanvas({
       </svg>
       <div className="map-legend">
         <span><i style={{ background: "var(--normal)" }} /> flowing</span>
+        <span><i style={{ background: "var(--muted)" }} /> quiet</span>
         <span><i style={{ background: "var(--disrupted)" }} /> disrupted</span>
         <span><i style={{ background: "var(--border)" }} /> not judged</span>
       </div>

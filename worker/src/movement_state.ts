@@ -77,6 +77,23 @@ export function binomLowerTail(k: number, n: number, p: number): number {
   return cdf;
 }
 
+// P(X <= k) for X ~ Poisson(mu) via the same iterative pmf sum, sibling of
+// binomLowerTail and mirrored 1:1 in Python (training/segments.py). Used by the
+// segment throughput branch, where mu is expected traversals out of ONE stop on
+// ONE route-direction over a ~25-minute window — bounded by physical headway at
+// well under 50, so exp(-mu) never approaches underflow and no guard is needed.
+export function poisLowerTail(k: number, mu: number): number {
+  if (k < 0) return 0;
+  if (mu <= 0) return 1;
+  let pmf = Math.exp(-mu); // P(X = 0)
+  let cdf = pmf;
+  for (let i = 1; i <= k; i++) {
+    pmf *= mu / i;
+    cdf += pmf;
+  }
+  return Math.min(1, cdf);
+}
+
 // Beta-Binomial call against a baseline advance rate p0, three ways:
 //   normal    — posterior advance rate above DISRUPTED_RATIO * p0.
 //   disrupted — posterior at/under DISRUPTED_RATIO * p0 AND the low advance count

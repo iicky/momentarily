@@ -203,3 +203,52 @@ export const PAINT_ORDER: Record<SegmentState, number> = {
   normal: 3,
   disrupted: 4,
 };
+
+// A whole route's movement rolled up on one side, read straight off the
+// per-segment surface (segment_flow) rather than the diagram: the drawer asks
+// "how is this route moving northbound", not which edge to paint, so it counts
+// cells by route+direction and never needs topology.
+//
+// `measured` counts only cells carrying an advancing-vs-stalling verdict —
+// normal or disrupted. `quiet` is excluded from it on purpose: "too little
+// scheduled here right now to read silence as anything" is not a moving-vs-
+// crawling call, so folding it into the denominator would understate the crawl
+// share. A key absent from the surface is unmeasured and counts toward nothing,
+// never a healthy read by omission — and `null` for a whole side means the
+// route has no cell there at all, which the reader must not see as an all-clear.
+export interface DirectionMovement {
+  measured: number; // cells with a verdict (normal + disrupted)
+  crawling: number; // of those, the disrupted ones
+  quiet: number; // present but quiet-normal (too little service to judge)
+}
+
+export function routeMovementByDirection(
+  flow: SegmentFlow | null,
+  route: string,
+): Record<Direction, DirectionMovement | null> {
+  const acc: Record<Direction, DirectionMovement> = {
+    north: { measured: 0, crawling: 0, quiet: 0 },
+    south: { measured: 0, crawling: 0, quiet: 0 },
+  };
+  const seen: Record<Direction, boolean> = { north: false, south: false };
+  for (const cell of Object.values(flow?.segments ?? {})) {
+    if (cell.route !== route) continue;
+    const dir: Direction | null =
+      cell.direction === "north" ? "north" : cell.direction === "south" ? "south" : null;
+    if (dir === null) continue;
+    seen[dir] = true;
+    const d = acc[dir];
+    if (cell.status === "disrupted") {
+      d.crawling += 1;
+      d.measured += 1;
+    } else if (cell.status === "normal") {
+      d.measured += 1;
+    } else if (cell.status === "quiet") {
+      d.quiet += 1;
+    }
+  }
+  return {
+    north: seen.north ? acc.north : null,
+    south: seen.south ? acc.south : null,
+  };
+}

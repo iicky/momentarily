@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useSnapshot, useCoords, useTopology, useStationFacts } from "../../useData";
+import { useSnapshot, useCoords, useTopology, useStationFacts, useStationMaintenance } from "../../useData";
 import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
@@ -12,6 +12,7 @@ import type { PlatformCrowdingView } from "@/lib/feed";
 import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery, SegmentStatus } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
 import type { StationFactsEntry } from "@/lib/facts";
+import type { StationMaintenanceEntry } from "@/lib/maintenance";
 
 interface AdjRow {
   route: string;
@@ -29,6 +30,7 @@ export default function StationPage() {
   const { data: coords } = useCoords();
   const { data: topo } = useTopology();
   const { data: facts } = useStationFacts();
+  const { data: maintenance } = useStationMaintenance();
   const meta = snap?.stations[id] ?? null;
   const coord: StationCoord | null = coords?.[id] ?? null;
   const flow = snap?.station_flow?.stations[id] ?? null;
@@ -36,6 +38,7 @@ export default function StationPage() {
     ? snap?.station_status[meta.station_complex_id] ?? null
     : null;
   const fx = facts?.stations[id] ?? null;
+  const mx = maintenance?.stations[id] ?? null;
 
   // Every judged segment touching this station, in either direction.
   const adj = useMemo<AdjRow[]>(() => {
@@ -176,6 +179,8 @@ export default function StationPage() {
             </div>
           )}
 
+          <MaintenanceBlock mx={mx} />
+
           <div className="section-title crowd-title">
             Waiting riders
             <Chip title="Modelled from entry counts and train movement. Nothing counts people on a platform.">
@@ -311,6 +316,69 @@ function RecoveryLine({ rec }: { rec: SegmentRecovery }) {
       </span>
     </div>
   );
+}
+
+// Maintenance history for the stop, read from the committed
+// station_maintenance.json sidecar and shown directly beneath the live E&E
+// status: what the live block reports right now, this reports over time. Counts
+// are this month, closures this year, both reduced from our own archives (the
+// hourly E&E feed and the parsed planned-work windows). Rendered only when the
+// stop has something to report, so a station with no equipment and no announced
+// work shows nothing rather than a row of zeros.
+function MaintenanceBlock({ mx }: { mx: StationMaintenanceEntry | null }) {
+  if (
+    !mx ||
+    (mx.elevator_outages === 0 && mx.escalator_outages === 0 && mx.planned_closures === 0)
+  ) {
+    return null;
+  }
+  return (
+    <>
+      <div className="section-title crowd-title">
+        Maintenance
+        <Chip title="From our own hourly elevator/escalator archive and planned-work advisories. Outage counts cover this month; closures cover this year.">
+          history
+        </Chip>
+      </div>
+      <div className="kv-block">
+        {mx.elevator_outages > 0 && (
+          <div className="kv">
+            <span className="k">Elevator outages, this month</span>
+            <span className="v">{mx.elevator_outages}</span>
+          </div>
+        )}
+        {mx.escalator_outages > 0 && (
+          <div className="kv">
+            <span className="k">Escalator outages, this month</span>
+            <span className="v">{mx.escalator_outages}</span>
+          </div>
+        )}
+        {mx.median_repair_hours != null && (
+          <div className="kv">
+            <span className="k">Median time to repair</span>
+            <span className="v">
+              {fmtRepair(mx.median_repair_hours)}
+              <span className="muted"> · over {mx.resolved_outages} repaired</span>
+            </span>
+          </div>
+        )}
+        {mx.planned_closures > 0 && (
+          <div className="kv">
+            <span className="k">Planned closures, this year</span>
+            <span className="v">{mx.planned_closures}</span>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// A median repair span in the unit that reads cleanly: minutes under an hour,
+// hours up to a couple of days, days beyond that.
+function fmtRepair(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)} min`;
+  if (hours < 48) return `${hours.toFixed(1)} h`;
+  return `${(hours / 24).toFixed(1)} d`;
 }
 
 // Estimated riders waiting on this station's two platforms.

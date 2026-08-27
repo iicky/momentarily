@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { fetchSnapshot } from "@/lib/feed";
 import { fetchDiagram } from "@/lib/diagram";
 import { fetchStationFacts } from "@/lib/facts";
+import { fetchStationMaintenance } from "@/lib/maintenance";
 import type { Snapshot } from "@/lib/types";
 import type { StationFacts } from "@/lib/facts";
+import type { StationMaintenance } from "@/lib/maintenance";
 import type { StationCoord, Topology } from "@/lib/stations";
 
 const SNAP_POLL_MS = 60_000;
@@ -107,6 +109,30 @@ export function useStationFacts(): Async<StationFacts> {
   useEffect(() => {
     let alive = true;
     fetchStationFacts().then(
+      (d) => {
+        if (alive) setState({ data: d, error: null });
+      },
+      (e: Error) => {
+        if (alive) setState({ data: null, error: e.message });
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return state;
+}
+
+/** Station maintenance history (elevator/escalator outages this month with
+ * median time-to-repair, planned-work closures this year), read off the
+ * committed station_maintenance.json asset (viz/lib/maintenance.ts) — one fetch
+ * shared across the session via fetchStationMaintenance's module cache, never
+ * polled, the same contract as useStationFacts. */
+export function useStationMaintenance(): Async<StationMaintenance> {
+  const [state, setState] = useState<Async<StationMaintenance>>({ data: null, error: null });
+  useEffect(() => {
+    let alive = true;
+    fetchStationMaintenance().then(
       (d) => {
         if (alive) setState({ data: d, error: null });
       },

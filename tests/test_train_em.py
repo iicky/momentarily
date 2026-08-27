@@ -295,6 +295,11 @@ class _FakeS3:
     def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: object) -> None:
         self.objects[Key] = Body
 
+    def list_objects_v2(self, **_: object) -> dict[str, object]:
+        # An empty prefix: R2 listings (e.g. the recovery-recalibration shadow
+        # window) see no history and degrade exactly as an empty bucket would.
+        return {"Contents": [], "IsTruncated": False}
+
 
 def _two_route_params() -> dict[str, HMMParams]:
     return {

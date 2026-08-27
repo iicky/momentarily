@@ -15,10 +15,29 @@ export const CODE_SHA: string =
 export const CODE_DIRTY: boolean | null =
   typeof __GIT_DIRTY__ === 'string' ? __GIT_DIRTY__ === 'true' : null;
 
+// Identity of the trained params.json that produced a snapshot's inference —
+// the one thing code_sha can't say, since the model version moves independently
+// of the deployed Worker. `trained_at` is the trainer's own version stamp (the
+// `trained_at` the params doc carries); `key` is the immutable versioned R2
+// object that stamp maps to (state/params/v<trained_at>.json), so a consumer can
+// pin the exact params without a LIST or a read of the live pointer. Both null
+// means the Worker is running on BOOTSTRAP params — no params.json published yet
+// — not that identity was unavailable. Snapshot carries this; trains.json does
+// NOT (it has no inference, only positions), so it stays off the shared block
+// below and is attached by snapshot.ts alone.
+export interface ParamsProvenance {
+  trained_at: number | null;
+  key: string | null;
+}
+
 export interface Provenance {
   code_sha: string;
   dirty: boolean | null;
   producer: string;
+  // Present on the snapshot (always, even on bootstrap — see ParamsProvenance);
+  // absent on trains.json. Optional so codeProvenance() stays the shared base
+  // both artifacts build from.
+  params?: ParamsProvenance | null;
 }
 
 export function codeProvenance(): Provenance {

@@ -264,6 +264,13 @@ export function supplyBand(r: RouteStatus): SupplyBand {
   return "normal";
 }
 
+// The Gauge's colour, kept in lockstep with the glyph/meter so a route's dial
+// never disagrees with its other supply surfaces. Running notably high takes the
+// "high" accent; otherwise it follows the band. Mirrors GaugeTone in app/Gauge.tsx.
+export function gaugeTone(r: RouteStatus): "low" | "thin" | "normal" | "high" | "unknown" {
+  return isRunningHigh(r) ? "high" : supplyBand(r);
+}
+
 // Bars lit on the 3-bar level glyph. Unknown lights none.
 export function supplyBars(band: SupplyBand): number {
   switch (band) {

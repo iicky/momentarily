@@ -873,6 +873,37 @@
       "title": "Observation",
       "type": "object"
     },
+    "ParamsProvenance": {
+      "description": "Identity of the trained params.json behind this snapshot's inference \u2014 the\none thing code_sha can't say, since the model version moves independently of\nthe deployed Worker. trained_at is the trainer's own version stamp; key is the\nimmutable versioned R2 object it maps to (state/params/v<trained_at>.json), so\na consumer can pin the exact params without a LIST. Both null means the Worker\nis on BOOTSTRAP params (no params.json published yet), not that identity was\nunavailable.",
+      "properties": {
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "trained_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trained At"
+        }
+      },
+      "title": "ParamsProvenance",
+      "type": "object"
+    },
     "PlatformCrowding": {
       "description": "Estimated riders waiting on each platform: the platform's assumed share\nof its complex's usual entry rate for this hour, times how long it has been\nsince a train cleared it.\n\nThis is an ESTIMATE built on an admitted assumption (see `method`), not a\nmeasurement \u2014 nothing counts people on platforms. Keys are DIRECTIONAL GTFS\nstop ids ('127N'), so the parent station is the key with its N/S suffix\nstripped and its metadata is in the `stations` surface under that id.\n\nPlatforms that cannot be estimated are absent, not zeroed, and the reason\nis counted in `abstained`.",
       "properties": {
@@ -1032,6 +1063,17 @@
           ],
           "default": null,
           "title": "Dirty"
+        },
+        "params": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParamsProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "producer": {
           "default": "unknown",
@@ -1223,6 +1265,18 @@
           ],
           "default": null,
           "title": "Service Low Ratio"
+        },
+        "service_percentile": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Percentile"
         },
         "service_ratio": {
           "anyOf": [

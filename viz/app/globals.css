@@ -939,6 +939,9 @@ code {
 }
 
 .verdict {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--unknown);
   border-radius: 10px;
@@ -1885,4 +1888,102 @@ a.trip-stop-name:hover {
   .trip-layout {
     grid-template-columns: 1fr;
   }
+}
+
+/* --- The Gauge: per-route "how bad vs usual" percentile dial ------------- */
+/* Colours follow the shared supply tones (gaugeTone in viz/lib/feed.ts): low
+   red, thin amber, normal green, running-high blue, unknown grey — so a route's
+   dial never disagrees with its glyph, meter, or verdict number. */
+.gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin: 10px 0 4px;
+}
+.gauge svg {
+  display: block;
+  overflow: visible;
+}
+.gauge-track {
+  stroke: var(--panel-2);
+  stroke-width: 8;
+  stroke-linecap: round;
+}
+/* The unresolvable top decile (>= this cell's own p90): the baseline carries no
+   anchor above it, so it is drawn as a dashed ceiling the reading never enters. */
+.gauge-ceiling {
+  stroke: var(--border);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 1.5 3;
+}
+.gauge-fill {
+  stroke: var(--unknown);
+  stroke-width: 8;
+  stroke-linecap: round;
+}
+.gauge-dot {
+  fill: var(--unknown);
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+.gauge-median {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+.gauge-value {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 21px;
+  fill: var(--text);
+}
+.gauge-unit {
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  fill: var(--muted);
+}
+.gauge-end {
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  fill: var(--muted);
+}
+.gauge-cap {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  text-align: center;
+  max-width: 210px;
+}
+.gauge-fine {
+  color: var(--unknown);
+}
+.gauge.low .gauge-fill { stroke: var(--suspended); }
+.gauge.low .gauge-dot { fill: var(--suspended); }
+.gauge.low .gauge-value { fill: var(--suspended); }
+.gauge.thin .gauge-fill { stroke: var(--disrupted); }
+.gauge.thin .gauge-dot { fill: var(--disrupted); }
+.gauge.thin .gauge-value { fill: var(--disrupted); }
+.gauge.normal .gauge-fill { stroke: var(--normal); }
+.gauge.normal .gauge-dot { fill: var(--normal); }
+.gauge.high .gauge-fill { stroke: var(--accent); }
+.gauge.high .gauge-dot { fill: var(--accent); }
+.gauge.high .gauge-value { fill: var(--accent); }
+
+/* Which trained params are live, in the header sub-line. Monospace so a version
+   epoch reads as an identifier, not prose. */
+.model-tag {
+  font-family: var(--mono);
+  color: var(--muted);
+  cursor: default;
+}
+
+/* The line page verdict now carries the dial beside its sentence + stats. */
+.verdict-main {
+  flex: 1 1 auto;
+  min-width: 0;
 }

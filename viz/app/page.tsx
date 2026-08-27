@@ -19,9 +19,11 @@ import {
   conditionLabel,
   conditionLead,
   conditionClass,
+  gaugeTone,
 } from "@/lib/feed";
 import type { SupplyBand } from "@/lib/feed";
 import type { Snapshot, RouteStatus, Inference } from "@/lib/types";
+import { Gauge } from "./Gauge";
 
 const POLL_MS = 60_000;
 
@@ -76,6 +78,8 @@ export default function StatusPage() {
         {snap ? (
           <>
             snapshot {fmtAgo(snap.generated_at, fetchedAt)} · refreshes every 60s
+            {" · "}
+            <ModelTag snap={snap} />
           </>
         ) : (
           "loading…"
@@ -110,6 +114,31 @@ export default function StatusPage() {
         />
       )}
     </div>
+  );
+}
+
+// Which trained params are live right now, read straight off the snapshot's
+// provenance — the whole point of exposing params identity in the public feed
+// is that a params publish can be verified here rather than by reading R2. The
+// versioned R2 key and code sha hang off the title for anyone who needs to pin
+// the exact object. Bootstrap (no params.json yet) says so plainly.
+function ModelTag({ snap }: { snap: Snapshot }) {
+  const p = snap.provenance.params;
+  const sha = snap.provenance.code_sha.slice(0, 7);
+  if (p?.trained_at == null) {
+    return (
+      <span className="model-tag" title={`code ${sha} · bootstrap params`}>
+        model: bootstrap
+      </span>
+    );
+  }
+  return (
+    <span
+      className="model-tag"
+      title={`params ${p.key ?? `v${p.trained_at}`} · code ${sha}`}
+    >
+      model v{p.trained_at}
+    </span>
   );
 }
 
@@ -708,6 +737,9 @@ function RouteDrawer({
         How many trains are out, not how well they move. A line can run few
         trains that all move fine, or a full set that crawls.
       </div>
+      {r.service_percentile != null && (
+        <Gauge percentile={r.service_percentile} tone={gaugeTone(r)} size={148} />
+      )}
       {r.service_ratio != null ? (
         <SupplyMeter
           ratio={r.service_ratio}

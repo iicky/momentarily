@@ -17,6 +17,7 @@ import {
   serviceQuantileFor,
   serviceQuantileRatiosFor,
   serviceRatioFor,
+  servicePercentile,
   SERVICE_DEGRADE_RATIO,
   SERVICE_DEBOUNCE_TICKS,
   MAX_MOVEMENT_METRIC_LAG_SECONDS,
@@ -899,5 +900,67 @@ describe('serviceQuantileFor / serviceQuantileRatiosFor / deriveServiceQuantileR
   test('deriveServiceQuantileRatios omits a route with a baseline but no quantile cell', () => {
     const rows = new Map<string, ServiceRow>([[ROUTE, svc({ assigned_n: 9 })]]);
     expect(deriveServiceQuantileRatios(rows, baseline, {}, T0)).toEqual({});
+  });
+});
+
+describe('servicePercentile (how-bad-vs-baseline gauge)', () => {
+  test('reads exactly at the three real anchors: p10 -> 10, median -> 50, p90 -> 90', () => {
+    // low = p10/median, high = p90/median; ratio 1.0 is the median.
+    expect(servicePercentile(0.7, 0.7, 1.3)).toBe(10);
+    expect(servicePercentile(1.0, 0.7, 1.3)).toBe(50);
+    expect(servicePercentile(1.3, 0.7, 1.3)).toBe(90);
+  });
+
+  test('interpolates linearly between anchors', () => {
+    // Halfway between median (1.0, 50) and p90 (1.3, 90) -> 70.
+    expect(servicePercentile(1.15, 0.7, 1.3)).toBe(70);
+    // Halfway between p10 (0.7, 10) and median (1.0, 50) -> 30.
+    expect(servicePercentile(0.85, 0.7, 1.3)).toBe(30);
+  });
+
+  test('below p10 interpolates toward the hard floor (zero trains = 0th percentile)', () => {
+    // Half of p10 on the ratio scale is half of 10 -> 5. Zero supply is 0.
+    expect(servicePercentile(0.35, 0.7, 1.3)).toBe(5);
+    expect(servicePercentile(0, 0.7, 1.3)).toBe(0);
+  });
+
+  test('above p90 saturates at 90 rather than projecting past the last observed quantile', () => {
+    expect(servicePercentile(1.6, 0.7, 1.3)).toBe(90);
+    expect(servicePercentile(5.0, 0.7, 1.3)).toBe(90);
+  });
+
+  // The journal (2026-08-22) rejected ratio-vs-median because it INVERTED the
+  // ranking of a bimodal cell: it called the 2's ordinary second mode (at its own
+  // p90, 178% of median) MORE anomalous than the 1's genuine outlier (above its
+  // own tighter p90, 164%). The empirical percentile — computed from FULL history,
+  // which this sidecar does NOT carry — separated them (88th vs 96th). This
+  // 3-anchor gauge cannot reproduce that separation: both sit at/above their own
+  // p90, so both SATURATE to 90 (a tie, not a separation — the documented upper-
+  // tail limit). What it guarantees is only the weaker, decision-relevant
+  // property: it never inverts the ranking the way the raw ratio did. The gauge's
+  // resolution lives in the low ("bad") tail, not here.
+  test("ties a bimodal cell's two upper modes at 90 rather than inverting them like ratio-vs-median", () => {
+    // Route 2 @ we23: median 9, p90 16, observed 16 -> ratio 1.78, high 1.78. At p90.
+    const two = servicePercentile(16 / 9, 8 / 9, 16 / 9);
+    // Route 1 @ we23: median 11, p90 13, observed 18 -> ratio 1.64, high 1.18. Above p90.
+    const one = servicePercentile(18 / 11, 9 / 11, 13 / 11);
+    expect(two).toBe(90); // exactly at its own p90 — top of normal, saturated
+    expect(one).toBe(90); // above its own p90 — saturated (NOT separated from two)
+    // Never ranked BELOW the ordinary second mode, which is exactly the inversion
+    // the raw ratio produced (1.64 < 1.78). Tie is acceptable; inversion is not.
+    expect(one!).toBeGreaterThanOrEqual(two!);
+  });
+
+  test('null when any input is null (same lifecycle as service_ratio)', () => {
+    expect(servicePercentile(null, 0.7, 1.3)).toBeNull();
+    expect(servicePercentile(1.0, null, 1.3)).toBeNull();
+    expect(servicePercentile(1.0, 0.7, null)).toBeNull();
+  });
+
+  test('null on a degenerate cell whose anchors are not ordered around the median', () => {
+    // p10 >= median (low >= 1): no honest placement exists.
+    expect(servicePercentile(1.0, 1.0, 1.3)).toBeNull();
+    // p90 <= median (high <= 1).
+    expect(servicePercentile(1.0, 0.7, 1.0)).toBeNull();
   });
 });

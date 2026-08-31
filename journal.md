@@ -5765,6 +5765,21 @@ than lying about which platform the demand goes to. Worth remembering the
 shape of the catch: 456 worker tests and the full python suite were green on
 both sides of this bug; only the semantic review gate saw it.
 
+## 2026-08-27 — correction: not "every overnight cell near a boundary" — only cells that themselves carry >=24:00 rows, and only where the spillover crosses a class
+
+origin: agent
+
+The entry above overclaimed its blast radius. The wrap put weight in the WRONG
+class only where a cell's own >=24:00 rows spill across a weekday/weekend
+boundary (Friday-night weekday service landing Saturday morning, Sunday-night
+weekend service landing Monday morning). A mid-week 25:10 row wraps into
+`wd[1]`, which is the class Tuesday-Friday 01:10 actually reads — same-class
+spillover, not corruption. So the corrupted set is: overnight cells containing
+>=24:00 departures whose service day's class differs from the next wall-clock
+day's, a subset of the 3.35% of rows, not "every overnight cell near a
+boundary". The shipped exclusion drops all >=24:00 rows regardless, which is
+broader than the corruption but the only shape a two-bin artifact can carry
+honestly.
 ## 2026-08-27 — supply-ratio 1.7-2.1x on weekend late nights: denominator is correct, the thin 2-weekend median is the amplifier
 
 origin: agent

@@ -5836,3 +5836,52 @@ UTC 00-03 of the next day, so a weekend-only fetch of the ET Sat/Sun UTC prefixe
 silently drops every Sunday-ET late night (they live under the Monday UTC prefix)
 — a partial fetch gave a `we23` median of 14.5 vs the true 13.0. Fetch the full
 contiguous window (as train_em does) or the recompute will not reconcile.
+
+## 2026-08-31 — publish-prep: the movement-trained retrain moves ONLY the advance emission live — service_mu/sigma are still prior-only (0 of 28 routes fitted), because training never carries the service channel
+
+origin: agent
+
+Retrained on the current window (`2026-08-18..08-31`, `prior_strength=100`,
+`min_ticks=288`, `--dry-run`) to diff the fitted emissions against the live
+published set (`trained_at=1787792319`, `2026-08-14..08-27`) before a real
+publish. `baseline_cells=211`, `service_cells=131`, movement mass healthy — the
+advance-baseline publish gate is nowhere near empty.
+
+**The advance emission is genuinely fitted, and it is the only channel that
+moves.** Per-state `advance_rate` shifts on every route with movement mass and
+tracks the responsibility-weighted `k/n` from `--diagnose-advance` (e.g. N
+disrupted 0.540→0.508 at `mov_n≈27k`; F normal 0.973→0.927; G disrupted
+0.234→0.838 as EM re-seats G's alert-thin states). The global prior's
+advance_rate is the fitted `(0.919, 0.903, 0.838)`. This is the intended
+operating-point move.
+
+**Negative result — service_mu/service_sigma are NOT fitted: 0 of 28 routes
+deviate from the prior default.** After the retrain every route still ships
+`service_mu=(1.0, 0.6, 0.05)` and `service_sigma=(0.3, 0.3, 0.15)` exactly (the
+`DEFAULT_EMISSIONS` constants), identical to the currently published set. The
+cause: `training/load_r2.py` builds each `Observation` with the alert flags,
+tod_bin, and (since 2026-08-25) the folded movement fields, but never sets
+`has_service`/`service_ratio`. So `svc_w=0` for every state and the M-step
+(`hmm.py` `_m_step`) returns `prior.service_mu[s]` unchanged. The service
+Gaussian is a prior-only channel in training — exactly the state the movement
+channel was in before it was wired — while the live worker still scores
+`service_ratio` against these constants (`worker/src/hmm.ts` gates on
+`service_mu !== undefined`, which the published params satisfy). So a
+"movement-trained params" publish moves the advance emission and leaves the
+service emission's operating point untouched; the earlier assumption that this
+retrain also fits the service channel does not hold.
+
+**Canonicalization holds under the now-fitted advance tiebreak.** The concern
+was that non-constant `advance_rate` feeding `canonicalize_states`' tiebreak
+could re-label states. It does not: across all 28 routes the suspended slot is
+still decided by the suspended-flag Bernoulli (`bernoulli_p`), which is strictly
+ordered `suspended ≥ disrupted` everywhere — the smallest gap is R at 0.005, and
+there is no exact tie for the advance term to break. Zero state assignments flip
+on the fitted advance. One pre-existing interaction does shift, though: because
+the prior `service_mu` constant is permuted along with a route's canonicalization
+and never re-applied in canonical order, any route whose EM converges to a
+non-identity permutation ships a severity-inverted `service_mu`
+(`(1.0, 0.05, 0.6)` — disrupted 0.05, suspended 0.6). The retrain moves that
+affected set from `{6X, W}` (published) to `{3, G, N, W}`. Harmless while the
+channel is prior-only, but it is a latent mis-order that a real service fit would
+need to fix first; out of scope for this publish.

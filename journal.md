@@ -5780,3 +5780,59 @@ day's, a subset of the 3.35% of rows, not "every overnight cell near a
 boundary". The shipped exclusion drops all >=24:00 rows regardless, which is
 broader than the corruption but the only shape a two-bin artifact can carry
 honestly.
+## 2026-08-27 — supply-ratio 1.7-2.1x on weekend late nights: denominator is correct, the thin 2-weekend median is the amplifier
+
+origin: agent
+
+Re-verification of the 170-208% supply readings (routes 1/2/J at
+169/208/175% of baseline while the median route sits at 100%). Confirmed the
+denominator is correct and the readings are real off-distribution surplus, not
+a wrong-cell-join / daypart / thin-cell defect — but the amplifier is a real
+sampling weakness in how the baseline window is sized and gated.
+
+**The sidecar reproduces bit-for-bit from the archive.** `state/service_baseline.json`
+is v1787792319 (generated_at == params_trained_at, i.e. baked by the retrain over
+its training window `2026-08-14..2026-08-27`, NOT by the 28-day backfill tool).
+Re-fetching the raw `archive/trip_updates/` for that window and re-running
+`build_service_series` -> `compute_baseline(bin_fn=schedule_bin)` /
+`compute_service_quantiles` reproduces every cell exactly: route 1 `we23`
+median=13.0 (p10=8/p90=18), route 2 `we23` median=11.5 (p10=7/p90=16), route J
+`we23` median=5.0 (p10=2/p90=8), route C `we23` median=2. So no wrong join, no
+arithmetic error. The Worker's `serviceRatioFor` (movement_state.ts) divides live
+`assigned_n` by `baseline[route][schedule_bin(observedAt)]` with the identical
+`schedule_bin` the builder used — same cell, both sides.
+
+**The reported ratios reproduce from those medians.** 22/13 = 169%, 24/11.5 =
+209%, 9/5 = 180%. The live assigned_n behind them (~22/24/9 trains on a weekend
+late night) is near a NORMAL WEEKDAY-MIDDAY level: the current Thu-12:40 snapshot
+reads route 1 assigned=24 at ratio 1.045 (wd12 median ~23), route 2 assigned=27
+at 1.038 — all ~1.0. The machinery is calibrated correctly everywhere except
+where the baseline itself is thin.
+
+**Why 2x is expected here, not a bug.** The training window is 13 days = exactly
+2 weekends, so every `we<hour>` cell has only 4 independent nights. `compute_baseline`
+gates on `min_samples=20` counting 5-minute TICKS (~12/hour, near-constant within
+a night), so a weekend-hour cell clears the gate on ~2 nights though it is really
+2-4 independent draws. Late-night weekend service is bimodal (reduced/trackwork
+nights vs normal nights) and the median lands in the empty gap between the modes:
+route 2 `we23` per-night medians are 8, 9, 16, 15 -> cell median 11.5 (no night
+ran ~11.5); route J `we23` is 2, 2, 7, 7 -> cell median 5 (no night ran 5). A live
+night at 24 (route 2) or 9 (route J) exceeds EVERY training night (max 16 and 8 =
+p90), so it correctly reads above p90 — a genuine surplus measured against a
+correct denominator that happens to sit between two modes.
+
+**Actionable weakness (filed, not fixed — params/training-window side, eval on
+v1787792319 protected):** the `min_samples` gate counts autocorrelated ticks, not
+independent service-nights, so a 2-weekend window certifies weekend-hourly cells
+that are really a 2-4-point summary of a bimodal distribution. The fix is a longer
+dedicated baseline window (the backfill tool's 28-day default gives ~8 weekend
+nights) and/or gating on independent-night count rather than tick count. Both
+change what the artifact publishes and feed the emission `service_mu/sigma`, so
+they are params-side and out of scope for a builder-only fix.
+
+**Recompute gotcha for the next investigator:** `archive/trip_updates/{d}/` is
+keyed by UTC date, but `schedule_bin` buckets by ET. ET weekend hours 20-23 are
+UTC 00-03 of the next day, so a weekend-only fetch of the ET Sat/Sun UTC prefixes
+silently drops every Sunday-ET late night (they live under the Monday UTC prefix)
+— a partial fetch gave a `we23` median of 14.5 vs the true 13.0. Fetch the full
+contiguous window (as train_em does) or the recompute will not reconcile.

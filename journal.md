@@ -5734,6 +5734,37 @@ the earlier bakeoff called it: the weakest and only non-significant separation
 (2.04x, overlapping CIs) despite judging 93% of cells. The win is still the
 cross, and it survives dropping the axis main had already graded away.
 
+## 2026-08-26 — GTFS after-midnight rows wrap into the wrong service class: 18,909 of 565,093 stop_times rows (3.35%) run on the next wall-clock day
+
+origin: agent
+
+The pre-commit adversarial gate blocked the scheduled-service-split merge on a
+bug the whole test suite passed: `hour_of()` mapped `24:xx`/`25:xx` departures
+back to a wall-clock hour with `% 24` but left the count in the SERVICE day's
+`wd`/`we` bucket, while the Worker's `serviceWeightFor` keys the lookup by
+actual wall clock. A Friday 25:10 trip counted into `wd[1]`, but a rider on
+that platform at Saturday 01:10 is read against `we[1]`; Sunday 25:10
+contaminates `we` while Monday 01:10 reads `wd`. 3.35% of all scheduled
+departures sit past 24:00, so every overnight cell near a weekday/weekend
+boundary carried some wrong-class weight.
+
+**The rejected fix, and why it is structurally dead, not just unshipped.** The
+obvious repair — count a >=24:00 row into the class of the reference day's
+successor via previous-day active service sets — looks exact and is not: the
+artifact publishes ONE `wd` vector applied to all five weekdays, so Monday's
+early hours (fed by Sunday-night, weekend-class service) and Tuesday-Friday's
+(fed by weekday-night service) cannot both be right in a two-bin shape. Any
+per-class predecessor rule just moves which morning is wrong. Exactness needs
+day-of-week resolution in both the artifact and the Worker lookup.
+
+Shipped instead: exclusion. `hour_of()` returns None for hour >= 24, an
+excluded row can zero a platform's overnight cell, and a zero forces that
+complex back to the even split for that hour — the pre-feature behavior,
+never a wrong-class weight. The split therefore abstains overnight rather
+than lying about which platform the demand goes to. Worth remembering the
+shape of the catch: 456 worker tests and the full python suite were green on
+both sides of this bug; only the semantic review gate saw it.
+
 ## 2026-08-27 — supply-ratio 1.7-2.1x on weekend late nights: denominator is correct, the thin 2-weekend median is the amplifier
 
 origin: agent

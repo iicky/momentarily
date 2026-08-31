@@ -9,7 +9,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coverage, readEdge, selectReading, stationOf } from "../lib/segments.ts";
+import {
+  coverage,
+  readEdge,
+  routeMovementByDirection,
+  selectReading,
+  stationOf,
+} from "../lib/segments.ts";
 import type { Diagram, DiagramEdge } from "../lib/diagram.ts";
 import type { SegmentFlow, SegmentStatus } from "../lib/types.ts";
 
@@ -283,4 +289,66 @@ test("stationOf strips only a directional suffix", () => {
   assert.equal(stationOf("101"), "101");
   // Not every id ends in a direction letter — a bare station id is unchanged.
   assert.equal(stationOf("H01"), "H01");
+});
+
+// --- Per-direction route rollup (drawer) -----------------------------------
+
+test("the rollup counts crawling only among cells with a movement verdict", () => {
+  // Three northbound cells: two moving, one crawling. The crawl share is 1 of 3
+  // — the two normal cells are the denominator, the disrupted one the numerator.
+  const f = flow({
+    "A|north|1N": cell({ route: "A", direction: "north", from_stop: "1N", status: "normal" }),
+    "A|north|2N": cell({ route: "A", direction: "north", from_stop: "2N", status: "normal" }),
+    "A|north|3N": cell({ route: "A", direction: "north", from_stop: "3N", status: "disrupted" }),
+  });
+  const mv = routeMovementByDirection(f, "A");
+  assert.deepEqual(mv.north, { measured: 3, crawling: 1, quiet: 0 });
+  // No southbound cell at all: the side is unmeasured, never a healthy read.
+  assert.equal(mv.south, null);
+});
+
+test("quiet cells stay out of the crawl denominator", () => {
+  // Two quiet cells and one crawling: the crawl share is 1 of 1, not 1 of 3.
+  // Folding quiet ("too little service to judge") into the denominator would
+  // understate how much of the judged track is crawling.
+  const f = flow({
+    "A|north|1N": cell({ route: "A", direction: "north", from_stop: "1N", status: "quiet" }),
+    "A|north|2N": cell({ route: "A", direction: "north", from_stop: "2N", status: "quiet" }),
+    "A|north|3N": cell({ route: "A", direction: "north", from_stop: "3N", status: "disrupted" }),
+  });
+  const mv = routeMovementByDirection(f, "A");
+  assert.deepEqual(mv.north, { measured: 1, crawling: 1, quiet: 2 });
+});
+
+test("an all-quiet side is measured 0, distinct from an unmeasured side", () => {
+  // The side HAS cells, so it is not null — but none carry a moving-vs-crawling
+  // verdict, so measured is 0. The drawer must say "too little to judge", not
+  // "moving" and not "unmeasured".
+  const f = flow({
+    "A|north|1N": cell({ route: "A", direction: "north", from_stop: "1N", status: "quiet" }),
+  });
+  const mv = routeMovementByDirection(f, "A");
+  assert.deepEqual(mv.north, { measured: 0, crawling: 0, quiet: 1 });
+  assert.equal(mv.south, null);
+});
+
+test("the rollup keeps routes and directions separate", () => {
+  const f = flow({
+    "A|north|1N": cell({ route: "A", direction: "north", from_stop: "1N", status: "disrupted" }),
+    "A|south|1S": cell({ route: "A", direction: "south", from_stop: "1S", status: "normal" }),
+    "B|north|9N": cell({ route: "B", direction: "north", from_stop: "9N", status: "disrupted" }),
+  });
+  const a = routeMovementByDirection(f, "A");
+  assert.deepEqual(a.north, { measured: 1, crawling: 1, quiet: 0 });
+  assert.deepEqual(a.south, { measured: 1, crawling: 0, quiet: 0 });
+  // Route B's crawl must not bleed into route A.
+  const b = routeMovementByDirection(f, "B");
+  assert.deepEqual(b.north, { measured: 1, crawling: 1, quiet: 0 });
+  assert.equal(b.south, null);
+});
+
+test("a missing segment surface reads unmeasured on both sides", () => {
+  const mv = routeMovementByDirection(null, "A");
+  assert.equal(mv.north, null);
+  assert.equal(mv.south, null);
 });

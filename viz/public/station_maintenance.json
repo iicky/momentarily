@@ -1,0 +1,3123 @@
+{
+  "closure_window": {
+    "end": "2026-08-27T08:52:59-04:00",
+    "start": "2026-01-01T00:00:00-05:00"
+  },
+  "coverage": {
+    "ene": {
+      "end": "2026-08-27",
+      "start": "2026-05-29"
+    },
+    "windows": {
+      "end": "2026-08-26",
+      "start": "2026-05-22"
+    }
+  },
+  "generated_at": 1787835179,
+  "n_stations": 442,
+  "outage_window": {
+    "end": "2026-08-27T08:52:59-04:00",
+    "start": "2026-08-01T00:00:00-04:00"
+  },
+  "schema_version": "1",
+  "source": {
+    "ene": "archive/ene/",
+    "windows": "archive/windows/"
+  },
+  "stations": {
+    "101": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "103": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "104": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.2,
+      "planned_closures": 6,
+      "resolved_outages": 4
+    },
+    "106": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "107": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "108": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "109": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.3,
+      "planned_closures": 2,
+      "resolved_outages": 7
+    },
+    "110": {
+      "elevator_outages": 25,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.9,
+      "planned_closures": 2,
+      "resolved_outages": 25
+    },
+    "111": {
+      "elevator_outages": 19,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.9,
+      "planned_closures": 2,
+      "resolved_outages": 19
+    },
+    "112": {
+      "elevator_outages": 12,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 3,
+      "resolved_outages": 12
+    },
+    "113": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "114": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "115": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.0,
+      "planned_closures": 9,
+      "resolved_outages": 4
+    },
+    "116": {
+      "elevator_outages": 0,
+      "escalator_outages": 22,
+      "median_repair_hours": 1.0,
+      "planned_closures": 12,
+      "resolved_outages": 21
+    },
+    "117": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 12,
+      "resolved_outages": 0
+    },
+    "118": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 12,
+      "resolved_outages": 0
+    },
+    "119": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 12,
+      "resolved_outages": 0
+    },
+    "120": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 29,
+      "resolved_outages": 3
+    },
+    "121": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "122": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "123": {
+      "elevator_outages": 2,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 29,
+      "resolved_outages": 0
+    },
+    "124": {
+      "elevator_outages": 2,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.4,
+      "planned_closures": 20,
+      "resolved_outages": 2
+    },
+    "125": {
+      "elevator_outages": 9,
+      "escalator_outages": 3,
+      "median_repair_hours": 4.7,
+      "planned_closures": 20,
+      "resolved_outages": 11
+    },
+    "126": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 23,
+      "resolved_outages": 0
+    },
+    "127": {
+      "elevator_outages": 39,
+      "escalator_outages": 46,
+      "median_repair_hours": 1.9,
+      "planned_closures": 29,
+      "resolved_outages": 82
+    },
+    "128": {
+      "elevator_outages": 12,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.0,
+      "planned_closures": 37,
+      "resolved_outages": 12
+    },
+    "129": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "130": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "131": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "132": {
+      "elevator_outages": 19,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.9,
+      "planned_closures": 29,
+      "resolved_outages": 19
+    },
+    "133": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "134": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "135": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "136": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "137": {
+      "elevator_outages": 6,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.0,
+      "planned_closures": 29,
+      "resolved_outages": 6
+    },
+    "138": {
+      "elevator_outages": 2,
+      "escalator_outages": 3,
+      "median_repair_hours": 3.3,
+      "planned_closures": 24,
+      "resolved_outages": 5
+    },
+    "139": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 24,
+      "resolved_outages": 0
+    },
+    "142": {
+      "elevator_outages": 3,
+      "escalator_outages": 62,
+      "median_repair_hours": 1.2,
+      "planned_closures": 24,
+      "resolved_outages": 65
+    },
+    "201": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "204": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "205": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 3,
+      "resolved_outages": 5
+    },
+    "206": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "207": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "208": {
+      "elevator_outages": 8,
+      "escalator_outages": 30,
+      "median_repair_hours": 2.0,
+      "planned_closures": 0,
+      "resolved_outages": 38
+    },
+    "211": {
+      "elevator_outages": 10,
+      "escalator_outages": 7,
+      "median_repair_hours": 3.3,
+      "planned_closures": 0,
+      "resolved_outages": 17
+    },
+    "213": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.8,
+      "planned_closures": 14,
+      "resolved_outages": 4
+    },
+    "214": {
+      "elevator_outages": 0,
+      "escalator_outages": 14,
+      "median_repair_hours": 1.1,
+      "planned_closures": 8,
+      "resolved_outages": 14
+    },
+    "215": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "216": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "217": {
+      "elevator_outages": 11,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.2,
+      "planned_closures": 13,
+      "resolved_outages": 11
+    },
+    "218": {
+      "elevator_outages": 0,
+      "escalator_outages": 9,
+      "median_repair_hours": 1.5,
+      "planned_closures": 13,
+      "resolved_outages": 9
+    },
+    "219": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "220": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "221": {
+      "elevator_outages": 6,
+      "escalator_outages": 0,
+      "median_repair_hours": 113.0,
+      "planned_closures": 8,
+      "resolved_outages": 4
+    },
+    "222": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 16,
+      "resolved_outages": 0
+    },
+    "224": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.5,
+      "planned_closures": 31,
+      "resolved_outages": 5
+    },
+    "225": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 31,
+      "resolved_outages": 0
+    },
+    "226": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 31,
+      "resolved_outages": 0
+    },
+    "227": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 31,
+      "resolved_outages": 0
+    },
+    "228": {
+      "elevator_outages": 13,
+      "escalator_outages": 10,
+      "median_repair_hours": 4.1,
+      "planned_closures": 9,
+      "resolved_outages": 21
+    },
+    "229": {
+      "elevator_outages": 27,
+      "escalator_outages": 40,
+      "median_repair_hours": 1.4,
+      "planned_closures": 9,
+      "resolved_outages": 67
+    },
+    "230": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "231": {
+      "elevator_outages": 14,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.5,
+      "planned_closures": 12,
+      "resolved_outages": 14
+    },
+    "232": {
+      "elevator_outages": 15,
+      "escalator_outages": 43,
+      "median_repair_hours": 1.9,
+      "planned_closures": 11,
+      "resolved_outages": 58
+    },
+    "233": {
+      "elevator_outages": 1,
+      "escalator_outages": 0,
+      "median_repair_hours": 5.9,
+      "planned_closures": 11,
+      "resolved_outages": 1
+    },
+    "234": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 20,
+      "resolved_outages": 0
+    },
+    "235": {
+      "elevator_outages": 23,
+      "escalator_outages": 12,
+      "median_repair_hours": 1.6,
+      "planned_closures": 20,
+      "resolved_outages": 33
+    },
+    "236": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 36,
+      "resolved_outages": 0
+    },
+    "237": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 36,
+      "resolved_outages": 0
+    },
+    "238": {
+      "elevator_outages": 6,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 36,
+      "resolved_outages": 6
+    },
+    "239": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 20,
+      "resolved_outages": 0
+    },
+    "241": {
+      "elevator_outages": 0,
+      "escalator_outages": 4,
+      "median_repair_hours": 2.5,
+      "planned_closures": 0,
+      "resolved_outages": 4
+    },
+    "244": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.6,
+      "planned_closures": 0,
+      "resolved_outages": 7
+    },
+    "247": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.9,
+      "planned_closures": 0,
+      "resolved_outages": 5
+    },
+    "248": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 20,
+      "resolved_outages": 0
+    },
+    "249": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 20,
+      "resolved_outages": 0
+    },
+    "250": {
+      "elevator_outages": 6,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.7,
+      "planned_closures": 28,
+      "resolved_outages": 6
+    },
+    "251": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "252": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "253": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "254": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "255": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "256": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "257": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 28,
+      "resolved_outages": 0
+    },
+    "301": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 35,
+      "resolved_outages": 0
+    },
+    "302": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 35,
+      "resolved_outages": 0
+    },
+    "401": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "402": {
+      "elevator_outages": 6,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.8,
+      "planned_closures": 17,
+      "resolved_outages": 6
+    },
+    "405": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "406": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "407": {
+      "elevator_outages": 10,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.1,
+      "planned_closures": 0,
+      "resolved_outages": 10
+    },
+    "409": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "410": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "411": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "412": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.9,
+      "planned_closures": 7,
+      "resolved_outages": 5
+    },
+    "414": {
+      "elevator_outages": 6,
+      "escalator_outages": 13,
+      "median_repair_hours": 2.1,
+      "planned_closures": 0,
+      "resolved_outages": 14
+    },
+    "416": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "418": {
+      "elevator_outages": 27,
+      "escalator_outages": 40,
+      "median_repair_hours": 1.4,
+      "planned_closures": 19,
+      "resolved_outages": 67
+    },
+    "419": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 21,
+      "resolved_outages": 0
+    },
+    "420": {
+      "elevator_outages": 25,
+      "escalator_outages": 56,
+      "median_repair_hours": 1.2,
+      "planned_closures": 19,
+      "resolved_outages": 81
+    },
+    "423": {
+      "elevator_outages": 15,
+      "escalator_outages": 43,
+      "median_repair_hours": 1.9,
+      "planned_closures": 9,
+      "resolved_outages": 58
+    },
+    "501": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "502": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "503": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.4,
+      "planned_closures": 9,
+      "resolved_outages": 8
+    },
+    "504": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "505": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "601": {
+      "elevator_outages": 9,
+      "escalator_outages": 6,
+      "median_repair_hours": 3.4,
+      "planned_closures": 4,
+      "resolved_outages": 15
+    },
+    "602": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 33,
+      "resolved_outages": 0
+    },
+    "603": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 33,
+      "resolved_outages": 0
+    },
+    "604": {
+      "elevator_outages": 6,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.5,
+      "planned_closures": 33,
+      "resolved_outages": 6
+    },
+    "606": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 30,
+      "resolved_outages": 0
+    },
+    "607": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 30,
+      "resolved_outages": 0
+    },
+    "608": {
+      "elevator_outages": 3,
+      "escalator_outages": 3,
+      "median_repair_hours": 1.2,
+      "planned_closures": 19,
+      "resolved_outages": 6
+    },
+    "609": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "610": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "611": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "612": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 39,
+      "resolved_outages": 0
+    },
+    "613": {
+      "elevator_outages": 11,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.9,
+      "planned_closures": 7,
+      "resolved_outages": 11
+    },
+    "614": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 33,
+      "resolved_outages": 0
+    },
+    "615": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.1,
+      "planned_closures": 33,
+      "resolved_outages": 4
+    },
+    "616": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 33,
+      "resolved_outages": 0
+    },
+    "617": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 33,
+      "resolved_outages": 0
+    },
+    "618": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 33,
+      "resolved_outages": 0
+    },
+    "619": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "621": {
+      "elevator_outages": 12,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.8,
+      "planned_closures": 8,
+      "resolved_outages": 12
+    },
+    "622": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "623": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "624": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "625": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "626": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.4,
+      "planned_closures": 8,
+      "resolved_outages": 4
+    },
+    "627": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "628": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.1,
+      "planned_closures": 7,
+      "resolved_outages": 4
+    },
+    "629": {
+      "elevator_outages": 0,
+      "escalator_outages": 36,
+      "median_repair_hours": 1.8,
+      "planned_closures": 8,
+      "resolved_outages": 35
+    },
+    "630": {
+      "elevator_outages": 8,
+      "escalator_outages": 41,
+      "median_repair_hours": 1.6,
+      "planned_closures": 7,
+      "resolved_outages": 48
+    },
+    "631": {
+      "elevator_outages": 11,
+      "escalator_outages": 124,
+      "median_repair_hours": 1.6,
+      "planned_closures": 10,
+      "resolved_outages": 134
+    },
+    "632": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "633": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "634": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.2,
+      "planned_closures": 4,
+      "resolved_outages": 3
+    },
+    "635": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "636": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "637": {
+      "elevator_outages": 18,
+      "escalator_outages": 5,
+      "median_repair_hours": 2.3,
+      "planned_closures": 4,
+      "resolved_outages": 23
+    },
+    "638": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "639": {
+      "elevator_outages": 13,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.1,
+      "planned_closures": 4,
+      "resolved_outages": 13
+    },
+    "640": {
+      "elevator_outages": 10,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.5,
+      "planned_closures": 19,
+      "resolved_outages": 10
+    },
+    "701": {
+      "elevator_outages": 1,
+      "escalator_outages": 23,
+      "median_repair_hours": 1.6,
+      "planned_closures": 3,
+      "resolved_outages": 23
+    },
+    "705": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "706": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "707": {
+      "elevator_outages": 24,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.1,
+      "planned_closures": 0,
+      "resolved_outages": 24
+    },
+    "708": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "709": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "710": {
+      "elevator_outages": 20,
+      "escalator_outages": 23,
+      "median_repair_hours": 1.1,
+      "planned_closures": 1,
+      "resolved_outages": 43
+    },
+    "711": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "712": {
+      "elevator_outages": 1,
+      "escalator_outages": 1,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "713": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "714": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "715": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "716": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "718": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.8,
+      "planned_closures": 4,
+      "resolved_outages": 8
+    },
+    "719": {
+      "elevator_outages": 20,
+      "escalator_outages": 4,
+      "median_repair_hours": 3.3,
+      "planned_closures": 4,
+      "resolved_outages": 21
+    },
+    "720": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "721": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "723": {
+      "elevator_outages": 11,
+      "escalator_outages": 124,
+      "median_repair_hours": 1.6,
+      "planned_closures": 4,
+      "resolved_outages": 134
+    },
+    "724": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "725": {
+      "elevator_outages": 39,
+      "escalator_outages": 46,
+      "median_repair_hours": 1.9,
+      "planned_closures": 4,
+      "resolved_outages": 82
+    },
+    "726": {
+      "elevator_outages": 22,
+      "escalator_outages": 128,
+      "median_repair_hours": 1.4,
+      "planned_closures": 4,
+      "resolved_outages": 150
+    },
+    "901": {
+      "elevator_outages": 11,
+      "escalator_outages": 124,
+      "median_repair_hours": 1.6,
+      "planned_closures": 0,
+      "resolved_outages": 134
+    },
+    "902": {
+      "elevator_outages": 39,
+      "escalator_outages": 46,
+      "median_repair_hours": 1.9,
+      "planned_closures": 0,
+      "resolved_outages": 82
+    },
+    "A02": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.3,
+      "planned_closures": 1,
+      "resolved_outages": 9
+    },
+    "A03": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "A05": {
+      "elevator_outages": 13,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 1,
+      "resolved_outages": 13
+    },
+    "A06": {
+      "elevator_outages": 12,
+      "escalator_outages": 21,
+      "median_repair_hours": 2.4,
+      "planned_closures": 1,
+      "resolved_outages": 33
+    },
+    "A07": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.5,
+      "planned_closures": 1,
+      "resolved_outages": 3
+    },
+    "A09": {
+      "elevator_outages": 12,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 4,
+      "resolved_outages": 12
+    },
+    "A10": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "A11": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "A12": {
+      "elevator_outages": 0,
+      "escalator_outages": 11,
+      "median_repair_hours": 1.2,
+      "planned_closures": 3,
+      "resolved_outages": 11
+    },
+    "A14": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "A15": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.9,
+      "planned_closures": 4,
+      "resolved_outages": 4
+    },
+    "A16": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A17": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A18": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A21": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A22": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 15,
+      "resolved_outages": 0
+    },
+    "A24": {
+      "elevator_outages": 9,
+      "escalator_outages": 3,
+      "median_repair_hours": 4.7,
+      "planned_closures": 4,
+      "resolved_outages": 11
+    },
+    "A25": {
+      "elevator_outages": 1,
+      "escalator_outages": 4,
+      "median_repair_hours": 6.0,
+      "planned_closures": 10,
+      "resolved_outages": 5
+    },
+    "A27": {
+      "elevator_outages": 39,
+      "escalator_outages": 46,
+      "median_repair_hours": 1.9,
+      "planned_closures": 0,
+      "resolved_outages": 82
+    },
+    "A28": {
+      "elevator_outages": 11,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.8,
+      "planned_closures": 0,
+      "resolved_outages": 9
+    },
+    "A30": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "A31": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.9,
+      "planned_closures": 0,
+      "resolved_outages": 9
+    },
+    "A32": {
+      "elevator_outages": 8,
+      "escalator_outages": 18,
+      "median_repair_hours": 0.9,
+      "planned_closures": 1,
+      "resolved_outages": 24
+    },
+    "A33": {
+      "elevator_outages": 2,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.2,
+      "planned_closures": 15,
+      "resolved_outages": 2
+    },
+    "A34": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "A38": {
+      "elevator_outages": 27,
+      "escalator_outages": 40,
+      "median_repair_hours": 1.4,
+      "planned_closures": 0,
+      "resolved_outages": 67
+    },
+    "A40": {
+      "elevator_outages": 0,
+      "escalator_outages": 25,
+      "median_repair_hours": 2.0,
+      "planned_closures": 0,
+      "resolved_outages": 25
+    },
+    "A41": {
+      "elevator_outages": 10,
+      "escalator_outages": 22,
+      "median_repair_hours": 1.7,
+      "planned_closures": 1,
+      "resolved_outages": 32
+    },
+    "A42": {
+      "elevator_outages": 1,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.8,
+      "planned_closures": 6,
+      "resolved_outages": 1
+    },
+    "A45": {
+      "elevator_outages": 3,
+      "escalator_outages": 15,
+      "median_repair_hours": 1.7,
+      "planned_closures": 0,
+      "resolved_outages": 18
+    },
+    "A48": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.2,
+      "planned_closures": 0,
+      "resolved_outages": 8
+    },
+    "A49": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "A50": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "A51": {
+      "elevator_outages": 0,
+      "escalator_outages": 26,
+      "median_repair_hours": 2.2,
+      "planned_closures": 0,
+      "resolved_outages": 26
+    },
+    "A52": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "A53": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "A54": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "A55": {
+      "elevator_outages": 10,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.5,
+      "planned_closures": 0,
+      "resolved_outages": 10
+    },
+    "A60": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "A61": {
+      "elevator_outages": 10,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.0,
+      "planned_closures": 10,
+      "resolved_outages": 10
+    },
+    "A63": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "A64": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "A65": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.3,
+      "planned_closures": 10,
+      "resolved_outages": 5
+    },
+    "B04": {
+      "elevator_outages": 15,
+      "escalator_outages": 14,
+      "median_repair_hours": 2.0,
+      "planned_closures": 0,
+      "resolved_outages": 27
+    },
+    "B06": {
+      "elevator_outages": 15,
+      "escalator_outages": 63,
+      "median_repair_hours": 2.2,
+      "planned_closures": 0,
+      "resolved_outages": 77
+    },
+    "B08": {
+      "elevator_outages": 32,
+      "escalator_outages": 58,
+      "median_repair_hours": 1.5,
+      "planned_closures": 3,
+      "resolved_outages": 83
+    },
+    "B10": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 0,
+      "resolved_outages": 4
+    },
+    "B16": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.9,
+      "planned_closures": 0,
+      "resolved_outages": 8
+    },
+    "B17": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "B18": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "B19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "B20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 14,
+      "resolved_outages": 0
+    },
+    "B21": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.9,
+      "planned_closures": 0,
+      "resolved_outages": 9
+    },
+    "D01": {
+      "elevator_outages": 0,
+      "escalator_outages": 10,
+      "median_repair_hours": 0.9,
+      "planned_closures": 26,
+      "resolved_outages": 10
+    },
+    "D03": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.6,
+      "planned_closures": 4,
+      "resolved_outages": 5
+    },
+    "D04": {
+      "elevator_outages": 10,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.5,
+      "planned_closures": 4,
+      "resolved_outages": 10
+    },
+    "D05": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D06": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D07": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.1,
+      "planned_closures": 4,
+      "resolved_outages": 8
+    },
+    "D08": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D09": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "D10": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "D11": {
+      "elevator_outages": 6,
+      "escalator_outages": 13,
+      "median_repair_hours": 2.1,
+      "planned_closures": 6,
+      "resolved_outages": 14
+    },
+    "D12": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "D13": {
+      "elevator_outages": 0,
+      "escalator_outages": 11,
+      "median_repair_hours": 1.2,
+      "planned_closures": 4,
+      "resolved_outages": 11
+    },
+    "D14": {
+      "elevator_outages": 0,
+      "escalator_outages": 16,
+      "median_repair_hours": 1.8,
+      "planned_closures": 4,
+      "resolved_outages": 15
+    },
+    "D15": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.6,
+      "planned_closures": 4,
+      "resolved_outages": 8
+    },
+    "D16": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 12.3,
+      "planned_closures": 4,
+      "resolved_outages": 8
+    },
+    "D17": {
+      "elevator_outages": 6,
+      "escalator_outages": 98,
+      "median_repair_hours": 2.5,
+      "planned_closures": 4,
+      "resolved_outages": 103
+    },
+    "D18": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "D19": {
+      "elevator_outages": 19,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.9,
+      "planned_closures": 10,
+      "resolved_outages": 19
+    },
+    "D20": {
+      "elevator_outages": 8,
+      "escalator_outages": 18,
+      "median_repair_hours": 0.9,
+      "planned_closures": 4,
+      "resolved_outages": 24
+    },
+    "D21": {
+      "elevator_outages": 18,
+      "escalator_outages": 5,
+      "median_repair_hours": 2.3,
+      "planned_closures": 4,
+      "resolved_outages": 23
+    },
+    "D22": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D24": {
+      "elevator_outages": 23,
+      "escalator_outages": 12,
+      "median_repair_hours": 1.6,
+      "planned_closures": 0,
+      "resolved_outages": 33
+    },
+    "D25": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D26": {
+      "elevator_outages": 2,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D28": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.6,
+      "planned_closures": 4,
+      "resolved_outages": 3
+    },
+    "D31": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D35": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.6,
+      "planned_closures": 6,
+      "resolved_outages": 4
+    },
+    "D37": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D38": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "D39": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.0,
+      "planned_closures": 6,
+      "resolved_outages": 5
+    },
+    "D40": {
+      "elevator_outages": 0,
+      "escalator_outages": 21,
+      "median_repair_hours": 1.4,
+      "planned_closures": 9,
+      "resolved_outages": 21
+    },
+    "D41": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "D42": {
+      "elevator_outages": 0,
+      "escalator_outages": 20,
+      "median_repair_hours": 1.9,
+      "planned_closures": 3,
+      "resolved_outages": 20
+    },
+    "D43": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.6,
+      "planned_closures": 9,
+      "resolved_outages": 2
+    },
+    "E01": {
+      "elevator_outages": 13,
+      "escalator_outages": 10,
+      "median_repair_hours": 4.1,
+      "planned_closures": 1,
+      "resolved_outages": 21
+    },
+    "F01": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 0,
+      "resolved_outages": 0
+    },
+    "F02": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "F04": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 21,
+      "resolved_outages": 0
+    },
+    "F05": {
+      "elevator_outages": 2,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.8,
+      "planned_closures": 33,
+      "resolved_outages": 2
+    },
+    "F06": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.6,
+      "planned_closures": 0,
+      "resolved_outages": 5
+    },
+    "F07": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "F09": {
+      "elevator_outages": 20,
+      "escalator_outages": 4,
+      "median_repair_hours": 3.3,
+      "planned_closures": 0,
+      "resolved_outages": 21
+    },
+    "F11": {
+      "elevator_outages": 8,
+      "escalator_outages": 41,
+      "median_repair_hours": 1.6,
+      "planned_closures": 0,
+      "resolved_outages": 48
+    },
+    "F12": {
+      "elevator_outages": 0,
+      "escalator_outages": 24,
+      "median_repair_hours": 0.9,
+      "planned_closures": 0,
+      "resolved_outages": 23
+    },
+    "F15": {
+      "elevator_outages": 0,
+      "escalator_outages": 28,
+      "median_repair_hours": 1.1,
+      "planned_closures": 0,
+      "resolved_outages": 28
+    },
+    "F16": {
+      "elevator_outages": 0,
+      "escalator_outages": 6,
+      "median_repair_hours": 1.0,
+      "planned_closures": 0,
+      "resolved_outages": 6
+    },
+    "F20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "F21": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "F22": {
+      "elevator_outages": 0,
+      "escalator_outages": 22,
+      "median_repair_hours": 1.8,
+      "planned_closures": 7,
+      "resolved_outages": 18
+    },
+    "F23": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 23,
+      "resolved_outages": 0
+    },
+    "F24": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.5,
+      "planned_closures": 5,
+      "resolved_outages": 7
+    },
+    "F25": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "F26": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "F27": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.4,
+      "planned_closures": 4,
+      "resolved_outages": 3
+    },
+    "F29": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "F31": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "F32": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "F33": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "F34": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "F35": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "G05": {
+      "elevator_outages": 10,
+      "escalator_outages": 46,
+      "median_repair_hours": 1.6,
+      "planned_closures": 7,
+      "resolved_outages": 55
+    },
+    "G06": {
+      "elevator_outages": 12,
+      "escalator_outages": 32,
+      "median_repair_hours": 4.8,
+      "planned_closures": 7,
+      "resolved_outages": 44
+    },
+    "G07": {
+      "elevator_outages": 5,
+      "escalator_outages": 35,
+      "median_repair_hours": 1.4,
+      "planned_closures": 7,
+      "resolved_outages": 39
+    },
+    "G08": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.6,
+      "planned_closures": 0,
+      "resolved_outages": 8
+    },
+    "G09": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "G10": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "G11": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "G12": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "G13": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "G14": {
+      "elevator_outages": 20,
+      "escalator_outages": 23,
+      "median_repair_hours": 1.1,
+      "planned_closures": 0,
+      "resolved_outages": 43
+    },
+    "G15": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 27,
+      "resolved_outages": 0
+    },
+    "G16": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.3,
+      "planned_closures": 27,
+      "resolved_outages": 4
+    },
+    "G18": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 27,
+      "resolved_outages": 0
+    },
+    "G19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 27,
+      "resolved_outages": 0
+    },
+    "G20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 27,
+      "resolved_outages": 0
+    },
+    "G21": {
+      "elevator_outages": 13,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.2,
+      "planned_closures": 0,
+      "resolved_outages": 13
+    },
+    "G22": {
+      "elevator_outages": 20,
+      "escalator_outages": 4,
+      "median_repair_hours": 3.3,
+      "planned_closures": 18,
+      "resolved_outages": 21
+    },
+    "G24": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "G26": {
+      "elevator_outages": 4,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.8,
+      "planned_closures": 18,
+      "resolved_outages": 4
+    },
+    "G28": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "G29": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.2,
+      "planned_closures": 18,
+      "resolved_outages": 9
+    },
+    "G30": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "G31": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "G32": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "G33": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 21,
+      "resolved_outages": 0
+    },
+    "G34": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "G35": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "G36": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "H03": {
+      "elevator_outages": 0,
+      "escalator_outages": 1,
+      "median_repair_hours": 22.3,
+      "planned_closures": 1,
+      "resolved_outages": 1
+    },
+    "H04": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "H06": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.3,
+      "planned_closures": 1,
+      "resolved_outages": 3
+    },
+    "H07": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "H08": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "H09": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "H10": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 1,
+      "resolved_outages": 0
+    },
+    "H11": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.3,
+      "planned_closures": 1,
+      "resolved_outages": 7
+    },
+    "H12": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "H13": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "H14": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "H15": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "J12": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "J13": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "J14": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "J15": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.0,
+      "planned_closures": 7,
+      "resolved_outages": 3
+    },
+    "J16": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "J17": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "J19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 7,
+      "resolved_outages": 0
+    },
+    "J20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "J21": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "J22": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "J23": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "J24": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 18,
+      "resolved_outages": 0
+    },
+    "J27": {
+      "elevator_outages": 0,
+      "escalator_outages": 26,
+      "median_repair_hours": 2.2,
+      "planned_closures": 21,
+      "resolved_outages": 26
+    },
+    "J28": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 89,
+      "resolved_outages": 0
+    },
+    "J29": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 89,
+      "resolved_outages": 0
+    },
+    "J30": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 89,
+      "resolved_outages": 0
+    },
+    "J31": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 89,
+      "resolved_outages": 0
+    },
+    "L01": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.9,
+      "planned_closures": 2,
+      "resolved_outages": 9
+    },
+    "L02": {
+      "elevator_outages": 19,
+      "escalator_outages": 0,
+      "median_repair_hours": 0.9,
+      "planned_closures": 2,
+      "resolved_outages": 19
+    },
+    "L03": {
+      "elevator_outages": 16,
+      "escalator_outages": 31,
+      "median_repair_hours": 1.2,
+      "planned_closures": 2,
+      "resolved_outages": 45
+    },
+    "L06": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.9,
+      "planned_closures": 0,
+      "resolved_outages": 7
+    },
+    "L08": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.9,
+      "planned_closures": 0,
+      "resolved_outages": 8
+    },
+    "L10": {
+      "elevator_outages": 9,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.2,
+      "planned_closures": 0,
+      "resolved_outages": 9
+    },
+    "L12": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.0,
+      "planned_closures": 0,
+      "resolved_outages": 7
+    },
+    "L17": {
+      "elevator_outages": 16,
+      "escalator_outages": 20,
+      "median_repair_hours": 2.2,
+      "planned_closures": 9,
+      "resolved_outages": 36
+    },
+    "L19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "L20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "L21": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 9,
+      "resolved_outages": 0
+    },
+    "L22": {
+      "elevator_outages": 0,
+      "escalator_outages": 26,
+      "median_repair_hours": 2.2,
+      "planned_closures": 27,
+      "resolved_outages": 26
+    },
+    "L24": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 20,
+      "resolved_outages": 0
+    },
+    "L25": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 17,
+      "resolved_outages": 0
+    },
+    "L26": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.1,
+      "planned_closures": 17,
+      "resolved_outages": 8
+    },
+    "L27": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 31,
+      "resolved_outages": 0
+    },
+    "L28": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 31,
+      "resolved_outages": 0
+    },
+    "L29": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 35,
+      "resolved_outages": 0
+    },
+    "M01": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "M04": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "M05": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "M06": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "M08": {
+      "elevator_outages": 16,
+      "escalator_outages": 20,
+      "median_repair_hours": 2.2,
+      "planned_closures": 3,
+      "resolved_outages": 36
+    },
+    "M09": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "M10": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 3,
+      "resolved_outages": 0
+    },
+    "M11": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 16,
+      "resolved_outages": 0
+    },
+    "M12": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.8,
+      "planned_closures": 16,
+      "resolved_outages": 8
+    },
+    "M13": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 16,
+      "resolved_outages": 0
+    },
+    "M14": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 16,
+      "resolved_outages": 0
+    },
+    "M16": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.0,
+      "planned_closures": 16,
+      "resolved_outages": 7
+    },
+    "M18": {
+      "elevator_outages": 0,
+      "escalator_outages": 28,
+      "median_repair_hours": 1.1,
+      "planned_closures": 13,
+      "resolved_outages": 28
+    },
+    "M19": {
+      "elevator_outages": 0,
+      "escalator_outages": 15,
+      "median_repair_hours": 1.4,
+      "planned_closures": 13,
+      "resolved_outages": 14
+    },
+    "M20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "M21": {
+      "elevator_outages": 10,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.5,
+      "planned_closures": 13,
+      "resolved_outages": 10
+    },
+    "M22": {
+      "elevator_outages": 27,
+      "escalator_outages": 40,
+      "median_repair_hours": 1.4,
+      "planned_closures": 13,
+      "resolved_outages": 67
+    },
+    "M23": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 13,
+      "resolved_outages": 0
+    },
+    "N02": {
+      "elevator_outages": 5,
+      "escalator_outages": 0,
+      "median_repair_hours": 3.9,
+      "planned_closures": 0,
+      "resolved_outages": 5
+    },
+    "N04": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.9,
+      "planned_closures": 0,
+      "resolved_outages": 8
+    },
+    "Q01": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 12,
+      "resolved_outages": 0
+    },
+    "Q03": {
+      "elevator_outages": 12,
+      "escalator_outages": 49,
+      "median_repair_hours": 1.7,
+      "planned_closures": 3,
+      "resolved_outages": 60
+    },
+    "Q04": {
+      "elevator_outages": 3,
+      "escalator_outages": 55,
+      "median_repair_hours": 1.6,
+      "planned_closures": 3,
+      "resolved_outages": 58
+    },
+    "Q05": {
+      "elevator_outages": 3,
+      "escalator_outages": 59,
+      "median_repair_hours": 1.0,
+      "planned_closures": 3,
+      "resolved_outages": 62
+    },
+    "R01": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "R03": {
+      "elevator_outages": 11,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.7,
+      "planned_closures": 8,
+      "resolved_outages": 11
+    },
+    "R04": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "R05": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "R06": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "R08": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 8,
+      "resolved_outages": 0
+    },
+    "R09": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "R11": {
+      "elevator_outages": 0,
+      "escalator_outages": 36,
+      "median_repair_hours": 1.8,
+      "planned_closures": 29,
+      "resolved_outages": 35
+    },
+    "R13": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 29,
+      "resolved_outages": 0
+    },
+    "R14": {
+      "elevator_outages": 8,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.3,
+      "planned_closures": 29,
+      "resolved_outages": 8
+    },
+    "R15": {
+      "elevator_outages": 1,
+      "escalator_outages": 0,
+      "median_repair_hours": 86.8,
+      "planned_closures": 38,
+      "resolved_outages": 1
+    },
+    "R16": {
+      "elevator_outages": 39,
+      "escalator_outages": 46,
+      "median_repair_hours": 1.9,
+      "planned_closures": 26,
+      "resolved_outages": 82
+    },
+    "R17": {
+      "elevator_outages": 6,
+      "escalator_outages": 98,
+      "median_repair_hours": 2.5,
+      "planned_closures": 12,
+      "resolved_outages": 103
+    },
+    "R18": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "R19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "R20": {
+      "elevator_outages": 16,
+      "escalator_outages": 31,
+      "median_repair_hours": 1.2,
+      "planned_closures": 12,
+      "resolved_outages": 45
+    },
+    "R21": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "R22": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 22,
+      "resolved_outages": 0
+    },
+    "R23": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 12,
+      "resolved_outages": 0
+    },
+    "R24": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 16,
+      "resolved_outages": 0
+    },
+    "R25": {
+      "elevator_outages": 13,
+      "escalator_outages": 10,
+      "median_repair_hours": 4.1,
+      "planned_closures": 12,
+      "resolved_outages": 21
+    },
+    "R26": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 12,
+      "resolved_outages": 0
+    },
+    "R27": {
+      "elevator_outages": 3,
+      "escalator_outages": 62,
+      "median_repair_hours": 1.2,
+      "planned_closures": 17,
+      "resolved_outages": 65
+    },
+    "R28": {
+      "elevator_outages": 15,
+      "escalator_outages": 43,
+      "median_repair_hours": 1.9,
+      "planned_closures": 5,
+      "resolved_outages": 58
+    },
+    "R29": {
+      "elevator_outages": 10,
+      "escalator_outages": 22,
+      "median_repair_hours": 1.7,
+      "planned_closures": 5,
+      "resolved_outages": 32
+    },
+    "R30": {
+      "elevator_outages": 2,
+      "escalator_outages": 13,
+      "median_repair_hours": 1.0,
+      "planned_closures": 16,
+      "resolved_outages": 15
+    },
+    "R31": {
+      "elevator_outages": 23,
+      "escalator_outages": 12,
+      "median_repair_hours": 1.6,
+      "planned_closures": 10,
+      "resolved_outages": 33
+    },
+    "R32": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 123,
+      "resolved_outages": 0
+    },
+    "R33": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 123,
+      "resolved_outages": 0
+    },
+    "R34": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 123,
+      "resolved_outages": 0
+    },
+    "R35": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 123,
+      "resolved_outages": 0
+    },
+    "R36": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 6,
+      "resolved_outages": 0
+    },
+    "R39": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "R40": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 10,
+      "resolved_outages": 0
+    },
+    "R41": {
+      "elevator_outages": 7,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.2,
+      "planned_closures": 6,
+      "resolved_outages": 7
+    },
+    "R44": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 4.3,
+      "planned_closures": 0,
+      "resolved_outages": 3
+    },
+    "R45": {
+      "elevator_outages": 3,
+      "escalator_outages": 0,
+      "median_repair_hours": 1.7,
+      "planned_closures": 0,
+      "resolved_outages": 3
+    },
+    "S01": {
+      "elevator_outages": 3,
+      "escalator_outages": 15,
+      "median_repair_hours": 1.7,
+      "planned_closures": 2,
+      "resolved_outages": 18
+    },
+    "S03": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S04": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S09": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S11": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S13": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S14": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S15": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S16": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "S17": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "S18": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "S19": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "S20": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "S21": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "S22": {
+      "elevator_outages": 11,
+      "escalator_outages": 0,
+      "median_repair_hours": 2.7,
+      "planned_closures": 5,
+      "resolved_outages": 11
+    },
+    "S23": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 5,
+      "resolved_outages": 0
+    },
+    "S24": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 4,
+      "resolved_outages": 0
+    },
+    "S25": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S26": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S27": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S28": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S29": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S30": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    },
+    "S31": {
+      "elevator_outages": 0,
+      "escalator_outages": 0,
+      "median_repair_hours": null,
+      "planned_closures": 2,
+      "resolved_outages": 0
+    }
+  }
+}

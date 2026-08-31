@@ -18,13 +18,15 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
+import { TripVerdict } from "./TripVerdict";
 import { undirected } from "@/lib/stations";
 import { fmtMinutes } from "@/lib/feed";
 import { indexComplexes, journeysBetween } from "@/lib/complexes";
-import { alightStop, boardStop } from "@/lib/journeys";
+import { alightStop, boardStop, journeyId } from "@/lib/journeys";
 import type { Journey, JourneyLeg } from "@/lib/journeys";
 import type { Snapshot, SegmentStatus } from "@/lib/types";
 import type { Topology } from "@/lib/stations";
+import { SaveJourney } from "@/app/commutes/SaveJourney";
 
 // One selectable endpoint: a station complex as the snapshot groups it, with a
 // display name and the routes it serves to disambiguate same-named complexes.
@@ -37,11 +39,6 @@ interface ComplexOption {
 }
 
 const DIR_LABEL: Record<string, string> = { north: "Northbound", south: "Southbound" };
-
-// One journey's stable identity for the URL: the route sequence alone, matching
-// the enumerator's own dedup key (opposite directions of one sequence collapse
-// to a single candidate). Route ids never contain a hyphen, so this round-trips.
-const journeyId = (j: Journey): string => j.legs.map((l) => l.route).join("-");
 
 export default function TripPage() {
   return (
@@ -121,7 +118,13 @@ function TripView() {
           <b>{optionById.get(to)?.name ?? to}</b> over the committed topology.
         </div>
       ) : (
-        <div className="trip-layout">
+        <>
+          <TripVerdict
+            snap={snap}
+            journeys={journeys}
+            onPick={(id) => setParams({ from, to, via: id })}
+          />
+          <div className="trip-layout">
           <CandidateList
             snap={snap}
             journeys={journeys}
@@ -129,13 +132,17 @@ function TripView() {
             onPick={(id) => setParams({ from, to, via: id })}
           />
           {selected ? (
-            <StripMap snap={snap} journey={selected} />
+            <div className="trip-strip-col">
+              <StripMap snap={snap} journey={selected} />
+              <SaveJourney key={via} snap={snap} journey={selected} />
+            </div>
           ) : (
             <div className="note muted trip-strip-empty">
               Pick a journey on the left to see its segments.
             </div>
           )}
-        </div>
+          </div>
+        </>
       )}
 
       {topo?.feed_version && (

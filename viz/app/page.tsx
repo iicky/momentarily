@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import Nav from "./Nav";
 import {
   fetchSnapshot,
@@ -22,8 +22,10 @@ import {
   gaugeTone,
 } from "@/lib/feed";
 import type { SupplyBand } from "@/lib/feed";
-import type { Snapshot, RouteStatus, Inference } from "@/lib/types";
+import type { Snapshot, RouteStatus, Inference, DirectionAlerts } from "@/lib/types";
 import { Gauge } from "./Gauge";
+import { routeMovementByDirection } from "@/lib/segments";
+import type { DirectionMovement } from "@/lib/segments";
 
 const POLL_MS = 60_000;
 
@@ -647,6 +649,18 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
   );
 }
 
+// How a side's per-segment movement rolls up into one phrase. Kept distinct
+// from the alert feed on purpose: null is "no movement cell on this side"
+// (unmeasured), which must never read as an all-clear; an all-quiet side is
+// "too little service to judge", not "moving"; and the crawl share counts only
+// cells with an advancing-vs-stalling verdict, so quiet cells never dilute it.
+function movementPhrase(mv: DirectionMovement | null): string {
+  if (mv === null) return "movement unmeasured";
+  if (mv.measured === 0) return "too little service to judge movement";
+  if (mv.crawling === 0) return "moving normally";
+  return `${mv.crawling} of ${mv.measured} segments crawling`;
+}
+
 function RouteDrawer({
   snap,
   r,
@@ -658,19 +672,39 @@ function RouteDrawer({
 }) {
   const inf = r.inference;
   const band = supplyBand(r);
-  // The alert feed's per-direction split, as the rows would render it, next to
-  // the route-level value they are compared against. Compared as displayed, so
-  // a row survives only when it puts something new on screen. "no alerts"
-  // rather than "good" deliberately: these read the alert feed, which cannot
-  // see whether trains are moving on that side.
   const { northbound, southbound } = r.by_direction;
-  const primary = r.primary_alert_type ?? "—";
-  const nb =
-    northbound.primary_alert_type ??
-    (northbound.alerts.length ? "alert" : "no alerts");
-  const sb =
-    southbound.primary_alert_type ??
-    (southbound.alerts.length ? "alert" : "no alerts");
+  const primaryAlert = r.primary_alert_type ?? "—";
+  const mv = routeMovementByDirection(snap.segment_flow, r.route_id);
+  const alertOf = (d: DirectionAlerts): string =>
+    d.primary_alert_type ?? (d.alerts.length ? "alert" : "no alert");
+  // A side earns a row when it adds something the route-level lines don't
+  // already say: a movement reading of its own, or an alert that differs from
+  // the primary. A side that only echoes the primary alert and has no movement
+  // cell of its own adds nothing, so it stays off the list. Alert and movement
+  // ride the same row: neither is allowed to stand in for the other, so a
+  // "no alert" side can never read as an all-clear while its track is crawling.
+  const dirRows = (
+    [
+      ["Northbound", "north", northbound],
+      ["Southbound", "south", southbound],
+    ] as const
+  )
+    .map(([label, dir, d]) => ({
+      label,
+      alert: alertOf(d),
+      movement: mv[dir],
+    }))
+    .filter(
+      (row) =>
+        // News, not a restatement of the route-level lines. An alert that
+        // differs from the primary is news; so is track actually crawling.
+        // A side that only moves normally, or has no reading at all, adds
+        // nothing over the badge — but a crawling side with no alert of its
+        // own is exactly the case a bare alert row would have hidden, so
+        // movement earns the row on its own.
+        (r.alerts.length > 0 && row.alert !== primaryAlert) ||
+        (row.movement !== null && row.movement.crawling > 0),
+    );
   return (
     <aside className="drawer">
       <button className="close" onClick={onClose} aria-label="close">
@@ -708,28 +742,31 @@ function RouteDrawer({
       ) : (
         <div className="kv">
           <span className="k">Primary alert</span>
-          <span className="v">{primary}</span>
-          {/* Alert feed only. A direction shows up only when it differs from
-              the route-level value above — a side that just repeats the primary
-              alert adds nothing, so what survives here is the news: which
-              direction is clear, or carrying something else. These rows never
-              see train movement, so the badge can say disrupted while the MTA
-              has posted nothing on that side. A real per-direction movement
-              read needs segment_flow coverage, which currently publishes only a
-              handful of cells system-wide. */}
-          {nb !== primary && (
-            <>
-              <span className="k">Northbound</span>
-              <span className="v">{nb}</span>
-            </>
-          )}
-          {sb !== primary && (
-            <>
-              <span className="k">Southbound</span>
-              <span className="v">{sb}</span>
-            </>
-          )}
+          <span className="v">{primaryAlert}</span>
         </div>
+      )}
+
+      {dirRows.length > 0 && (
+        <>
+          <div className="section-title">By direction</div>
+          <div className="section-note">
+            Two independent reads per side: the MTA&rsquo;s alert feed, and how
+            trains are actually advancing, rolled up from the per-segment
+            movement surface. A side can carry no alert and still be crawling,
+            or the reverse, so the two are shown together rather than letting one
+            stand in for the other.
+          </div>
+          <div className="kv">
+            {dirRows.map((row) => (
+              <Fragment key={row.label}>
+                <span className="k">{row.label}</span>
+                <span className="v">
+                  {row.alert} · {movementPhrase(row.movement)}
+                </span>
+              </Fragment>
+            ))}
+          </div>
+        </>
       )}
 
       <div className="section-title">Trains running</div>

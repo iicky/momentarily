@@ -39,12 +39,19 @@ const commute = (legs: CommuteLeg[], name = "to work"): Commute => ({
 // unknown: the full Snapshot has ~30 unrelated fields the derivation never
 // touches, and fabricating them would obscure what each case actually pins.
 function snapshot(opts: {
-  cells?: Record<string, { status: string; recovery_minutes?: number }>;
+  cells?: Record<string, { status: string; recovery_minutes?: number; to?: string | null }>;
   alerts?: Record<string, { northbound?: string | null; southbound?: string | null }>;
 }): Snapshot {
   const segments: Record<string, unknown> = {};
   for (const [key, v] of Object.entries(opts.cells ?? {})) {
+    // Fixture stops are `<name><n>` or `<n><N|S>` chained upward, so the drawn
+    // successor of `a1` is `a2` and of `1N` is `2N` — matching how `seg` builds
+    // commutes. Non-sequential stops pass `to` explicitly, as do the
+    // wrong-successor / attribution-less (null) cases.
+    const from = key.split("|")[2];
+    const derived = from.replace(/(\d+)([NS]?)$/, (_, n, s) => `${Number(n) + 1}${s}`);
     segments[key] = {
+      to: v.to === undefined ? derived : v.to,
       status: v.status,
       recovery: v.recovery_minutes != null ? { recovery_minutes: v.recovery_minutes } : null,
     };
@@ -68,8 +75,8 @@ test("scoping is direction-aware — a southbound disruption never colours a nor
   // southbound cell is disrupted; the northbound commute must read clean.
   const snap = snapshot({
     cells: {
-      "1|north|235N": { status: "normal" },
-      "1|south|235S": { status: "disrupted", recovery_minutes: 12 },
+      "1|north|235N": { status: "normal", to: "228N" },
+      "1|south|235S": { status: "disrupted", recovery_minutes: 12, to: "242S" },
     },
   });
   const nb = commuteStatus(snap, commute([leg([seg("1", "north", "235N", "228N")])]));
@@ -140,7 +147,7 @@ test("rollup: only-quiet reads quiet; nothing judged reads unknown", () => {
 
 test("disagreement: alert up but trains moving is flagged alert-only, direction-aware", () => {
   const snap = snapshot({
-    cells: { "A|north|1N": { status: "normal" }, "A|south|9S": { status: "normal" } },
+    cells: { "A|north|1N": { status: "normal" }, "A|south|9S": { status: "normal", to: "8S" } },
     // The advisory is on the SOUTHBOUND side only.
     alerts: { A: { southbound: "Delays" } },
   });
@@ -234,4 +241,25 @@ test("persistCommutes replaces the whole store", () => {
   const loaded = loadCommutes();
   assert.equal(loaded.length, 1);
   assert.equal(loaded[0].name, "two");
+});
+
+// --- Attribution: `to` is load-bearing at branches ---------------------------
+
+test("a disrupted reading about a different successor reads as unknown, not disruption", () => {
+  const c = commute([leg([seg("A", "north", "a1", "a2")])]);
+  const snap = snapshot({
+    cells: { "A|north|a1": { status: "disrupted", recovery_minutes: 30, to: "a9" } },
+  });
+  const s = commuteStatus(snap, c);
+  assert.equal(s.readings[0].status, null);
+  assert.equal(s.readings[0].recoveryMinutes, null);
+});
+
+test("a reading that cannot name its successor abstains instead of attributing", () => {
+  const c = commute([leg([seg("A", "north", "a1", "a2")])]);
+  const snap = snapshot({
+    cells: { "A|north|a1": { status: "disrupted", to: null } },
+  });
+  const s = commuteStatus(snap, c);
+  assert.equal(s.readings[0].status, null);
 });

@@ -197,7 +197,13 @@ export function commuteStatus(snap: Snapshot, commute: Commute): CommuteStatus {
   const readings: SegmentReading[] = [];
   for (const leg of commute.legs) {
     for (const segment of leg.segments) {
-      const cell = snap.segment_flow?.segments[segment.key] ?? null;
+      const raw = snap.segment_flow?.segments[segment.key] ?? null;
+      // A cell key names only its from_stop, so at a branch or express split
+      // several drawn edges claim it — `to` says which hop the reading is
+      // about. A reading about a different successor, or one that cannot name
+      // its successor (to: null), is no evidence for this commute: read it as
+      // unknown rather than misattribute. Mirrors rankJourneys.ts.
+      const cell = raw != null && raw.to === segment.to ? raw : null;
       const status = cell?.status ?? null;
       const alert = alertFor(snap, segment.route, segment.direction);
       // "No Scheduled Service" is an expected off-hours state, not a disruption

@@ -7,6 +7,7 @@ calls and a synthetic assigned_n label.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 
 from training.degradation_label import BIN_FN as _bin_fn
 from training.load import TICK_SECONDS
@@ -19,6 +20,7 @@ from training.movement_validation import (
     _boot_rates,  # pyright: ignore[reportPrivateUsage]
     _onset_latency,  # pyright: ignore[reportPrivateUsage]
     _state_at,  # pyright: ignore[reportPrivateUsage]
+    build_validation_report,
     episode_min_ratio,
     grade,
     published_states,
@@ -245,6 +247,65 @@ def test_episode_min_ratio_takes_the_worst_supply_tick() -> None:
     baseline = {("A", _bin(_t(i))): 20.0 for i in range(3)}
     d = Disruption("A", _t(0), _t(3))
     assert episode_min_ratio(d, series, baseline) == 2 / 20.0
+
+
+# --- build_validation_report (the shared review-wiring core) ----------------
+
+
+def _report_fixture() -> dict[str, Any]:
+    """One route: an 18-tick confirmed-normal supply run, a supply-collapse
+    episode (ticks 18-21 at 0.2 of baseline), then recovery. Movement fires
+    once inside the normal run (a false alarm) and across the episode (a
+    detection). Baseline covers every schedule_bin the ticks touch."""
+    n_ticks = 30
+    baseline: dict[tuple[str, str], float] = {
+        ("A", _bin(_t(i))): 10.0 for i in range(n_ticks)
+    }
+    # assigned_n: normal 10, collapsing to 2 over the episode, recovering to 10.
+    series: dict[tuple[str, int], int] = {}
+    for i in range(n_ticks):
+        series[("A", _t(i))] = 2 if 18 <= i <= 21 else 10
+    # movement truth: normal except a lone false alarm at tick 5 and the episode.
+    truth: dict[tuple[str, int], str] = {}
+    for i in range(n_ticks):
+        fired = i == 5 or 18 <= i <= 21
+        truth[("A", _t(i))] = "disrupted" if fired else "normal"
+    report = build_validation_report(
+        truth, series, baseline, window={"stop_scope": "through"}, bootstrap=100
+    )
+    return report
+
+
+def test_build_validation_report_shape_and_derived_window() -> None:
+    report = _report_fixture()
+    win = report["window"]
+    assert win["stop_scope"] == "through"  # caller-supplied field preserved
+    assert win["debounce_ticks"] == 1  # derived field filled in
+    assert win["n_scored_movement_ticks"] == 30
+    assert win["call_mix"] == {"disrupted": 5, "normal": 25}
+    assert win["disrupted_base_rate"] == 5 / 30
+    assert set(report["arms"]) == {"disrupted", "not_normal"}
+
+
+def test_build_validation_report_measures_false_alarm_and_detection() -> None:
+    report = _report_fixture()
+    truth = report["truth"]
+    assert truth["n_episodes"] >= 1  # the supply collapse became an episode
+    assert truth["n_normal_runs"] >= 1  # the confirmed-normal stretch
+    dis = report["arms"]["disrupted"]
+    # The lone movement firing inside a confirmed-normal supply run is a false
+    # alarm on both the raw and the published surface, with a CI and support.
+    fa = dis["published"]["false_alarms"]
+    assert fa["alarmed_ticks"] >= 1
+    assert fa["gradeable"] >= 1
+    assert fa["offered"] >= 1
+    assert "tick_rate_ci_low" in fa
+    assert "tick_rate_ci_high" in fa
+    # The movement firing across the supply-collapse episode is a detection.
+    det = dis["published"]["detection"]["all"]
+    assert det["alarmed_ticks"] >= 1
+    # Counted exclusions are surfaced, never silently dropped.
+    assert "n_ungradeable" in dis["published"]["onset_latency"]["all"]
 
 
 def test_split_severity_buckets_by_worst_ratio_and_counts_unrateable() -> None:

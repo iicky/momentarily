@@ -31,6 +31,7 @@ from training.r2_client import load_config, make_client
 from training.train_em import (
     PARAMS_KEY,
     SERVICE_BASELINE_KEY,
+    SERVICE_SIDECAR_WINDOW_DAYS,
     _service_baseline,  # pyright: ignore[reportPrivateUsage]
     write_service_baseline,
 )
@@ -38,13 +39,11 @@ from training.train_em import (
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
-# Trailing window used when no explicit dates are given. Sized so a weekend-hourly
-# (route, schedule_bin) cell clears the published axis's SERVICE_MIN_NIGHTS gate
-# with margin: 35 days is 5 weekends = 10 Sat/Sun nights per cell against a floor
-# of 8, so a normally-thin weekend late-night cell has enough independent nights
-# to publish a trusted median instead of abstaining. Still inside archive
-# retention headroom.
-DEFAULT_WINDOW_DAYS = 35
+# Trailing window used when no explicit dates are given. Shared with the retrain
+# publish (train_em.SERVICE_SIDECAR_WINDOW_DAYS) so a standalone backfill and a
+# retrain write the same sidecar: sized so a weekend-hourly (route, schedule_bin)
+# cell clears the published axis's SERVICE_MIN_NIGHTS gate with margin.
+DEFAULT_WINDOW_DAYS = SERVICE_SIDECAR_WINDOW_DAYS
 
 
 def _current_params_trained_at(client: S3Client, bucket: str) -> int | None:

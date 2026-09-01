@@ -713,6 +713,66 @@ def test_schedule_rows_excluded_from_calibration_and_recovery():
     assert cal.excluded_schedule == 1
 
 
+def test_shadow_grade_excludes_movement_sourced_recovery():
+    # A movement-sourced recovery_minutes=0 on a route the alert-shadow calls
+    # disrupted is NOT the shadow's forecast: movement saw a normal route and
+    # correctly emitted 0. Grading that 0 against the shadow's disrupted clock
+    # scores a bogus "instant recovery" and swamps MAE / pins IQR coverage near
+    # zero. The shadow grade must exclude it (counted), not read it as its own.
+    t0 = 1_700_000_000
+    preds = [
+        # HMM-sourced row: the shadow's own forecast, graded.
+        _pred(
+            ts=t0,
+            route="1",
+            condition="disrupted",
+            regime_entered_at=t0,
+            recovery_minutes=30,
+            recovery_source="hmm",
+        ),
+        # Movement-sourced 0 on a shadow-disrupted route: a different arm's
+        # answer, must not grade as instant recovery here.
+        _pred(
+            ts=t0,
+            route="2",
+            condition="disrupted",
+            regime_entered_at=t0,
+            recovery_minutes=0,
+            recovery_minutes_low=0,
+            recovery_minutes_high=0,
+            recovery_source="movement",
+        ),
+    ]
+    transitions = [
+        TransitionRecord(
+            ts=t0 + 1800,
+            route="1",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=t0,
+            exited_at=t0 + 1800,
+            dwell_sec=1800,
+        ),
+        TransitionRecord(
+            ts=t0 + 1800,
+            route="2",
+            prev_state="disrupted",
+            new_state="normal",
+            regime_entered_at=t0,
+            exited_at=t0 + 1800,
+            dwell_sec=1800,
+        ),
+    ]
+    r = recovery_metrics(preds, transitions)
+    # Only the HMM row grades; the movement row is excluded and counted.
+    assert r.overall.n == 1
+    assert r.excluded_cross_arm == 1
+    # The excluded movement 0 would have scored a 30-min error and a coverage
+    # miss; the shadow grade instead reflects only its own arm.
+    assert r.overall.mae_min == 0.0
+    assert r.overall.iqr_coverage == 1.0
+
+
 def test_calibrate_skips_withheld_30min_forecast():
     """p_normal_in_30min is null when the forecast arm differs from the arm
     that produced the published condition — mixing arms scored AUC 0.084
@@ -1427,7 +1487,13 @@ def test_independent_recovery_grades_the_movement_arm() -> None:
     ts0 = 1_700_000_000
     disruption = Disruption(route="1", start_tick=ts0, recovered_tick=ts0 + 1800)
     pred = replace(
-        _pred(ts=ts0, route="1", condition="normal", recovery_minutes=30),
+        _pred(
+            ts=ts0,
+            route="1",
+            condition="normal",
+            recovery_minutes=30,
+            recovery_source="movement",
+        ),
         published_condition="disrupted",
     )
 
@@ -1443,7 +1509,13 @@ def test_independent_recovery_skips_ticks_movement_could_not_call() -> None:
     ts0 = 1_700_000_000
     disruption = Disruption(route="1", start_tick=ts0, recovered_tick=ts0 + 1800)
     pred = replace(
-        _pred(ts=ts0, route="1", condition="disrupted", recovery_minutes=30),
+        _pred(
+            ts=ts0,
+            route="1",
+            condition="disrupted",
+            recovery_minutes=30,
+            recovery_source="movement",
+        ),
         published_condition="unknown",
     )
 

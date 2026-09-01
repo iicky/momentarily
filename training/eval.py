@@ -840,6 +840,12 @@ class RecoveryResult:
     # Schedule-recovery rows skipped — deterministic resume lookups graded for
     # adherence elsewhere, not against HMM dwell.
     excluded_schedule: int = 0
+    # Rows whose recovery_source names an arm this grade does not describe. A
+    # movement-sourced recovery_minutes=0 graded against the alert-shadow clock
+    # scores instant recovery on a route the shadow calls disrupted; the two are
+    # different arms and must not be crossed. Counted and reported, never
+    # silently dropped, so the support this grade actually rests on stays visible.
+    excluded_cross_arm: int = 0
 
 
 # Resolve a prediction to (actual_recovery_tick | None, regime_key). This is the
@@ -855,22 +861,39 @@ ExitResolver = Callable[["PredictionRecord"], tuple[int | None, tuple[str, int]]
 # arm, which is what consumers actually read.
 ConditionArm = Callable[["PredictionRecord"], str]
 
+# recovery_source values each grade may read. recovery_minutes is produced by the
+# arm recovery_source names, so a grade must only score the sources whose clock it
+# supplies — otherwise it crosses arms (a movement 0 vs. the shadow's disrupted
+# clock reads as instant recovery). None normalizes to `hmm` (pre-source JSONL).
+SHADOW_RECOVERY_SOURCES = frozenset({"hmm"})
+MOVEMENT_RECOVERY_SOURCES = frozenset({"movement"})
+
 
 def _grade_recovery(
     predictions: list[PredictionRecord],
     exit_for: ExitResolver,
     *,
     arm: ConditionArm,
+    graded_sources: frozenset[str],
 ) -> RecoveryResult:
     """Shared recovery grading: for every prediction made during a disruption that
     subsequently ended, compare recovery_minutes against actual remaining time and
     check IQR coverage. Each prediction-tick is one grading sample. `exit_for`
     supplies the actual recovery time and the regime key to group by; `arm`
-    supplies the condition stream that decides which ticks are disruptions."""
+    supplies the condition stream that decides which ticks are disruptions.
+
+    `graded_sources` names the recovery_source arms this grade may read.
+    recovery_minutes comes from whichever arm recovery_source names, which is not
+    necessarily the arm `exit_for`/`arm` describe: a movement-sourced 0 graded
+    against the alert-shadow clock scores instant recovery on a route the shadow
+    still calls disrupted. Rows whose source is not in `graded_sources` are
+    excluded and counted (excluded_cross_arm), so the grade only ever compares an
+    arm's prediction against that arm's own clock. (None normalizes to `hmm`.)"""
     abs_errors: list[float] = []
     sq_errors: list[float] = []
     covered = 0
     excluded_schedule = 0
+    excluded_cross_arm = 0
     by_route_abs: dict[str, list[float]] = {}
     by_route_sq: dict[str, list[float]] = {}
     by_route_cov: dict[str, list[int]] = {}
@@ -897,6 +920,13 @@ def _grade_recovery(
         # adherence elsewhere — not against HMM dwell.
         if p.recovery_source == "schedule":
             excluded_schedule += 1
+            continue
+        # recovery_minutes was produced by the arm recovery_source names. Grade
+        # only the rows whose source this grade's clock actually describes;
+        # crossing arms (e.g. a movement 0 vs. the shadow clock) is the bug this
+        # gate closes. Count the drop rather than hiding it.
+        if (p.recovery_source or "hmm") not in graded_sources:
+            excluded_cross_arm += 1
             continue
         exited_at, regime_key = exit_for(p)
         if exited_at is None or exited_at <= p.ts:
@@ -958,6 +988,7 @@ def _grade_recovery(
         by_route=by_route,
         by_alert_type=by_alert_type,
         excluded_schedule=excluded_schedule,
+        excluded_cross_arm=excluded_cross_arm,
     )
 
 
@@ -981,7 +1012,14 @@ def recovery_metrics(
         key = (p.route, p.regime_entered_at)
         return exits.get(key), key
 
-    return _grade_recovery(predictions, exit_for, arm=lambda p: p.condition)
+    # The shadow clock only describes HMM-dwell forecasts. A movement-sourced
+    # recovery_minutes belongs to the movement arm and is graded there, not here.
+    return _grade_recovery(
+        predictions,
+        exit_for,
+        arm=lambda p: p.condition,
+        graded_sources=SHADOW_RECOVERY_SOURCES,
+    )
 
 
 def independent_recovery_metrics(
@@ -1014,7 +1052,14 @@ def independent_recovery_metrics(
                 return d.recovered_tick, (p.route, d.start_tick)
         return None, ("", 0)
 
-    return _grade_recovery(predictions, exit_for, arm=published_arm)
+    # The movement arm is what consumers read; grade only movement-sourced
+    # recovery estimates against it. HMM-sourced rows are graded by the shadow.
+    return _grade_recovery(
+        predictions,
+        exit_for,
+        arm=published_arm,
+        graded_sources=MOVEMENT_RECOVERY_SOURCES,
+    )
 
 
 def _stats_from(
@@ -1088,6 +1133,7 @@ def recovery_as_dict(recovery: RecoveryResult, *, graded_arm: str) -> dict[str, 
             at: _stats_as_dict(s) for at, s in recovery.by_alert_type.items()
         },
         "excluded_schedule": recovery.excluded_schedule,
+        "excluded_cross_arm": recovery.excluded_cross_arm,
     }
 
 

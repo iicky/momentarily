@@ -5800,6 +5800,84 @@ silently drops every Sunday-ET late night (they live under the Monday UTC prefix
 — a partial fetch gave a `we23` median of 14.5 vs the true 13.0. Fetch the full
 contiguous window (as train_em does) or the recompute will not reconcile.
 
+---
+
+## 2026-08-31 — recovery-grader-arm-mismatch
+
+origin: agent
+
+`_grade_recovery` in `training/eval.py` gated ticks on one condition arm but
+graded `recovery_minutes`, which is produced by whichever arm `recovery_source`
+names — a different arm. The shadow grade (`recovery_metrics`) gates on the
+alert-shadow `condition` but was reading movement-sourced estimates too. On a
+route the shadow calls disrupted while movement calls it normal, movement
+correctly emits `recovery_minutes=0` (nothing to recover from); the shadow grade
+then scored that 0 as a forecast of instant recovery against its own disrupted
+clock, so every such row logged the full remaining regime as error and a coverage
+miss.
+
+Measured over 2026-07-28..08-24 (233,914 predictions, 752 transitions), shadow
+recovery as published: n=1097, 269 incidents, MAE=100.4 min, IQR coverage=0.085.
+906 of those gradeable rows were movement-sourced. Grading each arm only against
+its own source — shadow reads `{hmm}`, the trip-updates grade reads `{movement}`,
+cross-arm rows excluded and counted — leaves n=192, 52 incidents, MAE=29.0 min,
+IQR coverage=0.469. Same model, same window; the 3.5x improvement is entirely the
+removal of cross-arm rows, not a modeling change, and the shrunk support (192
+ticks / 52 incidents) must ship beside the number so it does not read as one.
+
+The guard for exactly this failure already existed and already described it, but
+it tested the condition stream rather than the stream the estimate came from.
+`recovery_minutes` still cannot express "no estimate" without overloading
+`recovery_indeterminate`; the source gate sidesteps that but does not fix the
+underlying contract.
+## 2026-08-31 — publish-prep: the movement-trained retrain moves ONLY the advance emission live — service_mu/sigma are still prior-only (0 of 28 routes fitted), because training never carries the service channel
+
+origin: agent
+
+Retrained on the current window (`2026-08-18..08-31`, `prior_strength=100`,
+`min_ticks=288`, `--dry-run`) to diff the fitted emissions against the live
+published set (`trained_at=1787792319`, `2026-08-14..08-27`) before a real
+publish. `baseline_cells=211`, `service_cells=131`, movement mass healthy — the
+advance-baseline publish gate is nowhere near empty.
+
+**The advance emission is genuinely fitted, and it is the only channel that
+moves.** Per-state `advance_rate` shifts on every route with movement mass and
+tracks the responsibility-weighted `k/n` from `--diagnose-advance` (e.g. N
+disrupted 0.540→0.508 at `mov_n≈27k`; F normal 0.973→0.927; G disrupted
+0.234→0.838 as EM re-seats G's alert-thin states). The global prior's
+advance_rate is the fitted `(0.919, 0.903, 0.838)`. This is the intended
+operating-point move.
+
+**Negative result — service_mu/service_sigma are NOT fitted: 0 of 28 routes
+deviate from the prior default.** After the retrain every route still ships
+`service_mu=(1.0, 0.6, 0.05)` and `service_sigma=(0.3, 0.3, 0.15)` exactly (the
+`DEFAULT_EMISSIONS` constants), identical to the currently published set. The
+cause: `training/load_r2.py` builds each `Observation` with the alert flags,
+tod_bin, and (since 2026-08-25) the folded movement fields, but never sets
+`has_service`/`service_ratio`. So `svc_w=0` for every state and the M-step
+(`hmm.py` `_m_step`) returns `prior.service_mu[s]` unchanged. The service
+Gaussian is a prior-only channel in training — exactly the state the movement
+channel was in before it was wired — while the live worker still scores
+`service_ratio` against these constants (`worker/src/hmm.ts` gates on
+`service_mu !== undefined`, which the published params satisfy). So a
+"movement-trained params" publish moves the advance emission and leaves the
+service emission's operating point untouched; the earlier assumption that this
+retrain also fits the service channel does not hold.
+
+**Canonicalization holds under the now-fitted advance tiebreak.** The concern
+was that non-constant `advance_rate` feeding `canonicalize_states`' tiebreak
+could re-label states. It does not: across all 28 routes the suspended slot is
+still decided by the suspended-flag Bernoulli (`bernoulli_p`), which is strictly
+ordered `suspended ≥ disrupted` everywhere — the smallest gap is R at 0.005, and
+there is no exact tie for the advance term to break. Zero state assignments flip
+on the fitted advance. One pre-existing interaction does shift, though: because
+the prior `service_mu` constant is permuted along with a route's canonicalization
+and never re-applied in canonical order, any route whose EM converges to a
+non-identity permutation ships a severity-inverted `service_mu`
+(`(1.0, 0.05, 0.6)` — disrupted 0.05, suspended 0.6). The retrain moves that
+affected set from `{6X, W}` (published) to `{3, G, N, W}`. Harmless while the
+channel is prior-only, but it is a latent mis-order that a real service fit would
+need to fix first; out of scope for this publish.
 ## 2026-08-31 — negative result: the published movement condition and the independent assigned_n label are statistically independent, so assigned_n cannot adjudicate movement detection (0/173 severe, base≈false-alarm≈0.1%)
 
 origin: agent

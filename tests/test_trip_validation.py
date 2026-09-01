@@ -110,7 +110,9 @@ def _pred(
     recovery_minutes: int = 30,
     low: int = 15,
     high: int = 60,
-    source: str | None = None,
+    # These fixtures all feed independent_recovery_metrics, which grades the
+    # movement arm; recovery_minutes must be sourced from that arm to be graded.
+    source: str | None = "movement",
     indeterminate: bool = False,
 ) -> PredictionRecord:
     return PredictionRecord(

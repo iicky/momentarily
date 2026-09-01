@@ -5837,6 +5837,36 @@ silently drops every Sunday-ET late night (they live under the Monday UTC prefix
 — a partial fetch gave a `we23` median of 14.5 vs the true 13.0. Fetch the full
 contiguous window (as train_em does) or the recompute will not reconcile.
 
+---
+
+## 2026-08-31 — recovery-grader-arm-mismatch
+
+origin: agent
+
+`_grade_recovery` in `training/eval.py` gated ticks on one condition arm but
+graded `recovery_minutes`, which is produced by whichever arm `recovery_source`
+names — a different arm. The shadow grade (`recovery_metrics`) gates on the
+alert-shadow `condition` but was reading movement-sourced estimates too. On a
+route the shadow calls disrupted while movement calls it normal, movement
+correctly emits `recovery_minutes=0` (nothing to recover from); the shadow grade
+then scored that 0 as a forecast of instant recovery against its own disrupted
+clock, so every such row logged the full remaining regime as error and a coverage
+miss.
+
+Measured over 2026-07-28..08-24 (233,914 predictions, 752 transitions), shadow
+recovery as published: n=1097, 269 incidents, MAE=100.4 min, IQR coverage=0.085.
+906 of those gradeable rows were movement-sourced. Grading each arm only against
+its own source — shadow reads `{hmm}`, the trip-updates grade reads `{movement}`,
+cross-arm rows excluded and counted — leaves n=192, 52 incidents, MAE=29.0 min,
+IQR coverage=0.469. Same model, same window; the 3.5x improvement is entirely the
+removal of cross-arm rows, not a modeling change, and the shrunk support (192
+ticks / 52 incidents) must ship beside the number so it does not read as one.
+
+The guard for exactly this failure already existed and already described it, but
+it tested the condition stream rather than the stream the estimate came from.
+`recovery_minutes` still cannot express "no estimate" without overloading
+`recovery_indeterminate`; the source gate sidesteps that but does not fix the
+underlying contract.
 ## 2026-08-31 — publish-prep: the movement-trained retrain moves ONLY the advance emission live — service_mu/sigma are still prior-only (0 of 28 routes fitted), because training never carries the service channel
 
 origin: agent

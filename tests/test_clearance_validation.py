@@ -25,7 +25,9 @@ def _pred(
     low: int = 0,
     high: int = 60,
     indeterminate: bool = False,
-    source: str | None = "hmm",
+    # Graded through independent_recovery_metrics (the movement arm), so the
+    # recovery estimate has to be movement-sourced to be graded.
+    source: str | None = "movement",
 ) -> PredictionRecord:
     return PredictionRecord(
         ts=ts,

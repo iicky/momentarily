@@ -127,10 +127,13 @@ export default function ModelsPage() {
         <Nav />
       </div>
       <div className="sub">
-        How well the model&apos;s calls hold up. Most panels grade against the
-        model&apos;s own published-condition stream (self-consistency, not independent
-        ground truth); the train-movement panels are the independent cross-check.
-        Each chart&apos;s footer tags its truth source.
+        How well the model&apos;s calls hold up. Panels graded against the model&apos;s
+        own published-condition stream are self-consistency, not independent ground
+        truth. Train movement is now the independent arm the recovery axis is graded
+        against — its false-alarm rate (calling a moving line stuck) is bounded and
+        monitored, but its miss rate can&apos;t be measured, because no archived
+        movement truth exists to catch what it lets through. Each chart&apos;s footer
+        tags its truth source.
       </div>
 
       <div className="controls">
@@ -289,6 +292,14 @@ export default function ModelsPage() {
                 before you believe either — disrupted cases are rare in any window,
                 and movement can&apos;t judge every tick.
               </p>
+              <p className="grp-note">
+                One thing to read correctly: skill-vs-persistence runs sharply
+                negative here by construction. The outcome is ~99%
+                &ldquo;normal,&rdquo; so &ldquo;assume it stays as it is&rdquo; is a
+                near-unbeatable baseline on Brier — a large negative is the metric,
+                not a broken model. The AUC chip (does the forecast rank the right
+                cases higher?) is the more informative read at this base rate.
+              </p>
               <div className="charts-grid-3">
                 {rel.map((r) => (
                   <ReliabilityChart key={r.horizonMin} result={r} />
@@ -393,16 +404,20 @@ export default function ModelsPage() {
           )}
 
           <h3 className="grp">
-            A second opinion: trains vs. alerts
+            The independent arm: trains vs. alerts
             {movement?.counts &&
               ` · ${movement.counts.judgeableTicks.toLocaleString()} judgeable ticks · ${movement.counts.vehicleTicks.toLocaleString()} vehicle snapshots`}
           </h3>
           <p className="grp-note">
-            A second opinion from the trains themselves. The status we publish comes
-            from the alerts feed; this compares it to where trains are actually
-            moving. They&apos;re different signals, so the spots where they disagree are
-            the interesting ones — and movement is the read we&apos;re hoping to lean on
-            for &ldquo;is this line stuck right now?&rdquo;
+            Train movement is now the independent arm the recovery axis is graded
+            against — no longer a side check. The status we publish now follows
+            train movement; the alerts feed is the cross-reference this panel
+            compares it against. The two are different signals, so a disagreement
+            is the signal, not
+            noise. One honest asymmetry: movement&apos;s false-alarm rate — calling a
+            moving line stuck — is bounded and monitored, but how often it{" "}
+            <em>misses</em> a stuck line the trains don&apos;t reveal is unmeasurable
+            here, because no archived movement truth exists to grade misses against.
           </p>
           {source === "static" && (
             <div className="muted">
@@ -455,6 +470,37 @@ export default function ModelsPage() {
             trainedAt={data.paramsTrainedAt}
             selfLoopCap={data.paramsSelfLoopCap}
           />
+
+          <h3 className="grp">The supply axis</h3>
+          <p className="grp-note">
+            Everything above grades the flow/condition model. Supply is the second,
+            now load-bearing axis — it catches service collapses (missing trains)
+            that the flow signal is structurally blind to. Its derivation and
+            scorecard are reserved here; the numbers land with the next review
+            regeneration so they come from the fresh scorecard rather than a stale
+            one.
+          </p>
+          <div className="chart-reserved" role="note">
+            <div className="chart-reserved-tag">panel reserved · lands next review</div>
+            <div className="chart-reserved-title">
+              Supply: assigned trains vs. the line&apos;s own baseline
+            </div>
+            <p>
+              The derivation this panel will show, end to end:{" "}
+              <code>assigned_n</code> → the median for that{" "}
+              <code>(route, schedule_bin)</code> cell → their ratio →{" "}
+              <strong>degrade</strong> under 0.5× / <strong>recover</strong> over
+              0.8×, with a 2-tick debounce so a single thin scan doesn&apos;t flip the
+              state.
+            </p>
+            <p>
+              And the honesty rule that makes it trustworthy: a cell with too few
+              nights of history <strong>abstains</strong> — it reads &ldquo;no
+              reading&rdquo; rather than guessing — so a thin weekend cell can&apos;t
+              manufacture a supply collapse. The monitored thresholds and per-line
+              support counts render once the regenerated review supplies them.
+            </p>
+          </div>
         </ChartMetaProvider>
         </ChartErrorBoundary>
       )}

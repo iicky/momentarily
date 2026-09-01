@@ -809,6 +809,46 @@ code {
   text-align: center;
 }
 
+/* Reserved-space card: a panel that is intentionally not built yet. Dashed
+   border + tag so it reads as held-open room for a coming panel, never as a
+   broken or empty chart. */
+.chart-reserved {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--panel);
+  max-width: 720px;
+}
+.chart-reserved-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.chart-reserved-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.chart-reserved p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 8px;
+  line-height: 1.55;
+}
+.chart-reserved p:last-child {
+  margin-bottom: 0;
+}
+.chart-reserved code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--panel-2);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
 @media (max-width: 760px) {
   .charts-row {
     flex-direction: column;

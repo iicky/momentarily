@@ -1255,6 +1255,57 @@ def movement_observation_fields(
     return {"advanced_n": advanced_n, "matched_n": matched_n, "has_movement": True}
 
 
+# A carried service metric older than this (seconds) is a feed gap, not "now"
+# — mirrors worker/src/movement_state.ts MAX_SERVICE_METRIC_LAG_SECONDS. The
+# live filter folds the PREVIOUS tick's assigned_n into an observation (option B
+# lag) and drops anything staler; training admits the same window so the service
+# emission is fitted on exactly the samples inference will score it against.
+MAX_SERVICE_METRIC_LAG_SECONDS = 600
+
+
+def service_observation_fields(
+    service_by_tick: dict[tuple[str, int], int],
+    service_baseline: dict[tuple[str, int], float],
+    snapshot_ticks: set[int] | frozenset[int],
+    route: str,
+    tick: int,
+) -> dict[str, Any] | None:
+    """Service fields for one (route, tick) HMM observation, reconstructing what
+    the live filter folds in at that tick: the previous tick's assigned_n divided
+    by the (route, tod_bin) baseline median. Returns None — channel stays off —
+    exactly where the live filter abstains: no carried snapshot within the lag
+    window, the route absent from that snapshot's rows, or no published baseline
+    cell for the current tick's tod_bin. Straight port of
+    worker/src/movement_state.ts serviceObservationFields (assigned/baseline, gate
+    keyed on the current tick's tod_bin), so training and inference admit and
+    score the same samples (no train/serve skew).
+
+    The live filter carries ONE snapshot doc (the previous tick's, or up to
+    MAX_SERVICE_METRIC_LAG_SECONDS back across a feed gap) and reads the route off
+    it — abstaining when that specific doc lacks the route. So we resolve the
+    single carried snapshot tick from `snapshot_ticks` FIRST (the most recent tick
+    that produced a doc, within the lag window), then look the route up in that
+    one tick: a route absent from the carried doc abstains here too, rather than
+    reaching further back to an older doc where the route happens to reappear.
+    """
+    carried_tick: int | None = None
+    lag = TICK_SECONDS
+    while lag <= MAX_SERVICE_METRIC_LAG_SECONDS:
+        if (tick - lag) in snapshot_ticks:
+            carried_tick = tick - lag
+            break
+        lag += TICK_SECONDS
+    if carried_tick is None:
+        return None
+    assigned = service_by_tick.get((route, carried_tick))
+    if assigned is None:
+        return None
+    baseline = service_baseline.get((route, tod_bin(tick)))
+    if baseline is None or baseline <= 0:
+        return None
+    return {"service_ratio": assigned / baseline, "has_service": True}
+
+
 def compute_advance_baseline_by_route(
     series: dict[tuple[str, str, int], dict[str, int]],
     *,

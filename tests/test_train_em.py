@@ -35,6 +35,7 @@ from training.train_em import (
     VERSIONED_PARAMS_PREFIX,
     CorpusStats,
     MovementInputs,
+    ServiceInputs,
     _apply_advance_prior,  # pyright: ignore[reportPrivateUsage]
     _cap_self_loops,  # pyright: ignore[reportPrivateUsage]
     _movement_baseline,  # pyright: ignore[reportPrivateUsage]
@@ -284,6 +285,38 @@ def test_params_to_json_round_trip_shape() -> None:
     assert body["emissions"]["poisson_lambda"] == (0.3, 4.0, 12.0)
     # emissions_by_bin omitted when params.emissions_by_bin is None
     assert "emissions_by_bin" not in body
+    # The service Gaussian is DROPPED from published params (2026-08-31 fit-or-drop
+    # verdict): omitting it turns the live service channel off via the Worker's
+    # optional-param gate, no Worker deploy. Alert + movement channels stay.
+    assert "service_mu" not in body["emissions"]
+    assert "service_sigma" not in body["emissions"]
+    assert "advance_rate" in body["emissions"]
+    assert "bernoulli_p" in body["emissions"]
+
+
+def test_params_to_json_drops_service_gaussian_in_every_bin() -> None:
+    """The drop applies to the per-TOD-bin emissions too, not just the top-level
+    set — a bin that still shipped service_mu would re-enable the channel for that
+    bin live."""
+    em = EmissionParams(
+        poisson_lambda=(0.3, 4.0, 12.0),
+        gamma_alpha=(1.0, 3.0, 6.0),
+        gamma_beta=(2.0, 0.4, 0.2),
+        bernoulli_p=(0.001, 0.05, 0.95),
+        service_mu=(1.0, 0.6, 0.05),
+        service_sigma=(0.3, 0.3, 0.15),
+    )
+    params = HMMParams(
+        transition=((0.9, 0.08, 0.02), (0.1, 0.85, 0.05), (0.02, 0.13, 0.85)),
+        initial=(0.8, 0.15, 0.05),
+        emissions=em,
+        emissions_by_bin=tuple(em for _ in range(5)),
+    )
+    body = _params_to_json(params)
+    assert "service_mu" not in body["emissions"]
+    for binned in body["emissions_by_bin"]:
+        assert "service_mu" not in binned
+        assert "service_sigma" not in binned
 
 
 class _FakeS3:
@@ -763,37 +796,32 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     start = date(2026, 6, 1)
     end = date(2026, 6, 14)
 
-    (
-        result,
-        n_cells,
-        schedule_result,
-        n_schedule_cells,
-        hourly_result,
-        n_hourly_cells,
-        hourly_quantiles_result,
-        n_hourly_quantile_cells,
-    ) = _service_baseline(cfg, client, start, end)
+    svc = _service_baseline(cfg, client, start, end)
 
     assert fetch_calls == [{"start_date": start, "end_date": end, "client": client}]
     assert bodies_seen == [sentinel_bodies]
     # Both baselines come off the SAME series (one fetch, one build).
     assert series_seen == [sentinel_series, sentinel_series]
     assert baseline_seen == [sentinel_baseline, sentinel_hourly_baseline]
-    assert result == sentinel_json
-    assert n_cells == 2
-    assert hourly_result == sentinel_hourly_json
-    assert n_hourly_cells == 1
+    assert svc.baseline_json == sentinel_json
+    assert svc.n_cells == 2
+    assert svc.hourly_json == sentinel_hourly_json
+    assert svc.n_hourly == 1
+    # The raw tod_bin baseline dict and per-tick series ride along untouched, so
+    # the service emission is fitted against the exact denominator inference uses.
+    assert svc.baseline_by_cell == sentinel_baseline
+    assert svc.service_by_tick == sentinel_series
     # Schedule chain reuses the SAME fetch — not a second trip-updates call.
     assert schedule_bodies_seen == [sentinel_bodies]
     assert schedule_rate_seen == [sentinel_schedule_rate]
-    assert schedule_result == sentinel_schedule_json
-    assert n_schedule_cells == 1
+    assert svc.schedule_json == sentinel_schedule_json
+    assert svc.n_schedule == 1
     # Quantile chain reuses the SAME series as the hourly baseline — not a
     # second fetch or a second build_service_series call.
     assert quantile_series_seen == [sentinel_series]
     assert quantiles_seen == [sentinel_hourly_quantiles]
-    assert hourly_quantiles_result == sentinel_quantiles_json
-    assert n_hourly_quantile_cells == 1
+    assert svc.hourly_quantiles_json == sentinel_quantiles_json
+    assert svc.n_hourly_quantiles == 1
 
 
 def test_service_baseline_fails_soft_on_archive_error(
@@ -814,30 +842,23 @@ def test_service_baseline_fails_soft_on_archive_error(
 
     monkeypatch.setattr("training.train_em.fetch_trip_update_metrics", _raise_fetch)
 
-    (
-        result,
-        n_cells,
-        schedule_result,
-        n_schedule_cells,
-        hourly_result,
-        n_hourly,
-        hourly_quantiles_result,
-        n_hourly_quantile_cells,
-    ) = _service_baseline(
+    svc = _service_baseline(
         _r2_config(),
         cast("S3Client", _FakeS3()),
         date(2026, 6, 1),
         date(2026, 6, 14),
     )
 
-    assert result == {}
-    assert n_cells == 0
-    assert schedule_result == {}
-    assert n_schedule_cells == 0
-    assert hourly_result == {}
-    assert n_hourly == 0
-    assert hourly_quantiles_result == {}
-    assert n_hourly_quantile_cells == 0
+    assert svc.baseline_json == {}
+    assert svc.n_cells == 0
+    assert svc.schedule_json == {}
+    assert svc.n_schedule == 0
+    assert svc.hourly_json == {}
+    assert svc.n_hourly == 0
+    assert svc.hourly_quantiles_json == {}
+    assert svc.n_hourly_quantiles == 0
+    assert svc.baseline_by_cell == {}
+    assert svc.service_by_tick == {}
     assert "service baseline skipped" in capsys.readouterr().err
 
 
@@ -1089,25 +1110,18 @@ def test_main_threads_service_baselines_to_their_writers(
 
     def _fake_service_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
-    ) -> tuple[
-        dict[str, Any],
-        int,
-        dict[str, Any],
-        int,
-        dict[str, Any],
-        int,
-        dict[str, Any],
-        int,
-    ]:
-        return (
-            sentinel_baseline,
-            4,
-            sentinel_schedule_rate,
-            6,
-            sentinel_hourly,
-            3,
-            sentinel_hourly_quantiles,
-            2,
+    ) -> ServiceInputs:
+        return ServiceInputs(
+            baseline_json=sentinel_baseline,
+            n_cells=4,
+            schedule_json=sentinel_schedule_rate,
+            n_schedule=6,
+            hourly_json=sentinel_hourly,
+            n_hourly=3,
+            hourly_quantiles_json=sentinel_hourly_quantiles,
+            n_hourly_quantiles=2,
+            baseline_by_cell={},
+            service_by_tick={},
         )
 
     def _fake_write_params(*args: Any, **kwargs: Any) -> str:

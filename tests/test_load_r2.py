@@ -35,6 +35,7 @@ from training.load_r2 import (
     movement_observation_fields,
     presence_mask_from_predictions,
     service_baseline_to_json,
+    service_observation_fields,
     service_quantiles_to_json,
     throughput_exposure,
     throughput_to_json,
@@ -464,6 +465,94 @@ def test_movement_fields_requires_a_published_baseline_cell():
     assert movement_observation_fields(mv, set(), "A", T0) is None
     south_only = {("A", "south", _TB)}
     assert movement_observation_fields(mv, south_only, "A", T0) is not None
+
+
+# --- service_observation_fields: the training-side mirror of the live filter's
+# serviceObservationFields (worker/src/movement_state.ts). ---
+
+_SVC_BASE = {("A", _TB): 20.0}  # (route, tod_bin) -> median assigned_n
+
+
+def _svc_fields(
+    svc: dict[tuple[str, int], int],
+    baseline: dict[tuple[str, int], float],
+    route: str,
+    tick: int,
+) -> dict[str, Any] | None:
+    """Call service_observation_fields with the snapshot-tick set derived from the
+    series, exactly as the trainer builds it (frozenset of every tick that
+    produced a doc)."""
+    snapshot_ticks = frozenset(t for _r, t in svc)
+    return service_observation_fields(svc, baseline, snapshot_ticks, route, tick)
+
+
+def test_service_fields_folds_previous_tick_ratio():
+    """The observation at tick T carries the PREVIOUS tick's assigned_n over the
+    (route, tod_bin) baseline (option B lag), matching what the live filter folds
+    in — assigned/baseline, has_service on."""
+    svc = {("A", T0 - TICK): 15}
+    assert _svc_fields(svc, _SVC_BASE, "A", T0) == {
+        "service_ratio": 15 / 20.0,
+        "has_service": True,
+    }
+
+
+def test_service_fields_ignores_same_tick():
+    """A snapshot at the current tick is not yet 'carried in' live, so training
+    must not fold it either — only lagged assigned_n counts."""
+    svc = {("A", T0): 15}
+    assert _svc_fields(svc, _SVC_BASE, "A", T0) is None
+
+
+def test_service_fields_allows_two_tick_lag_but_not_three():
+    two = {("A", T0 - 2 * TICK): 15}
+    assert _svc_fields(two, _SVC_BASE, "A", T0) == {
+        "service_ratio": 15 / 20.0,
+        "has_service": True,
+    }
+    three = {("A", T0 - 3 * TICK): 15}
+    assert _svc_fields(three, _SVC_BASE, "A", T0) is None
+
+
+def test_service_fields_requires_a_baseline_cell():
+    """No baseline cell for this route+tod_bin → off, matching the live filter, so
+    a sample is never scored under a bin it wasn't fitted on."""
+    svc = {("A", T0 - TICK): 15}
+    assert _svc_fields(svc, {}, "A", T0) is None
+    assert _svc_fields(svc, {("A", _TB): 0.0}, "A", T0) is None
+
+
+def test_service_fields_admits_zero_assigned():
+    """assigned_n == 0 is a real reading (no trains dispatched → ratio 0), not a
+    gap: the channel fires, unlike movement's min_matched floor. This is the
+    suspended-supply signal the Gaussian would score."""
+    svc = {("A", T0 - TICK): 0}
+    assert _svc_fields(svc, _SVC_BASE, "A", T0) == {
+        "service_ratio": 0.0,
+        "has_service": True,
+    }
+
+
+def test_service_fields_off_when_route_absent_from_carried_snapshot():
+    """A route not present in the carried snapshot's rows has no assigned_n —
+    off, matching the live undefined-row abstention."""
+    svc = {("B", T0 - TICK): 15}
+    assert _svc_fields(svc, _SVC_BASE, "A", T0) is None
+
+
+def test_service_fields_abstains_when_absent_from_recent_doc_not_older_one():
+    """The live filter reads ONE carried doc (the most recent within lag) and
+    abstains if the route is absent from it — it does not reach past that doc to
+    an older one where the route reappears. A snapshot exists at T-TICK (carrying
+    only route B) and an older one at T-2*TICK carries A: A must abstain at T,
+    because the doc the live filter would hold is the T-TICK one, which lacks A."""
+    svc = {("B", T0 - TICK): 12, ("A", T0 - 2 * TICK): 15}
+    assert _svc_fields(svc, _SVC_BASE, "A", T0) is None
+    # B, present in the most-recent doc, still scores.
+    assert _svc_fields(svc, {("B", _TB): 20.0}, "B", T0) == {
+        "service_ratio": 12 / 20.0,
+        "has_service": True,
+    }
 
 
 # --- Per-(route,direction,from,to,tick) segment leaf ---

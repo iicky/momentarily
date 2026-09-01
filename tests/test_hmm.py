@@ -1292,6 +1292,92 @@ def test_canonicalize_service_mu_breaks_ties() -> None:
     assert math.isclose(canon.emissions.service_mu[2], 0.05)
 
 
+def _prior_only_service_scrambled() -> HMMParams:
+    """A route whose ALERT channels force a non-identity canonical permutation
+    (perm (1,2,0): normal=old idx1, disrupted=old idx2, suspended=old idx0)
+    while the service channel is untouched — its default prior constants sit at
+    canonical indices (normal 1.0 > disrupted 0.6 > suspended 0.05). This is the
+    {3, G, N, W}-class case: alerts are fit, service is not.
+    """
+    return HMMParams(
+        transition=(
+            (0.97, 0.02, 0.01),
+            (0.03, 0.97, 0.0),
+            (0.02, 0.01, 0.97),
+        ),
+        initial=(0.8, 0.15, 0.05),
+        emissions=EmissionParams(
+            poisson_lambda=(5.0, 0.02, 9.0),  # min at idx1 → normal
+            gamma_alpha=(1.0, 1.0, 1.0),
+            gamma_beta=(1.0, 1.0, 1.0),
+            bernoulli_p=(0.9, 0.01, 0.1),  # max among {0,2} at idx0 → suspended
+            # service channel at its untouched default (canonical, descending)
+            service_mu=(1.0, 0.6, 0.05),
+            service_sigma=(0.3, 0.3, 0.15),
+        ),
+    )
+
+
+def test_canonicalize_inverts_prior_only_service_without_the_skip() -> None:
+    """Regression witness: with the permutation applied to the prior-only
+    service channel (the old behavior), a non-identity route ships a
+    severity-INVERTED service_mu — suspended scored against mu=1.0."""
+    canon = canonicalize_states(_prior_only_service_scrambled())
+    # perm (1,2,0) reindexes (1.0, 0.6, 0.05) → (0.6, 0.05, 1.0): suspended (idx2)
+    # now carries the highest service ratio. This is the bug.
+    assert canon.emissions.service_mu == (0.6, 0.05, 1.0)
+
+
+def test_canonicalize_holds_prior_only_service_in_canonical_order() -> None:
+    """A prior-only service channel must never be severity-inverted by
+    canonicalization: held in place, normal keeps the highest service ratio and
+    suspended the lowest, whatever the alert-fitted permutation is."""
+    canon = canonicalize_states(
+        _prior_only_service_scrambled(),
+        prior_only_channels=frozenset({"service"}),
+    )
+    # Alert channels still relabel to canonical (quiet→normal, flag→suspended)...
+    assert math.isclose(canon.emissions.poisson_lambda[0], 0.02)
+    assert math.isclose(canon.emissions.bernoulli_p[2], 0.9)
+    # ...but the untouched service prior stays canonical, not inverted.
+    assert canon.emissions.service_mu == (1.0, 0.6, 0.05)
+    assert canon.emissions.service_sigma == (0.3, 0.3, 0.15)
+    mu = canon.emissions.service_mu
+    assert mu[0] > mu[1] > mu[2]  # normal > disrupted > suspended
+
+
+def test_fit_em_never_inverts_the_unfitted_service_channel() -> None:
+    """End to end: a corpus with no service tick anywhere leaves service_mu at
+    its canonical prior even when EM label-switches and canonicalize permutes
+    the alert channels — the fit_em path derives the skip from the observations.
+    """
+    rng = random.Random(20260831)
+    obs: list[Observation] = []
+    # Alternate quiet and loud-suspended ticks so EM finds a real split and the
+    # canonical permutation is exercised; never set has_service.
+    for i in range(400):
+        if i % 5 == 0:
+            obs.append(
+                Observation(
+                    alert_count=rng.randint(6, 12),
+                    severity_sum=20,
+                    has_suspended_alert=True,
+                    has_delays=True,
+                )
+            )
+        else:
+            obs.append(
+                Observation(alert_count=0, severity_sum=0, has_suspended_alert=False)
+            )
+    # Seed EM with a label-switched init so canonicalize has to permute.
+    init = _scrambled_params()
+    fitted, _ = fit_em(obs, init, max_iterations=20)
+    assert all(not o.has_service for o in obs)
+    mu = fitted.emissions.service_mu
+    assert mu == (1.0, 0.6, 0.05)
+    assert mu[0] > mu[1] > mu[2]
+
+
 def test_reorder_emissions_permutes_service_channel_in_lockstep() -> None:
     """service_mu/service_sigma must move with the rest of a state's
     per-state channels under a non-identity permutation, not independently."""

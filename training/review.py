@@ -81,6 +81,7 @@ from training.load_r2 import (
     presence_mask_from_predictions,
 )
 from training.movement_backfill import resolve_stop_filter
+from training.movement_validation import build_validation_report
 from training.r2_client import load_config, make_client
 from training.reliability import direction_reliability, segment_reliability
 from training.scorecard import dwell_lookup_from_params, episode_scorecard
@@ -647,6 +648,44 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"{n_degraded} degraded"
     )
 
+    # Movement-condition validation on its own flow axis (training.movement_
+    # validation): the measured false-alarm UPPER bound on assigned_n-confirmed-
+    # normal runs, plus detection split by supply-collapse severity and onset
+    # latency, every arm episode-bootstrapped with a CI and its gradeable/offered
+    # support. Wiring this here makes the false-alarm bound a monitored, recurring
+    # scorecard number that recomputes from the archive window each review run,
+    # not a one-off. It reuses the already-loaded causal movement_truth (advance
+    # baseline fit on the pre-window above) and the assigned_n supply series; the
+    # supply label's own median baseline is fit on the review window itself,
+    # matching degradation_label's design (a median resists an outage lowering its
+    # own reference), so the whole review window is scored rather than a held-out
+    # tail. Detection of the broad assigned_n label is CORROBORATION not a pass
+    # bar (supply vs flow are near-orthogonal); the severe/near-suspension subset
+    # is the only place the two feeds physically agree — see the module docstring.
+    movement_validation = build_validation_report(
+        movement_truth,
+        tu_series,
+        tu_baseline,
+        window={
+            "movement_baseline_start": baseline_start.isoformat(),
+            "movement_baseline_end": baseline_end.isoformat(),
+            "score_start": start_date.isoformat(),
+            "score_end": end_date.isoformat(),
+            "supply_baseline": "fit on the review window (degradation_label median)",
+            "stop_scope": args.stop_scope,
+        },
+    )
+    mv_truth = movement_validation["truth"]
+    mv_fa = movement_validation["arms"]["disrupted"]["published"]["false_alarms"]
+    print(
+        f"  movement validation: {mv_truth['n_episodes']} assigned_n episodes "
+        f"({mv_truth['n_severe_episodes']} severe), {mv_truth['n_normal_runs']} normal "
+        f"runs; published disrupted false-alarm tick_rate="
+        f"{mv_fa.get('tick_rate')} "
+        f"[{mv_fa.get('tick_rate_ci_low')}, {mv_fa.get('tick_rate_ci_high')}] "
+        f"over {mv_fa.get('gradeable')}/{mv_fa.get('offered')} gradeable runs"
+    )
+
     # Peer-comparison reliability scorecard: rank line-directions and
     # segments by held-out advance deficit — observed advance over the review
     # window vs the causal baseline. Baselines are fit on baseline_bodies (the
@@ -906,6 +945,18 @@ def main(argv: Iterable[str] | None = None) -> int:
             "n_degraded_ticks": n_degraded,
             "independence": "independent (orthogonal to alerts and vehicle positions)",
         },
+        # Movement-condition validation on its own flow axis: the measured
+        # false-alarm UPPER bound on assigned_n-confirmed-normal runs (published
+        # disrupted arm), detection split by supply-collapse severity, and onset
+        # latency — each arm episode-bootstrapped with a 95% CI and its
+        # gradeable/offered support and counted exclusions (n_ungradeable,
+        # n_unrateable) visible. This recomputes from the archive window every
+        # review run so the promotion bar's false-alarm bound stays monitored.
+        # Detection of the BROAD assigned_n label is corroboration, not a pass
+        # bar — supply and flow are near-orthogonal; the `severe` (near-
+        # suspension) subset is the only coincident one. See
+        # training/movement_validation.py.
+        "movement_validation": movement_validation,
         # Escalation arm: movement disruptions beyond the alert feed, scored
         # against a corroboration window around each episode's onset (no
         # contemporaneous signal can adjudicate the vehicle-derived disrupted

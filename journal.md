@@ -5963,3 +5963,61 @@ can clear it. The movement condition's trustworthiness rests on its calibration
 and low false-alarm behaviour (settled 2026-08-26) plus the alert-corroboration
 lower bound (escalation.py), not on independent detection agreement. Harness run
 offline only; nothing published.
+
+---
+
+## 2026-08-31 — supply axis abstains on thin cells: an independent-night gate on the published (schedule_bin) baseline, tod_bin emission untouched
+
+origin: agent
+
+Closed the actionable weakness the 2026-08-27 entry filed (weekend-hourly
+`we<hour>` cells reading 1.7-2.1x off a bimodal 2-4-night median) on the
+publication side, so the supply axis no longer presents an un-trustworthy median
+as a confident reading. The supply axis itself (per-route `service_condition` +
+`service_ratio`/`service_low_ratio`/`service_high_ratio`/`service_percentile`,
+distinct from the movement `condition` flow axis) was already published and
+consumed by the viz (route-card glyph + "Trains running" drawer + percentile
+Gauge, all gating a null reading out honestly); the only missing piece was the
+thin-cell treatment, so this is a targeted addition, not a new surface.
+
+**The fix is abstention, not a clamp.** `compute_baseline` and
+`compute_service_quantiles` (training/load_r2.py) gain an opt-in `min_nights`
+gate that counts DISTINCT ET calendar dates per cell on top of the existing
+`min_samples` tick floor — because assigned_n is ~constant within an hour, a
+dozen 5-min ticks from one night are one autocorrelated draw, not twelve, which
+is exactly why the old `min_samples=20` gate certified a 2-night cell. A cell
+below the night floor is OMITTED (no baseline -> `serviceRatioFor` returns null
+-> `service_condition` 'unknown' -> the viz already renders "No reading… nothing
+to compare it against for this hour"). No ratio is fabricated or clamped; the
+reading is withheld until enough independent nights exist.
+
+**Applied to the published axis only.** `_service_baseline` (train_em.py) passes
+`min_nights=SERVICE_MIN_NIGHTS=8` to the schedule_bin `hourly` baseline + its
+quantiles (both, so `set(baseline) == set(quantiles)` still holds and the Worker
+can always pair a low/high ratio with its median), and leaves the tod_bin
+emission denominator at the default `min_nights=1`. So the frozen HMM operating
+point / `service_mu/sigma` emission channel is byte-for-byte unchanged — this is
+a sidecar-generation change, out of the protected v1787792319 eval's path. The
+offline degradation label keeps its own ungated `compute_baseline` (a truth
+signal, not a mirror of the published axis), so its grade is unperturbed too.
+
+**8 nights, and the window that feeds it.** 8 = a full month of weekend nights
+(4 weekends x Sat/Sun); a normally-thin `we<hour>` cell abstains until it has
+that many independent nights instead of publishing a between-modes median. The
+backfill tool's default window widened 28 -> 35 days (5 weekends = 10 Sat/Sun
+nights per cell) so a regenerated sidecar clears the floor with margin rather
+than landing exactly on it.
+
+**Evidence.** New unit tests in tests/test_load_r2.py: a 2-night/24-tick cell
+clears `min_samples=20` but is withheld at `min_nights=8`; an 8-night cell
+publishes; `min_nights=1` is a proven no-op (identical to the current behaviour);
+baseline and quantiles gate identically under the same floor. tests/test_train_em.py
+asserts `_service_baseline` threads `SERVICE_MIN_NIGHTS` into BOTH the schedule_bin
+baseline and its quantiles while the tod_bin call stays ungated. Full suites green:
+Python 1052 passed, worker (vitest) 456 passed, viz (node --test) 231 passed.
+
+**Not fixed here (still filed):** the Sat/Sun pooling into one `we` bin (a real
+split candidate if weekend service differs materially) and the actual sidecar
+regeneration — the live v1787792319 sidecar was baked over a 13-day window, so
+its weekend cells will abstain under the new floor until a 35-day backfill
+republishes them. Regeneration needs R2 and is a deploy step, staged not run.

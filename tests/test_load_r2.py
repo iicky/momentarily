@@ -668,6 +668,65 @@ def test_compute_service_quantiles_omits_cells_below_min_samples():
     assert cells == {}
 
 
+def _assigned_over_nights(
+    route: str, n_nights: int, per_night: int = 12, val: int = 5
+) -> dict[tuple[str, int], int]:
+    """`n_nights` distinct ET dates, each with `per_night` consecutive 5-min
+    ticks at the same local hour — the autocorrelated shape a weekend-hourly cell
+    actually has (assigned_n ~constant within an hour). Base is floored to a whole
+    UTC hour (also an ET hour) and each night is +1 calendar day, so every tick
+    lands in the same tod_bin / schedule_bin; the window (chosen off T0) stays
+    clear of a DST transition so a day step never shifts the local hour."""
+    base = (T0 // 3600) * 3600
+    return {
+        (route, base + d * 86400 + i * TICK): val
+        for d in range(n_nights)
+        for i in range(per_night)
+    }
+
+
+def test_compute_baseline_night_gate_omits_autocorrelated_thin_cells():
+    """A cell can clear the raw tick floor on a couple of nights of 5-min ticks
+    yet be only one or two independent draws. min_nights omits it until enough
+    DISTINCT ET dates exist — the weekend-hourly thin-cell guard (a normal
+    weekend night otherwise reads off-distribution against a bimodal median)."""
+    two_nights = _assigned_over_nights("A", n_nights=2)  # 24 ticks, 2 dates
+    assert len(two_nights) >= 20  # clears the tick floor
+    # Tick floor alone (default night gate = 1) still publishes it...
+    assert compute_baseline(two_nights, min_samples=20) != {}
+    # ...but the night gate withholds it: too few independent nights.
+    assert compute_baseline(two_nights, min_samples=20, min_nights=8) == {}
+
+    eight_nights = _assigned_over_nights("A", n_nights=8)
+    assert compute_baseline(eight_nights, min_samples=20, min_nights=8) != {}
+
+
+def test_compute_baseline_night_gate_default_is_a_noop():
+    """min_nights defaults to 1, so the tod_bin emission denominator and every
+    existing caller keep the raw tick-floor behaviour — the gate is opt-in for
+    the published supply axis only."""
+    one_night = _assigned_over_nights("A", n_nights=1, per_night=24)
+    assert compute_baseline(one_night, min_samples=20) == compute_baseline(
+        one_night, min_samples=20, min_nights=1
+    )
+    assert compute_baseline(one_night, min_samples=20) != {}
+
+
+def test_service_baseline_and_quantiles_gate_nights_identically():
+    """A cell present in the baseline is present in the quantiles and vice versa,
+    under the SAME min_nights — so the Worker can always pair a low/high ratio
+    with its median. Two-night cell abstains from both; eight-night cell is in
+    both."""
+    two = _assigned_over_nights("A", n_nights=2)
+    assert compute_baseline(two, min_samples=20, min_nights=8) == {}
+    assert compute_service_quantiles(two, min_samples=20, min_nights=8) == {}
+
+    eight = _assigned_over_nights("A", n_nights=8)
+    base = compute_baseline(eight, min_samples=20, min_nights=8)
+    quant = compute_service_quantiles(eight, min_samples=20, min_nights=8)
+    assert set(base) == set(quant) != set()
+
+
 def test_service_quantiles_bracket_the_baseline_median_cell_for_cell():
     """p10 <= median <= p90 for every cell, so the Worker's derived low/high
     ratios always straddle 1.0. The median and the quantiles are computed by two

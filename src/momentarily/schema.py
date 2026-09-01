@@ -209,6 +209,16 @@ class RouteStatus(BaseModel):
     # Python alert-only path (derive_route_status) has no movement feed and emits
     # the default "hmm".
     condition_source: str = "hmm"
+    # When the currently published `condition` began, epoch seconds — the badge's
+    # own clock ("how long has it held"), NOT the model's argmax clock in
+    # inference.regime_entered_at. Set only on the arm that can honestly time the
+    # badge: the Worker publisher fills it from the movement regime's entered_at
+    # when condition_source == "movement". None whenever no honest start exists —
+    # "schedule" (a planned non-run whose start the Worker doesn't track), "unknown"
+    # (movement declined to judge), and the alert-only Python "hmm" path. A reader
+    # must never present inference.regime_entered_at as this clock; that one times
+    # the HMM argmax, which flips independently of the badge.
+    condition_entered_at: int | None = None
     # Supply axis — assigned_n against its own hourly baseline, one-tick lagged
     # like `condition`. Distinct from `condition` (flow): a route's trips can be
     # pulled (degraded) while the trains still running advance fine (normal), and

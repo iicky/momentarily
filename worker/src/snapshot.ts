@@ -152,6 +152,13 @@ interface RouteStatusOut {
   // positions), 'schedule' (a planned "No Scheduled Service" alert), or 'unknown'
   // (movement can't judge — an honest coverage gap, never an alert fallback).
   condition_source: string;
+  // When `condition` began (epoch s) — the badge's own clock, how long this
+  // published state has held. Non-null ONLY when condition_source === 'movement'
+  // (the movement regime's entered_at); null for 'schedule' (the Worker tracks a
+  // planned run's announced end, not its start) and 'unknown' (nothing to time).
+  // Deliberately NOT inference.regime_entered_at, which times the HMM argmax and
+  // flips independently of the badge — see resolvePublishedCondition.
+  condition_entered_at: number | null;
   // Supply axis — assigned_n against its own hourly baseline, one-tick lagged
   // like `condition`. 'normal' | 'degraded' | 'unknown'. Distinct from
   // `condition` (flow): a route's trips can be pulled (degraded here) while the
@@ -585,10 +592,11 @@ export function buildSnapshot(args: {
     // one exception: a planned non-run wins. When movement can't judge (cold start,
     // feed gap, thin/absent signal) the condition is 'unknown' — an honest coverage
     // gap, never an alert-derived fallback.
-    const { condition, source: condition_source } = resolvePublishedCondition(
-      schedule,
-      movementRegime,
-    );
+    const {
+      condition,
+      source: condition_source,
+      entered_at: condition_entered_at,
+    } = resolvePublishedCondition(schedule, movementRegime);
     const serviceRatio = movementStates?.service_ratios?.[routeId] ?? null;
     const serviceLowRatio =
       movementStates?.service_quantile_ratios?.[routeId]?.low ?? null;
@@ -599,6 +607,7 @@ export function buildSnapshot(args: {
       alerts: activeAlerts,
       condition,
       condition_source,
+      condition_entered_at,
       service_condition: serviceRegime?.state ?? "unknown",
       service_ratio: serviceRatio,
       service_low_ratio: serviceLowRatio,
@@ -854,16 +863,28 @@ interface MovementRegime {
 // condition nobody was shown.
 type ConditionSource = "schedule" | "movement" | "unknown";
 
+// `entered_at` is the badge's own clock — when the PUBLISHED condition began —
+// and is honest only on the movement arm: it carries the movement regime's
+// entered_at there and null on every other arm. The schedule arm knows a
+// planned run's announced END (scheduledResumeAt), not when the non-run began;
+// the unknown arm has no regime at all. Returning null rather than a fabricated
+// stand-in is the whole point — a consumer must never fall back to the HMM's
+// regime_entered_at to fill this, because that clock times the argmax, not the
+// badge.
 function resolvePublishedCondition(
   schedule: ScheduleFacts,
   movementRegime: MovementRegime | null,
-): { condition: string; source: ConditionSource } {
+): { condition: string; source: ConditionSource; entered_at: number | null } {
   if (schedule.isNotScheduled)
-    return { condition: "not_scheduled", source: "schedule" };
+    return { condition: "not_scheduled", source: "schedule", entered_at: null };
   if (movementRegime !== null) {
-    return { condition: movementRegime.state, source: "movement" };
+    return {
+      condition: movementRegime.state,
+      source: "movement",
+      entered_at: movementRegime.entered_at,
+    };
   }
-  return { condition: "unknown", source: "unknown" };
+  return { condition: "unknown", source: "unknown", entered_at: null };
 }
 
 // atom_p/atom_sec activate the mixture closed form in pLeaveBy/conditionalRecovery

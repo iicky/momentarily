@@ -1201,6 +1201,18 @@
           "title": "Condition",
           "type": "string"
         },
+        "condition_entered_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Condition Entered At"
+        },
         "condition_source": {
           "default": "hmm",
           "title": "Condition Source",

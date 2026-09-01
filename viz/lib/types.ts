@@ -53,6 +53,11 @@ export interface RouteStatus {
   condition: string;
   // Where `condition` came from: 'movement' | 'schedule' | 'unknown' | 'hmm'.
   condition_source: string;
+  // When `condition` began (epoch s) — the badge's own clock, how long the
+  // published state has held. Non-null only when condition_source === 'movement';
+  // null for 'schedule'/'unknown'/'hmm'. NOT inference.regime_entered_at (which
+  // times the HMM argmax); the drawer must never fill this from that clock.
+  condition_entered_at: number | null;
   // Supply axis (assigned_n vs its hourly baseline), distinct from `condition`
   // (flow). 'normal' | 'degraded' | 'unknown'.
   service_condition: string;

@@ -6099,3 +6099,38 @@ The production fit stays service-free (the fold runs only under
 `--diagnose-service`) so the alert/movement params are not refit under a
 service-scored E-step the worker never runs. Dry-run only; nothing published or
 deployed.
+
+## 2026-09-01 — publish the movement regime's own entered_at so the drawer can time the badge, not the HMM argmax
+
+origin: agent
+
+The route drawer's "regime age" row read `inference.regime_entered_at`, the
+HMM argmax clock (advances only when `roll.filter` flips its top state), while
+the badge beside it is movement-primary (`condition`/`condition_source ===
+'movement'`, driven by the movement regime in `state/movement_state.json`). The
+two clocks are unrelated: in a live snapshot 14/29 routes flipped the HMM
+argmax in the same tick, so the row commonly read `—` (fmtMinutes(0)) or a few
+minutes next to a movement badge that had actually held for hours. The badge's
+own clock — the movement regime's `entered_at` — was read in `buildSnapshot`
+(`resolvePublishedCondition`, `movementRecovery`) but never published on
+RouteStatus, so viz could not show it and could not honestly derive it (segment
+`entered_at`s are per-segment, not the route movement regime).
+
+Fix, one field: `route_status.condition_entered_at: int | null`, the epoch the
+PUBLISHED condition began, filled only by the arm that can honestly time the
+badge. `resolvePublishedCondition` now returns `entered_at` alongside
+`{condition, source}` so the precedence lives in one place: `movement` →
+the movement regime's `entered_at`; `schedule` (a planned not_scheduled) → null
+(the Worker tracks the announced END via `scheduled_resume_at`, never the start
+of the non-run); `unknown`/`hmm` → null. Invariant: non-null **iff**
+`condition_source === 'movement'`. The drawer shows "<state> for X" under the
+badge only when non-null; `heldFor()` floors sub-minute to "under a minute" so
+a just-changed badge doesn't render fmtMinutes' `—`. The model section keeps
+`inference.regime_entered_at` under its honest label "Model regime age".
+
+No new zod input surface: `entered_at` is already validated on
+MovementRegimeSchema — this only threads it to the output. Schema regenerated
+(`scripts/export_schema.py`), one additive nullable int. Worker 456, viz 233,
+python parity 2, both typechecks clean. Not deployed: the Worker must ship for
+`condition_entered_at` to appear on the live feed; viz reads it back-compat
+(field absent → no row).

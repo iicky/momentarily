@@ -192,6 +192,17 @@ export function fmtEta(epochSec: number | null | undefined, nowSec: number): str
   return `in ${Math.round(d / 86400)}d`;
 }
 
+// How long the badge has held its current state, from route_status
+// .condition_entered_at (the movement regime's own clock). Sub-minute reads as
+// "under a minute" rather than fmtMinutes' "—", which would look like a missing
+// value beside a badge that just changed. Distinct from the model regime age,
+// which times the HMM argmax and restarts far more often. Negative input (a
+// clock ahead of generated_at, e.g. clock skew) is clamped to "under a minute".
+export function heldFor(ageSec: number): string {
+  if (ageSec < 60) return "under a minute";
+  return fmtMinutes(ageSec / 60);
+}
+
 export function fmtMinutes(min: number): string {
   if (min <= 0) return "—";
   if (min < 60) return `${Math.round(min)}m`;

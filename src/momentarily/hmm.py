@@ -152,13 +152,35 @@ class HMMParams:
     emissions_by_bin: tuple[EmissionParams, ...] | None = None
 
 
+# Channel names for the canonicalization skip-list. A channel named here is a
+# per-state emission the fit only touches when the tick carries its data; when a
+# route never carries it (movement or service unavailable for the whole window),
+# its per-state values are the prior constants sitting at their canonical indices
+# — reindexing them by the alert-fitted permutation ships a severity-INVERTED
+# tuple (e.g. suspended scored against the normal service_mu). Skipping the
+# permutation for such a channel leaves the canonical prior in place.
+CHANNEL_MOVEMENT = "movement"
+CHANNEL_SERVICE = "service"
+
+
 def _reorder_emissions(
-    em: EmissionParams, perm: tuple[int, int, int]
+    em: EmissionParams,
+    perm: tuple[int, int, int],
+    *,
+    skip: frozenset[str] = frozenset(),
 ) -> EmissionParams:
-    """Reindex every per-state channel of `em` by `perm` (new index -> old)."""
+    """Reindex every per-state channel of `em` by `perm` (new index -> old).
+
+    Channels named in `skip` are left in place (identity): a prior-only channel
+    carries no per-state fit, so permuting its constants would invert them —
+    see the CHANNEL_* note above.
+    """
 
     def r(t: tuple[float, float, float]) -> tuple[float, float, float]:
         return (t[perm[0]], t[perm[1]], t[perm[2]])
+
+    def maybe(name: str, t: tuple[float, float, float]) -> tuple[float, float, float]:
+        return t if name in skip else r(t)
 
     return EmissionParams(
         poisson_lambda=r(em.poisson_lambda),
@@ -168,13 +190,15 @@ def _reorder_emissions(
         bernoulli_p_delays=r(em.bernoulli_p_delays),
         bernoulli_p_service_change=r(em.bernoulli_p_service_change),
         bernoulli_p_planned=r(em.bernoulli_p_planned),
-        advance_rate=r(em.advance_rate),
-        service_mu=r(em.service_mu),
-        service_sigma=r(em.service_sigma),
+        advance_rate=maybe(CHANNEL_MOVEMENT, em.advance_rate),
+        service_mu=maybe(CHANNEL_SERVICE, em.service_mu),
+        service_sigma=maybe(CHANNEL_SERVICE, em.service_sigma),
     )
 
 
-def canonicalize_states(params: HMMParams) -> HMMParams:
+def canonicalize_states(
+    params: HMMParams, *, prior_only_channels: frozenset[str] = frozenset()
+) -> HMMParams:
     """Permute the three states into canonical label order so the state index
     matches its semantics: normal < disrupted < suspended in disruption.
 
@@ -201,6 +225,13 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
     the single state-ordering rule — fit_em applies it before returning, and
     any post-processing keyed by state index (e.g. per-state self-loop caps)
     must run after it.
+
+    `prior_only_channels` names emission channels (CHANNEL_MOVEMENT /
+    CHANNEL_SERVICE) that the fit never touched because the route carried no
+    data for them: their per-state values are the prior constants at canonical
+    indices, so they are held in place rather than permuted (fit_em derives the
+    set from the observations). Ranking still uses whatever values are present;
+    only the applied permutation of these channels is suppressed.
     """
     em = params.emissions
     if params.emissions_by_bin is None:
@@ -257,14 +288,17 @@ def canonicalize_states(params: HMMParams) -> HMMParams:
         params.initial[perm[2]],
     )
     new_by_bin = (
-        tuple(_reorder_emissions(e, perm) for e in params.emissions_by_bin)
+        tuple(
+            _reorder_emissions(e, perm, skip=prior_only_channels)
+            for e in params.emissions_by_bin
+        )
         if params.emissions_by_bin is not None
         else None
     )
     return HMMParams(
         transition=new_transition,
         initial=new_initial,
-        emissions=_reorder_emissions(em, perm),
+        emissions=_reorder_emissions(em, perm, skip=prior_only_channels),
         emissions_by_bin=new_by_bin,
     )
 
@@ -1010,10 +1044,19 @@ def fit_em(
 
     The output is passed through canonicalize_states so the index<->label
     mapping (normal/disrupted/suspended) is stable across runs — there is
-    exactly one ordering rule; don't add another.
+    exactly one ordering rule; don't add another. A channel the corpus never
+    enables (no movement / no service tick anywhere) is fitted nowhere, so its
+    per-state values stay the prior constants; canonicalize is told to hold
+    those in place rather than reindex the prior into a severity-inverted order.
     """
     if not observations:
         raise ValueError("fit_em requires at least one observation")
+
+    prior_only: set[str] = set()
+    if not any(o.has_movement and o.matched_n > 0 for o in observations):
+        prior_only.add(CHANNEL_MOVEMENT)
+    if not any(o.has_service and o.service_ratio is not None for o in observations):
+        prior_only.add(CHANNEL_SERVICE)
 
     params = initial_params
     log_liks: list[float] = []
@@ -1033,7 +1076,10 @@ def fit_em(
                 break
         prev = log_lik
 
-    return canonicalize_states(params), log_liks
+    return (
+        canonicalize_states(params, prior_only_channels=frozenset(prior_only)),
+        log_liks,
+    )
 
 
 def advance_responsibility(
@@ -1065,4 +1111,38 @@ def advance_responsibility(
             mov_k[s] += g * obs.advanced_n
     for s in range(N_STATES):
         out.append((mov_n[s], mov_k[s]))
+    return out
+
+
+def service_responsibility(
+    observations: list[Observation],
+    params: HMMParams,
+) -> list[tuple[float, float]]:
+    """Per-state (svc_w, svc_mean): responsibility-weighted service-tick count
+    and the responsibility-weighted mean service_ratio over service-available
+    ticks, under `params`.
+
+    This is the M-step's own `svc_w`/`mu` numerator (hmm.py service branch), read
+    off a single E-step at the given params. `svc_w[s]` is the effective sample
+    size the service-ratio Gaussian for state `s` was fitted on; when it is small
+    relative to `prior_strength`, that state's serialized `service_mu`/`sigma`
+    reflect the prior, not observed service. Diagnostic only — never called in the
+    fit; mirrors advance_responsibility for the service channel."""
+    emis, _ = _per_tick_emissions(observations, params)
+    alpha, scales = _forward_scaled(emis, params)
+    beta = _backward_scaled(emis, scales, params)
+    svc_w = [0.0] * N_STATES
+    svc_sum = [0.0] * N_STATES
+    for t, obs in enumerate(observations):
+        if not (obs.has_service and obs.service_ratio is not None):
+            continue
+        z = sum(alpha[t][s] * beta[t][s] for s in range(N_STATES)) or 1e-300
+        for s in range(N_STATES):
+            g = alpha[t][s] * beta[t][s] / z
+            svc_w[s] += g
+            svc_sum[s] += g * obs.service_ratio
+    out: list[tuple[float, float]] = []
+    for s in range(N_STATES):
+        mean = svc_sum[s] / svc_w[s] if svc_w[s] > 0 else float("nan")
+        out.append((svc_w[s], mean))
     return out

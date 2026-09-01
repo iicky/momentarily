@@ -38,6 +38,7 @@ from momentarily.hmm import (
     advance_responsibility,
     fit_em,
     schedule_bin,
+    service_responsibility,
 )
 from training.drift import build_input_profile
 from training.dwell import (
@@ -81,6 +82,7 @@ from training.load_r2 import (
     presence_mask_from_predictions,
     schedule_rate_to_json,
     service_baseline_to_json,
+    service_observation_fields,
     service_quantiles_to_json,
     throughput_to_json,
 )
@@ -189,6 +191,7 @@ def load_series_by_route(
     end: date,
     *,
     movement_fields: Callable[[str, int], dict[str, Any] | None] | None = None,
+    service_fields: Callable[[str, int], dict[str, Any] | None] | None = None,
 ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
     """Single R2 pass: fetch alerts, build per-route quiet-filled series.
 
@@ -202,8 +205,11 @@ def load_series_by_route(
     `movement_fields(route, tick)` folds the movement channel into each
     observation before the tick tag is dropped: it returns the
     advanced_n/matched_n/has_movement for that cell (or None to leave the channel
-    off), reconstructing exactly what the live filter carries in. Without it the
-    series is alerts-only, as before.
+    off), reconstructing exactly what the live filter carries in.
+    `service_fields(route, tick)` does the same for the service channel
+    (service_ratio/has_service). Both are merged onto the same observation, the
+    way the live filter folds both the previous tick's movement and service
+    metrics into one Observation. Without either the series is alerts-only.
     """
     client = make_client(cfg)
     # Hash the exact key set we fetch — the manifest fingerprint and the training
@@ -256,15 +262,22 @@ def load_series_by_route(
         filled: list[TickObservation] = fill_quiet_ticks(
             all_ticks, route, start_tick=start_tick, end_tick=last_tick
         )
-        if movement_fields is None:
+        if movement_fields is None and service_fields is None:
             by_route[route] = [t.observation for t in filled]
         else:
-            by_route[route] = [
-                replace(t.observation, **mv)
-                if (mv := movement_fields(route, t.tick))
-                else t.observation
-                for t in filled
-            ]
+            route_obs: list[Observation] = []
+            for t in filled:
+                extra: dict[str, Any] = {}
+                if movement_fields is not None and (
+                    mv := movement_fields(route, t.tick)
+                ):
+                    extra.update(mv)
+                if service_fields is not None and (sv := service_fields(route, t.tick)):
+                    extra.update(sv)
+                route_obs.append(
+                    replace(t.observation, **extra) if extra else t.observation
+                )
+            by_route[route] = route_obs
     return by_route, corpus, input_profile
 
 
@@ -393,16 +406,91 @@ def _report_advance_diagnostics(
             )
 
 
+def _report_service_diagnostics(
+    series_by_route: dict[str, list[Observation]],
+    global_prior: HMMParams,
+    per_route: dict[str, HMMParams],
+    *,
+    min_ticks: int,
+) -> None:
+    """Print, per fitted route, each canonical state's service-ratio Gaussian
+    responsibility (svc_w), the mean ratio the data alone implies, and the fitted
+    mu/sigma — read off one E-step at the canonical fitted params, so they agree
+    by construction. The service-channel analog of _report_advance_diagnostics.
+
+    Reading: a state with large svc_w whose fitted mu tracks the data mean is
+    genuinely fitted on service; a state with svc_w≈0 carries the prior
+    (fitted==prior). This is the fit-or-drop evidence: if svc_w is ~0 everywhere,
+    or the fitted per-state mu/sigma barely separate normal from suspended, the
+    Gaussian adds no discrimination the alert + movement channels don't already
+    carry.
+    """
+    gm = global_prior.emissions.service_mu
+    gs = global_prior.emissions.service_sigma
+    print("=== service-ratio diagnostics ===")
+    print(
+        "global prior service_mu (normal, disrupted, suspended) = "
+        f"({gm[0]:.4f}, {gm[1]:.4f}, {gm[2]:.4f}); sigma = "
+        f"({gs[0]:.4f}, {gs[1]:.4f}, {gs[2]:.4f})"
+    )
+    print(
+        f"{'route':<5} {'state':<10} {'svc_w':>10} {'data_mu':>9} "
+        f"{'fit_mu':>8} {'fit_sig':>8}"
+    )
+    for route in sorted(per_route):
+        series = series_by_route.get(route, [])
+        if len(series) < min_ticks:
+            continue
+        params = per_route[route]
+        resp = service_responsibility(series, params)
+        mu = params.emissions.service_mu
+        sigma = params.emissions.service_sigma
+        for s in range(len(STATES)):
+            svc_w, data_mu = resp[s]
+            dm = f"{data_mu:.3f}" if svc_w > 0 else "--"
+            print(
+                f"{route:<5} {STATES[s]:<10} {svc_w:>10.2f} {dm:>9} "
+                f"{mu[s]:>8.4f} {sigma[s]:>8.4f}"
+            )
+
+
+# Emission channels dropped from the published params. The Worker reads
+# service_mu/service_sigma as OPTIONAL (worker/src/hmm.ts: the service term only
+# scores when `em.service_mu !== undefined`), so omitting them here turns the
+# service channel off live via the exact back-compat gate pre-service params used
+# — no Worker deploy required. This is the 2026-08-31 fit-or-drop verdict: fitting
+# the service Gaussian showed the per-state means barely separate (median spread
+# 0.15 on a ~1.0 scale, sigma ~0.25) and the fit is severity-INVERTED on 15/28
+# routes, because assigned_n supply is statistically independent of the
+# alert-defined disruption axis the states are anchored on (journal 2026-08-31
+# assigned_n-independence result). A sub-nat channel that points the wrong way
+# half the time cannot help a posterior already one-hot at log-odds in the
+# hundreds, and the live suspended arm already reads assigned_n on its own axis.
+# The channel is still FITTED (see --diagnose-service) so the decision stays
+# reproducible; it is simply not shipped for scoring.
+_DROPPED_EMISSION_KEYS = ("service_mu", "service_sigma")
+
+
 def _params_to_json(params: HMMParams) -> dict[str, Any]:
-    """Serialize HMMParams to the loose schema the Worker reads."""
-    emissions = asdict(params.emissions)
+    """Serialize HMMParams to the loose schema the Worker reads.
+
+    Drops the service Gaussian (see _DROPPED_EMISSION_KEYS): the trained value is
+    not shipped, so the Worker's optional-param gate leaves the channel unscored.
+    """
+
+    def emit(em: EmissionParams) -> dict[str, Any]:
+        d = asdict(em)
+        for k in _DROPPED_EMISSION_KEYS:
+            d.pop(k, None)
+        return d
+
     body: dict[str, Any] = {
         "transition": [list(row) for row in params.transition],
         "initial": list(params.initial),
-        "emissions": emissions,
+        "emissions": emit(params.emissions),
     }
     if params.emissions_by_bin is not None:
-        body["emissions_by_bin"] = [asdict(e) for e in params.emissions_by_bin]
+        body["emissions_by_bin"] = [emit(e) for e in params.emissions_by_bin]
     return body
 
 
@@ -899,14 +987,37 @@ def _movement_baseline(
         return MovementInputs({}, 0, {}, set(), {})
 
 
+@dataclass(frozen=True)
+class ServiceInputs:
+    """Everything the service channel needs from one trip-updates fetch.
+
+    The `*_json` / `n_*` fields are the published baselines/quantiles/schedule
+    rate (as before). `baseline_by_cell` is the raw (route, tod_bin) -> median
+    assigned_n — the live-ratio denominator, kept in its dict form so the HMM
+    service emission is fitted against the exact denominator inference divides
+    by. `service_by_tick` is the per-(route, tick) assigned_n the live filter
+    folds into an observation (previous tick, option B lag). Parity with
+    MovementInputs so the two channels wire the same way.
+    """
+
+    baseline_json: dict[str, Any]
+    n_cells: int
+    schedule_json: dict[str, Any]
+    n_schedule: int
+    hourly_json: dict[str, Any]
+    n_hourly: int
+    hourly_quantiles_json: dict[str, Any]
+    n_hourly_quantiles: int
+    baseline_by_cell: dict[tuple[str, int], float]
+    service_by_tick: dict[tuple[str, int], int]
+
+
 def _service_baseline(
     cfg: R2Config,
     client: S3Client,
     start_date: date,
     end_date: date,
-) -> tuple[
-    dict[str, Any], int, dict[str, Any], int, dict[str, Any], int, dict[str, Any], int
-]:
+) -> ServiceInputs:
     """Per-(route, tod) assigned_n baseline, per-(route, schedule_bin) assigned_n
     baseline, per-(route, schedule_bin) assigned_n p10/p90 quantiles, AND
     per-(route, schedule_bin) scheduled-presence rate over the training window,
@@ -924,9 +1035,7 @@ def _service_baseline(
     keeps the default night gate so its frozen operating point is untouched. The
     schedule rate splits a no-service reading into suspended vs
     not_scheduled. Fail-soft: a trip-updates archive error returns empty
-    sidecars (all optional and back-compat). Returns (baseline, n_cells,
-    schedule, n_schedule, hourly_baseline, n_hourly_cells, hourly_quantiles,
-    n_hourly_quantile_cells)."""
+    sidecars (all optional and back-compat)."""
     try:
         bodies = fetch_trip_update_metrics(
             cfg, start_date=start_date, end_date=end_date, client=client
@@ -940,19 +1049,21 @@ def _service_baseline(
             series, bin_fn=schedule_bin, min_nights=SERVICE_MIN_NIGHTS
         )
         rate = compute_schedule_rate(bodies)
-        return (
-            service_baseline_to_json(baseline),
-            len(baseline),
-            schedule_rate_to_json(rate),
-            len(rate),
-            service_baseline_to_json(hourly),
-            len(hourly),
-            service_quantiles_to_json(hourly_quantiles),
-            len(hourly_quantiles),
+        return ServiceInputs(
+            baseline_json=service_baseline_to_json(baseline),
+            n_cells=len(baseline),
+            schedule_json=schedule_rate_to_json(rate),
+            n_schedule=len(rate),
+            hourly_json=service_baseline_to_json(hourly),
+            n_hourly=len(hourly),
+            hourly_quantiles_json=service_quantiles_to_json(hourly_quantiles),
+            n_hourly_quantiles=len(hourly_quantiles),
+            baseline_by_cell=baseline,
+            service_by_tick=series,
         )
     except Exception as exc:
         print(f"service baseline skipped ({exc})", file=sys.stderr)
-        return {}, 0, {}, 0, {}, 0, {}, 0
+        return ServiceInputs({}, 0, {}, 0, {}, 0, {}, 0, {}, {})
 
 
 def _movement_dwell(
@@ -1108,6 +1219,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         "against, then exit without writing. Answers whether a state's serialized "
         "advance_rate reflects observed movement mass or just its prior.",
     )
+    parser.add_argument(
+        "--diagnose-service",
+        action="store_true",
+        help="after fitting, report per-route per-state service-ratio "
+        "responsibility (svc_w), the data-implied mean, and the fitted mu/sigma, "
+        "then exit without writing. Answers whether the service Gaussian is fitted "
+        "on observed supply or just carries its prior — the fit-or-drop evidence.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -1144,8 +1263,52 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         movement_fields = _movement_fields
 
+    # Assigned_n service baseline + raw per-tick counts over the window. The
+    # tod_bin baseline ships to the Worker and is the service emission's live-ratio
+    # denominator; the raw counts feed the HMM service emission below the same way
+    # movement does (fail-soft — see helper).
+    svc = _service_baseline(cfg, client, start_date, end_date)
+    service_baseline = svc.baseline_json
+    n_service_cells = svc.n_cells
+    schedule_rate = svc.schedule_json
+    n_schedule_cells = svc.n_schedule
+    service_baseline_hourly = svc.hourly_json
+    n_service_hourly_cells = svc.n_hourly
+    service_baseline_hourly_quantiles = svc.hourly_quantiles_json
+    n_service_hourly_quantile_cells = svc.n_hourly_quantiles
+    # Fold the service channel into each observation the way the live filter WOULD
+    # — previous tick's assigned_n over the (route, tod_bin) baseline, same lag and
+    # gate. This runs ONLY under --diagnose-service: the 2026-08-31 fit-or-drop
+    # verdict is DROP (see _DROPPED_EMISSION_KEYS), so the production fit stays
+    # service-free to match the service-free live Worker — folding it into the
+    # normal fit would refit the alert/movement params under a service-scored
+    # E-step the Worker never runs (the very train/serve skew the movement wiring
+    # exists to avoid). The diagnostic path still reconstructs it so the decision
+    # stays reproducible via service_responsibility.
+    service_fields: Callable[[str, int], dict[str, Any] | None] | None = None
+    if args.diagnose_service and svc.service_by_tick and svc.baseline_by_cell:
+        # The set of ticks that produced a service snapshot — used to resolve the
+        # single carried doc the live filter would have read, so a route absent
+        # from the most-recent doc abstains rather than reaching to an older one.
+        snapshot_ticks = frozenset(t for _r, t in svc.service_by_tick)
+
+        def _service_fields(route: str, tick: int) -> dict[str, Any] | None:
+            return service_observation_fields(
+                svc.service_by_tick,
+                svc.baseline_by_cell,
+                snapshot_ticks,
+                route,
+                tick,
+            )
+
+        service_fields = _service_fields
+
     series, corpus, input_profile = load_series_by_route(
-        cfg, start_date, end_date, movement_fields=movement_fields
+        cfg,
+        start_date,
+        end_date,
+        movement_fields=movement_fields,
+        service_fields=service_fields,
     )
     if not series:
         print("no observations in archive — skipping training", file=sys.stderr)
@@ -1178,19 +1341,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             "movement-primary condition will publish 'unknown' for every route.",
             file=sys.stderr,
         )
-    # Assigned_n service baseline (per route, tod) for the Worker's service
-    # emission channel — it divides live assigned_n by this to form the ratio.
-    (
-        service_baseline,
-        n_service_cells,
-        schedule_rate,
-        n_schedule_cells,
-        service_baseline_hourly,
-        n_service_hourly_cells,
-        service_baseline_hourly_quantiles,
-        n_service_hourly_quantile_cells,
-    ) = _service_baseline(cfg, client, start_date, end_date)
-
     global_prior, per_route = train(
         series,
         prior_strength=args.prior_strength,
@@ -1204,6 +1354,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             global_prior,
             per_route,
             route_advance_rates,
+            min_ticks=args.min_ticks,
+        )
+        return 0
+
+    if args.diagnose_service:
+        _report_service_diagnostics(
+            series,
+            global_prior,
+            per_route,
             min_ticks=args.min_ticks,
         )
         return 0

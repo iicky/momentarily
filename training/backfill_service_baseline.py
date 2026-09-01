@@ -88,9 +88,11 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     client = make_client(cfg)
 
-    (_tod, _n_tod, _sched, _n_sched, hourly, n_hourly, quantiles, n_quantile_cells) = (
-        _service_baseline(cfg, client, start, end)
-    )
+    svc = _service_baseline(cfg, client, start, end)
+    hourly = svc.hourly_json
+    n_hourly = svc.n_hourly
+    quantiles = svc.hourly_quantiles_json
+    n_quantile_cells = svc.n_hourly_quantiles
     if not hourly:
         print(
             f"no hourly service baseline for {start}..{end}; nothing to write",

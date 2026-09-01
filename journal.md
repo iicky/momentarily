@@ -5830,6 +5830,7 @@ it tested the condition stream rather than the stream the estimate came from.
 `recovery_minutes` still cannot express "no estimate" without overloading
 `recovery_indeterminate`; the source gate sidesteps that but does not fix the
 underlying contract.
+
 ## 2026-08-31 — publish-prep: the movement-trained retrain moves ONLY the advance emission live — service_mu/sigma are still prior-only (0 of 28 routes fitted), because training never carries the service channel
 
 origin: agent
@@ -5878,6 +5879,7 @@ non-identity permutation ships a severity-inverted `service_mu`
 affected set from `{6X, W}` (published) to `{3, G, N, W}`. Harmless while the
 channel is prior-only, but it is a latent mis-order that a real service fit would
 need to fix first; out of scope for this publish.
+
 ## 2026-08-31 — negative result: the published movement condition and the independent assigned_n label are statistically independent, so assigned_n cannot adjudicate movement detection (0/173 severe, base≈false-alarm≈0.1%)
 
 origin: agent
@@ -6021,3 +6023,79 @@ split candidate if weekend service differs materially) and the actual sidecar
 regeneration — the live v1787792319 sidecar was baked over a 13-day window, so
 its weekend cells will abstain under the new floor until a 35-day backfill
 republishes them. Regeneration needs R2 and is a deploy step, staged not run.
+## 2026-08-31 — fit-or-drop verdict on the service emission: DROP. Wired assigned_n into training, fit it, and the Gaussian does not separate the HMM states — median per-state mu spread 0.15 on a ~1.0 scale, severity-inverted on 15 of 28 routes
+
+origin: agent
+
+Follow-up to the same-day publish-prep entry, which established that the service
+Gaussian is prior-only in training (0 of 28 routes fitted) while the live worker
+scores `service_ratio` against the `DEFAULT_EMISSIONS` constants. Two things were
+done here: fix the latent canonicalization mis-order the earlier entry flagged
+(prerequisite), then wire `service_ratio`/`has_service` into training exactly as
+the movement channel is wired, fit it on the archive, and decide fit-or-drop on
+the numbers.
+
+**Canonicalization fix (prerequisite, ships regardless of the verdict).**
+`canonicalize_states` permuted _every_ per-state emission tuple by the fitted
+state order, including channels the fit never touched. A prior-only channel's
+values are the default constants sitting at their canonical indices, so on any
+route whose EM converges to a non-identity permutation the reorder shipped a
+severity-INVERTED `service_mu` — e.g. suspended scored against `mu=1.0`. `fit_em`
+now derives which channels the corpus never enables (no movement / no service
+tick anywhere) and tells `canonicalize_states` to hold those in canonical order
+rather than reindex them (`prior_only_channels`, `hmm.py`). This also protects
+the movement channel on the ~5 zero-movement routes (`6X`, `7X`, …). Pinned by
+`tests/test_hmm.py`: a witness test shows the old reorder inverting
+`(1.0,0.6,0.05)→(0.6,0.05,1.0)` and the fixed path holding it canonical, plus an
+end-to-end `fit_em` case with no service tick.
+
+**Training wiring + parity.** `service_observation_fields` (`load_r2.py`) is a
+line-for-line port of `worker/src/movement_state.ts serviceObservationFields`:
+previous tick's carried `assigned_n` (option-B one-tick lag, walked back to
+`MAX_SERVICE_METRIC_LAG_SECONDS=600`), divided by the `(route, tod_bin)` baseline
+median, gated off when the route is absent from the carried snapshot or the cell
+has no baseline; `assigned_n==0` is admitted as a real zero-supply reading (no
+`min_matched` floor, unlike movement). Pinned by six parity tests in
+`tests/test_load_r2.py`. A `--diagnose-service` flag + `service_responsibility`
+(the service analog of `advance_responsibility`) report per-state responsibility
+mass and the data-implied mean.
+
+**The fit (window `2026-08-18..08-31`, `prior_strength=100`, `--diagnose-service`).**
+Service is now genuinely fitted — `svc_w` is in the hundreds-to-thousands of
+ticks on most routes. But the fitted per-state `service_mu` does not separate the
+three HMM states:
+
+- Median spread `max(mu)-min(mu)` across states = **0.153** (scale ≈ 1.0), with
+  per-state `sigma ≈ 0.25` — the state densities overlap almost completely.
+- Only **12 of 28** routes come out monotone (`normal>disrupted>suspended`);
+  **16 of 28** are non-monotone / severity-INVERTED in the fit itself (e.g. `2`:
+  1.02/0.85/0.99; `N`: 1.07/0.83/1.03; `L`: 1.26/0.88/0.98 — suspended ≥
+  disrupted, or disrupted ≥ normal on `A`,`B`,`C`,`D`,`R`).
+- **11 of 28** routes have a zero-mass disrupted or suspended state, so the
+  Gaussian ships the prior there anyway — the exact prior-only hazard the
+  canonicalization fix addresses.
+- At a genuine half-service reading (`ratio=0.5`, itself far below the fitted
+  suspended means of ~0.9), the channel adds a **median +0.70 nats** toward
+  suspended over normal, and pushes the **wrong way on 7 of 28** routes.
+
+**Why (already on record).** `assigned_n` (dispatched-train supply) is
+statistically independent of the alert-defined disruption axis the HMM states are
+anchored on — the 2026-08-31 negative-result entry measured 0/785
+assigned_n-disrupted overlap and 0/173 on severe. EM cannot learn a separating
+Gaussian from a signal orthogonal to the states; it fits ≈1.0±0.25 in every
+state. And the alert posterior is one-hot on 24/29 routes with per-tick log-odds
+in the hundreds (2026-08-22/23), so a sub-nat channel that points the wrong way
+half the time cannot move it. The supply information is not lost by dropping it:
+the published `service_condition` axis reads `assigned_n` on its own hysteresis
+band, and the live suspended arm already gates on it independently.
+
+**Verdict: DROP.** The trainer no longer ships the service Gaussian in params
+(`_params_to_json` strips `service_mu`/`service_sigma`, both top-level and
+per-tod-bin). The worker's `service_mu`/`service_sigma` are already OPTIONAL
+(`worker/src/params.ts`; `worker/src/hmm.ts` only scores the term when
+`em.service_mu !== undefined`), so omitting them turns the channel off live via
+the same back-compat gate pre-service params used — no worker deploy required.
+The production fit stays service-free (the fold runs only under
+`--diagnose-service`) so the alert/movement params are not refit under a
+service-scored E-step the worker never runs. Dry-run only; nothing published or
+deployed.

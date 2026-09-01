@@ -470,6 +470,104 @@ def _stop_filter(
     return lambda route, direction, frm: (route, direction, frm) in through
 
 
+def build_validation_report(
+    movement_truth: Mapping[tuple[str, int], str],
+    service_series: Mapping[tuple[str, int], int],
+    service_baseline: Mapping[tuple[str, str], float],
+    *,
+    window: Mapping[str, Any] | None = None,
+    bootstrap: int = BOOTSTRAP_N,
+    seed: int = 0,
+    severe_ratio: float = SEVERE_RATIO,
+) -> dict[str, Any]:
+    """The full validation report — detection (split by supply-collapse
+    severity), the false-alarm upper bound on confirmed-normal runs, and onset
+    latency — from a reconstructed movement condition and the independent
+    assigned_n supply series plus its causal baseline.
+
+    Pure over its inputs: both movement_validation.main and training.review call
+    this, so the false-alarm bound is derived exactly one way wherever it is
+    reported. `movement_truth` is build_movement_truth's (route, tick) -> state
+    map (its advance baseline must already be causal — fit on a window ending
+    before the scored one — since this function does not refit it). The
+    assigned_n episodes, normal runs, and severity split are derived here from
+    `service_series` against `service_baseline` via the pinned degradation_label
+    thresholds, so a grade is never scored against a differently tuned supply
+    label than the one that module publishes.
+
+    `window` carries the fetch-provenance fields the caller knows (dates, tick
+    counts, topology source); the fields derivable from the calls themselves
+    (call mix, disrupted base rate, scored-tick count, debounce) are filled in
+    here and win on key collision."""
+    calls = _calls_by_tick(movement_truth)
+    call_mix: dict[str, int] = defaultdict(int)
+    for state in movement_truth.values():
+        call_mix[state] += 1
+    n_calls = sum(call_mix.values())
+
+    disruptions, labels = build_labels(dict(service_series), dict(service_baseline))
+    runs = normal_runs(labels)
+    severe, partial, n_unrateable = split_severity(
+        disruptions, service_series, service_baseline, severe_ratio=severe_ratio
+    )
+
+    derived_window: dict[str, Any] = {
+        "n_scored_movement_ticks": len(calls),
+        "debounce_ticks": 1,
+        # Sanity: the raw call mix over judged route-ticks. A disrupted base rate
+        # near the ~0.3% the calibration reported (journal 2026-08-26) confirms
+        # the reconstruction fires at all, so a low false-alarm rate is a
+        # silent-on-normal result, not a dead classifier.
+        "call_mix": dict(sorted(call_mix.items())),
+        "disrupted_base_rate": call_mix.get("disrupted", 0) / n_calls
+        if n_calls
+        else None,
+    }
+    return {
+        "window": {**dict(window or {}), **derived_window},
+        "truth": {
+            "label": "assigned_n degradation (training.degradation_label)",
+            "independence": "independent-in-derivation (trip-updates supply) from "
+            "the vehicle-position flow signal the condition reads; NOT "
+            "independent-in-source (same GTFS-RT upstream family)",
+            "n_episodes": len(disruptions),
+            "n_severe_episodes": len(severe),
+            "n_partial_episodes": len(partial),
+            "n_unrateable_episodes": n_unrateable,
+            "severe_ratio": severe_ratio,
+            "n_normal_runs": len(runs),
+            "n_routes_with_episodes": len({d.route for d in disruptions}),
+            "episode_ticks_median": statistics.median(
+                (d.recovered_tick - d.start_tick) // TICK_SECONDS for d in disruptions
+            )
+            if disruptions
+            else 0,
+        },
+        "arms": {
+            "disrupted": grade(
+                calls,
+                disruptions,
+                severe,
+                partial,
+                runs,
+                alarm_states=DISRUPTED,
+                bootstrap=bootstrap,
+                seed=seed,
+            ),
+            "not_normal": grade(
+                calls,
+                disruptions,
+                severe,
+                partial,
+                runs,
+                alarm_states=NOT_NORMAL,
+                bootstrap=bootstrap,
+                seed=seed,
+            ),
+        },
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate the published movement condition against the "
@@ -532,14 +630,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     truth = build_movement_truth(
         score_veh, movement_baseline=advance_baseline, counts_from_stop=stop
     )
-    calls = _calls_by_tick(truth)
-    call_mix: dict[str, int] = defaultdict(int)
-    for state in truth.values():
-        call_mix[state] += 1
-    n_calls = sum(call_mix.values())
     print(
         f"{len(fit_veh)} fit ticks -> {len(advance_baseline)} advance cells; "
-        f"{len(calls)} scored movement ticks",
+        f"{len(truth)} scored movement ticks",
         file=sys.stderr,
     )
 
@@ -556,76 +649,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         {k: v for k, v in all_series.items() if k[1] < boundary}, bin_fn=BIN_FN
     )
     series = {k: v for k, v in all_series.items() if k[1] >= boundary}
-    disruptions, labels = build_labels(series, svc_baseline)
-    runs = normal_runs(labels)
-    severe, partial, n_unrateable = split_severity(disruptions, series, svc_baseline)
-    print(
-        f"{len(disruptions)} assigned_n episodes ({len(severe)} severe, "
-        f"{len(partial)} partial, {n_unrateable} unrateable), {len(runs)} normal runs, "
-        f"{len(svc_baseline)} (route, schedule_bin) baseline cells fitted on {start}..{fit_end}",
-        file=sys.stderr,
-    )
 
-    report: dict[str, Any] = {
-        "window": {
+    report = build_validation_report(
+        truth,
+        series,
+        svc_baseline,
+        window={
             "fit_start": start.isoformat(),
             "fit_end": fit_end.isoformat(),
             "score_start": score_start.isoformat(),
             "score_end": end.isoformat(),
             "topology_source": topology_source,
             "n_fit_ticks": len(fit_veh),
-            "n_scored_movement_ticks": len(calls),
-            "debounce_ticks": 1,
-            # Sanity: the raw call mix over judged route-ticks. A disrupted base
-            # rate near the ~0.3% the calibration reported (journal 2026-08-26)
-            # confirms the reconstruction fires at all, so a low false-alarm rate
-            # is a silent-on-normal result, not a dead classifier.
-            "call_mix": dict(sorted(call_mix.items())),
-            "disrupted_base_rate": call_mix.get("disrupted", 0) / n_calls
-            if n_calls
-            else None,
         },
-        "truth": {
-            "label": "assigned_n degradation (training.degradation_label)",
-            "independence": "independent-in-derivation (trip-updates supply) from "
-            "the vehicle-position flow signal the condition reads; NOT "
-            "independent-in-source (same GTFS-RT upstream family)",
-            "n_episodes": len(disruptions),
-            "n_severe_episodes": len(severe),
-            "n_partial_episodes": len(partial),
-            "n_unrateable_episodes": n_unrateable,
-            "severe_ratio": SEVERE_RATIO,
-            "n_normal_runs": len(runs),
-            "n_routes_with_episodes": len({d.route for d in disruptions}),
-            "episode_ticks_median": statistics.median(
-                (d.recovered_tick - d.start_tick) // TICK_SECONDS for d in disruptions
-            )
-            if disruptions
-            else 0,
-        },
-        "arms": {
-            "disrupted": grade(
-                calls,
-                disruptions,
-                severe,
-                partial,
-                runs,
-                alarm_states=DISRUPTED,
-                bootstrap=args.bootstrap,
-                seed=args.seed,
-            ),
-            "not_normal": grade(
-                calls,
-                disruptions,
-                severe,
-                partial,
-                runs,
-                alarm_states=NOT_NORMAL,
-                bootstrap=args.bootstrap,
-                seed=args.seed,
-            ),
-        },
-    }
+        bootstrap=args.bootstrap,
+        seed=args.seed,
+    )
+    t = report["truth"]
+    print(
+        f"{t['n_episodes']} assigned_n episodes ({t['n_severe_episodes']} severe, "
+        f"{t['n_partial_episodes']} partial, {t['n_unrateable_episodes']} unrateable), "
+        f"{t['n_normal_runs']} normal runs, {len(svc_baseline)} (route, schedule_bin) "
+        f"baseline cells fitted on {start}..{fit_end}",
+        file=sys.stderr,
+    )
     print(json.dumps(report, indent=2))
     return 0
 

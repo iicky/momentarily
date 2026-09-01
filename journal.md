@@ -6099,3 +6099,53 @@ The production fit stays service-free (the fold runs only under
 `--diagnose-service`) so the alert/movement params are not refit under a
 service-scored E-step the worker never runs. Dry-run only; nothing published or
 deployed.
+
+## 2026-09-01 — wired the movement false-alarm bound into review.py as a recurring scorecard, and the supply-baseline seam that keeps it from reproducing the standalone 0.00101
+
+origin: agent
+
+`training/movement_validation.py` produced the movement condition's promotion
+numbers as a one-off CLI run: false-alarm upper bound 0.00101/tick
+[0.00058, 0.00163] on assigned_n-confirmed-normal runs, detection 1/84 all /
+0/40 severe (gradeable), 168/252 episodes with no judged movement tick at all.
+Extracted the report-building/grading into a pure `build_validation_report(
+movement_truth, service_series, service_baseline, ...)` so `main()` and
+`training.review` compute the bound one identical way, and wired it into
+`review.py` (embedded under `summary["movement_validation"]`, printed each run).
+The bound now recomputes from the archive window every review, carrying its
+episode-bootstrap CI, gradeable/offered support, and counted exclusions
+(`n_ungradeable`, `n_unrateable`) — no longer a number someone has to remember
+to re-run.
+
+Non-obvious seam worth pinning: the review's monitored false-alarm number is
+NOT the standalone tool's number under identical methodology, and shouldn't be
+expected to reproduce 0.00101 to the digit. The standalone tool fits the
+assigned_n supply baseline on a held-out leading sub-window (`--fit-days 14` of
+21) and scores the remainder; `review.py` reuses its already-loaded `tu_baseline`
+= `compute_baseline(tu_series)` fit on the review window ITSELF — deliberately,
+because that is `degradation_label`'s own design (a per-(route, schedule_bin)
+median resists an outage lowering its own reference), and it lets the whole
+window be scored instead of a 7-day tail. The movement side stays causal either
+way (advance baseline fit on the pre-window). So the two runs sit on different
+supply-baseline windows by construction; the review number is the monitored one,
+the tool number is the pinned reference. Treat a drift between them as expected
+window/methodology difference, not a regression, unless the review number leaves
+the tool's CI by a wide margin.
+
+Separately audited gate 4 (does the published surface label flow distinct from
+supply): met at the copy level. The two axes are separated at the data layer
+(`viz/lib/feed.ts`) and every render site pulls the same helpers, so wording
+can't drift between pages. Flow is worded around movement everywhere
+("moving normally / slowly or stalling", badge Normal/Disrupted/Suspended,
+map "advancing / not advancing"); supply around counts-vs-baseline ("of usual
+trains", "supply low/normal", gauge "fewer/more trains than usual"). The
+sharpest disambiguation is the drawer's "Trains running" note
+(`viz/app/page.tsx:774`): "How many trains are out, not how well they move. A
+line can run few trains that all move fine, or a full set that crawls," and the
+"Predicted status" note ("can differ from the status above, which follows train
+movement alone"). No copy fix needed. One structural gap, reported not fixed:
+the models page (`viz/app/models/page.tsx`) grades/explains the flow/condition
+model only — the word "supply" never appears there; a panel explaining the
+supply axis's derivation (assigned_n / trip-updates -> service_ratio ->
+degrade/recover thresholds) does not exist on that page, only in per-surface
+tooltips and `viz/README.md`.

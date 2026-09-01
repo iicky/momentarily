@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
+from zoneinfo import ZoneInfo
 
 from blake3 import blake3
 
@@ -485,6 +486,31 @@ def build_service_series(bodies: list[dict[str, Any]]) -> dict[tuple[str, int], 
     return series
 
 
+_NYC_TZ = ZoneInfo("America/New_York")
+
+# A published supply cell must span at least this many DISTINCT nights before its
+# median is trusted, on top of the raw min_samples tick floor. Rationale (the
+# weekend-hourly thin-cell caveat): assigned_n is ~constant within an hour, so a
+# dozen 5-min ticks from ONE night are a single autocorrelated draw, not twelve.
+# On a short window a weekend-hourly (route, schedule_bin) cell clears min_samples
+# on ~2 nights, and its median then sits between the bimodal trackwork/normal
+# service modes — a genuinely normal weekend night reads 1.7-2.1x its own baseline.
+# Requiring ~a month of distinct nights (8 weekend days = 4 weekends) makes such a
+# cell ABSTAIN (omitted -> no baseline -> serviceRatioFor null -> service_condition
+# 'unknown') until enough independent nights exist, rather than publish a median we
+# do not believe. Applied to the published schedule_bin axis only; the tod_bin
+# emission denominator keeps the default 1 (no gate) so the frozen operating point
+# is untouched. Not a clamp: no ratio is fabricated, the reading is withheld.
+SERVICE_MIN_NIGHTS = 8
+
+
+def _et_date(epoch_seconds: int) -> date:
+    """The America/New_York calendar date a tick falls on — the unit
+    independent-night gating counts, so autocorrelated same-night ticks collapse
+    to one draw. Same zone schedule_bin/tod_bin already bucket by."""
+    return datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ).date()
+
+
 # Baselines are keyed on (route, time bucket), and which bucket is a real
 # choice. `tod_bin` (5 ET blocks) is what the HMM emission channel scores
 # against and must keep; `schedule_bin` (ET weekday/weekend x hour) is what a
@@ -497,18 +523,25 @@ def compute_baseline[BinKey: (int, str)](
     *,
     bin_fn: Callable[[int], BinKey] = tod_bin,
     min_samples: int = 20,
+    min_nights: int = 1,
 ) -> dict[tuple[str, BinKey], float]:
     """Per (route, time bucket) median of assigned_n — the expected running-train
     count at that time of day. The median resists the disrupted minority. Cells
-    with fewer than `min_samples` observations are omitted (insufficient data),
-    so callers treat a missing baseline as "can't judge", not "zero service"."""
+    with fewer than `min_samples` observations, OR spanning fewer than
+    `min_nights` distinct ET calendar dates, are omitted (insufficient/
+    autocorrelated data), so callers treat a missing baseline as "can't judge",
+    not "zero service". `min_nights` defaults to 1 (tick floor only); the
+    published supply axis passes SERVICE_MIN_NIGHTS — see its note."""
     buckets: dict[tuple[str, BinKey], list[int]] = {}
+    nights: dict[tuple[str, BinKey], set[date]] = {}
     for (route, tick), assigned in series.items():
-        buckets.setdefault((route, bin_fn(tick)), []).append(assigned)
+        key = (route, bin_fn(tick))
+        buckets.setdefault(key, []).append(assigned)
+        nights.setdefault(key, set()).add(_et_date(tick))
     return {
         key: statistics.median(vals)
         for key, vals in buckets.items()
-        if len(vals) >= min_samples
+        if len(vals) >= min_samples and len(nights[key]) >= min_nights
     }
 
 
@@ -542,22 +575,26 @@ def compute_service_quantiles[BinKey: (int, str)](
     *,
     bin_fn: Callable[[int], BinKey] = tod_bin,
     min_samples: int = 20,
+    min_nights: int = 1,
 ) -> dict[tuple[str, BinKey], ServiceQuantiles]:
     """Per (route, time bucket) p10/p90 of assigned_n — the cell's own spread,
     the denominator-relative bounds the Worker draws as ticks on the existing
-    supply meter. Same bucketing and `min_samples` gate as compute_baseline: a
-    cell present in one is present in the other, so a caller can always pair a
-    quantile with its median.
+    supply meter. Same bucketing, `min_samples`, and `min_nights` gates as
+    compute_baseline: a cell present in one is present in the other (pass the
+    SAME min_nights), so a caller can always pair a quantile with its median.
 
     Nearest-rank on the cell's own sorted assigned_n samples: p10 is
     sorted[n // 10], p90 is sorted[int(n * 0.9)] (0-indexed) — both are always
     an OBSERVED assigned_n value, never interpolated between two samples."""
     buckets: dict[tuple[str, BinKey], list[int]] = {}
+    nights: dict[tuple[str, BinKey], set[date]] = {}
     for (route, tick), assigned in series.items():
-        buckets.setdefault((route, bin_fn(tick)), []).append(assigned)
+        key = (route, bin_fn(tick))
+        buckets.setdefault(key, []).append(assigned)
+        nights.setdefault(key, set()).add(_et_date(tick))
     out: dict[tuple[str, BinKey], ServiceQuantiles] = {}
     for key, vals in buckets.items():
-        if len(vals) < min_samples:
+        if len(vals) < min_samples or len(nights[key]) < min_nights:
             continue
         ordered = sorted(vals)
         n = len(ordered)

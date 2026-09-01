@@ -22,6 +22,7 @@ from training.load_r2 import (
     MIN_MATCHED_TRIPS,
     MIN_SCHEDULE_TICKS,
     P0_FLOOR,
+    SERVICE_MIN_NIGHTS,
     ServiceQuantiles,
     compute_schedule_rate,
     schedule_rate_to_json,
@@ -693,6 +694,8 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     schedule_rate_seen: list[dict[tuple[str, str], float]] = []
     quantile_series_seen: list[dict[tuple[str, int], int]] = []
     quantiles_seen: list[dict[tuple[str, str], Any]] = []
+    # min_nights threaded into the published schedule_bin baseline + quantiles.
+    night_gate_seen: list[int] = []
 
     sentinel_bodies: list[dict[str, Any]] = [{"marker": "body"}]
     sentinel_series: dict[tuple[str, int], int] = {("A", 0): 6}
@@ -732,10 +735,16 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
         series: dict[tuple[str, int], int],
         *,
         bin_fn: Any = None,
+        min_nights: int = 1,
     ) -> dict[tuple[str, Any], float]:
         series_seen.append(series)
-        # bin_fn set only on the hourly (schedule_bin) call.
-        return sentinel_hourly_baseline if bin_fn is not None else sentinel_baseline
+        if bin_fn is not None:
+            # The published schedule_bin axis gates on distinct nights; the
+            # tod_bin emission denominator keeps the default (no night gate).
+            night_gate_seen.append(min_nights)
+            return sentinel_hourly_baseline
+        assert min_nights == 1
+        return sentinel_baseline
 
     def _fake_to_json(
         baseline: dict[tuple[str, Any], float],
@@ -763,8 +772,10 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
         series: dict[tuple[str, int], int],
         *,
         bin_fn: Any = None,
+        min_nights: int = 1,
     ) -> dict[tuple[str, str], Any]:
         quantile_series_seen.append(series)
+        night_gate_seen.append(min_nights)
         return sentinel_hourly_quantiles
 
     def _fake_quantiles_to_json(
@@ -822,6 +833,10 @@ def test_service_baseline_uses_explicit_window_and_threads_result(
     assert quantiles_seen == [sentinel_hourly_quantiles]
     assert svc.hourly_quantiles_json == sentinel_quantiles_json
     assert svc.n_hourly_quantiles == 1
+    # The published schedule_bin baseline AND its quantiles both gate on the same
+    # independent-night floor; the tod_bin denominator stays ungated (asserted in
+    # the fake). Guards a drift where only one of the two picks up the gate.
+    assert night_gate_seen == [SERVICE_MIN_NIGHTS, SERVICE_MIN_NIGHTS]
 
 
 def test_service_baseline_fails_soft_on_archive_error(

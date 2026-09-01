@@ -58,6 +58,7 @@ from training.gtfs_static import (
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     MIN_THROUGHPUT_TICKS,
+    SERVICE_MIN_NIGHTS,
     StopFilter,
     advance_baseline_to_json,
     build_movement_series,
@@ -916,8 +917,12 @@ def _service_baseline(
     (finer, so the quiet edge of a wide tod block doesn't read as a supply cut —
     see degradation_label's BIN_FN note). The quantiles are computed off the
     SAME schedule_bin series as the schedule_bin baseline (same fetch, same
-    bucketing, same min_samples gate), so a cell has a quantile iff it has a
-    baseline. The schedule rate splits a no-service reading into suspended vs
+    bucketing, same min_samples AND min_nights gate), so a cell has a quantile
+    iff it has a baseline. The published schedule_bin axis additionally gates on
+    SERVICE_MIN_NIGHTS distinct nights (thin weekend-hourly cells abstain rather
+    than publish an off-distribution median); the tod_bin emission denominator
+    keeps the default night gate so its frozen operating point is untouched. The
+    schedule rate splits a no-service reading into suspended vs
     not_scheduled. Fail-soft: a trip-updates archive error returns empty
     sidecars (all optional and back-compat). Returns (baseline, n_cells,
     schedule, n_schedule, hourly_baseline, n_hourly_cells, hourly_quantiles,
@@ -928,8 +933,12 @@ def _service_baseline(
         )
         series = build_service_series(bodies)
         baseline = compute_baseline(series)
-        hourly = compute_baseline(series, bin_fn=schedule_bin)
-        hourly_quantiles = compute_service_quantiles(series, bin_fn=schedule_bin)
+        hourly = compute_baseline(
+            series, bin_fn=schedule_bin, min_nights=SERVICE_MIN_NIGHTS
+        )
+        hourly_quantiles = compute_service_quantiles(
+            series, bin_fn=schedule_bin, min_nights=SERVICE_MIN_NIGHTS
+        )
         rate = compute_schedule_rate(bodies)
         return (
             service_baseline_to_json(baseline),

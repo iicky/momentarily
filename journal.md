@@ -5953,7 +5953,7 @@ circular — it would only confirm the two feeds agree a dead route is dead, not
 that the FLOW signal detects anything. The genuinely independent question is the
 disrupted arm's, and its answer is above.
 
-**Verdict for the promotion gate (q087 / 4ih.10).** This validation does NOT
+**Verdict for the promotion gate.** This validation does NOT
 supply independent detection evidence for promoting the movement condition, and
 by construction it cannot — the axis is orthogonal. What it DOES establish: the
 published condition's absolute alarm rate on independently-confirmed-normal supply

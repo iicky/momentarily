@@ -788,6 +788,16 @@ def write_segment_params(
 SERVICE_BASELINE_KEY = "state/service_baseline.json"
 VERSIONED_SERVICE_PREFIX = "state/service_baseline/"
 
+# Trailing window for the published service-baseline sidecar, deliberately wider
+# than a typical HMM retrain window. Sized so a weekend-hourly (route,
+# schedule_bin) cell clears the sidecar's SERVICE_MIN_NIGHTS gate with margin: 35
+# days is 5 weekends = 10 Sat/Sun nights per cell against a floor of 8, so a
+# normally-thin weekend late-night cell publishes a trusted median instead of
+# abstaining. Still inside archive-retention headroom. Shared with
+# backfill_service_baseline so a retrain publish and a standalone backfill write
+# the same sidecar.
+SERVICE_SIDECAR_WINDOW_DAYS = 35
+
 
 def write_service_baseline(
     client: S3Client,
@@ -1272,10 +1282,28 @@ def main(argv: Iterable[str] | None = None) -> int:
     n_service_cells = svc.n_cells
     schedule_rate = svc.schedule_json
     n_schedule_cells = svc.n_schedule
-    service_baseline_hourly = svc.hourly_json
-    n_service_hourly_cells = svc.n_hourly
-    service_baseline_hourly_quantiles = svc.hourly_quantiles_json
-    n_service_hourly_quantile_cells = svc.n_hourly_quantiles
+    # The published schedule_bin sidecar is computed over a DEDICATED window,
+    # decoupled from (and never narrower than) the HMM training window. A short
+    # retrain (--days 14) offers only ~4 weekend nights per thin late-night cell,
+    # below the sidecar's SERVICE_MIN_NIGHTS gate, so publishing it over the
+    # training window would regress every weekend cell to abstention and stomp
+    # the wide-window sidecar backfill_service_baseline maintains. Over
+    # >= SERVICE_SIDECAR_WINDOW_DAYS a thin cell clears the gate, so the DEFAULT
+    # publish refreshes the sidecar correctly rather than overwriting it. The
+    # params-embedded tod_bin emission baseline stays on the training window
+    # (svc, above) so the frozen emission operating point is untouched.
+    sidecar_start = min(
+        start_date, end_date - timedelta(days=SERVICE_SIDECAR_WINDOW_DAYS - 1)
+    )
+    sidecar = (
+        _service_baseline(cfg, client, sidecar_start, end_date)
+        if sidecar_start < start_date
+        else svc
+    )
+    service_baseline_hourly = sidecar.hourly_json
+    n_service_hourly_cells = sidecar.n_hourly
+    service_baseline_hourly_quantiles = sidecar.hourly_quantiles_json
+    n_service_hourly_quantile_cells = sidecar.n_hourly_quantiles
     # Fold the service channel into each observation the way the live filter WOULD
     # — previous tick's assigned_n over the (route, tod_bin) baseline, same lag and
     # gate. This runs ONLY under --diagnose-service: the 2026-08-31 fit-or-drop

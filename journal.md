@@ -6099,3 +6099,30 @@ The production fit stays service-free (the fold runs only under
 `--diagnose-service`) so the alert/movement params are not refit under a
 service-scored E-step the worker never runs. Dry-run only; nothing published or
 deployed.
+
+## 2026-09-01 — retrain-publish-stomped-the-service-sidecar
+
+origin: self
+
+`train_em`'s publish path called `write_service_baseline` over its own HMM
+training window — default `--days 14` — so every retrain overwrote
+`state/service_baseline.json` with a 14-day sidecar. The published schedule_bin
+axis gates each cell on `SERVICE_MIN_NIGHTS = 8` distinct nights; a 14-day window
+holds only ~4 weekend (Sat/Sun) nights per late-night cell, so every weekend cell
+abstained. Observed live: the service-drop params publish replaced the 35-day
+backfilled baseline (**1122 cells**, `v1788228846`) with a **562-cell** one whose
+weekend cells all abstained, and it had to be restored by re-running
+`backfill_service_baseline` (`v1788230125`). The tod_bin emission baseline
+(params-embedded, training-window) was not the problem — only the published
+schedule_bin sidecar.
+
+Fix: decouple the sidecar window from the training window. The publish now
+computes the schedule_bin sidecar over a dedicated `SERVICE_SIDECAR_WINDOW_DAYS =
+35` window (35d = 5 weekends = 10 Sat/Sun nights per cell, margin over the floor
+of 8), reusing the training-window result only when the training window is
+already ≥ 35d (so a wide retrain does no second fetch, and a `--days 60` run gets
+a 60d sidecar). The constant is shared with `backfill_service_baseline`, so a
+retrain publish and a standalone backfill write the same sidecar. No flag to
+remember: the DEFAULT invocation now refreshes the sidecar correctly instead of
+regressing it. The tod_bin emission baseline still ships from the training window
+so the frozen operating point is untouched.

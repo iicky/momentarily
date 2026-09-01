@@ -49,7 +49,6 @@ sparse incident history instead of leaning on the pooled prior. If this needs
 revisiting, the number to chase is the per-route incident count above which
 `prior_strength=20` stops hurting — untested here.
 
-
 ## 2026-08-11 — pooled-normal-dwell coverage is transition-gated
 
 origin: agent
@@ -59,7 +58,7 @@ elapsed-conditioning fix off the four routes that cleared
 `MIN_SAMPLES_FOR_EMPIRICAL`. It does, but not as far as the design implies: a
 `train_em --dry-run` on the current 14-day window fits normal cells for 11 of
 28 routes. `pooled_dwell_cells` reads `dwell_samples_by_cell`, which derives a
-still-open regime from a route's *last transition record*, so the 17 routes
+still-open regime from a route's _last transition record_, so the 17 routes
 with zero transitions in the window supply neither an event nor a censored
 observation and never reach the pooling step — the steadiest routes, which are
 the ones the pooling exists to serve, are still the ones excluded. Those routes
@@ -68,11 +67,11 @@ carry 62% of normal route-ticks.
 Counterfactual over 50,866 predictions (08-05..08-11), pooled curves vs the
 live geometric projection, graded against the model's own condition at t+H:
 
-| horizon | covered subset (n=19,217) | fleet (n=50,663) |
-| --- | --- | --- |
-| 30 min | Brier 0.01734 -> 0.00326 (-81%) | 0.01714 -> 0.01180 (-31%) |
-| 60 min | 0.03746 -> 0.00392 (-90%) | 0.03895 -> 0.02623 (-33%) |
-| 120 min | 0.06052 -> 0.00416 (-93%) | 0.06380 -> 0.04242 (-34%) |
+| horizon | covered subset (n=19,217)       | fleet (n=50,663)          |
+| ------- | ------------------------------- | ------------------------- |
+| 30 min  | Brier 0.01734 -> 0.00326 (-81%) | 0.01714 -> 0.01180 (-31%) |
+| 60 min  | 0.03746 -> 0.00392 (-90%)       | 0.03895 -> 0.02623 (-33%) |
+| 120 min | 0.06052 -> 0.00416 (-93%)       | 0.06380 -> 0.04242 (-34%) |
 
 On the covered subset mean predicted `p_normal_in_120` moves 0.7582 -> 0.9870
 against an actual base rate of 0.9968, so the sharpness bias really is closed
@@ -80,13 +79,12 @@ where a cell exists. The number to chase is the fleet column: it only moves if
 open regimes are reconstructed from prediction rows rather than from transition
 records.
 
-
 ## 2026-08-11 — open regimes from prediction rows: 11 -> 29 normal cells
 
 origin: agent
 
 Follows the entry above, which named the number to chase. `_open_regimes` read
-each route's still-open regime off its *last transition record*, so a route with
+each route's still-open regime off its _last transition record_, so a route with
 no transition in the window supplied neither an event nor a censored
 observation. Sourcing open regimes from the prediction stream instead — every
 live route is written every tick, and the row already carries
@@ -107,11 +105,10 @@ fitted cell the same route reads 0.9987, and the 18 newly covered routes average
 
 Two footguns found while wiring it. Predictions load by whole-day prefix, so a
 backdated `--end` reads rows past the censoring boundary and reports the regime
-open *now* — `open_regimes_from_predictions` takes `window_end` and ignores
+open _now_ — `open_regimes_from_predictions` takes `window_end` and ignores
 later rows. And `not_scheduled` must be dropped: it is not a regime the filter
 dwells in, so banking scheduled downtime as a long healthy run would inflate the
 very curve this corrects.
-
 
 ## 2026-08-11 — the forecast is anti-correlated with the arm consumers read
 
@@ -125,12 +122,12 @@ number described a model no consumer reads.
 
 Grading the same `p_normal_in_H` forecast against each arm over 7 days:
 
-| arm | n | Brier | BSS vs persistence | AUC |
-| --- | --- | --- | --- | --- |
-| shadow (`condition`), h30 | 55,390 | 0.01709 | -7.93 | **0.780** |
-| movement (`published_condition`), h30 | 41,132 | 0.01605 | -16.37 | **0.145** |
-| movement, h60 | 40,807 | 0.03640 | -40.27 | 0.144 |
-| movement, h120 | 40,081 | 0.06059 | -55.48 | 0.142 |
+| arm                                   | n      | Brier   | BSS vs persistence | AUC       |
+| ------------------------------------- | ------ | ------- | ------------------ | --------- |
+| shadow (`condition`), h30             | 55,390 | 0.01709 | -7.93              | **0.780** |
+| movement (`published_condition`), h30 | 41,132 | 0.01605 | -16.37             | **0.145** |
+| movement, h60                         | 40,807 | 0.03640 | -40.27             | 0.144     |
+| movement, h120                        | 40,081 | 0.06059 | -55.48             | 0.142     |
 
 AUC 0.142-0.145 is not weak, it is inverted: random is 0.5, and inverting the
 forecast would score ~0.855. The mechanism is not subtle. Of the 29
@@ -139,7 +136,7 @@ movement-disrupted ticks in the window, **29/29 have shadow `condition ==
 whenever `disruptiveAlertCount === 0`, so movement-disrupted-while-alerts-silent
 is by construction the case the filter is most confident about. Mean
 `p_normal_in_30min` is **0.9166 on movement-disrupted ticks vs 0.8780 on
-movement-normal ticks**: the forecast is *more* sure of health exactly where
+movement-normal ticks**: the forecast is _more_ sure of health exactly where
 movement says the line is stalled.
 
 Thin — 29 disrupted ticks (6:12, R:7, G:3, GS:2, J:2, M:1, W:1, 5:1) — so treat
@@ -151,7 +148,6 @@ ticks publish `unknown` and 8.1% `not_scheduled`, and scoring those as calm
 would credit the forecast for 24.7% of the window it was never tested on.
 Gradeable share is 75.3%.
 
-
 ## 2026-08-11 — the movement arm was blind for three weeks and nothing noticed
 
 origin: agent
@@ -159,12 +155,12 @@ origin: agent
 Census of `published_condition` over its whole life (shipped 2026-07-11 in
 15e4b65, 262,459 prediction rows to 2026-08-11, 97.8% carrying the field):
 
-| period | unknown share | gradeable share |
-| --- | --- | --- |
-| 2026-07-11 | 3.7% | 92.2% |
-| 2026-07-12 .. 2026-08-02 | ~100% | ~0% |
-| 2026-08-03 | 64.1% | 34.9% |
-| 2026-08-04 .. 2026-08-11 | 15-17% | 68-78% |
+| period                   | unknown share | gradeable share |
+| ------------------------ | ------------- | --------------- |
+| 2026-07-11               | 3.7%          | 92.2%           |
+| 2026-07-12 .. 2026-08-02 | ~100%         | ~0%             |
+| 2026-08-03               | 64.1%         | 34.9%           |
+| 2026-08-04 .. 2026-08-11 | 15-17%        | 68-78%          |
 
 For 22 consecutive days the site published `unknown` for essentially every
 route on every tick and no check fired. Coverage returns exactly at the
@@ -187,7 +183,6 @@ hours (one F "Severe Delays" held 459h, recorded in episodes.py). Movement
 disruptions are a different phenomenon an order of magnitude shorter, so the
 32.9-min recovery MAE the shadow reports is not a baseline the movement arm
 should be compared against — most movement stalls are over in two ticks.
-
 
 ## 2026-08-11 — alert corroboration of movement episodes: 15.4% confirmed, confirmed slice sits at lead=0
 
@@ -214,7 +209,6 @@ the rest (84.6%) with no alert record either way, consistent with the 29/29
 alert-silent finding two entries above. Number to chase next: split the 219
 unconfirmed episodes by duration — short blips (movement-classifier noise) vs.
 long stalls (a real alert-feed gap) look identical in this rollup.
-
 
 ## 2026-08-11 — static GTFS topology fixes segment-graph fragmentation: 44/52 chains vs 8/53 observed
 
@@ -251,7 +245,6 @@ with both a static successor and an observed cross-tick baseline this window,
 `MIN_SHARE>=0.5` gate despite the static timetable naming a real successor for
 them — the number `MIN_SHARE`-as-existence-gate was actually costing.
 
-
 ## 2026-08-11 — movement regime debounce: debounce=2 erases 76% of route episodes
 
 origin: agent
@@ -267,11 +260,11 @@ Route scope, from `published_condition` (this archived window predates the
 regime clock landing this session, so it is the raw per-tick classifier call,
 not a debounced regime):
 
-| debounce_ticks | n episodes | median (min) | min | max | routes ≥3 eps | survival vs 1 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 17 | 5.0 | 4.95 | 34.92 | 3 of 6 | 100% |
-| 2 | 4 | 10.125 | 10.0 | 34.92 | 0 of 2 | 23.5% |
-| 3 | 1 | 49.95 | 49.95 | 49.95 | 0 of 1 | 5.9% |
+| debounce_ticks | n episodes | median (min) | min   | max   | routes ≥3 eps | survival vs 1 |
+| -------------- | ---------- | ------------ | ----- | ----- | ------------- | ------------- |
+| 1              | 17         | 5.0          | 4.95  | 34.92 | 3 of 6        | 100%          |
+| 2              | 4          | 10.125       | 10.0  | 34.92 | 0 of 2        | 23.5%         |
+| 3              | 1          | 49.95        | 49.95 | 49.95 | 0 of 1        | 5.9%          |
 
 `debounce_ticks=2` (the shipped default, tuned for `derive_actual_recovery`'s
 alert-count service metric, not movement) erases 13 of 17 episodes and every
@@ -285,11 +278,11 @@ before the regime clock runs at all — real archive median matched-trips per
 segment leaf per tick is 1, ten times under `segments.py`'s
 `MIN_MATCHED_TRIPS=3` floor):
 
-| debounce_ticks | n episodes | median (min) | min | max | cells ≥3 eps | survival vs 1 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 828 | 10.0 | 5.0 | 435 | 35 of 79 | 100% |
-| 2 | 411 | 30.0 | 10.0 | 765 | 26 of 59 | 49.6% |
-| 3 | 216 | 55.0 | 15.0 | 1090 | 25 of 49 | 26.1% |
+| debounce_ticks | n episodes | median (min) | min  | max  | cells ≥3 eps | survival vs 1 |
+| -------------- | ---------- | ------------ | ---- | ---- | ------------ | ------------- |
+| 1              | 828        | 10.0         | 5.0  | 435  | 35 of 79     | 100%          |
+| 2              | 411        | 30.0         | 10.0 | 765  | 26 of 59     | 49.6%         |
+| 3              | 216        | 55.0         | 15.0 | 1090 | 25 of 49     | 26.1%         |
 
 Segment scope survives the same sweep far better (49.6% at debounce=2 vs
 route's 23.5%) because the 30-min accumulation window already absorbs most of
@@ -313,6 +306,7 @@ above — movement's own classifier already carries a per-tick significance
 test (`classify_direction`'s binomial tail, alpha=0.05), and its real episode
 population is dominated by single-tick events that `debounce_ticks=2` erases
 almost entirely. The lead makes the final call.
+
 ## 2026-08-11 — debounce set to 1: the movement classifier is not noise-dominated
 
 origin: self
@@ -351,7 +345,6 @@ The number to chase if this is revisited: an independent corroborator for
 single-tick movement episodes. The trip-updates service metric
 (`derive_actual_recovery`) is derivation-independent from vehicle positions and
 was not used here.
-
 
 ## 2026-08-11 — clustered incidents: 0/1260 ticks show two disrupted segments adjacent
 
@@ -414,7 +407,7 @@ the deployed Worker is actively computing regimes — `movement_state.json` is
 only 378 bytes, consistent with a handful of routes still on their very
 first cold-start entry. `writeMovementTransitions` only puts an object when
 `changes.length > 0` (grading.ts), so a regime clock that has not yet
-*changed* any cell's state writes nothing, even while it publishes
+_changed_ any cell's state writes nothing, even while it publishes
 `state/*.json` every tick.
 
 Net: the movement_transitions stream this session's dwell-curve work
@@ -424,7 +417,6 @@ cannot be validated against production data until the deployed Worker has
 run long enough, post-deploy, to commit at least one regime change per
 scope. Tests in `tests/test_segment_dwell.py` exercise the estimator against
 synthetic fixtures instead.
-
 
 ## 2026-08-11 — revises the entry above: 0/1260 is baseline-window-sensitive
 
@@ -437,16 +429,16 @@ adjacent" above, which self-trains `build_segment_baseline` on the FULL
 8 days SEPARATELY — one self-trained baseline per single day — to check
 whether the zero survives a shorter baseline window:
 
-| day | disrupted calls | ticks w/ >=2 disrupted | adjacent (gap0) | share |
-| --- | --- | --- | --- | --- |
-| 08-04 | 3391 | 286 | 11 | 3.8% |
-| 08-05 | 4236 | 286 | 15 | 5.2% |
-| 08-06 | 3949 | 287 | 26 | 9.1% |
-| 08-07 | 3601 | 285 | 0 | 0.0% |
-| 08-08 | 4559 | 287 | 0 | 0.0% |
-| 08-09 | 5089 | 287 | 0 | 0.0% |
-| 08-10 | 4379 | 287 | 0 | 0.0% |
-| 08-11 | 5210 | 251 | 37 | 14.7% |
+| day   | disrupted calls | ticks w/ >=2 disrupted | adjacent (gap0) | share |
+| ----- | --------------- | ---------------------- | --------------- | ----- |
+| 08-04 | 3391            | 286                    | 11              | 3.8%  |
+| 08-05 | 4236            | 286                    | 15              | 5.2%  |
+| 08-06 | 3949            | 287                    | 26              | 9.1%  |
+| 08-07 | 3601            | 285                    | 0               | 0.0%  |
+| 08-08 | 4559            | 287                    | 0               | 0.0%  |
+| 08-09 | 5089            | 287                    | 0               | 0.0%  |
+| 08-10 | 4379            | 287                    | 0               | 0.0%  |
+| 08-11 | 5210            | 251                    | 37              | 14.7% |
 
 Four of eight single-day baselines reproduce the zero; the other four don't,
 and the non-zero share ranges 3.8-14.7% with no visible day-of-week pattern
@@ -463,7 +455,6 @@ count moves. Number to chase if this matters later: rerun the
 8-day-baseline classification but score it against a HELD-OUT week (not
 overlapping the classified window) to remove the self-training confound
 entirely — not attempted here.
-
 
 ## 2026-08-11 — IRT/BMT/IND division does not earn a hierarchy level: eta² 0.16, p=0.081
 
@@ -486,11 +477,11 @@ the same 14-day window `train_em` uses live.
 `partially_pooled_dwell` on that window, grouped by division (n=28 mapped
 routes, SI dropped):
 
-| division | n | mean log-scale | within-division variance |
-| --- | --- | --- | --- |
-| BMT | 9 | 10.899 | 0.027 |
-| IND | 9 | 10.841 | 0.023 |
-| IRT | 10 | 10.529 | 0.401 |
+| division | n   | mean log-scale | within-division variance |
+| -------- | --- | -------------- | ------------------------ |
+| BMT      | 9   | 10.899         | 0.027                    |
+| IND      | 9   | 10.841         | 0.023                    |
+| IRT      | 10  | 10.529         | 0.401                    |
 
 MS_between=0.381, MS_within=0.161, F=2.373, **eta²=0.1596** (division
 nominally explains 16% of fitted-log-scale variance), permutation
@@ -511,7 +502,7 @@ division-wide effect — and BMT vs IND, the two divisions closest in the
 classification scheme, are statistically indistinguishable here (10.899 vs
 10.841, within each other's within-division noise). Restricting to the 6
 own-voters directly (n=1,1,4 per division — too degenerate to trust, but
-telling): eta² swings to 0.272 and F *drops* to 0.561 (p=0.529), the
+telling): eta² swings to 0.272 and F _drops_ to 0.561 (p=0.529), the
 opposite of what a real division effect would do with less shrinkage noise.
 
 **Verdict: no.** A division level does not earn its place — the measured
@@ -521,7 +512,6 @@ churn during this 14-day window, not to IRT/BMT/IND membership. Re-run this
 exact module once movement or alert coverage is wide enough that most
 routes clear `MIN_VOTER_EVENTS` on their own MLE — the number to chase is
 the `n_own`/`n_pooled` split (6/23 here) approaching parity.
-
 
 ## 2026-08-11 — movement dwell_movement fit: 31 cells (8 own, 23 pooled), disrupted median 5.1-6.8min matches the 17-episode count exactly
 
@@ -558,7 +548,6 @@ cells here gives 5+3+5+1+2+1 = **17**, and the 3 that clear
 episodes" cited there. Same source data, two independent code paths
 (census vs. dwell fit), same numbers.
 
-
 ## 2026-08-11 — movement exit-destination split: 100% to-normal, closed by measurement not code
 
 origin: agent
@@ -575,10 +564,10 @@ route scope, `debounce_ticks=1`, per `from_state`, both independent sources.
 source is structurally biased against non-normal exits; trusted only as a
 high-volume cross-check, not the vocabulary answer):
 
-| from_state | n exits | to_normal | dest breakdown |
-| --- | --- | --- | --- |
-| disrupted | 213 | 1.000 | normal=213 |
-| suspended | 0 | n/a | (no completed episode in window) |
+| from_state | n exits | to_normal | dest breakdown                   |
+| ---------- | ------- | --------- | -------------------------------- |
+| disrupted  | 213     | 1.000     | normal=213                       |
+| suspended  | 0       | n/a       | (no completed episode in window) |
 
 19 routes contribute to the 213, every one individually 100% to normal (7:45,
 G:29, M:23, R:16, W:14, 6:14, E:11, J:10, D:10, N:9, A:8, C:5, 4:5, F:3, Q:3,
@@ -588,10 +577,10 @@ B:3, H:2, 1:1, 2:1, 5:1).
 vocabulary — trusted for the `not_scheduled` question the vehicle source
 structurally cannot answer):
 
-| from_state | n exits | to_normal | dest breakdown |
-| --- | --- | --- | --- |
-| disrupted | 17 | 1.000 | normal=17 |
-| suspended | 0 | n/a | (no completed episode in window) |
+| from_state | n exits | to_normal | dest breakdown                   |
+| ---------- | ------- | --------- | -------------------------------- |
+| disrupted  | 17      | 1.000     | normal=17                        |
+| suspended  | 0       | n/a       | (no completed episode in window) |
 
 Per-route on the faithful source: R:5, 6:5, G:3, J:2, M:1, W:1 — every route
 100% to normal, none below the pooled figure. (This 17 is the same population
@@ -615,7 +604,6 @@ and this date so the claim is checked, not assumed. Number to chase if this
 ever needs revisiting: the first observed `suspended`-from or
 disrupted-to-`not_scheduled` route-scope transition, whenever it happens.
 
-
 ## 2026-08-12 — 53-day incident clustering settles it: still doesn't hold, but not literally zero (3 real incidents)
 
 origin: agent
@@ -634,10 +622,10 @@ run's weakness, still run here so the two can be compared directly) and
 
 Pooled 53-day result, both baselines:
 
-| baseline | candidate ticks (>=2 disrupted) | adjacent ticks gap0 | adjacent ticks gap1 | share ticks gap0 | mean cluster size gap0 | share disrupted-segments-in-multi gap0 | gap1 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| self (53-day self-trained) | 5257 | 21 | 21 | 0.40% | 1.0016 | 0.274% | 0.285% |
-| published (live segment_params.json) | 5489 | 21 | 21 | 0.38% | 1.0016 | 0.271% | 0.283% |
+| baseline                             | candidate ticks (>=2 disrupted) | adjacent ticks gap0 | adjacent ticks gap1 | share ticks gap0 | mean cluster size gap0 | share disrupted-segments-in-multi gap0 | gap1   |
+| ------------------------------------ | ------------------------------- | ------------------- | ------------------- | ---------------- | ---------------------- | -------------------------------------- | ------ |
+| self (53-day self-trained)           | 5257                            | 21                  | 21                  | 0.40%            | 1.0016                 | 0.274%                                 | 0.285% |
+| published (live segment_params.json) | 5489                            | 21                  | 21                  | 0.38%            | 1.0016                 | 0.271%                                 | 0.283% |
 
 gap=0 and gap=1 give the IDENTICAL 21 adjacent ticks on both baselines —
 loosening `DEFAULT_MAX_GAP` still has no support. The two baselines land
@@ -650,16 +638,16 @@ order of magnitude as the 8-day run's 55.6%, not a new finding on its own.)
 Per-week breakdown (self-trained baseline; published tracks it within 1-2
 ticks/week everywhere it differs):
 
-| week | candidate ticks | adjacent ticks gap0 | share |
-| --- | --- | --- | --- |
-| 06-21..06-27 | 0 | 0 | n/a (no disruption observed yet) |
-| 06-28..07-04 | 0 | 0 | n/a |
-| 07-05..07-11 | 20 | 0 | 0.0% |
-| 07-12..07-18 | 948 | 11 | 1.16% |
-| 07-19..07-25 | 1185 | 9 | 0.76% |
-| 07-26..08-01 | 1304 | 1 | 0.08% |
-| 08-02..08-08 | 1255 | 0 | 0.0% |
-| 08-09..08-12 | 545 | 0 | 0.0% |
+| week         | candidate ticks | adjacent ticks gap0 | share                            |
+| ------------ | --------------- | ------------------- | -------------------------------- |
+| 06-21..06-27 | 0               | 0                   | n/a (no disruption observed yet) |
+| 06-28..07-04 | 0               | 0                   | n/a                              |
+| 07-05..07-11 | 20              | 0                   | 0.0%                             |
+| 07-12..07-18 | 948             | 11                  | 1.16%                            |
+| 07-19..07-25 | 1185            | 9                   | 0.76%                            |
+| 07-26..08-01 | 1304            | 1                   | 0.08%                            |
+| 08-02..08-08 | 1255            | 0                   | 0.0%                             |
+| 08-09..08-12 | 545             | 0                   | 0.0%                             |
 
 5 of 8 weeks are exactly zero; all 21 adjacent ticks fall in a 3-week span
 (07-12..08-01). Traced identity through the whole window with
@@ -667,11 +655,11 @@ ticks/week everywhere it differs):
 DISTINCT real incidents that span represents: exactly **3**, agreed on by
 both baselines down to the segment keys and timestamps —
 
-| incident | segments | first seen (UTC) | last seen (UTC) | span |
-| --- | --- | --- | --- | --- |
-| 1 | 7\|south\|701S, 7\|south\|702S | 2026-07-16 04:20 | 2026-07-16 07:55 | 215 min |
-| 2 | A\|north\|A48N, A51N, A55N | 2026-07-24 18:15 | 2026-07-24 19:45 | 90 min |
-| 3 | 7\|south\|701S, 7\|south\|702S | 2026-07-27 12:30 | 2026-07-27 12:45 | 15 min |
+| incident | segments                       | first seen (UTC) | last seen (UTC)  | span    |
+| -------- | ------------------------------ | ---------------- | ---------------- | ------- |
+| 1        | 7\|south\|701S, 7\|south\|702S | 2026-07-16 04:20 | 2026-07-16 07:55 | 215 min |
+| 2        | A\|north\|A48N, A51N, A55N     | 2026-07-24 18:15 | 2026-07-24 19:45 | 90 min  |
+| 3        | 7\|south\|701S, 7\|south\|702S | 2026-07-27 12:30 | 2026-07-27 12:45 | 15 min  |
 
 Two of the three are the SAME 7|south segment pair recurring (a specific
 chronically slow spot, not a generic clustering tendency); the third is the
@@ -696,6 +684,7 @@ to the verdict. Left `training.incidents.path_incident_durations` unwired
 (non-goal: `train_em.py`/`snapshot.ts` publish nothing new here) and
 rewrote the module docstring with this finding and window so the next
 reader doesn't re-derive it from scratch.
+
 ## 2026-08-12 — suspended is not covered by the exit-split measurement
 
 origin: agent
@@ -760,11 +749,11 @@ tick, 5,000 (7.5%) for a state the movement path doesn't serve
 (not_scheduled/suspended); zero rows fell back for a missing curve, a
 non-positive clock, or schedule precedence.
 
-| horizon | n | AUC old→new | Brier old→new | BSS vs persistence old→new |
-| --- | --- | --- | --- | --- |
-| 30min | 50,061 | 0.150→0.762 | 0.01587→0.00066 | -16.27→+0.29 |
-| 60min | 49,831 | 0.150→0.493 | 0.03609→0.00102 | -39.87→-0.16 |
-| 120min | 49,201 | 0.150→0.397 | 0.06004→0.00178 | -58.08→-0.75 |
+| horizon | n      | AUC old→new | Brier old→new   | BSS vs persistence old→new |
+| ------- | ------ | ----------- | --------------- | -------------------------- |
+| 30min   | 50,061 | 0.150→0.762 | 0.01587→0.00066 | -16.27→+0.29               |
+| 60min   | 49,831 | 0.150→0.493 | 0.03609→0.00102 | -39.87→-0.16               |
+| 120min  | 49,201 | 0.150→0.397 | 0.06004→0.00178 | -58.08→-0.75               |
 
 Positive-class (published-normal at t+H) base rate is ~99.95% at every
 horizon. The mean-split that named the bug, `p_normal_in_30min`: old 0.9209
@@ -794,7 +783,6 @@ This is the correct apples-to-apples comparison — the 0.142-0.145 figure that
 named the bug was computed the same way, against the same arm — but it is not
 evidence of independent skill, and does not validate the movement classifier
 itself.
-
 
 ## 2026-08-11 — independent-truth grade of the movement forecast: trip-updates MAE 251.8min, movement CRPS underwater (skill -0.10, -0.36 held out)
 
@@ -828,7 +816,7 @@ Signed bias (predicted − actual_remaining, same matching as
 remaining time on average. Direction, stated plainly per the semantic gap: the
 two signals measure different things (trip-updates counts dispatched trains,
 movement times station-to-station advance), so this is not automatically an
-arm error — but the sign says the movement arm calls "recovered" *before* the
+arm error — but the sign says the movement arm calls "recovered" _before_ the
 fleet count does, the "thinned but flowing" case, not the "full fleet crawling"
 case. MAE at 251.8min is large in absolute terms, but a truth series whose
 median disruption alone is 70min (and tail runs to 81h of planned-work-scale
@@ -880,22 +868,22 @@ the point the codebase's deploy commits land in NY time, so "today"=08-12,
 
 Coverage, last 14 days + today:
 
-| date | unknown share | gradeable share |
-| --- | --- | --- |
-| 07-30 | 100.0% | 0.02% |
-| 07-31 | 99.9% | 0.08% |
-| 08-01 | 100.0% | 0% |
-| 08-02 | 100.0% | 0% |
-| 08-03 | 64.1% | 34.9% |
-| 08-04 | 16.9% | 78.4% |
-| 08-05 | 17.3% | 77.8% |
-| 08-06 | 17.1% | 78.2% |
-| 08-07 | 16.8% | 78.3% |
-| 08-08 | 16.3% | 70.8% |
-| 08-09 | 16.5% | 68.9% |
-| 08-10 | 15.3% | 77.6% |
-| 08-11 | 16.3% | 78.1% |
-| 08-12 (today, n=522, partial day) | 13.8% | 82.8% |
+| date                              | unknown share | gradeable share |
+| --------------------------------- | ------------- | --------------- |
+| 07-30                             | 100.0%        | 0.02%           |
+| 07-31                             | 99.9%         | 0.08%           |
+| 08-01                             | 100.0%        | 0%              |
+| 08-02                             | 100.0%        | 0%              |
+| 08-03                             | 64.1%         | 34.9%           |
+| 08-04                             | 16.9%         | 78.4%           |
+| 08-05                             | 17.3%         | 77.8%           |
+| 08-06                             | 17.1%         | 78.2%           |
+| 08-07                             | 16.8%         | 78.3%           |
+| 08-08                             | 16.3%         | 70.8%           |
+| 08-09                             | 16.5%         | 68.9%           |
+| 08-10                             | 15.3%         | 77.6%           |
+| 08-11                             | 16.3%         | 78.1%           |
+| 08-12 (today, n=522, partial day) | 13.8%         | 82.8%           |
 
 Coverage is healthy now: today's 13.8% unknown / 82.8% gradeable sits inside
 (slightly better than) the stable ~15-17%/~78% band every day has held since
@@ -905,13 +893,13 @@ the 07-12..08-02 empty-baseline gap closed on 08-03. Nothing resembling the
 Adoption, today (n=522, post-deploy) vs before deploy (n=8,352, 08-11, almost
 entirely pre-deploy — the deploy landed ~23:48 UTC 08-11):
 
-| field | value | before deploy | today |
-| --- | --- | --- | --- |
-| recovery_source | movement | 0.29% (24) | **82.76% (432)** |
-| recovery_source | hmm | 99.71% (8,328) | 17.24% (90) |
-| condition_source | movement | 83.66% (6,987) | 86.21% (450) |
-| condition_source | unknown | 16.34% (1,365) | 13.79% (72) |
-| published_condition | disrupted | 0.14% (12) | 0% (0) |
+| field               | value     | before deploy  | today            |
+| ------------------- | --------- | -------------- | ---------------- |
+| recovery_source     | movement  | 0.29% (24)     | **82.76% (432)** |
+| recovery_source     | hmm       | 99.71% (8,328) | 17.24% (90)      |
+| condition_source    | movement  | 83.66% (6,987) | 86.21% (450)     |
+| condition_source    | unknown   | 16.34% (1,365) | 13.79% (72)      |
+| published_condition | disrupted | 0.14% (12)     | 0% (0)           |
 
 `condition_source` was already movement-majority BEFORE today's deploy — this
 matches the bug's own framing exactly: published status was already
@@ -949,7 +937,6 @@ live disrupted data exists to grade directly.
 measurement, not this run (whose vehicle-sourced episodes bottom out at one
 tick, 5.0min, by construction — `TICK_SECONDS=300`).
 
-
 ## 2026-08-11 — forecast horizon inversion: projection defect, not left-censoring (trustworthy-clock subset still inverted, AUC 0.352 at 120min)
 
 origin: agent
@@ -970,11 +957,11 @@ unknown, elapsed understated). Of the 50,722 movement-path rows, 36,184
 (71.4% — matches the diagnosed figure exactly) are censored, 14,538 (28.6%)
 are trustworthy.
 
-| subset | 30min AUC / BSS (n) | 60min AUC / BSS (n) | 120min AUC / BSS (n) |
-| --- | --- | --- | --- |
-| all (sanity) | 0.762 / +0.29 (50,061) | 0.493 / -0.16 (49,831) | 0.398 / -0.75 (49,297) |
-| trustworthy | 0.728 / **+0.40** (14,278) | 0.395 / **-0.00** (14,053) | 0.352 / **-0.53** (13,606) |
-| censored | 0.624 / -0.32 (35,783) | 0.449 / -0.63 (35,778) | 0.317 / -1.30 (35,690) |
+| subset       | 30min AUC / BSS (n)        | 60min AUC / BSS (n)        | 120min AUC / BSS (n)       |
+| ------------ | -------------------------- | -------------------------- | -------------------------- |
+| all (sanity) | 0.762 / +0.29 (50,061)     | 0.493 / -0.16 (49,831)     | 0.398 / -0.75 (49,297)     |
+| trustworthy  | 0.728 / **+0.40** (14,278) | 0.395 / **-0.00** (14,053) | 0.352 / **-0.53** (13,606) |
+| censored     | 0.624 / -0.32 (35,783)     | 0.449 / -0.63 (35,778)     | 0.317 / -1.30 (35,690)     |
 
 **Interpretation rule applied as specified: the trustworthy subset does NOT
 recover AUC above 0.5 at 60 or 120min (0.395, 0.352) — it is still inverted
@@ -1057,7 +1044,6 @@ recomputed `p_normal_in_H` via `training.dwell.p_leave_by` against
 `training.scorecard.movement_dwell_lookup_from_params`, graded via
 `training.eval.calibrate(..., truth_default=None)`.
 
-
 ## 2026-08-12 — movement recovery distribution: model form, not data volume (mixture fix cuts the CRPS deficit from -0.088 to -0.023 using the same data)
 
 origin: agent
@@ -1069,7 +1055,7 @@ held-out 97-episode population, zero additional days — cuts the CRPS-skill
 deficit from **-0.088 to -0.023** (a 74% reduction). Meanwhile the causal
 training-window sweep below shows no monotonic gain from more data at all
 (skill oscillates -0.14 to -0.24 from 7 to 35 days of training, and gets
-*worse* from day 21 to day 28). Four experiments, detailed below, all point
+_worse_ from day 21 to day 28). Four experiments, detailed below, all point
 the same way: not data volume, not pooling shrinkage, but a single
 continuous distribution being structurally unable to front-load enough mass
 at the exact one-tick floor (70.4% of outcomes) while keeping enough tail
@@ -1124,36 +1110,36 @@ grading a closed-form CDF that bypasses `curve_sec` quantization entirely.
 Duration histogram, full 53-day archive reconstruction, n=213 (exact
 match to the already-measured table; only 14 distinct duration values):
 
-| ticks | minutes | count | share |
-| --- | --- | --- | --- |
-| 1 | 5 | 150 | 70.4% |
-| 2 | 10 | 27 | 12.7% |
-| 3 | 15 | 11 | 5.2% |
-| 4 | 20 | 4 | 1.9% |
-| 5-119 (10 distinct values) | 25-595 | 21 | 9.8% |
+| ticks                      | minutes | count | share |
+| -------------------------- | ------- | ----- | ----- |
+| 1                          | 5       | 150   | 70.4% |
+| 2                          | 10      | 27    | 12.7% |
+| 3                          | 15      | 11    | 5.2%  |
+| 4                          | 20      | 4     | 1.9%  |
+| 5-119 (10 distinct values) | 25-595  | 21    | 9.8%  |
 
 Route-volume buckets (full-archive, in-sample fit — every route's own
 completed-episode count over all 53 days vs. CRPS skill on its own
 episodes):
 
-| bucket (own episodes) | n routes | n episodes | mean CRPS | baseline CRPS | skill |
-| --- | --- | --- | --- | --- | --- |
-| 1-2 | 4 | 5 | 0.89 | 0.00 | undefined (zero-variance baseline, n too small) |
-| 3-5 | 5 | 19 | 17.31 | 15.87 | -0.090 |
-| 6-10 | 4 | 37 | 8.27 | 7.67 | -0.078 |
-| 11+ | 7 | 152 | 7.34 | 7.05 | -0.040 |
+| bucket (own episodes) | n routes | n episodes | mean CRPS | baseline CRPS | skill                                           |
+| --------------------- | -------- | ---------- | --------- | ------------- | ----------------------------------------------- |
+| 1-2                   | 4        | 5          | 0.89      | 0.00          | undefined (zero-variance baseline, n too small) |
+| 3-5                   | 5        | 19         | 17.31     | 15.87         | -0.090                                          |
+| 6-10                  | 4        | 37         | 8.27      | 7.67          | -0.078                                          |
+| 11+                   | 7        | 152        | 7.34      | 7.05          | -0.040                                          |
 
 Training-window sweep — fit on the first N days (2026-06-21 onward), grade
 on the SAME fixed held-out window every time (2026-07-30..08-12, n=63
 episodes, held fixed so N is the only thing that changes):
 
-| N days | train window ends | n train episodes | routes w/ cell (own/pooled) | n scored | skill |
-| --- | --- | --- | --- | --- | --- |
-| 7 | 06-28 | 29 | 10 (3/7) | 51 | -0.243 |
-| 14 | 07-05 | 77 | 13 (8/5) | 55 | -0.150 |
-| 21 | 07-12 | 90 | 16 (9/7) | 62 | -0.142 |
-| 28 | 07-19 | 118 | 20 (10/10) | 63 | -0.170 |
-| 35 | 07-26 | 138 | 20 (14/6) | 63 | -0.164 |
+| N days | train window ends | n train episodes | routes w/ cell (own/pooled) | n scored | skill  |
+| ------ | ----------------- | ---------------- | --------------------------- | -------- | ------ |
+| 7      | 06-28             | 29               | 10 (3/7)                    | 51       | -0.243 |
+| 14     | 07-05             | 77               | 13 (8/5)                    | 55       | -0.150 |
+| 21     | 07-12             | 90               | 16 (9/7)                    | 62       | -0.142 |
+| 28     | 07-19             | 118              | 20 (10/10)                  | 63       | -0.170 |
+| 35     | 07-26             | 138              | 20 (14/6)                   | 63       | -0.164 |
 
 **Interpretation rule (as specified): skill rising monotonically with N
 would mean a volume problem; flat or negative regardless of N means more
@@ -1171,20 +1157,20 @@ Same 06-21..07-04 training data, same causal 130-episode held-out
 population, three forms graded through the unmodified
 `scorecard.episode_recovery` / `recovery_dist.recovery_dist_report`:
 
-| model | n scored | n no-curve | mean CRPS | baseline CRPS | skill |
-| --- | --- | --- | --- | --- | --- |
-| a. shipped continuous log-logistic AFT (`partially_pooled_dwell`) | 97 | 33 | 6.92 | 6.36 | -0.088 |
-| b. per-route empirical/KM (`compute_dwell_quantiles`, min_samples=5) | 25 | 105 | 5.45 | 3.82 | -0.426 |
-| c. pooled climatology (one KM curve over all routes' pooled samples) | 97 | 33 | 7.15 | 6.36 | -0.126 |
+| model                                                                | n scored | n no-curve | mean CRPS | baseline CRPS | skill  |
+| -------------------------------------------------------------------- | -------- | ---------- | --------- | ------------- | ------ |
+| a. shipped continuous log-logistic AFT (`partially_pooled_dwell`)    | 97       | 33         | 6.92      | 6.36          | -0.088 |
+| b. per-route empirical/KM (`compute_dwell_quantiles`, min_samples=5) | 25       | 105        | 5.45      | 3.82          | -0.426 |
+| c. pooled climatology (one KM curve over all routes' pooled samples) | 97       | 33         | 7.15      | 6.36          | -0.126 |
 
 Restricted to the n=25 intersection every model can score (apples-to-apples,
 same episodes, same baseline):
 
-| model | mean CRPS | baseline CRPS | skill |
-| --- | --- | --- | --- |
-| a. shipped continuous | 4.42 | 3.82 | -0.157 |
-| b. per-route KM | 5.45 | 3.82 | -0.426 |
-| c. pooled climatology | 4.68 | 3.82 | -0.224 |
+| model                 | mean CRPS | baseline CRPS | skill  |
+| --------------------- | --------- | ------------- | ------ |
+| a. shipped continuous | 4.42      | 3.82          | -0.157 |
+| b. per-route KM       | 5.45      | 3.82          | -0.426 |
+| c. pooled climatology | 4.68      | 3.82          | -0.224 |
 
 Neither (b) nor (c) beats (a) — on the contrary, (a) is the least-bad of
 the three, both at full coverage and on the matched subset. Per the
@@ -1204,12 +1190,12 @@ episodes graded against the live `dwell_movement`, reproduced bit-for-bit
 above). Per-episode PIT, lobed at [0.2,0.3) and >=0.8 as specified (plus
 the [0.4,0.5) cluster the histogram also shows):
 
-| PIT lobe | n | share | composition |
-| --- | --- | --- | --- |
-| [0.2,0.3) | 38 | 50.0% | **100% one-tick**, 100% own-fit routes with n=5 own events (6, G, R) |
-| [0.4,0.5) | 14 | 18.4% | **100% one-tick**, 100% pooled-parent routes with n=1-2 own events (J, M, W) |
-| [0.8,1.0) | 22 | 28.9% | **100% multi-tick** (median 12.5min, max 95min), mix of own (15) and pooled (7) routes, all 6 routes represented |
-| other (<8min gap) | 2 | 2.6% | route 6, multi-tick, own-fit |
+| PIT lobe          | n   | share | composition                                                                                                      |
+| ----------------- | --- | ----- | ---------------------------------------------------------------------------------------------------------------- |
+| [0.2,0.3)         | 38  | 50.0% | **100% one-tick**, 100% own-fit routes with n=5 own events (6, G, R)                                             |
+| [0.4,0.5)         | 14  | 18.4% | **100% one-tick**, 100% pooled-parent routes with n=1-2 own events (J, M, W)                                     |
+| [0.8,1.0)         | 22  | 28.9% | **100% multi-tick** (median 12.5min, max 95min), mix of own (15) and pooled (7) routes, all 6 routes represented |
+| other (<8min gap) | 2   | 2.6%  | route 6, multi-tick, own-fit                                                                                     |
 
 This is a clean, complete explanation, not a partial one. The two opposite
 failure modes: **(1) one-tick outcomes always read as "model too
@@ -1234,18 +1220,18 @@ population, not an artifact of one specific fit.
 Own-fit vs pooled-parent routes, split on the exact published population
 (own={6,G,R}, n=5 events each; pooled={J,M,W}, n=1-2 events each):
 
-| split | n routes | n scored | mean CRPS | baseline CRPS | skill |
-| --- | --- | --- | --- | --- | --- |
-| own-fit | 3 | 55 | 4.98 | 4.53 | -0.099 |
-| pooled-parent | 3 | 21 | 5.68 | 5.01 | -0.133 |
+| split         | n routes | n scored | mean CRPS | baseline CRPS | skill  |
+| ------------- | -------- | -------- | --------- | ------------- | ------ |
+| own-fit       | 3        | 55       | 4.98      | 4.53          | -0.099 |
+| pooled-parent | 3        | 21       | 5.68      | 5.01          | -0.133 |
 
 Cross-checked on the independent local fit (8 own-fit routes incl. n=32/15
 event routes 7/M, 5 pooled-parent routes at n=1 each):
 
-| split | n routes | n scored | skill |
-| --- | --- | --- | --- |
-| own-fit | 8 | 60 | -0.094 |
-| pooled-parent | 5 | 37 | -0.079 |
+| split         | n routes | n scored | skill  |
+| ------------- | -------- | -------- | ------ |
+| own-fit       | 8        | 60       | -0.094 |
+| pooled-parent | 5        | 37       | -0.079 |
 
 Own-fit and pooled-parent skill sit in the same negative band in both
 cuts (pooled is worse in one, marginally better in the other) — pooling
@@ -1266,10 +1252,10 @@ cannot represent a mass this large evaluated exactly at its own grid
 point — see the artifact note above). Same training window, same 97-episode
 held-out population as Experiment 2's model (a):
 
-| model | mean CRPS | baseline CRPS | skill |
-| --- | --- | --- | --- |
-| a. shipped continuous (closed-form check, same math as the curve version) | 7.04 | 6.36 | -0.108 |
-| d. one-tick spike + conditional continuous tail mixture | 6.50 | 6.36 | **-0.023** |
+| model                                                                     | mean CRPS | baseline CRPS | skill      |
+| ------------------------------------------------------------------------- | --------- | ------------- | ---------- |
+| a. shipped continuous (closed-form check, same math as the curve version) | 7.04      | 6.36          | -0.108     |
+| d. one-tick spike + conditional continuous tail mixture                   | 6.50      | 6.36          | **-0.023** |
 
 A 74% reduction in the skill deficit (-0.108 → -0.023), same data, zero
 extra training days, one extra parameter (the pooled one-tick fraction).
@@ -1321,11 +1307,11 @@ successive passings of a fixed reference stop would give it.
 shape encodings for normal/disrupted/suspended at 20px with hue removed,
 scanned as a route grid (`docs/brand/mark-study.html` §6):
 
-| encoding | 20px monochrome result |
-| --- | --- |
+| encoding                                        | 20px monochrome result                           |
+| ----------------------------------------------- | ------------------------------------------------ |
 | gap 0 / 4 / 8 units on a 24 grid (spacing only) | fails — disrupted vs suspended indistinguishable |
-| gap 0 / 5 / 11 (spacing widened to the frame) | marginal, needs a side-by-side reference |
-| split topology + symmetric height drop | passes, read correctly cold |
+| gap 0 / 5 / 11 (spacing widened to the frame)   | marginal, needs a side-by-side reference         |
+| split topology + symmetric height drop          | passes, read correctly cold                      |
 
 A 4-unit gap delta on a 24 grid is 3.3px at 20px render, and judging "how far
 apart" has no anchor at that size, whereas "one shape or two" and "tall or
@@ -1368,11 +1354,11 @@ tick). Graded causally — trained 06-21..07-25, scored on 74 held-out
 episodes from 07-26..08-11, same transitions and same grader for every
 variant, only the cell construction differing:
 
-| model | CRPS | baseline | skill | mean PIT |
-| --- | --- | --- | --- | --- |
-| continuous (what shipped before) | 7.451 | 6.541 | -0.1391 | 0.579 |
-| single global atom | 6.922 | 6.541 | **-0.0582** | 0.545 |
-| per-route shrunk atom (shipped) | 6.938 | 6.541 | **-0.0606** | 0.544 |
+| model                            | CRPS  | baseline | skill       | mean PIT |
+| -------------------------------- | ----- | -------- | ----------- | -------- |
+| continuous (what shipped before) | 7.451 | 6.541    | -0.1391     | 0.579    |
+| single global atom               | 6.922 | 6.541    | **-0.0582** | 0.545    |
+| per-route shrunk atom (shipped)  | 6.938 | 6.541    | **-0.0606** | 0.544    |
 
 56% of the skill deficit gone. Still short of climatology, so the arm stays
 ungraduated. Global and shrunk are within noise of each other because the
@@ -1419,13 +1405,13 @@ Worth internalising, because it looks exactly like a catastrophic
 regression. With an atom at 300s, every one-tick episode returns the
 identical F(300) = atom_p, so the histogram collapses:
 
-| model | PIT histogram | mean PIT |
-| --- | --- | --- |
-| continuous | [0,1,7,15,25,0,1,1,8,16] | 0.579 |
-| mixture, raw PIT | [0,0,0,0,0,0,0,48,13,13] | 0.790 |
-| mixture, randomized PIT | [8,8,4,8,6,6,6,2,13,13] | 0.544 |
+| model                   | PIT histogram            | mean PIT |
+| ----------------------- | ------------------------ | -------- |
+| continuous              | [0,1,7,15,25,0,1,1,8,16] | 0.579    |
+| mixture, raw PIT        | [0,0,0,0,0,0,0,48,13,13] | 0.790    |
+| mixture, randomized PIT | [8,8,4,8,6,6,6,2,13,13]  | 0.544    |
 
-The middle row is not miscalibration. PIT is only uniform for a *continuous*
+The middle row is not miscalibration. PIT is only uniform for a _continuous_
 predictive CDF; against a jump the correct diagnostic spreads each
 observation across its own jump. Uncorrected, the mixture would have been
 published with a "badly optimistic" verdict on the Models page while being
@@ -1484,7 +1470,7 @@ number" precedent (`SegmentStatus.recovery: SegmentRecovery | None`,
 comparison against an announced resume time, not a fitted forecast. It carries
 none of the defect above, so it keeps publishing all three horizons. A blanket
 suppression would have thrown away the only horizon information in the feed that
-is *deterministically* correct. Gated at the single point where the Inference is
+is _deterministically_ correct. Gated at the single point where the Inference is
 assembled rather than in each of the five arms that set these values, so the
 next arm added cannot silently miss the gate.
 
@@ -1539,36 +1525,36 @@ route-ticks against 196 disrupted**, so the two targets agree to within 0.0008
 Brier. Recording it because the objection is correct in principle even though it
 did not bite here.
 
-| predictor | Brier | logloss | vs pooled |
-| --- | --- | --- | --- |
-| pooled (what ships) | 0.06519 | 0.23645 | |
-| raw leaf rate | **0.06414** | 0.23453 | -0.00105 |
-| route level | 0.18876 | 0.54609 | +0.12357 |
-| system level | 0.24298 | 0.67903 | +0.17779 |
-| pooled, fitted on normal ticks only | 0.06505 | 0.23640 | -0.00014 |
+| predictor                           | Brier       | logloss | vs pooled |
+| ----------------------------------- | ----------- | ------- | --------- |
+| pooled (what ships)                 | 0.06519     | 0.23645 |           |
+| raw leaf rate                       | **0.06414** | 0.23453 | -0.00105  |
+| route level                         | 0.18876     | 0.54609 | +0.12357  |
+| system level                        | 0.24298     | 0.67903 | +0.17779  |
+| pooled, fitted on normal ticks only | 0.06505     | 0.23640 | -0.00014  |
 
 Restricted to the 497 THIN training leaves (n_A < MIN_LEAF_N=20) — the leaves
 partial pooling exists to serve:
 
-| predictor | Brier | logloss | vs pooled |
-| --- | --- | --- | --- |
-| pooled | 0.12451 | 0.43691 | |
-| raw leaf rate | **0.06908** | 0.36334 | -0.05543 |
-| system level | 0.19412 | 0.58022 | +0.06960 |
+| predictor     | Brier       | logloss | vs pooled |
+| ------------- | ----------- | ------- | --------- |
+| pooled        | 0.12451     | 0.43691 |           |
+| raw leaf rate | **0.06908** | 0.36334 | -0.05543  |
+| system level  | 0.19412     | 0.58022 | +0.06960  |
 
 So: pooling is a small net loss overall and a **1.8x Brier loss exactly where it
 is supposed to help**. It does beat route- and system-level pooling by a wide
 margin (0.065 vs 0.189 and 0.243), so leaf specificity is doing real work — the
-hierarchy *above* the leaf is nearly worthless here. It is the direction of the
+hierarchy _above_ the leaf is nearly worthless here. It is the direction of the
 shrinkage that is wrong, not the idea of a leaf-level estimate.
 
 ### Why: exchangeability is violated, and not in the direction I guessed
 
-| | held-out advance rate |
-| --- | --- |
-| thin leaves (n_A < 20) | 0.8532 |
-| voting leaves (n_A >= 20) | 0.5830 |
-| centre thin leaves are shrunk toward | **0.9888** |
+|                                      | held-out advance rate |
+| ------------------------------------ | --------------------- |
+| thin leaves (n_A < 20)               | 0.8532                |
+| voting leaves (n_A >= 20)            | 0.5830                |
+| centre thin leaves are shrunk toward | **0.9888**            |
 
 Thin leaves run **higher** than well-observed ones, not lower. Plausible reading:
 a rarely-traversed segment has few trains on it, so nothing queues and trains
@@ -1638,13 +1624,13 @@ stop sequences per route+direction; hop = index difference), over
 2026-08-05..08-11, 915,906 transitions, 98.6% of them placeable in the scheduled
 order:
 
-| stops covered in one 5-min look | count | share of moves |
-| --- | --- | --- |
-| 1 (an actual segment) | 90,159 | **18.2%** |
-| 2 | 158,975 | 32.2% |
-| 3 | 192,192 | 38.9% |
-| 4 | 42,354 | 8.6% |
-| 5+ | 8,612 | 1.2% |
+| stops covered in one 5-min look | count   | share of moves |
+| ------------------------------- | ------- | -------------- |
+| 1 (an actual segment)           | 90,159  | **18.2%**      |
+| 2                               | 158,975 | 32.2%          |
+| 3                               | 192,192 | 38.9%          |
+| 4                               | 42,354  | 8.6%           |
+| 5+                              | 8,612   | 1.2%           |
 
 **81.8% of observed moves skipped at least one station we never saw.** Mean 2.71
 stations per look. Worst on the busiest lines: `1` 94.8% multi-stop, `6` 89.4%,
@@ -1698,7 +1684,7 @@ stay gated to 5-minute boundaries with its own carry object, and the trace needs
 its own.
 
 Commands run (`murk exec -- uv run python /tmp/hop_test.py`, PYTHONPATH at the
-repo root; script and its caches under /tmp only, deleted after): 
+repo root; script and its caches under /tmp only, deleted after):
 `movement_backfill._fetch_vehicle_bodies` for the window,
 `gtfs_static.load_successors` + `gtfs_static.chains` for scheduled travel order,
 `load_r2.build_segment_series` for the observed transitions. No production code
@@ -1713,13 +1699,13 @@ origin: agent
 Stalls per (route, direction, from_stop) over 2026-08-05..08-11, cross-referenced
 against each stop's position in its scheduled travel-order chain:
 
-| position in the line | stalls | moves | stall rate | share of all stalls |
-| --- | --- | --- | --- | --- |
-| first stop (origin terminal) | 244,009 | 28,261 | **89.6%** | **63.5%** |
-| destination terminal | 12,419 | 2,434 | 83.6% | 3.2% |
-| one in from a terminal | 6,324 | 19,611 | 24.4% | 1.6% |
-| mid-line | 96,273 | 474,532 | **16.9%** | 25.1% |
-| not in a scheduled chain | 24,953 | | | 6.5% |
+| position in the line         | stalls  | moves   | stall rate | share of all stalls |
+| ---------------------------- | ------- | ------- | ---------- | ------------------- |
+| first stop (origin terminal) | 244,009 | 28,261  | **89.6%**  | **63.5%**           |
+| destination terminal         | 12,419  | 2,434   | 83.6%      | 3.2%                |
+| one in from a terminal       | 6,324   | 19,611  | 24.4%      | 1.6%                |
+| mid-line                     | 96,273  | 474,532 | **16.9%**  | 25.1%               |
+| not in a scheduled chain     | 24,953  |         |            | 6.5%                |
 
 **Two-thirds of the stall mass is trains parked at terminals by design.** It is
 also extremely concentrated: the top 25 (route, direction, stop) leaves hold
@@ -1754,11 +1740,11 @@ The measure itself behaves sanely: median 0.818, p05 0.092, p95 1.056.
 Graded against MTA severe-alert truth (severity floor 2), 41,413 route-ticks,
 AUC where a low score should mean disrupted:
 
-| score | AUC |
-| --- | --- |
+| score                                               | AUC    |
+| --------------------------------------------------- | ------ |
 | advance rate, as production computes it (all stops) | 0.2175 |
-| advance rate, terminals excluded | 0.3899 |
-| progress ratio, terminals excluded | 0.4229 |
+| advance rate, terminals excluded                    | 0.3899 |
+| progress ratio, terminals excluded                  | 0.4229 |
 
 All three are INVERTED. Excluding terminals is worth +0.172 AUC on its own, which
 is the single largest effect measured today and comes straight from the stall
@@ -1778,13 +1764,13 @@ disrupted and cannot separate anything.
 Confirmed by trying the acute version — label a CALM route-tick positive if a new
 alert onset (normal -> not-normal transition) follows within 30 minutes:
 
-  * **4 acute onsets in the entire week, across 4 routes**, giving 24 positive
-    route-ticks out of 36,297.
-  * AUC 0.6025 progress ratio vs 0.5744 advance rate. Both now the right side of
-    0.5, and the progress ratio's mean is 0.0391 LOWER before an onset while the
-    advance rate moves +0.0019 (i.e. not at all).
-  * With 24 positives the CI on AUC is about +/-0.12. This is a direction, not a
-    result. Do not cite it as one.
+- **4 acute onsets in the entire week, across 4 routes**, giving 24 positive
+  route-ticks out of 36,297.
+- AUC 0.6025 progress ratio vs 0.5744 advance rate. Both now the right side of
+  0.5, and the progress ratio's mean is 0.0391 LOWER before an onset while the
+  advance rate moves +0.0019 (i.e. not at all).
+- With 24 positives the CI on AUC is about +/-0.12. This is a direction, not a
+  result. Do not cite it as one.
 
 So the honest state: the progress ratio is a better-posed measure on every
 structural argument, it edges the advance rate on every cut tried, and there is
@@ -1817,7 +1803,6 @@ all deleted after): `movement_backfill._fetch_vehicle_bodies`,
 `load_hop_seconds`, `review.build_mta_truth`. Production code changed: only the
 new `gtfs_static.hop_seconds` / `load_hop_seconds` (committed, tested).
 
-
 ## 2026-08-12 — the advance signal needs an admission rule, not a terminal blacklist: through-stops-only cuts thin-leaf Brier 0.149 -> 0.081
 
 origin: agent
@@ -1830,11 +1815,11 @@ which concatenates one walk per entry stop and so names only one origin when a
 component has two. 199 endpoint keys against 1,659 through stops. Recounted over
 2026-08-05..08-11, keyed on each transition's from_stop:
 
-| position | stalls | moves | stall rate | share of all stalls |
-| --- | --- | --- | --- | --- |
-| chain endpoint | 294,928 | 36,316 | **89.0%** | **76.8%** |
-| mid-line (through) | 64,103 | 488,522 | 11.6% | 16.7% |
-| not in the skeleton at all | 24,947 | 7,090 | **77.9%** | 6.5% |
+| position                   | stalls  | moves   | stall rate | share of all stalls |
+| -------------------------- | ------- | ------- | ---------- | ------------------- |
+| chain endpoint             | 294,928 | 36,316  | **89.0%**  | **76.8%**           |
+| mid-line (through)         | 64,103  | 488,522 | 11.6%      | 16.7%               |
+| not in the skeleton at all | 24,947  | 7,090   | **77.9%**  | 6.5%                |
 
 The third row is the finding. Stops the timetable never names — yard leads, rare
 patterns, stop_ids the vehicle feed emits and stop_times doesn't — stall at 77.9%,
@@ -1850,11 +1835,11 @@ Train 2026-06-21..07-25, score 07-26..08-11 on the route-ticks the severity-2
 alert truth calls normal. Pooled = `hierarchical.partially_pool`, raw-leaf = each
 leaf's own training rate.
 
-| arm | leaves | no train data | thin | pooled Brier | thin-leaf pooled | thin-leaf raw |
-| --- | --- | --- | --- | --- | --- | --- |
-| all stops (production) | 2291 | 177 | 448 | 0.06656 | 0.14857 | 0.05506 |
-| terminals excluded | 2107 | 174 | 436 | 0.06034 | 0.11144 | 0.05769 |
-| through stops only | 1617 | **0** | **69** | 0.06208 | **0.08082** | 0.07788 |
+| arm                    | leaves | no train data | thin   | pooled Brier | thin-leaf pooled | thin-leaf raw |
+| ---------------------- | ------ | ------------- | ------ | ------------ | ---------------- | ------------- |
+| all stops (production) | 2291   | 177           | 448    | 0.06656      | 0.14857          | 0.05506       |
+| terminals excluded     | 2107   | 174           | 436    | 0.06034      | 0.11144          | 0.05769       |
+| through stops only     | 1617   | **0**         | **69** | 0.06208      | **0.08082**      | 0.07788       |
 
 Read the last three columns, not the fourth: overall Brier is dominated by the
 largest leaves and each arm scores a different population, so cross-arm overall
@@ -1862,16 +1847,16 @@ comparison is not like-for-like (terminals-excluded "wins" it at 0.06034 while
 being worse everywhere the estimator is actually load-bearing). What is
 like-for-like:
 
-  * **Every held-out leaf has training data** under through-only — 177 leaves
-    that previously needed a fabricated prior are gone, because they were
-    off-skeleton stops that appear in one window and not the next.
-  * Thin leaves fall 448 -> 69 and their Brier 0.14857 -> 0.08082.
-  * Pooled and raw converge (0.06208 vs 0.06195, and 0.08082 vs 0.07788 on thin
-    leaves). The exchangeability violation measured in the earlier grade —
-    pooling *losing* to raw by 1.8x on the leaves it exists to serve — was mostly
-    terminals and off-skeleton stops sitting in one hierarchy with through stops.
-    Most of what the n-aware-shrinkage work was for dissolves with the population
-    fixed instead.
+- **Every held-out leaf has training data** under through-only — 177 leaves
+  that previously needed a fabricated prior are gone, because they were
+  off-skeleton stops that appear in one window and not the next.
+- Thin leaves fall 448 -> 69 and their Brier 0.14857 -> 0.08082.
+- Pooled and raw converge (0.06208 vs 0.06195, and 0.08082 vs 0.07788 on thin
+  leaves). The exchangeability violation measured in the earlier grade —
+  pooling _losing_ to raw by 1.8x on the leaves it exists to serve — was mostly
+  terminals and off-skeleton stops sitting in one hierarchy with through stops.
+  Most of what the n-aware-shrinkage work was for dissolves with the population
+  fixed instead.
 
 Reproduction check, since the harness is new: the all-stops arm scored on all
 ticks gives pooled 0.06598 / raw 0.06472 over 2,378 leaves and 2.21M trials, 499
@@ -1883,11 +1868,11 @@ earlier. Same estimator, same finding.
 Same window, severity floor 2, 45,292 route-ticks, prevalence 12.4-14.7% in every
 one of the 24 UTC hours (the flatness the label was already condemned for):
 
-| arm | AUC | mean score on normal | on disrupted | overall advance rate |
-| --- | --- | --- | --- | --- |
-| all stops | 0.3388 | 0.5619 | 0.7215 | 0.5807 |
-| terminals excluded | 0.4361 | 0.8217 | 0.9112 | 0.8470 |
-| through stops only | 0.4641 | 0.8673 | 0.9099 | 0.8832 |
+| arm                | AUC    | mean score on normal | on disrupted | overall advance rate |
+| ------------------ | ------ | -------------------- | ------------ | -------------------- |
+| all stops          | 0.3388 | 0.5619               | 0.7215       | 0.5807               |
+| terminals excluded | 0.4361 | 0.8217               | 0.9112       | 0.8470               |
+| through stops only | 0.4641 | 0.8673               | 0.9099       | 0.8832               |
 
 Ordering and sign match the 0.2175 -> 0.3899 pair recorded earlier; the absolute
 values do not (different route-tick population, no presence mask). All three are
@@ -1923,7 +1908,6 @@ counters changing meaning at deploy.
 Measured with two throwaway scripts at the repo root (both deleted after) over
 `archive/vehicles/` and `archive/alerts/` via `murk exec`.
 
-
 ## 2026-08-12 — the 1-minute trace reads back: 3,457 single-hop traversals in 25 minutes, tracking the timetable within 3%
 
 origin: agent
@@ -1935,13 +1919,13 @@ at exactly 60s spacing, ~650 rows each, while archive/vehicles/ stays on its
 First reconstruction, over 25 minutes of live data (572 trips, 16,196 rows,
 4,337 arrivals):
 
-| outcome | n | share |
-| --- | --- | --- |
-| exact single hop | 3,457 | 91.9% |
-| interval-censored (arrival missed between polls) | 215 | 5.7% |
-| right-censored (in transit when last seen) | 89 | 2.4% |
-| dropped: stop_seq backwards | 11 | |
-| dropped: arrival with no stop_seq | 82 | |
+| outcome                                          | n     | share |
+| ------------------------------------------------ | ----- | ----- |
+| exact single hop                                 | 3,457 | 91.9% |
+| interval-censored (arrival missed between polls) | 215   | 5.7%  |
+| right-censored (in transit when last seen)       | 89    | 2.4%  |
+| dropped: stop_seq backwards                      | 11    |       |
+| dropped: arrival with no stop_seq                | 82    |       |
 
 **92% of hops are cleanly measured at 1-minute polling.** That is the number the
 whole trace was built for: at 5-minute polling the mean observed move spanned
@@ -1952,10 +1936,10 @@ whole trace was built for: at 5-minute polling the mean observed move spanned
 A poll brackets a hop rather than pinning it, and the two ends are biased in
 opposite directions:
 
-| cut | n | ratio to schedule (median) | p10 | p90 |
-| --- | --- | --- | --- | --- |
-| arrival -> arrival | 3,420 | **1.033** | 0.667 | 1.667 |
-| departure -> arrival | 797 | 0.422 | 0.189 | 0.833 |
+| cut                  | n     | ratio to schedule (median) | p10   | p90   |
+| -------------------- | ----- | -------------------------- | ----- | ----- |
+| arrival -> arrival   | 3,420 | **1.033**                  | 0.667 | 1.667 |
+| departure -> arrival | 797   | 0.422                      | 0.189 | 0.833 |
 
 Arrival-to-arrival includes the dwell at the origin, so it is an upper bound.
 Departure-to-arrival starts its clock at the first sighting that had already
@@ -1979,20 +1963,20 @@ median and the 90s scheduled one.
 Two of these were wrong in the first draft and produced plausible-looking
 numbers anyway, which is the reason they are written down:
 
-  * **Right-censoring needs in-transit evidence, not just absence.** A trip last
-    seen standing at a stop FURTHER ALONG than its last recorded arrival has
-    already completed the hop — we simply could not time it (the feed omitted
-    stop_seq). Recording "still running at T" there is false, not unverified,
-    and stretches every fitted traversal. The rule that holds: censor only when
-    the last sighting is in transit toward a stop other than the last arrival.
-  * **A departure observed at the same instant as the next arrival is not a
-    departure.** It bounds travel time below by zero, which is no information.
-    Emitting 0 there would drag any fit down hard; those records carry
-    moving_seconds=None instead, and 2,443 of 3,457 exact hops are in that state.
-  * A feed gap after the last in-transit sighting does not weaken the censoring
-    bound — the train demonstrably was still moving when last seen, and the
-    endpoint is the feed's own vehicle_ts, not a poll time. A gap that swallows
-    an arrival surfaces as a stop_seq jump instead, which is interval-censored.
+- **Right-censoring needs in-transit evidence, not just absence.** A trip last
+  seen standing at a stop FURTHER ALONG than its last recorded arrival has
+  already completed the hop — we simply could not time it (the feed omitted
+  stop_seq). Recording "still running at T" there is false, not unverified,
+  and stretches every fitted traversal. The rule that holds: censor only when
+  the last sighting is in transit toward a stop other than the last arrival.
+- **A departure observed at the same instant as the next arrival is not a
+  departure.** It bounds travel time below by zero, which is no information.
+  Emitting 0 there would drag any fit down hard; those records carry
+  moving_seconds=None instead, and 2,443 of 3,457 exact hops are in that state.
+- A feed gap after the last in-transit sighting does not weaken the censoring
+  bound — the train demonstrably was still moving when last seen, and the
+  endpoint is the feed's own vehicle_ts, not a poll time. A gap that swallows
+  an arrival surfaces as a stop_seq jump instead, which is interval-censored.
 
 Interval-censored spans are dropped from the survival samples rather than split
 evenly across their hops: the fitters in survival.py carry a right-censored
@@ -2001,7 +1985,6 @@ they cannot express. Splitting would fabricate observations. At 5.7% of
 traversals the discard is small, and TraceStats reports it.
 
 Reproducible: `murk exec -- uv run python -m training.trace`.
-
 
 ## 2026-08-12 — the through-stops retrain landed, but three silent faults sat between the code and the artifact
 
@@ -2034,7 +2017,7 @@ crash. After the fix: 32 cells, and the published block is back to 25 routes.
 
 The general lesson is about the guard, not the math: `t = max(t, _MIN_DURATION)`
 keeps `t` positive, which looks like it protects `log(t)` and does — but `z` is
-a *power* of a ratio and has its own range. Flooring the input does not bound
+a _power_ of a ratio and has its own range. Flooring the input does not bound
 the intermediate.
 
 ### 2. Every local retrain since 2026-08-10 stamped a stale `code_sha`
@@ -2045,7 +2028,7 @@ The previous live params said the same thing.
 
 `.build-sha` is a gitignored file that `trainer deploy:ci` writes into the
 checkout before the container build, because the image excludes `.git`.
-`code_provenance()` consulted it *above* `git rev-parse HEAD`, so once a local
+`code_provenance()` consulted it _above_ `git rev-parse HEAD`, so once a local
 deploy has run, the file shadows the live tree forever and `dirty` can never be
 computed. Reordered: env var, then the live git tree, then the file, then
 unknown. The file is the container's only source; in a checkout the tree that
@@ -2087,7 +2070,6 @@ normal.
 provenance fix, so it carries the stale sha. The corrected stamp needs one more
 publish from a recorded commit.
 
-
 ## 2026-08-12 — the degradation label was mostly measuring the clock: hourly bins cut degraded prevalence 11.0% -> 1.8%
 
 origin: agent
@@ -2097,11 +2079,11 @@ graded against. Over 2026-08-03..08-13 it called **11.0% of all judgeable
 route-ticks degraded**, and the per-hour breakdown said most of that was not
 disruption at all:
 
-| UTC hour | ET | prevalence, tod_bin | prevalence, hourly |
-| --- | --- | --- | --- |
-| 10 | 06:00 | **26.8%** | 5.9% |
-| 03 | 23:00 | **18.9%** | 2.6% |
-| others | | 4.6-14.7% | 0.2-8.0% |
+| UTC hour | ET    | prevalence, tod_bin | prevalence, hourly |
+| -------- | ----- | ------------------- | ------------------ |
+| 10       | 06:00 | **26.8%**           | 5.9%               |
+| 03       | 23:00 | **18.9%**           | 2.6%               |
+| others   |       | 4.6-14.7%           | 0.2-8.0%           |
 
 Both spikes sit at a `tod_bin` edge. The bins are 4-6 hours wide (00-05, 06-09,
 10-14, 15-19, 20-23), so the 06:00-09:59 median is set by the 08:00 rush peak
@@ -2125,12 +2107,12 @@ landing in the top two ET clock hours 42% -> 30%.
 **Negative result: finer than hourly is not worth it.** Same window, same
 thresholds, four granularities:
 
-| bin | cells | judgeable ticks | events | degraded | top-2 ET hours |
-| --- | --- | --- | --- | --- | --- |
-| tod_bin (4-6h) | 131 | 69,636 | 210 | 11.00% | 42% |
-| hourly | 1,122 | 69,546 | 142 | 1.79% | 30% |
-| half-hour | 1,197 | 55,963 | 66 | 1.22% | 26% |
-| quarter-hour | 2,364 | 55,621 | 54 | 0.90% | 26% |
+| bin            | cells | judgeable ticks | events | degraded | top-2 ET hours |
+| -------------- | ----- | --------------- | ------ | -------- | -------------- |
+| tod_bin (4-6h) | 131   | 69,636          | 210    | 11.00%   | 42%            |
+| hourly         | 1,122 | 69,546          | 142    | 1.79%    | 30%            |
+| half-hour      | 1,197 | 55,963          | 66     | 1.22%    | 26%            |
+| quarter-hour   | 2,364 | 55,621          | 54     | 0.90%    | 26%            |
 
 Half-hourly buys 4 points of edge concentration and costs **20% of every
 judgeable tick** (69,546 -> 55,963) plus two more routes, because cells fall
@@ -2143,7 +2125,6 @@ The residual concentration after the fix is ET 05:00 (27 onsets) and 06:00
 (16) — the hours service ramps hardest within the hour. That is the part a
 half-hour bin would actually fix, and it is not worth a fifth of the label.
 
-
 ## 2026-08-12 — per-segment traversal baselines: 1,338 of 1,924 hops fit their own curve off eight hours of trace
 
 origin: agent
@@ -2153,16 +2134,16 @@ into a per-(route, direction, from_stop, to_stop) baseline, plus the deviation
 of a live hop from it. First fit, over 2026-08-12 16:30Z..08-13 00:14Z (473
 snapshots, 7h45m — the whole archive, which started today):
 
-| | |
-| --- | --- |
-| exact single hops fitted | 74,706 |
-| distinct hops seen | 1,924 |
-| hops fitted on their own data | **1,338** |
-| hops anchored on their scheduled time | 257 |
-| hops omitted, thin and unscheduled | 329 |
-| median own-fit hop | 109.1 s |
-| median p90/median within a hop | 1.351 |
-| median observed/scheduled | 1.056 |
+|                                       |           |
+| ------------------------------------- | --------- |
+| exact single hops fitted              | 74,706    |
+| distinct hops seen                    | 1,924     |
+| hops fitted on their own data         | **1,338** |
+| hops anchored on their scheduled time | 257       |
+| hops omitted, thin and unscheduled    | 329       |
+| median own-fit hop                    | 109.1 s   |
+| median p90/median within a hop        | 1.351     |
+| median observed/scheduled             | 1.056     |
 
 Eight hours is already enough for 70% of hops to clear 20 observations, which
 was the open question — the median hop gets 47 samples.
@@ -2215,7 +2196,6 @@ the parameterisation on the way to it.
 Not graded. There is one evening of archive and no held-out window; the epic
 says weeks, and nothing here is retroactive.
 
-
 ## 2026-08-12 — the advance trip-wire graded against the assigned_n label: 7 firings in 54,000 ticks, zero agreement. Retuning does not fix it and neither does the estimator
 
 origin: agent
@@ -2246,9 +2226,9 @@ fractions. With layovers excluded, **71.3% of ticks have zero stalls**, so the
 median sits on the ceiling and gets floored to 0.9990. That is not the cell's
 advance rate:
 
-| | median of tick fractions | pooled advanced/matched |
-| --- | --- | --- |
-| median cell | 0.9990 | **0.9443** |
+|             | median of tick fractions | pooled advanced/matched |
+| ----------- | ------------------------ | ----------------------- |
+| median cell | 0.9990                   | **0.9443**              |
 
 p0 − true rate is +0.033 at the median and +0.135 at p90, and **73 of 210 cells
 publish p0 = 0.9990 for a real rate between 0.80 and 0.95**. That matters
@@ -2261,13 +2241,13 @@ trim to keep outage ticks from dragging the rate down. The saturation goes away
 (median p0 0.9990 -> 0.9443, cells at/above 0.99 drop from 74.3% to 8.6%). The
 trip-wire does not improve:
 
-| baseline | ratio | fired | agree | disagree | agreement rate |
-| --- | --- | --- | --- | --- | --- |
-| median (shipped) | 0.5 | 7 | 0 | 7 | 0.000 |
-| pooled, trim 0 | 0.5 | 7 | 0 | 7 | 0.000 |
-| pooled, trim 0 | 0.7 | 896 | 3 | 893 | **0.003** |
-| pooled, trim 0.1 | 0.7 | 1,129 | 3 | 1,126 | 0.003 |
-| pooled, trim 0.2 | 0.7 | 1,421 | 3 | 1,418 | 0.002 |
+| baseline         | ratio | fired | agree | disagree | agreement rate |
+| ---------------- | ----- | ----- | ----- | -------- | -------------- |
+| median (shipped) | 0.5   | 7     | 0     | 7        | 0.000          |
+| pooled, trim 0   | 0.5   | 7     | 0     | 7        | 0.000          |
+| pooled, trim 0   | 0.7   | 896   | 3     | 893      | **0.003**      |
+| pooled, trim 0.1 | 0.7   | 1,129 | 3     | 1,126    | 0.003          |
+| pooled, trim 0.2 | 0.7   | 1,421 | 3     | 1,418    | 0.002          |
 
 At a 1.795% base rate, an agreement rate of 0.003 is five times WORSE than
 firing at random. Against this label the wire is not weak, it is
@@ -2294,7 +2274,6 @@ is for.
 Reproducible from `training.degradation_label` + `load_r2.classify_direction`
 over any 10-day window; the sweep is three nested loops over the knobs.
 
-
 ## 2026-08-13 — two arms were sharing one forecast field, and the mix scored worse than either: AUC 0.378 -> 0.856
 
 origin: agent
@@ -2308,10 +2287,10 @@ reader had every reason to think the forecast described the condition.
 Graded properly for the first time — each prediction against the condition we
 actually published 30 minutes later, six days of the stream:
 
-| rows | n | AUC |
-| --- | --- | --- |
-| movement-sourced | 4,741 | **0.856** |
-| alert-sourced | 20,497 | 0.261 |
+| rows                   | n      | AUC       |
+| ---------------------- | ------ | --------- |
+| movement-sourced       | 4,741  | **0.856** |
+| alert-sourced          | 20,497 | 0.261     |
 | all of them, one field | 25,238 | **0.084** |
 
 The mixture scoring below both components is the whole finding. The two arms
@@ -2339,12 +2318,12 @@ and the `toNormal` transition-matrix split. The alert arm still estimates
 `recovery_minutes` is the same claim on a different scale, so it was graded the
 same way — time to the next tick published normal:
 
-| arm / published condition | n | MAE |
-| --- | --- | --- |
-| movement / disrupted | 10 | **3.5 min** |
-| hmm / disrupted | 23 | 13.5 min |
-| hmm / suspended | 12 | 33.8 min |
-| hmm / not_scheduled | 4,258 | **1,134.8 min** |
+| arm / published condition | n     | MAE             |
+| ------------------------- | ----- | --------------- |
+| movement / disrupted      | 10    | **3.5 min**     |
+| hmm / disrupted           | 23    | 13.5 min        |
+| hmm / suspended           | 12    | 33.8 min        |
+| hmm / not_scheduled       | 4,258 | **1,134.8 min** |
 
 Nineteen hours, on the dominant population. Those are overnight routes: the
 published condition is `not_scheduled` and the alert arm was timing its own
@@ -2390,11 +2369,11 @@ are of observed single hops unless stated.
 the feed, measured departure-to-arrival. Three things are wrong with that, and
 they are separable:
 
-| change to the reference | observed hops mispriced >10% | >25% |
-| --- | --- | --- |
-| service-day slicing (weekday vs weekend) | **26.0%** | 16.0% |
-| clock (departure-to-arrival -> arrival-to-arrival) | 4.9% | 3.5% |
-| both | 27.9% | 17.1% |
+| change to the reference                            | observed hops mispriced >10% | >25%  |
+| -------------------------------------------------- | ---------------------------- | ----- |
+| service-day slicing (weekday vs weekend)           | **26.0%**                    | 16.0% |
+| clock (departure-to-arrival -> arrival-to-arrival) | 4.9%                         | 3.5%  |
+| both                                               | 27.9%                        | 17.1% |
 
 **Service-day pooling is the dominant error and nobody had named it.** A quarter
 of weekday hops were being judged partly against Saturday and Sunday run times.
@@ -2425,12 +2404,12 @@ served by more than one path code, so if the effect existed it would be
 everywhere. Ratio dispersion on exactly those keys, trip-exact scheduled times
 against the pooled per-key median:
 
-| reference on multi-pattern keys | IQR | MAD | sd |
-| --- | --- | --- | --- |
-| the trip's own scheduled times | 0.4667 | 0.2000 | 0.5832 |
+| reference on multi-pattern keys    | IQR        | MAD    | sd     |
+| ---------------------------------- | ---------- | ------ | ------ |
+| the trip's own scheduled times     | 0.4667     | 0.2000 | 0.5832 |
 | median over trips serving the pair | **0.4653** | 0.2000 | 0.5855 |
 
-The pooled median is marginally *tighter*. Physically obvious in hindsight: on a
+The pooled median is marginally _tighter_. Physically obvious in hindsight: on a
 consecutive pair both patterns serve, express and local cover the same track at
 the same scheduled speed. Express differs in which pairs it has, and per-pair
 keying already separates those. Over all keys the same comparison gives IQR
@@ -2458,11 +2437,11 @@ every candidate pattern agrees, and falling back to the day's per-hop median
 otherwise, lifts pattern coverage 78.4% -> 90.1% against a unique-prefix rule.
 Layered with the median fallback:
 
-| how a hop gets priced | share |
-| --- | --- |
-| the trip's own pattern | 89.9% |
-| the service day's median for the pair | 8.8% |
-| unpriceable | **1.14%** |
+| how a hop gets priced                 | share     |
+| ------------------------------------- | --------- |
+| the trip's own pattern                | 89.9%     |
+| the service day's median for the pair | 8.8%      |
+| unpriceable                           | **1.14%** |
 
 Key-level coverage 83.0% -> 85.9% (1,715 of 2,066 keys, then 1,718 of 2,000).
 The 14% that stay unpriced are thin keys the timetable never scheduled — 1.1% of
@@ -2491,13 +2470,13 @@ arrival rather than pinning it, and 31% of measured hops land on an exact
 multiple of 60. The timetable is on a 30-second grid. Where the two grids line
 up, the measure looks three times sharper than where they do not:
 
-| scheduled hop | n | ratio IQR |
-| --- | --- | --- |
-| 60s (on the poll grid) | 9,071 | 0.517 |
-| 90s (off it) | 32,418 | 0.522 |
-| **120s (on it)** | 22,325 | **0.150** |
-| 150s (off it) | 8,812 | 0.387 |
-| 300s | 1,383 | 0.200 |
+| scheduled hop          | n      | ratio IQR |
+| ---------------------- | ------ | --------- |
+| 60s (on the poll grid) | 9,071  | 0.517     |
+| 90s (off it)           | 32,418 | 0.522     |
+| **120s (on it)**       | 22,325 | **0.150** |
+| 150s (off it)          | 8,812  | 0.387     |
+| 300s                   | 1,383  | 0.200     |
 
 A 120s hop is not physically three times more predictable than a 90s one. Ratio
 IQR sits near 0.48 overall under every reference tried, and a large part of that
@@ -2508,10 +2487,10 @@ Which points at the 6,953 interval-censored spans currently discarded. Resolved
 against the trip's own pattern, 91% of them price, and their ratio is far
 tighter than single hops because the same +/-60s lands on a 2-3x longer span:
 
-| span | ratio IQR | sd | median |
-| --- | --- | --- | --- |
-| exact single hop | 0.478 | 0.576 | 1.000 |
-| interval, 2+ hops | **0.221** | **0.306** | 0.983 |
+| span              | ratio IQR | sd        | median |
+| ----------------- | --------- | --------- | ------ |
+| exact single hop  | 0.478     | 0.576     | 1.000  |
+| interval, 2+ hops | **0.221** | **0.306** | 0.983  |
 
 They are deliberately kept out of the population ratio curve — that curve is
 transplanted onto thin SINGLE hops, and a distribution tightened by averaging
@@ -2523,18 +2502,19 @@ cleaner than what the model currently uses, off data it currently throws away.
 Re-run under the fixed reference, joining each hop to its route's alert state at
 the enclosing 5-minute tick:
 
-| cut | share of route-ticks | disrupted median | normal median |
-| --- | --- | --- | --- |
-| Delays or Suspended | **94.8%** | 1.000 | 1.000 |
-| Delays | 84.7% | 1.000 | 1.000 |
-| severity_sum >= 100 | 26.2% | 1.000 | 1.000 |
-| Suspended | 34.1% | **1.033** | 1.000 |
+| cut                 | share of route-ticks | disrupted median | normal median |
+| ------------------- | -------------------- | ---------------- | ------------- |
+| Delays or Suspended | **94.8%**            | 1.000            | 1.000         |
+| Delays              | 84.7%                | 1.000            | 1.000         |
+| severity_sum >= 100 | 26.2%                | 1.000            | 1.000         |
+| Suspended           | 34.1%                | **1.033**        | 1.000         |
 
 Only the suspended cut separates, by 3.3% on the median (p99 3.625 vs 3.000) —
 directionally right, where the 5-minute scores came out inverted, but small. The
 other three say nothing because the label says nothing: 95% of route-minutes on
 an ordinary weekday carry a Delays or Suspended alert. This is the same wall the
 advance rate hit. The measure is not gradeable until the label is.
+
 ## 2026-08-13 — the timetable is now the instrument, not an input: thin cells abstain, and drift reads 1.0117 against feed 20260807
 
 origin: self
@@ -2550,11 +2530,11 @@ borrowing a level from the schedule.
 fitted from that segment's own traversals; under `MIN_HOP_SAMPLES` there is no
 cell. `TraversalCell.source` is gone with it — one source needs no label.
 
-| | before | after |
-| --- | --- | --- |
-| cells | 1,723 | **1,357** |
-| keys abstaining | 284 | **663** |
-| share of traffic covered | 99.1% | ~97% |
+|                          | before | after     |
+| ------------------------ | ------ | --------- |
+| cells                    | 1,723  | **1,357** |
+| keys abstaining          | 284    | **663**   |
+| share of traffic covered | 99.1%  | ~97%      |
 
 The 366 cells that went away were carrying 2.1% of traffic on borrowed levels.
 That is the price, and it shrinks: those segments cross the sample floor on
@@ -2569,13 +2549,13 @@ A reference that feeds the fit cannot then detect the fit drifting.
 `schedule_drift` compares fitted cells against the timetable they were not
 fitted from. First reading, 2026-08-12 16:30Z..08-13 03:00Z:
 
-| | |
-| --- | --- |
-| feed_version | `20260807-H-rockaways-extension-removed` |
-| cells compared | 1,347 (10 fitted cells the timetable never names) |
-| median fitted / scheduled | **1.0117** |
-| p10 / p90 | 0.7946 / 1.3516 |
-| share of segments >= 1.25x schedule | **16.0%** |
+|                                     |                                                   |
+| ----------------------------------- | ------------------------------------------------- |
+| feed_version                        | `20260807-H-rockaways-extension-removed`          |
+| cells compared                      | 1,347 (10 fitted cells the timetable never names) |
+| median fitted / scheduled           | **1.0117**                                        |
+| p10 / p90                           | 0.7946 / 1.3516                                   |
+| share of segments >= 1.25x schedule | **16.0%**                                         |
 
 The fleet runs its own timetable to within 1.2%. One segment in six has a
 NORMAL that is a quarter over schedule — some of those are standing slow orders,
@@ -2599,7 +2579,7 @@ Three gaps that made the drift measure meaningless until closed:
 - **Nothing checked the validity window.** The vehicle archive reaches back to
   June; the trace archive is 30 days. Replaying a window from before this feed
   took effect would have compared trains against a schedule that did not exist
-  when they ran — and Rockaways service was *removed* in this version, so that
+  when they ran — and Rockaways service was _removed_ in this version, so that
   is not hypothetical. `Timetable.covers` now guards it: an out-of-window
   observation still fits its cell and carries NO scheduled time, which keeps it
   out of the drift measure by construction rather than by remembering to filter.
@@ -2634,13 +2614,13 @@ only to attach a comparison. `TraversalStats.n_dropped_bypass` is `n_bypass`.
 Re-run over 2026-08-12 16:30Z..08-13 04:00Z (the archive is still filling, so
 this window is larger than the one above, not just a rerun of it):
 
-| | |
-| --- | --- |
-| traversals | 148,337 |
-| bypasses, kept | 202 |
-| cells | 1,533 |
-| median fitted / scheduled | **1.0058** |
-| share of segments >= 1.25x schedule | 14.45% |
+|                                     |            |
+| ----------------------------------- | ---------- |
+| traversals                          | 148,337    |
+| bypasses, kept                      | 202        |
+| cells                               | 1,533      |
+| median fitted / scheduled           | **1.0058** |
+| share of segments >= 1.25x schedule | 14.45%     |
 
 ## 2026-08-13 — the planned-work grade ran end to end and graded almost nothing: two days of trace cover disjoint clock bands, and the 7's daily work blacks out its own control
 
@@ -2653,13 +2633,13 @@ may never supply it.
 
 ### What the first run saw
 
-| | |
-| --- | --- |
-| trace snapshots | 1,329 (Wed 12:20 ET -> Thu 10:41 ET, 22.3h) |
-| traversals | 171,960 (159,374 exact) |
-| announced windows in the alert archive | 394 |
-| **over the trace span** | **2**, both `Express to Local` on the 7, naming 1 stop |
-| unknown alert types | 0 |
+|                                        |                                                        |
+| -------------------------------------- | ------------------------------------------------------ |
+| trace snapshots                        | 1,329 (Wed 12:20 ET -> Thu 10:41 ET, 22.3h)            |
+| traversals                             | 171,960 (159,374 exact)                                |
+| announced windows in the alert archive | 394                                                    |
+| **over the trace span**                | **2**, both `Express to Local` on the 7, naming 1 stop |
+| unknown alert types                    | 0                                                      |
 
 2 of 394 is not a shortfall, it is the rate: ~2.2 geo-scoped windows a day
 against a 22-hour archive.
@@ -2669,10 +2649,10 @@ against a 22-hour archive.
 Difference-in-differences on the boundary hops, 4 affected keys against 36
 control keys:
 
-| window | inside | affected lift | control lift | effect |
-| --- | --- | --- | --- | --- |
-| Wed 15:00-22:00 | 321 | 1.0099 | 0.9982 | **1.0118** |
-| Thu 06:15-10:00 | 248 | 0.9990 | 0.9942 | **1.0048** |
+| window          | inside | affected lift | control lift | effect     |
+| --------------- | ------ | ------------- | ------------ | ---------- |
+| Wed 15:00-22:00 | 321    | 1.0099        | 0.9982       | **1.0118** |
+| Thu 06:15-10:00 | 248    | 0.9990        | 0.9942       | **1.0048** |
 
 An express told to run local does not slow the hops beside it down; it stops
 making its own long hops. Duration is the wrong instrument for this type and
@@ -2684,10 +2664,10 @@ the module says so — 1.007 is that prediction confirmed, not a miss.
 same band of the local clock on a comparable service day, and the funnel dies
 entirely at that filter:
 
-| window | on-route hops | inside | same service class | **+ same clock band** |
-| --- | --- | --- | --- | --- |
-| Wed 15:00-22:00 | 8,726 | 3,815 | 4,911 | **0** |
-| Thu 06:15-10:00 | 8,726 | 2,254 | 6,472 | **0** |
+| window          | on-route hops | inside | same service class | **+ same clock band** |
+| --------------- | ------------- | ------ | ------------------ | --------------------- |
+| Wed 15:00-22:00 | 8,726         | 3,815  | 4,911              | **0**                 |
+| Thu 06:15-10:00 | 8,726         | 2,254  | 6,472              | **0**                 |
 
 Not a property of these two windows. The trace's two calendar days cover
 Wed 12:20-24:00 and Thu 00:00-10:41 — **disjoint clock bands**, so no window of
@@ -2708,15 +2688,15 @@ control period is the same clock band on the adjacent weekday, which is the same
 work. The blackout that keeps other announced disruption out of the baseline
 correctly removes all of it:
 
-| tonight's window | control traversals in the trace | after blackout |
-| --- | --- | --- |
-| 7 Express to Local, 15:00 | 3,815 | **0** |
-| 6 Part Suspended, 21:30 | 1,376 | 1,376 |
-| L Part Suspended, 22:45 | 593 | 593 |
-| SI Special Schedule, 23:00 | 299 | 299 |
-| A Reroute, 23:45 | 1,588 | 1,588 |
-| A Stops Skipped, 23:45 | 1,588 | 1,588 |
-| E Stops Skipped, 23:45 | 781 | 781 |
+| tonight's window           | control traversals in the trace | after blackout |
+| -------------------------- | ------------------------------- | -------------- |
+| 7 Express to Local, 15:00  | 3,815                           | **0**          |
+| 6 Part Suspended, 21:30    | 1,376                           | 1,376          |
+| L Part Suspended, 22:45    | 593                             | 593            |
+| SI Special Schedule, 23:00 | 299                             | 299            |
+| A Reroute, 23:45           | 1,588                           | 1,588          |
+| A Stops Skipped, 23:45     | 1,588                           | 1,588          |
+| E Stops Skipped, 23:45     | 781                             | 781            |
 
 `Express to Local` is 278 of the 394 announced windows. Where it recurs daily,
 an adjacent-day control cannot exist, and the answer is not to relax the
@@ -2755,11 +2735,11 @@ It now returns `dict[service, int]`, and `_service_of` is shared with
 a traversal belongs to. The empty result splits into three states, because there
 are three:
 
-| | |
-| --- | --- |
-| `graded_coverage` | a service had both arms |
+|                              |                                              |
+| ---------------------------- | -------------------------------------------- |
+| `graded_coverage`            | a service had both arms                      |
 | `coverage_no_paired_service` | some service had control, none had both arms |
-| `coverage_no_control_period` | no service had a control arm at all |
+| `coverage_no_control_period` | no service had a control arm at all          |
 
 **No published number changes.** Re-run over the same window: 0 graded, 2 with
 no control period, 0 with no paired service — and the six windows in the table
@@ -2790,15 +2770,15 @@ and the arm I expected to win lost.
 Scores are stated so HIGHER MEANS WORSE. Intervals are a stratified percentile
 bootstrap over 2,000 resamples. Acute is graded against NORMAL ticks only.
 
-| | progress ratio | stalled share |
-| --- | --- | --- |
-| graded against the label | 7,790 | 7,820 |
-| degraded among them | 54 | 51 |
-| pooled AUC | 0.535 [0.440, 0.628] | 0.606 [0.507, 0.712] |
-| **within-route AUC** | **0.476 [0.380, 0.579]** | **0.684 [0.618, 0.759]** |
-| acute-onset AUC | 0.605 [0.441, 0.762] (n=14) | 0.755 [0.581, 0.893] (n=17) |
-| median, normal ticks | 1.000 | 0.043 |
-| median, degraded ticks | 1.017 | 0.250 |
+|                          | progress ratio              | stalled share               |
+| ------------------------ | --------------------------- | --------------------------- |
+| graded against the label | 7,790                       | 7,820                       |
+| degraded among them      | 54                          | 51                          |
+| pooled AUC               | 0.535 [0.440, 0.628]        | 0.606 [0.507, 0.712]        |
+| **within-route AUC**     | **0.476 [0.380, 0.579]**    | **0.684 [0.618, 0.759]**    |
+| acute-onset AUC          | 0.605 [0.441, 0.762] (n=14) | 0.755 [0.581, 0.893] (n=17) |
+| median, normal ticks     | 1.000                       | 0.043                       |
+| median, degraded ticks   | 1.017                       | 0.250                       |
 
 The progress ratio's within-route interval straddles 0.5 and is centred just
 below it. Against this label, over this window, it has no signal. The medians
@@ -2828,12 +2808,12 @@ saturated p0 is the wrong decision rule on top of an informative quantity.
 Raising the matched-trip floor makes the score BETTER and the measurement
 rarer — the signature of a coverage limit, not a skill limit:
 
-| min_matched | degraded ticks judgeable | coverage | within-route AUC |
-| --- | --- | --- | --- |
-| 3 | 51 | 25.5% | 0.684 [0.612, 0.752] |
-| 8 | 19 | 9.5% | **0.925 [0.903, 0.945]** |
-| 15 | 0 | 0% | no answer — empty class |
-| 25 | 0 | 0% | no answer — empty class |
+| min_matched | degraded ticks judgeable | coverage | within-route AUC         |
+| ----------- | ------------------------ | -------- | ------------------------ |
+| 3           | 51                       | 25.5%    | 0.684 [0.612, 0.752]     |
+| 8           | 19                       | 9.5%     | **0.925 [0.903, 0.945]** |
+| 15          | 0                        | 0%       | no answer — empty class  |
+| 25          | 0                        | 0%       | no answer — empty class  |
 
 A small-denominator artifact would have gone the other way. This one sharpens
 to 0.925 as the floor rises, then runs out of data entirely.
@@ -2841,11 +2821,11 @@ to 0.925 as the floor rises, then runs out of data entirely.
 The number underneath it is the sharpest thing this run produced. Across the
 193 degraded ticks carrying a movement row at all:
 
-| | matched trips at through stops |
-| --- | --- |
-| median normal tick | 15 |
-| **median degraded tick** | **0** |
-| degraded ticks with exactly zero | **50.8%** |
+|                                  | matched trips at through stops |
+| -------------------------------- | ------------------------------ |
+| median normal tick               | 15                             |
+| **median degraded tick**         | **0**                          |
+| degraded ticks with exactly zero | **50.8%**                      |
 
 Not "few". Zero, on half of them. Yesterday's entry put this at 276 of 1,249
 degraded ticks judgeable and called the coverage anti-correlated; the median is
@@ -2881,7 +2861,6 @@ threshold that works at a 0.65% base rate. And 31.6 hours with 51 positives is
 one window on one pair of weekdays, with intervals wide enough that the
 pooled-versus-within-route gap is the only comparison I would defend.
 
-
 ## 2026-08-13 — correction: nine episodes, not fifty-one ticks. The advance arm's win is not established, and the 0.925 was one incident
 
 origin: self
@@ -2901,12 +2880,12 @@ which is precisely how a handful of incidents came to read as decisive.
 route, and the bootstrap resamples those. The point estimates are unchanged.
 The intervals are not, and neither is the conclusion:
 
-| within-route AUC | by tick (wrong) | by episode (right) |
-| --- | --- | --- |
-| progress ratio | 0.476 [0.380, 0.579] | 0.476 [0.428, 0.556] |
-| **stalled share** | **0.684 [0.618, 0.759]** | **0.684 [0.450, 0.850]** |
-| acute, progress ratio | 0.605 [0.441, 0.762] | 0.605 [0.365, 0.751] |
-| acute, stalled share | 0.755 [0.581, 0.893] | 0.755 [0.352, 0.989] |
+| within-route AUC      | by tick (wrong)          | by episode (right)       |
+| --------------------- | ------------------------ | ------------------------ |
+| progress ratio        | 0.476 [0.380, 0.579]     | 0.476 [0.428, 0.556]     |
+| **stalled share**     | **0.684 [0.618, 0.759]** | **0.684 [0.450, 0.850]** |
+| acute, progress ratio | 0.605 [0.441, 0.762]     | 0.605 [0.365, 0.751]     |
+| acute, stalled share  | 0.755 [0.581, 0.893]     | 0.755 [0.352, 0.989]     |
 
 **The stalled share's interval now straddles 0.5.** 51 degraded ticks are
 **9 episodes**; the acute cut's 17 ticks are **3**. The advance arm's point
@@ -2918,11 +2897,11 @@ estimate is still the better of the two, and that is now the whole claim —
 The floor sweep row I put in bold was selected after seeing the sweep, which
 alone makes it exploratory. It is worse than that:
 
-| min_matched | degraded ticks | **episodes** | coverage | within-route AUC |
-| --- | --- | --- | --- | --- |
-| 3 | 51 | 9 | 25.5% | 0.684 [0.450, 0.850] |
-| 8 | 19 | **1** | 9.5% | 0.925 — no interval |
-| 15 | 0 | 0 | 0% | no answer — empty class |
+| min_matched | degraded ticks | **episodes** | coverage | within-route AUC        |
+| ----------- | -------------- | ------------ | -------- | ----------------------- |
+| 3           | 51             | 9            | 25.5%    | 0.684 [0.450, 0.850]    |
+| 8           | 19             | **1**        | 9.5%     | 0.925 — no interval     |
+| 15          | 0              | 0            | 0%       | no answer — empty class |
 
 Nineteen ticks of ONE episode on one route. Its old band of [0.902, 0.948] was
 a degenerate resample: with one cluster, every bootstrap draw returns that same
@@ -2932,8 +2911,7 @@ either side has under two clusters, which is the same can't-judge contract the
 rest of this module uses, applied to the uncertainty rather than the value.
 
 So the sweep does not show the score "sharpening" to 0.925. It shows the
-measurement running out of episodes, with one left at min_matched=8 and none at
-15. The direction is still inconsistent with a small-denominator artifact, and
+measurement running out of episodes, with one left at min_matched=8 and none at 15. The direction is still inconsistent with a small-denominator artifact, and
 that is all it is good for.
 
 ### What survives unchanged
@@ -2952,7 +2930,6 @@ built on nine episodes will separate two arms this close. That is a supply
 problem with the same shape as the planned-work grade's, and it wants more
 days, not more analysis.
 
-
 ## 2026-08-13 — correction to the correction: five episodes, not nine. Cutting runs on the scored ticks split single disruptions at their coverage gaps
 
 origin: self
@@ -2970,16 +2947,16 @@ to survive.
 Episode identity now comes from the full label (`_episode_ids`), which has
 every tick, and the arm's ticks are filed under those boundaries:
 
-| | episodes by scored ticks | episodes by label |
-| --- | --- | --- |
-| degraded, either arm | 9 | **5** |
-| acute | 3 | 3 |
+|                      | episodes by scored ticks | episodes by label |
+| -------------------- | ------------------------ | ----------------- |
+| degraded, either arm | 9                        | **5**             |
+| acute                | 3                        | 3                 |
 
-| within-route AUC | 9 episodes (wrong) | 5 episodes (right) |
-| --- | --- | --- |
-| progress ratio | 0.476 [0.428, 0.556] | 0.476 [0.409, 0.528] |
-| **stalled share** | 0.684 [0.450, 0.850] | **0.684 [0.451, 0.919]** |
-| pooled, stalled share | 0.606 [0.253, 0.867] | 0.606 [0.256, 0.963] |
+| within-route AUC      | 9 episodes (wrong)   | 5 episodes (right)       |
+| --------------------- | -------------------- | ------------------------ |
+| progress ratio        | 0.476 [0.428, 0.556] | 0.476 [0.409, 0.528]     |
+| **stalled share**     | 0.684 [0.450, 0.850] | **0.684 [0.451, 0.919]** |
+| pooled, stalled share | 0.606 [0.253, 0.867] | 0.606 [0.256, 0.963]     |
 
 Five. Thirty-one hours of trace against a label carrying 17 disruptions over
 the same span yields **five** that any movement arm could judge, and the
@@ -2993,7 +2970,6 @@ noticing that it survives them because it is a count rather than an inference:
 tick, 50.8% at exactly zero. Three passes at the uncertainty have not moved any
 of those, and they say the same thing each time — the arms are not being beaten
 on skill, they are being starved of the observations that would let them play.
-
 
 ## 2026-08-13 — correction: the origin lines on both grading corrections were wrong
 
@@ -3011,7 +2987,6 @@ numbers cheerfully in every broken state: a confident [0.902, 0.948] built from
 one incident is not a shape any assertion in the harness could have flagged,
 because nothing was wrong with the arithmetic. Only the meaning was wrong.
 
-
 ## 2026-08-16 — the planned-work measure ranks announced work by severity without being told the ordering, and part suspensions slow the hops beside them by a third
 
 origin: artifact
@@ -3020,24 +2995,24 @@ Four days of accumulation turned the measure from "never graded anything" into
 its first per-type read. 6,379 trace snapshots, continuous Wed 12:30 -> Sun
 22:46 ET with no gaps, 720,058 traversals, 527 announced windows.
 
-| | 08-13 | 08-14 | 08-16 |
-| --- | --- | --- | --- |
-| over the trace span | 2 | 15 | 31 |
-| gradeable | 2 | 13 | 20 |
-| **graded** | **0** | **6** | **13** |
-| no control period | 2 | 7 | 7 |
+|                     | 08-13 | 08-14 | 08-16  |
+| ------------------- | ----- | ----- | ------ |
+| over the trace span | 2     | 15    | 31     |
+| gradeable           | 2     | 13    | 20     |
+| **graded**          | **0** | **6** | **13** |
+| no control period   | 2     | 7     | 7      |
 
 ### The instrument validates itself: the ordering is monotone in how much of the route the work removes
 
 Share of the route's hop keys that stop appearing inside the window:
 
-| type | rows | median vanished |
-| --- | --- | --- |
-| Suspended | 1 | 0.4375 |
-| Reroute | 4 | 0.2716 |
-| Stops Skipped | 4 | 0.1583 |
-| Part Suspended | 9 | 0.1250 |
-| Special Schedule | 2 | 0.0263 |
+| type             | rows | median vanished |
+| ---------------- | ---- | --------------- |
+| Suspended        | 1    | 0.4375          |
+| Reroute          | 4    | 0.2716          |
+| Stops Skipped    | 4    | 0.1583          |
+| Part Suspended   | 9    | 0.1250          |
+| Special Schedule | 2    | 0.0263          |
 
 Nothing tells this measure that a full suspension removes more service than a
 reroute, or a reroute more than a skipped stop. It ranks them in that order
@@ -3048,12 +3023,12 @@ the measure has had, and it is worth more than any single row in the table.
 
 Difference-in-differences on the hops at the boundary of the closed stretch:
 
-| type | rows | median effect |
-| --- | --- | --- |
-| **Part Suspended** | **10** | **1.3175** |
-| Reroute | 3 | 1.0491 |
-| Express to Local | 5 | 1.0233 |
-| Stops Skipped | 2 | 0.9895 |
+| type               | rows   | median effect |
+| ------------------ | ------ | ------------- |
+| **Part Suspended** | **10** | **1.3175**    |
+| Reroute            | 3      | 1.0491        |
+| Express to Local   | 5      | 1.0233        |
+| Stops Skipped      | 2      | 0.9895        |
 
 The hops beside a part suspension take **a third longer**, and it is not one
 outlier: 8 of 10 rows sit above 1.0, spread 1.29 to 3.07, with the two below
@@ -3093,7 +3068,6 @@ windows still have no control period at all, all of them the recurring
 `Express to Local` blackout. And the duration rows carry no service
 attribution, so unlike the coverage rows they cannot separate a 7 from a 7X.
 
-
 ## 2026-08-16 — the shippable segment model graded for the first time: not inverted, strongest exactly where the work physically constrains, and short of significance on every cut
 
 origin: artifact
@@ -3107,25 +3081,25 @@ binary before it was quantitative.
 **It is not inverted.** That is the result. Everything after this is about how
 far short of a claim it stops.
 
-| | |
-| --- | --- |
-| gradeable announced windows | 20 |
-| graded | 15 |
-| abstained | 5 (2 no fitted cell on any boundary hop, 3 thin affected arm) |
-| windows above 0.5 | **11 of 15** |
-| sign test | **p = 0.118** |
-| median AUC | 0.5705 |
-| median deviation, affected hops | 1.0116 |
-| median deviation, control hops | 0.9727 |
+|                                 |                                                               |
+| ------------------------------- | ------------------------------------------------------------- |
+| gradeable announced windows     | 20                                                            |
+| graded                          | 15                                                            |
+| abstained                       | 5 (2 no fitted cell on any boundary hop, 3 thin affected arm) |
+| windows above 0.5               | **11 of 15**                                                  |
+| sign test                       | **p = 0.118**                                                 |
+| median AUC                      | 0.5705                                                        |
+| median deviation, affected hops | 1.0116                                                        |
+| median deviation, control hops  | 0.9727                                                        |
 
 ### Where the signal actually lives
 
-| type | windows | median AUC | median affected deviation |
-| --- | --- | --- | --- |
-| **Part Suspended** | 6 | **0.674** | **1.244** |
-| Express to Local | 5 | 0.568 | 1.008 |
-| Reroute | 2 | 0.537 | 1.007 |
-| Stops Skipped | 2 | 0.491 | 1.120 |
+| type               | windows | median AUC | median affected deviation |
+| ------------------ | ------- | ---------- | ------------------------- |
+| **Part Suspended** | 6       | **0.674**  | **1.244**                 |
+| Express to Local   | 5       | 0.568      | 1.008                     |
+| Reroute            | 2       | 0.537      | 1.007                     |
+| Stops Skipped      | 2       | 0.491      | 1.120                     |
 
 Part suspensions again, and the magnitudes on the four that work are not
 subtle: the 1 at 1.32x its own normal (AUC 0.95), the 6 at 1.42x (0.86), the J
@@ -3137,10 +3111,10 @@ instruments, one answer.
 
 ### The two windows that go the other way are both the N, and both read FASTER
 
-| route | AUC | affected deviation |
-| --- | --- | --- |
-| N | 0.431 | 0.864 |
-| N | 0.448 | 0.893 |
+| route | AUC   | affected deviation |
+| ----- | ----- | ------------------ |
+| N     | 0.431 | 0.864              |
+| N     | 0.448 | 0.893              |
 
 Not noise scattered around 0.5 — two windows on the same route, both saying the
 boundary hops ran about 12% QUICKER than their own normal during a part
@@ -3179,7 +3153,6 @@ correct and costly — it is why cells exist for only some boundary hops. More
 distinct work patterns is the only thing that moves this, and the collector
 supplies them at a few a night without any further work.
 
-
 ## 2026-08-16 — correction: the entry above called it "shippable" while fitting from the future. Refitting each window from its own past only, the answer holds
 
 origin: agent
@@ -3195,13 +3168,13 @@ data — retrospective — and is not by itself a deployable claim.
 FINISHED before its start. One fit per window, 3.5 minutes instead of 60
 seconds. It is strictly harsher, and the honest surprise is how little it costs:
 
-| | retrospective | causal (past only) |
-| --- | --- | --- |
-| graded | 15 | 16 |
-| abstained thin | 3 | 4 |
-| above 0.5 | 11 of 15 | 11 of 16 |
-| sign test | p = 0.118 | p = 0.210 |
-| median AUC | 0.5705 | 0.5794 |
+|                    | retrospective        | causal (past only)   |
+| ------------------ | -------------------- | -------------------- |
+| graded             | 15                   | 16                   |
+| abstained thin     | 3                    | 4                    |
+| above 0.5          | 11 of 15             | 11 of 16             |
+| sign test          | p = 0.118            | p = 0.210            |
+| median AUC         | 0.5705               | 0.5794               |
 | **Part Suspended** | **0.674, dev 1.244** | **0.670, dev 1.245** |
 
 Part suspensions land in the same place to three decimal places on the
@@ -3217,7 +3190,6 @@ one of them as the other is the defect this entry exists to prevent.
 Unchanged: still not significant, and the effective sample is still nearer
 eight distinct work patterns than sixteen windows.
 
-
 ## 2026-08-16 — correction: the causal comparison was run against a bigger archive than the retrospective one, and on equal footing the AGGREGATE result is a coin flip
 
 origin: agent
@@ -3229,12 +3201,12 @@ asserted from mismatched inputs. Re-run properly: one fetch, both modes graded
 off exactly the same bytes (7,008 snapshots, 775,193 traversals, 593 announced
 windows, 28 gradeable).
 
-| | retrospective | causal (past only) |
-| --- | --- | --- |
-| graded | 22 | 21 |
-| above 0.5 | 12 of 22 | 13 of 21 |
-| **sign test** | **p = 0.832** | **p = 0.383** |
-| median AUC | 0.5439 | 0.5542 |
+|                    | retrospective                 | causal (past only)            |
+| ------------------ | ----------------------------- | ----------------------------- |
+| graded             | 22                            | 21                            |
+| above 0.5          | 12 of 22                      | 13 of 21                      |
+| **sign test**      | **p = 0.832**                 | **p = 0.383**                 |
+| median AUC         | 0.5439                        | 0.5542                        |
 | **Part Suspended** | **n=6, AUC 0.674, dev 1.242** | **n=6, AUC 0.670, dev 1.245** |
 
 Two findings, pulling opposite ways.
@@ -3273,7 +3245,6 @@ evidence in either direction.
 Next run must report per type and drop the pooled sign test, or keep it only as
 a diagnostic clearly marked as pooling incommensurable experiments.
 
-
 ## 2026-08-16 — the baseline blackout tested only a traversal's start, so hops running INTO the work were fitted as normal. No published number moves
 
 origin: agent
@@ -3293,11 +3264,11 @@ traversals against 112,139, and 1,592 fitted cells against 1,687.
 
 And it changes nothing. Same fetch, both modes:
 
-| | retrospective | causal |
-| --- | --- | --- |
-| graded / above 0.5 | 22 / 12 | 21 / 13 |
-| sign test | p = 0.832 | p = 0.383 |
-| median AUC | 0.5443 | 0.5542 |
+|                    | retrospective              | causal                    |
+| ------------------ | -------------------------- | ------------------------- |
+| graded / above 0.5 | 22 / 12                    | 21 / 13                   |
+| sign test          | p = 0.832                  | p = 0.383                 |
+| median AUC         | 0.5443                     | 0.5542                    |
 | **Part Suspended** | **AUC 0.6745, dev 1.2429** | **AUC 0.6703, dev 1.245** |
 
 Part suspensions have now held at AUC ~0.67 and ~1.24x through a retrospective
@@ -3311,7 +3282,6 @@ Local` ranks marginally above chance (0.565) with a magnitude of 1.007, which
 is a ranking signal with no practical size and matches its four prior readings
 of approximately nothing. One type carries this measure, and it is the one whose
 work physically constrains the track the trains are still using.
-
 
 ## 2026-08-17 — the N does not run faster during its part suspension, it runs UNCHANGED on two hops. Part suspensions are one mechanism, not two
 
@@ -3329,12 +3299,12 @@ Both windows are 23:45-05:00, naming R09, R11, R13, R14, R15, R16. Twelve hops
 qualify as boundary hops; ten of them have almost nothing inside the window. Two
 carry the arm:
 
-| hop | in-window median | out-of-window median | n in / out |
-| --- | --- | --- | --- |
-| R17N->R16N (Wed) | 118 s | 121 s | 14 / 527 |
-| R17N->R16N (Thu) | 120 s | 121 s | 15 / 526 |
-| R08S->R09S (Wed) | 159 s | 170 s | 7 / 465 |
-| R08S->R09S (Thu) | 166 s | 170 s | 14 / 458 |
+| hop              | in-window median | out-of-window median | n in / out |
+| ---------------- | ---------------- | -------------------- | ---------- |
+| R17N->R16N (Wed) | 118 s            | 121 s                | 14 / 527   |
+| R17N->R16N (Thu) | 120 s            | 121 s                | 15 / 526   |
+| R08S->R09S (Wed) | 159 s            | 170 s                | 7 / 465    |
+| R08S->R09S (Thu) | 166 s            | 170 s                | 14 / 458   |
 
 One to eleven seconds on two-minute hops, off 33 and 23 observations across a
 five-hour overnight window. That is not a route running faster under
@@ -3358,12 +3328,12 @@ arm's deviation by the control arm's over the same minutes, which absorbs the
 hour the same way `planned_work`'s difference-in-differences does, in deviation
 space. It moves the headline:
 
-| type | windows | above 0.5 | median AUC | median effect | raw deviation | sign p |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Part Suspended** | 6 | 4 | 0.670 | **1.201** | 1.245 | 0.688 |
-| Express to Local | 6 | 5 | 0.586 | 1.042 | 1.004 | 0.219 |
-| Stops Skipped | 2 | 1 | 0.494 | 1.023 | 1.080 | 1.000 |
-| Reroute | 7 | 3 | 0.498 | 0.926 | 0.981 | 1.000 |
+| type               | windows | above 0.5 | median AUC | median effect | raw deviation | sign p |
+| ------------------ | ------- | --------- | ---------- | ------------- | ------------- | ------ |
+| **Part Suspended** | 6       | 4         | 0.670      | **1.201**     | 1.245         | 0.688  |
+| Express to Local   | 6       | 5         | 0.586      | 1.042         | 1.004         | 0.219  |
+| Stops Skipped      | 2       | 1         | 0.494      | 1.023         | 1.080         | 1.000  |
+| Reroute            | 7       | 3         | 0.498      | 0.926         | 0.981         | 1.000  |
 
 Part suspensions come down from 1.245 to 1.201 once the hour is taken out. In
 the same measurement, the control arms sat at 0.96-1.08, so the correction is
@@ -3404,12 +3374,12 @@ waiting on a statistic. They are waiting on archive.
 
 ### What the 15 actually are, and it is broader than the bug says
 
-| work | windows | cadence |
-| --- | --- | --- |
-| 7 Express to Local | 6 | every weekday, 06:15-10:00 and 15:00-22:00 |
-| R Reroute | 6 | every weekday, 07:15-09:00 and 12:45-18:00 |
-| N Stops Skipped | 2 | every Sat and Sun, 06:00-23:00 |
-| 4 Stops Skipped | 1 | continuous, 2026-04-27 to 2026-08-18 |
+| work               | windows | cadence                                    |
+| ------------------ | ------- | ------------------------------------------ |
+| 7 Express to Local | 6       | every weekday, 06:15-10:00 and 15:00-22:00 |
+| R Reroute          | 6       | every weekday, 07:15-09:00 and 12:45-18:00 |
+| N Stops Skipped    | 2       | every Sat and Sun, 06:00-23:00             |
+| 4 Stops Skipped    | 1       | continuous, 2026-04-27 to 2026-08-18       |
 
 Not one class but four cadences, including a 113-day continuous window that no
 adjacent-day control could ever serve.
@@ -3422,12 +3392,12 @@ minus `vanished` on hops touching none, so pattern diversity in the reference
 cancels. Graded against the matched-day `vanished` on the 12 service-rows where
 both exist:
 
-| | matched-day | out-of-band |
-| --- | --- | --- |
-| mean | 0.1976 | **-0.0616** |
-| median | 0.1250 | **-0.0684** |
-| pearson r | — | **0.564** (n=12) |
-| sign agreement | — | **6 of 12** |
+|                | matched-day | out-of-band      |
+| -------------- | ----------- | ---------------- |
+| mean           | 0.1976      | **-0.0616**      |
+| median         | 0.1250      | **-0.0684**      |
+| pearson r      | —           | **0.564** (n=12) |
+| sign agreement | —           | **6 of 12**      |
 
 Sign agreement at chance, and biased 0.26 the wrong way: it reports "nothing
 detected" where the primary sees a quarter of pairs vanish. The D row is the
@@ -3463,13 +3433,13 @@ before the first snapshot is absent from the record, not inactive. Absence of an
 announcement is evidence of a free day only where we hold snapshots. Bounded to
 certified days, every one of the 15 reads:
 
-| | |
-| --- | --- |
-| `coverage_no_control_period` | 15 |
-| `coverage_reach_unknown` | **15** |
-| `answer_key_days` | 6 |
-| weekday windows | certified 4, covered 4 |
-| N weekend windows | certified **1**, covered 1 |
+|                              |                            |
+| ---------------------------- | -------------------------- |
+| `coverage_no_control_period` | 15                         |
+| `coverage_reach_unknown`     | **15**                     |
+| `answer_key_days`            | 6                          |
+| weekday windows              | certified 4, covered 4     |
+| N weekend windows            | certified **1**, covered 1 |
 
 `certified == covered` everywhere: every comparable day the answer key can speak
 for carries work on the route. The N's weekend windows have exactly one candidate
@@ -3479,13 +3449,13 @@ day in six days of coverage, which is the whole finding in one number.
 
 All three would have certified a control that never existed.
 
-* Coverage read as `first..last` rather than as a set. `load_windows` supports
+- Coverage read as `first..last` rather than as a set. `load_windows` supports
   non-contiguous coverage, so a hole between the endpoints would have counted as
   evidence of free service.
-* The window was excluded from its own blackout and only its START date skipped,
+- The window was excluded from its own blackout and only its START date skipped,
   so for the 4's 2026-04-27 to 2026-08-18 closure, 113 days of the closure would
   have certified as a control for itself.
-* `_band_on` projected the clock band as `midnight + seconds`. On 2026-03-08,
+- `_band_on` projected the clock band as `midnight + seconds`. On 2026-03-08,
   which springs forward, local 05:00 is not 18,000 seconds after midnight — the
   band landed at **06:00**, an hour off, twice a year. Both endpoints are now
   built with `datetime.combine`, the way `split_by_local_day` already builds day
@@ -3524,10 +3494,10 @@ piece needs a SATURDAY control.
 Read unsplit, only Friday's weekday class is ever considered, so a free Saturday
 in the record is not even a candidate. On that fixture:
 
-| | day | lag | certified | covered |
-| --- | --- | --- | --- | --- |
-| unsplit (rejected) | **None** | None | 1 | 1 |
-| per-piece (shipped) | 2026-08-08 | -7 | 3 | 2 |
+|                     | day        | lag  | certified | covered |
+| ------------------- | ---------- | ---- | --------- | ------- |
+| unsplit (rejected)  | **None**   | None | 1         | 1       |
+| per-piece (shipped) | 2026-08-08 | -7   | 3         | 2       |
 
 It reports no reach where a control exists — the opposite direction from the
 earlier 2026-08-04 defect, and just as wrong.
@@ -3564,10 +3534,10 @@ That is a false negative, and the grade disagrees: `coverage_state` calls a wind
 graded when ANY service pairs, so a window on the 2 and 5 against work running on
 the 5 alone still has a free control arm on the 2. On that fixture:
 
-| | day | lag | certified | covered |
-| --- | --- | --- | --- | --- |
-| routes ignored at the test (rejected) | **None** | None | 2 | 2 |
-| per-route (shipped) | 2026-08-13 | +1 | 2 | 1 |
+|                                       | day        | lag  | certified | covered |
+| ------------------------------------- | ---------- | ---- | --------- | ------- |
+| routes ignored at the test (rejected) | **None**   | None | 2         | 2       |
+| per-route (shipped)                   | 2026-08-13 | +1   | 2         | 1       |
 
 Not hypothetical: **13 of the 593** announced windows in the record name more than
 one route, the 2/5 reroute among them. A day now counts as covered only when EVERY
@@ -3589,10 +3559,10 @@ occupying part of a band leaves the rest admissible.
 
 Against a 12:00-16:00 band with a 12:00-13:00 closure on the candidate day:
 
-| | day | lag | certified | covered |
-| --- | --- | --- | --- | --- |
-| band-level (rejected) | **None** | None | 2 | 2 |
-| instant-level (shipped) | 2026-08-13 | -1 | 2 | 1 |
+|                         | day        | lag  | certified | covered |
+| ----------------------- | ---------- | ---- | --------- | ------- |
+| band-level (rejected)   | **None**   | None | 2         | 2       |
+| instant-level (shipped) | 2026-08-13 | -1   | 2         | 1       |
 
 And the grade agrees with the second one, which is the part that settles it:
 `control_supply` on the same blackout returns `{'J': 1}` for a traversal at 14:00
@@ -3645,12 +3615,12 @@ move was to loosen the movement disrupted threshold (`DISRUPTED_RATIO`, currentl
 Over 2026-08-15..08-20, against a causal advance baseline (2026-08-01..08-14), of
 the 785 assigned_n-disrupted route-ticks:
 
-| what the movement feed sees | ticks | share |
-| --- | --- | --- |
-| unjudgeable — too few matched trips / no baseline | 550 | 70% |
-| no movement row at all | 23 | 3% |
-| judgeable, and reads **normal** (advancing >0.5·p0) | 212 | 27% |
-| judgeable, reads **disrupted** | **0** | 0% |
+| what the movement feed sees                         | ticks | share |
+| --------------------------------------------------- | ----- | ----- |
+| unjudgeable — too few matched trips / no baseline   | 550   | 70%   |
+| no movement row at all                              | 23    | 3%    |
+| judgeable, and reads **normal** (advancing >0.5·p0) | 212   | 27%   |
+| judgeable, reads **disrupted**                      | **0** | 0%    |
 
 For the 212 judgeable cells the worst-direction posterior advance ratio is median
 **0.75·p0**, min 0.53, and a quarter sit at or above **1.0·p0**. Not one dropped
@@ -3672,15 +3642,15 @@ movement disrupted state.
 origin: self
 
 Reading the route drawer against the live feed to explain "P(suspended) 100.00%,
-Regime age —" on the 2, the J and the 4. The section is honest about *which* arm it
+Regime age —" on the 2, the J and the 4. The section is honest about _which_ arm it
 shows (the alert-aware read, not the published movement condition), but two of its
 four numbers are not usable as displayed.
 
 In one snapshot (generated_at 1787432444), of the 29 routes carrying an inference:
 
-| what the alert filter shows | routes |
-| --- | --- |
-| posterior numerically one-hot (max p > 0.999999) | 24 / 29 |
+| what the alert filter shows                                  | routes  |
+| ------------------------------------------------------------ | ------- |
+| posterior numerically one-hot (max p > 0.999999)             | 24 / 29 |
 | `regime_age_seconds == 0` — argmax flipped on this very tick | 14 / 29 |
 
 The posteriors are not near-certain, they are saturated: the 2 reads
@@ -3696,7 +3666,7 @@ published from. Age "—" is `fmtMinutes(0)`: it flipped this tick.
 Two display consequences worth separating from the model problem: `fmtMinutes`
 rounded the hour remainder on its own, so 1379.7 minutes printed as "22h 60m"
 (fixed); and for a movement regime in state `normal`, `movementRecovery` returns
-`recovery_minutes = 0` by construction and `p_normal_in_30` is P(*stays* normal),
+`recovery_minutes = 0` by construction and `p_normal_in_30` is P(_stays_ normal),
 so the "Recovery forecast" block renders "Median —" against "P(normal in 30m) 93%"
 — the label is wrong for normal routes, not the number.
 
@@ -3716,11 +3686,11 @@ built from (2026-07-26..08-22, 8,065 archived trip-updates ticks, 193,017
 (route, tick) samples, 1,129 cells at >=20 samples), for the MEDIAN cell:
 
 | threshold vs own cell median | share of that cell's own history flagged |
-| --- | --- |
-| > 1.00x | 35.8% |
-| > 1.10x | 16.7% |
-| > 1.25x | 1.7% |
-| > 1.50x | 0.0% |
+| ---------------------------- | ---------------------------------------- |
+| > 1.00x                      | 35.8%                                    |
+| > 1.10x                      | 16.7%                                    |
+| > 1.25x                      | 1.7%                                     |
+| > 1.50x                      | 0.0%                                     |
 
 Note it is 35.8% and not ~50%: `assigned_n` is a small integer count, so the
 median sits ON a heavily-tied value — the median cell has 29.2% of its readings
@@ -3764,11 +3734,11 @@ the readings are real. What is wrong is the measure.
 Per-ET-date median `assigned_n` across all hours, weekends only, over
 2026-07-20..08-23 (9,935 archived ticks):
 
-| route | 07-25 | 08-01 | 08-08 | 08-15 | 08-22 | weekday level |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 13 | 13 | 12 | 13 | **20** | 21-23 |
-| 2 | 11 | 11 | 11 | 11 | **21** | 25-26 |
-| C | 11 | 11 | 9 | 10 | 11 | 14-15 |
+| route | 07-25 | 08-01 | 08-08 | 08-15 | 08-22  | weekday level |
+| ----- | ----- | ----- | ----- | ----- | ------ | ------------- |
+| 1     | 13    | 13    | 12    | 13    | **20** | 21-23         |
+| 2     | 11    | 11    | 11    | 11    | **21** | 25-26         |
+| C     | 11    | 11    | 9     | 10    | 11     | 14-15         |
 
 On Saturday 08-22 the 1 and 2 ran at nearly weekday levels all day while the C
 ran an ordinary Saturday. No `Extra Service` alert was published for either line
@@ -3778,10 +3748,10 @@ anomaly the alert feed never announced.
 **The finding that matters for the measure.** Those two readings look identical
 as ratios and are nothing alike as percentiles:
 
-| cell | n | median | p90 | p95 | observed | ratio | percentile | >1.25x median? | >p90? |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 @ we23 | 120 | 11 | 13 | 17 | 18 | 164% | 96th | yes | yes |
-| 2 @ we23 | 120 | 9 | 16 | 16 | 16 | 178% | 88th | yes | **no** |
+| cell     | n   | median | p90 | p95 | observed | ratio | percentile | >1.25x median? | >p90?  |
+| -------- | --- | ------ | --- | --- | -------- | ----- | ---------- | -------------- | ------ |
+| 1 @ we23 | 120 | 11     | 13  | 17  | 18       | 164%  | 96th       | yes            | yes    |
+| 2 @ we23 | 120 | 9      | 16  | 16  | 16       | 178%  | 88th       | yes            | **no** |
 
 The 2's cell is BIMODAL — value counts `{6:1, 7:5, 8:42, 9:42, 10:6, 14:8, 15:1,
 16:15}`, the 14-16 mode occurring on 2 of 5 weekends. Sixteen trains is that
@@ -3792,7 +3762,6 @@ separates them correctly with no tuning.
 
 This is the concrete case for moving the axis off ratio-vs-median and onto
 per-cell quantiles, beyond the cross-cell comparability argument recorded above.
-
 
 ## 2026-08-23 — the Models page reliability panel graded the movement forecast against the alert arm: same forecast, AUC 0.406 published vs 0.961 correct
 
@@ -3812,22 +3781,22 @@ it graded.
 
 Live feed 2026-08-22 (`code_sha 1982fd6`), 30-minute horizon, one forecast:
 
-| graded against | n | Brier | BSS vs clim | AUC |
-| --- | --- | --- | --- | --- |
-| `condition` (alert-shadow) — published | 35,078 | 0.0175 | -0.031 | **0.406** |
-| `published_condition` (movement) — dropped | 34,740 | 0.0009 | -0.108 | **0.961** |
+| graded against                             | n      | Brier  | BSS vs clim | AUC       |
+| ------------------------------------------ | ------ | ------ | ----------- | --------- |
+| `condition` (alert-shadow) — published     | 35,078 | 0.0175 | -0.031      | **0.406** |
+| `published_condition` (movement) — dropped | 34,740 | 0.0009 | -0.108      | **0.961** |
 
 The tell was in the strata. Shadow `not_normal_now`: `mean_pred` 0.9939 against
 `mean_outcome` 0.5049, and 35,017 of 35,078 samples in the single [0.9,1.0)
 reliability bin. That reads as a degenerate constant forecast, but the forecast is
-not constant — it is conditioned on the *movement* state while the stratum splits
-on the *alert* condition, and the two are nearly independent. Sharpness of 0.99
+not constant — it is conditioned on the _movement_ state while the stratum splits
+on the _alert_ condition, and the two are nearly independent. Sharpness of 0.99
 against a realized 0.50 was cross-arm disagreement being reported as forecast
 error.
 
 **The correction is not "publish the better number".** The movement arm has
 `not_normal_now` n=**4** and `unknown_share` 0.247, so its AUC 0.961 rests on 28
-non-normal outcomes out of 34,740, and its BSS vs climatology (-0.108) is *worse*
+non-normal outcomes out of 34,740, and its BSS vs climatology (-0.108) is _worse_
 than the shadow arm's (-0.031). Swapping 0.406 for 0.961 would have moved the
 dishonesty rather than removed it. Both arms now ship with their label, sample
 count, and coverage, and the panel draws both series.
@@ -3846,6 +3815,7 @@ Two things this did not fix, recorded so they are not mistaken for it:
   samples on the shadow arm and 4 on the movement arm, this window cannot
   distinguish a good model from a bad one on the cases that matter. That is a
   collection problem, not a charting one.
+
 ## 2026-08-23 — one "Recovery forecast" heading was answering four different questions, and three of them wrongly
 
 origin: self
@@ -3862,12 +3832,12 @@ The drawer fix: the published numbers under one "Recovery forecast" heading mean
 four different things, and the reader had no way to tell which. Mapping the live
 snapshot's 29 inference-carrying routes onto the branches:
 
-| what the numbers actually mean | routes |
-| --- | --- |
-| published normal — median 0/0/0 by construction, horizon is P(*stays* normal) | 19 |
-| published unknown — we declined to judge, so every number is withheld | 7 |
-| `not_scheduled`, `recovery_source: 'hmm'` — no announced resume to count down to | 3 |
-| real time-to-normal estimate off the dwell curve | 0 |
+| what the numbers actually mean                                                   | routes |
+| -------------------------------------------------------------------------------- | ------ |
+| published normal — median 0/0/0 by construction, horizon is P(_stays_ normal)    | 19     |
+| published unknown — we declined to judge, so every number is withheld            | 7      |
+| `not_scheduled`, `recovery_source: 'hmm'` — no announced resume to count down to | 3      |
+| real time-to-normal estimate off the dwell curve                                 | 0      |
 
 The 19 normal routes were rendering "Median —" (that's `fmtMinutes(0)`) directly
 above "P(normal in 30m) 93%", which reads as a broken forecast rather than "this
@@ -3881,7 +3851,6 @@ hits the 24h clamp (snapshot.ts:974), so copy asserting "beyond every one we've
 measured" is wrong for the clamp case; the message now names the ceiling that
 `recovery_minutes` already carries. The hmm arm sets it via the withholding gate
 (snapshot.ts:855), which is not a bounding failure at all.
-
 
 ## 2026-08-23 — "collection problem" was wrong: 91 days are archived, eval grades 7, and a 7-day window's real support swings 17.8x
 
@@ -3901,13 +3870,13 @@ not a data-collection campaign.
 the published arm — tick counts indistinguishable, support wildly not:
 
 | window start | tick-rows | episodes |
-| --- | --- | --- |
-| 2026-08-16 | 58,464 | 26 |
-| 2026-08-09 | 58,551 | **89** |
-| 2026-08-02 | 58,464 | 16 |
-| 2026-07-26 | 58,464 | **5** |
-| 2026-07-19 | 57,868 | 8 |
-| 2026-07-12 | 56,280 | 8 |
+| ------------ | --------- | -------- |
+| 2026-08-16   | 58,464    | 26       |
+| 2026-08-09   | 58,551    | **89**   |
+| 2026-08-02   | 58,464    | 16       |
+| 2026-07-26   | 58,464    | **5**    |
+| 2026-07-19   | 57,868    | 8        |
+| 2026-07-12   | 56,280    | 8        |
 
 A flat advertised n of ~58k hides a **17.8x** swing in independent evidence. Any
 week-over-week metric move on this page was dominated by which week got sampled.
@@ -3948,10 +3917,10 @@ at `train_em.py:113` says EM on a thin or mostly-quiet corpus drives self-loops
 toward 1.0, so widening the corpus should let real per-line dynamics emerge.
 Patched `_cap_self_loops` to record the pre-clamp diagonal and refit both widths:
 
-| corpus | normal over cap | disrupted | suspended | mean excess |
-| --- | --- | --- | --- | --- |
-| 14 days | 21/28 | 22/28 | 14/28 | +0.014 … +0.046 |
-| 28 days | 23/28 | 18/28 | 19/28 | +0.016 … +0.048 |
+| corpus  | normal over cap | disrupted | suspended | mean excess     |
+| ------- | --------------- | --------- | --------- | --------------- |
+| 14 days | 21/28           | 22/28     | 14/28     | +0.014 … +0.046 |
+| 28 days | 23/28           | 18/28     | 19/28     | +0.016 … +0.048 |
 
 Doubling the data changed nothing. EM wants stickier regimes at any corpus size,
 so the clamp is not a thin-data artifact and widening the corpus buys nothing.
@@ -3961,32 +3930,32 @@ was set from median regime dwell in `v1/regime_transitions`, and that stream is
 the filter's own argmax flips — `worker/src/grading.ts:11-13` literally calls it
 "ground-truth dwell times." A loop on paper. But the numbers refuse to close it:
 the cap implies a **48 min** median dwell and the filter's measured argmax dwell
-is **15 min** (median, n=231 over 28d). The cap is ~3x *looser* than the
+is **15 min** (median, n=231 over 28d). The cap is ~3x _looser_ than the
 behaviour it supposedly came from, so it is not enforcing its own justification.
 
 **What is actually true.** Of the 1,086 route-ticks where the filter says
 not-normal, split by the severity of the alert behind them:
 
-| tier | meaning | ticks | share |
-| --- | --- | --- | --- |
-| 3 | suspension | 2 | 0.2% |
-| 2 | severe delays | 60 | 5.5% |
-| 1 | ordinary `Delays` | **1,024** | **94.3%** |
-| 0 | planned work | 0 | correctly excluded |
+| tier | meaning           | ticks     | share              |
+| ---- | ----------------- | --------- | ------------------ |
+| 3    | suspension        | 2         | 0.2%               |
+| 2    | severe delays     | 60        | 5.5%               |
+| 1    | ordinary `Delays` | **1,024** | **94.3%**          |
+| 0    | planned work      | 0         | correctly excluded |
 
 The latent "disrupted" regime is routine `Delays`, which the MTA posts constantly.
 Planned work is properly excluded, so that earlier suspicion was wrong too. And
 the duration distributions explain the EM fight exactly:
 
-| population | n | median | mean | mean/median |
-| --- | --- | --- | --- | --- |
-| raw alert presence, any tier | 1,692 | 55 min | 284 min | 5.2x |
-| raw alert presence, tier>=2 | 45 | 50 min | 56 min | **1.1x** |
-| filter argmax not-normal | 231 | 15 min | 24 min | 1.6x |
-| movement arm | 136 | 5 min | 11 min | 2.2x |
+| population                   | n     | median | mean    | mean/median |
+| ---------------------------- | ----- | ------ | ------- | ----------- |
+| raw alert presence, any tier | 1,692 | 55 min | 284 min | 5.2x        |
+| raw alert presence, tier>=2  | 45    | 50 min | 56 min  | **1.1x**    |
+| filter argmax not-normal     | 231   | 15 min | 24 min  | 1.6x        |
+| movement arm                 | 136   | 5 min  | 11 min  | 2.2x        |
 
 Severe events are nearly symmetric and perfectly representable by a geometric
-self-loop. The heavy tail is *entirely* tier<2. A single self-loop fitted across
+self-loop. The heavy tail is _entirely_ tier<2. A single self-loop fitted across
 both populations splits the difference — EM lands on 0.965 (~97 min) and the cap
 clips to 0.930 (~48 min), which happens to sit near the tier>=2 median of 50 min.
 The cap is accidentally about right for real disruptions, which is probably why
@@ -4034,17 +4003,17 @@ coefficient changes. `matched_n` is `advanced_n + stalled_n` over both direction
 state's own advance rate, so there is no anomaly anywhere in the input. LLR
 normal vs disrupted, nats:
 
-| channel | n=3 | n=20 | n=40 | n=80 | n=160 |
-| --- | --- | --- | --- | --- | --- |
-| Poisson `alert_count` | 3.70 | 3.70 | 3.70 | 3.70 | 3.70 |
-| Bernoulli `has_delays` | 0.90 | 0.90 | 0.90 | 0.90 | 0.90 |
-| Bernoulli `has_service_change` | 0.90 | 0.90 | 0.90 | 0.90 | 0.90 |
-| Bernoulli `has_planned` | 0.86 | 0.86 | 0.86 | 0.86 | 0.86 |
-| Bernoulli `has_suspended_alert` | 0.05 | 0.05 | 0.05 | 0.05 | 0.05 |
-| Gaussian `service_ratio` | 0.89 | 0.89 | 0.89 | 0.89 | 0.89 |
-| **Binomial movement** | **0.83** | **3.84** | **7.68** | **15.36** | **30.73** |
-| total | 8.12 | 11.14 | 14.98 | 22.66 | 38.02 |
-| movement share of positive LLR | 10% | 35% | 51% | 68% | 81% |
+| channel                         | n=3      | n=20     | n=40     | n=80      | n=160     |
+| ------------------------------- | -------- | -------- | -------- | --------- | --------- |
+| Poisson `alert_count`           | 3.70     | 3.70     | 3.70     | 3.70      | 3.70      |
+| Bernoulli `has_delays`          | 0.90     | 0.90     | 0.90     | 0.90      | 0.90      |
+| Bernoulli `has_service_change`  | 0.90     | 0.90     | 0.90     | 0.90      | 0.90      |
+| Bernoulli `has_planned`         | 0.86     | 0.86     | 0.86     | 0.86      | 0.86      |
+| Bernoulli `has_suspended_alert` | 0.05     | 0.05     | 0.05     | 0.05      | 0.05      |
+| Gaussian `service_ratio`        | 0.89     | 0.89     | 0.89     | 0.89      | 0.89      |
+| **Binomial movement**           | **0.83** | **3.84** | **7.68** | **15.36** | **30.73** |
+| total                           | 8.12     | 11.14    | 14.98    | 22.66     | 38.02     |
+| movement share of positive LLR  | 10%      | 35%      | 51%      | 68%       | 81%       |
 
 Per-trip discrimination here is `KL(0.6 || 0.3) = 0.192` nats, contributed
 whether or not anything is wrong, and the crossover where movement carries the
@@ -4060,16 +4029,16 @@ than as two symptoms.
 **Measured, independent of the above.** Over the 35,492 graded 30-minute
 forecasts in the public `v1/eval.json` (window ending 2026-08-23):
 
-| | alert-shadow arm | movement arm |
-| --- | --- | --- |
+|                              | alert-shadow arm             | movement arm    |
+| ---------------------------- | ---------------------------- | --------------- |
 | forecasts in the 0.9–1.0 bin | 35,432 / 35,492 (**99.83%**) | 35,097 / 35,157 |
-| forecasts in 0.8–0.9 | 60 | 60 |
-| forecasts below 0.8 | **0** | **0** |
-| AUC | 0.375 | 0.361 |
-| BSS vs climatology | -0.033 | -0.534 |
+| forecasts in 0.8–0.9         | 60                           | 60              |
+| forecasts below 0.8          | **0**                        | **0**           |
+| AUC                          | 0.375                        | 0.361           |
+| BSS vs climatology           | -0.033                       | -0.534          |
 
 And the one subset where the answer should not be "fine", the 552 ticks whose
-line is not normal *now*: mean forecast **0.9963**, mean outcome **0.5272**. The
+line is not normal _now_: mean forecast **0.9963**, mean outcome **0.5272**. The
 model says 99.6% where the truth is 53%.
 
 Both arms saturate identically, on the same 60 mid-bin predictions, so this is
@@ -4098,7 +4067,7 @@ Same error class as the `severity_sum` Gamma channel removed earlier
 (`hmm.py:128-133`, "double-counted the count evidence and saturated the
 posterior") — but where that double-counted a bounded quantity, this multiplies
 by an unbounded trip count. No fix applied. The direction suggested by the
-structure is to score the advance *rate* once per tick rather than once per
+structure is to score the advance _rate_ once per tick rather than once per
 trip, which under bootstrap params would put the channel at 0.192 nats instead
 of 30.73 at n=160; untested, and it would need the EM fit redone.
 
@@ -4116,16 +4085,16 @@ standing causal story for the two worst numbers on the Models page.
 being graded, which is the number that says how much independent evidence a
 segment carries:
 
-| params trained | ticks | incid | MAE | IQR coverage | span |
-| --- | --- | --- | --- | --- | --- |
-| 2026-07-26 | 60 | 13 | 30.1m | 38.3% | 07-28..08-02 |
-| 2026-08-02 | 14 | 2 | 17.9m | 78.6% | 08-02..08-03 |
-| 2026-08-03 | 0 | 0 | — | — | 08-03..08-03 |
-| 2026-08-03 | 89 | **33** | **32.5m** | **39.3%** | 08-03..08-11 |
-| 2026-08-11 | 16 | 2 | 99.0m | 6.2% | 08-11..08-12 |
-| 2026-08-12 | 12 | 12 | 11.7m | 0.0% | 08-12..08-13 |
-| 2026-08-13 | 884 | **197** | **116.8m** | **2.6%** | 08-13..08-24 |
-| pooled | 1,075 | 259 | 102.3m | 8.7% | whole window |
+| params trained | ticks | incid   | MAE        | IQR coverage | span         |
+| -------------- | ----- | ------- | ---------- | ------------ | ------------ |
+| 2026-07-26     | 60    | 13      | 30.1m      | 38.3%        | 07-28..08-02 |
+| 2026-08-02     | 14    | 2       | 17.9m      | 78.6%        | 08-02..08-03 |
+| 2026-08-03     | 0     | 0       | —          | —            | 08-03..08-03 |
+| 2026-08-03     | 89    | **33**  | **32.5m**  | **39.3%**    | 08-03..08-11 |
+| 2026-08-11     | 16    | 2       | 99.0m      | 6.2%         | 08-11..08-12 |
+| 2026-08-12     | 12    | 12      | 11.7m      | 0.0%         | 08-12..08-13 |
+| 2026-08-13     | 884   | **197** | **116.8m** | **2.6%**     | 08-13..08-24 |
+| pooled         | 1,075 | 259     | 102.3m     | 8.7%         | whole window |
 
 Two segments clear a 20-incident floor and they disagree by 3.6x on MAE and 15x
 on coverage. The pooled number sits between them and flatters the model now
@@ -4134,17 +4103,17 @@ running.
 **Dead hypothesis — "the 2026-08-13 retrain made the filter flap, and a
 dwell-based estimate cannot hit short regimes."** Regime durations moved the
 wrong way: median non-normal dwell was 5.0 min before 08-13 (n=78) and 10.0 min
-after (n=286), mean 18.3 → 36.9 min. Regimes got *longer*, so flapping is not
+after (n=286), mean 18.3 → 36.9 min. Regimes got _longer_, so flapping is not
 what broke the estimate.
 
 **What is actually true.** The predicted quantity collapsed, not the truth. Over
 the gradeable population (non-normal on the shadow arm, determinate), split by
 the arm that produced `recovery_minutes`:
 
-| recovery_source | n | median predicted | median IQR width | zero-width |
-| --- | --- | --- | --- | --- |
-| `hmm` | 192 | 50.0m | 80.0m | 1% |
-| `movement` | 883 | **0.0m** | **0.0m** | **99%** |
+| recovery_source | n   | median predicted | median IQR width | zero-width |
+| --------------- | --- | ---------------- | ---------------- | ---------- |
+| `hmm`           | 192 | 50.0m            | 80.0m            | 1%         |
+| `movement`      | 883 | **0.0m**         | **0.0m**         | **99%**    |
 
 `movement` became the dominant source at the 08-11 retrain and carried 857 of
 884 rows by 08-13. Those rows read zero for a good reason: **870 of the 872
@@ -4154,7 +4123,7 @@ or `suspended` (357).
 
 So the movement arm is right. It says "this route is running normally, there is
 nothing to recover from" and emits 0 — `worker/src/snapshot.ts:963-967`,
-`1029-1033`. The grader picks the row because a *different* arm calls the route
+`1029-1033`. The grader picks the row because a _different_ arm calls the route
 disrupted, then reads that 0 as a forecast of instant recovery against the
 shadow's regime clock. `_grade_recovery` gates ticks on `arm(p)` but grades
 `recovery_minutes`, which comes from whichever arm `recovery_source` names, and
@@ -4168,10 +4137,10 @@ came from.
 Excluding movement-sourced rows the way `schedule` rows are already excluded
 (`training/eval.py:876`):
 
-| | ticks | incidents | MAE | IQR coverage |
-| --- | --- | --- | --- | --- |
-| as published | 1,075 | 259 | 102.3m | 8.7% |
-| movement rows excluded | 192 | 52 | **29.0m** | **46.9%** |
+|                        | ticks | incidents | MAE       | IQR coverage |
+| ---------------------- | ----- | --------- | --------- | ------------ |
+| as published           | 1,075 | 259       | 102.3m    | 8.7%         |
+| movement rows excluded | 192   | 52        | **29.0m** | **46.9%**    |
 
 Against a nominal 50%, the recovery forecast is close to calibrated. **Not
 applied.** It changes published grading semantics and makes the headline numbers
@@ -4182,15 +4151,15 @@ rather than an agent's initiative.
 and IQR coverage were severity conflation — a dwell inherited from a population
 94% composed of ordinary `Delays`. That conflation is real and separately
 verified: the training path carries no severity input at all. What is now
-measured is that it does not *explain these two metrics*. Across the 08-13
+measured is that it does not _explain these two metrics_. Across the 08-13
 boundary the severity mix is flat while the recovery source inverts:
 
-| | tier>=2 share | tier 1 share | `hmm` | `movement` |
-| --- | --- | --- | --- | --- |
-| pre 08-13 (n=182) | 3.3% | 96.7% | 89.6% | 10.4% |
-| post 08-13 (n=893) | 6.3% | 93.7% | 3.2% | 96.8% |
+|                    | tier>=2 share | tier 1 share | `hmm` | `movement` |
+| ------------------ | ------------- | ------------ | ----- | ---------- |
+| pre 08-13 (n=182)  | 3.3%          | 96.7%        | 89.6% | 10.4%      |
+| post 08-13 (n=893) | 6.3%          | 93.7%        | 3.2%  | 96.8%      |
 
-Same conflation on both sides — marginally *more* severe events afterward, which
+Same conflation on both sides — marginally _more_ severe events afterward, which
 under the conflation hypothesis should have improved the numbers rather than
 degrading coverage from 39.3% to 2.6%. The 2026-08-03 params scored MAE 32.5 min
 and 39.3% coverage over 33 incidents under exactly this mix. So the conflation
@@ -4284,7 +4253,6 @@ there, where zero waiting is the reading we want. The one ordering that could
 strand a departure — same stop_id going stopped -> moving — occurs 79 times in
 those 47,936 transitions (0.16%) and only defers detection by one poll.
 
-
 ## 2026-08-24 — running the finished crowding path end to end put two feed-stall artifacts at the top of the whole system, and exposed that the even split is wrong by 3-5x at the two busiest complexes every tick
 
 origin: artifact
@@ -4346,7 +4314,6 @@ share, on any complex where both are observable. Until then the surface is
 labelled an estimate and publishes the assumption, which is the honest state
 but not a good one.
 
-
 ## 2026-08-24 — correction: the stall gate in the entry above was rejected on measurement. It abstained 23 platforms with live service and never fired on the case it was written for
 
 origin: self
@@ -4385,7 +4352,6 @@ The lesson worth keeping is the shape of the mistake: I reached for an
 observation-quality gate because the number looked wrong, when the number was
 wrong for a demand-allocation reason the gate could not touch. A gate that
 cannot articulate which of the two it is testing will grade badly on both.
-
 
 ## 2026-08-24 — exits really are gone, but the origin-destination estimate hands us the thing we actually needed: departing riders split by direction, and the even split is off by 8x at a terminal
 
@@ -4463,7 +4429,6 @@ cannot close that either, because "changed trains at Z" is precisely the path
 information MTA discards. Closing it needs our own routing model over the
 topology.
 
-
 ## 2026-08-24 — for station VOLUME the origin-destination dataset adds nothing: over a month every station's arrivals/entries collapses to 1.0, the ranking moves a median of 1 place, and total volume is exactly 2.0x entries
 
 origin: artifact
@@ -4510,7 +4475,6 @@ an hourly, within-complex allocation question, which is exactly the regime where
 the asymmetry is real (0.13 vs 2.54) — and it is measured on the departure side
 regardless. Volume is the case where aggregation destroys the signal; the
 platform split is the case where it does not.
-
 
 ## 2026-08-24 — the 49 crowding abstentions are almost all correct: 38 are SIR stations that collect no fares, 7 are yard trackage in no station reference and not in GTFS at all, and only 2 complexes were ours to recover
 
@@ -4564,7 +4528,6 @@ The lesson for next time is the order of the checks: I reached for "which
 station reference is stale" first, when the question was answerable from the
 schedule feed we already download every night.
 
-
 ## 2026-08-24 — a zero-row trace tick would have wiped the departure carry and stamped a fresh timestamp on a frozen crowd, turning a feed outage into confident wrong numbers
 
 origin: agent
@@ -4602,7 +4565,6 @@ suite had 407 passing tests over this code and none of them covered a zero-row
 tick — every fixture supplied rows, because supplying rows is what you think to
 do. The new test asserts the stored document is byte-identical after an
 all-feeds-fail tick, and it fails against the old code on all three counts.
-
 
 ## 2026-08-24 — the Worker's per-tick CPU goes to zod validation, not to JSON or to the maths: 3.4ms to validate an artifact that parses in 0.94ms, and serialising the whole 109KB snapshot costs 0.11ms
 
@@ -4676,13 +4638,13 @@ The result corrects both quantitative guesses in the 2026-08-23 entry above.
 emissions and back-solved `matched_n ≈ 161` from a published
 `p_disrupted = 2.69e-17`. Neither survives contact:
 
-| | 2026-08-23 assumed | production |
-| --- | --- | --- |
+|                        | 2026-08-23 assumed      | production               |
+| ---------------------- | ----------------------- | ------------------------ |
 | `advance_rate[normal]` | 0.6 (dataclass default) | **0.8 – 0.999** (fitted) |
-| `matched_n` | ~161, inferred | **8 – 26**, measured |
-| per-advancing-trip LLR | 0.192 nats | **1.20 or 3.91 nats** |
+| `matched_n`            | ~161, inferred          | **8 – 26**, measured     |
+| per-advancing-trip LLR | 0.192 nats              | **1.20 or 3.91 nats**    |
 
-The 0.192 was `KL(0.6 || 0.3)`, the *expected* per-trip divergence. The filter
+The 0.192 was `KL(0.6 || 0.3)`, the _expected_ per-trip divergence. The filter
 never sees the expectation, it sees the realised count, and trips almost all
 advance (`k = n` on 9 of 20 routes, `k >= n-2` on 17). The right quantity is
 `ln(rate_normal / rate_other)` per advancing trip. The mechanism the entry
@@ -4694,10 +4656,10 @@ story was wrong the other way: `matched_n` never exceeds 26 on any route.
 suspended)`. Across the 20 routes carrying counts in tick 1787682922 it comes
 back in two orderings:
 
-| ordering | routes | per-advancing-trip LLR vs index 1 | movement nats (median) | observed suppression (median) |
-| --- | --- | --- | --- | --- |
-| `(0.8–0.999, 0.3, 0.02)` | 1 3 4 5 6 7 A B N Q R (11) | 1.20 | 17.5 | **42.6** |
-| `(0.8–0.999, 0.02, 0.3)` | 2 C D E F G J L M (9) | 3.91 | 47.7 | **151.7** |
+| ordering                 | routes                     | per-advancing-trip LLR vs index 1 | movement nats (median) | observed suppression (median) |
+| ------------------------ | -------------------------- | --------------------------------- | ---------------------- | ----------------------------- |
+| `(0.8–0.999, 0.3, 0.02)` | 1 3 4 5 6 7 A B N Q R (11) | 1.20                              | 17.5                   | **42.6**                      |
+| `(0.8–0.999, 0.02, 0.3)` | 2 C D E F G J L M (9)      | 3.91                              | 47.7                   | **151.7**                     |
 
 In the second group index 1 carries 0.02 and index 2 carries 0.3, so an
 ordinary advancing trip is 3.25x more evidence against index 1 than it is on
@@ -4755,13 +4717,13 @@ fit had movement evidence, spent it all on the normal state, and never separated
 M-step is the κ-blended branch `(κ·prior + mov_k)/(κ + mov_n)`
 (`hmm.py:794-796`), not the plain `mov_k/mov_n` I assumed. Two consequences:
 
-  - That branch returns the prior exactly whenever `mov_k = prior·mov_n`, not
-    only when `mov_n = 0`. Exact equality is therefore not proof of zero
-    responsibility.
-  - The clean rationals do not prove the plain branch was taken either. `fit_hmm`
-    also accepts `advance_priors` — per-route normal advance rates injected from
-    the movement baseline (`train_em.py:247,1025`), themselves ratios of archive
-    counts, so `11/12` is as likely to be an injected prior as an MLE output.
+- That branch returns the prior exactly whenever `mov_k = prior·mov_n`, not
+  only when `mov_n = 0`. Exact equality is therefore not proof of zero
+  responsibility.
+- The clean rationals do not prove the plain branch was taken either. `fit_hmm`
+  also accepts `advance_priors` — per-route normal advance rates injected from
+  the movement baseline (`train_em.py:247,1025`), themselves ratios of archive
+  counts, so `11/12` is as likely to be an injected prior as an MLE output.
 
 There is also a whole-prior escape at `hmm.py:711-714`: a subset below
 `MIN_EFFECTIVE_OBS` returns the prior emission set entire, which would produce
@@ -4821,10 +4783,10 @@ Measured, running the repo's own E-step (`_per_tick_emissions`,
 published params:
 
 | route | ticks | ticks with movement | `mov_n` per state |
-| --- | --- | --- | --- |
-| 1 | 2,212 | **0** | 0.0, 0.0, 0.0 |
-| 2 | 2,312 | **0** | 0.0, 0.0, 0.0 |
-| G | 2,469 | **0** | 0.0, 0.0, 0.0 |
+| ----- | ----- | ------------------- | ----------------- |
+| 1     | 2,212 | **0**               | 0.0, 0.0, 0.0     |
+| 2     | 2,312 | **0**               | 0.0, 0.0, 0.0     |
+| G     | 2,469 | **0**               | 0.0, 0.0, 0.0     |
 
 Zero movement mass in 6,993 ticks, so the advance-rate M-step
 (`hmm.py:794-801`) can only ever take the prior or fallback branch, and
@@ -4835,11 +4797,11 @@ branches were the same branch.
 
 What corroborates it, from the params:
 
-| | |
-| --- | --- |
-| `advance_rate` idx1/idx2 exactly the defaults | **28 / 28** |
-| `advance_rate[normal]` exactly equal to one of that route's baseline `p0` | 20 / 28 |
-| ...or the raw `0.6` default | 6 / 28 |
+|                                                                           |             |
+| ------------------------------------------------------------------------- | ----------- |
+| `advance_rate` idx1/idx2 exactly the defaults                             | **28 / 28** |
+| `advance_rate[normal]` exactly equal to one of that route's baseline `p0` | 20 / 28     |
+| ...or the raw `0.6` default                                               | 6 / 28      |
 | `poisson_lambda` moved off bootstrap (the ALERT channel really is fitted) | **28 / 28** |
 
 The only movement information reaching training is `advance_priors` →
@@ -4900,12 +4862,12 @@ bootstrap default (`run_filter.BOOTSTRAP_PARAMS`, unset → dataclass default
 
 Every fitted `advance_rate` equals its prior to the last digit. `normal` differs
 by route only because `_apply_advance_prior` injects the movement-baseline route
-rate into the *normal* prior alone (`train_em.py:272-277,292-300`); the
+rate into the _normal_ prior alone (`train_em.py:272-277,292-300`); the
 18-vs-10 group each route falls into is exactly whether the other two states'
 `0.3`/`0.02` came through canonicalization straight or swapped.
 
 **Why `mov_n` is literally zero.** The HMM training observations are
-reconstructed from the *alerts* archive only. Both constructors —
+reconstructed from the _alerts_ archive only. Both constructors —
 `load.build_observations` and `load_r2.build_tick_observations` — build
 `Observation(...)` with `advanced_n`/`matched_n`/`has_movement` left at their
 defaults (`0/0/False`); nothing downstream joins movement counts in
@@ -4922,14 +4884,14 @@ orders the two non-normal states by the alert channels — lowest `poisson_lambd
 takes normal, higher suspended-alert `bernoulli_p` of the rest takes suspended
 (`hmm.py:232-240`) — with `advance_rate` only a second sort key behind
 `bernoulli_p`. That tiebreak never fires here: in the published params
-`bernoulli_p[suspended] > bernoulli_p[disrupted]` *strictly* on all 28 routes
+`bernoulli_p[suspended] > bernoulli_p[disrupted]` _strictly_ on all 28 routes
 (closest margin 0.0244 vs 0.0244-to-4dp on D, still separated beyond 1e-12; no
 exact tie anywhere), so the disrupted/suspended assignment is decided entirely by
 the fitted suspended-alert channel and `advance_rate` contributes nothing, not
 even as a tiebreak. The two advance constants ride along as whatever raw EM
 cluster they initialized on. The 3.25× per-advancing-trip gap the 2026-08-25
 attribution entry measured is real arithmetic on the shipped params, but it is
-the *live* forward filter applying a movement emission whose parameters were
+the _live_ forward filter applying a movement emission whose parameters were
 never trained on movement — the split between adjacent routes is only whether the
 higher-`bernoulli_p` cluster landed on the raw index carrying the `0.3` prior or
 the one carrying `0.02`, relabeled by canonicalization. Nothing about observed
@@ -4942,7 +4904,7 @@ reason — no state on this channel is fed at all during training.
 
 **The median normal-baseline is upstream, and now precisely so.**
 `compute_advance_baseline_by_route` (the median-of-tick-fractions estimator that
-saturates to 0.999 where most ticks are stall-free) is the *only* movement
+saturates to 0.999 where most ticks are stall-free) is the _only_ movement
 information that reaches the HMM, and it reaches only the normal-state prior. Its
 median-vs-pooled-rate defect therefore biases the one channel input that isn't
 inert; disrupted/suspended never see movement by any path.
@@ -4963,7 +4925,7 @@ filter has applied it since 2026-06-22 (`3fe5891`) against parameters EM never
 saw movement to fit. This wires the counts in.
 
 **What the live filter does, mirrored.** `worker/src/movement_state.ts`
-`movementObservationFields` folds the *previous* tick's cross-tick counts (option
+`movementObservationFields` folds the _previous_ tick's cross-tick counts (option
 B lag) into each observation — both directions summed off the raw route counters
 — and abstains (channel off) on a stale carry (>600s), fewer than
 `MIN_MATCHED_TRIPS`, or no published baseline cell for the current tod_bin. The
@@ -4991,14 +4953,15 @@ while the same route's other states carry thousands). It is posterior mass and
 the has_movement gate, not route thinness — every route shown cleared min_ticks.
 Both keep the prior, correctly. 1.66M matched trips now enter the fit. Where
 `mov_n > 50` the fitted rate tracks the data rate `k/n` (only 2 states deviate
->0.02, the prior pulling on modest-mass states, as intended at
-`prior_strength=100`). The global prior's advance_rate moved off the bootstrap
-default to a fitted `(0.632, 0.617, 0.644)`.
+
+> 0.02, the prior pulling on modest-mass states, as intended at
+> `prior_strength=100`). The global prior's advance_rate moved off the bootstrap
+> default to a fitted `(0.632, 0.617, 0.644)`.
 
 **What that last number means, and the honest limit.** The three fitted rates
 are close — normal 0.756 median, disrupted 0.551, suspended 0.570 across routes
 with mass — and disrupted/suspended overlap. The movement channel is now trained,
-but the HMM's hidden state is still *alert-defined*, and physical advance is only
+but the HMM's hidden state is still _alert-defined_, and physical advance is only
 weakly separated by it: a route flagged disrupted/suspended by alerts is often
 still advancing near normally. So this fix removes a real defect (an untrained,
 prior-only emission scored live) and is a prerequisite for trusting the movement
@@ -5018,8 +4981,8 @@ origin: agent
 Shipped the estimator fix the 2026-08-13 entry measured and deferred. `p0` is the
 cell's normal cross-tick advance rate, and it anchors both the movement
 trip-wire (`classify_direction`, `disrupted ≤ 0.5·p0` plus a binomial
-significance gate against p0) and the HMM's advance prior. It was the *median of
-per-tick advance fractions*: with ~71% of through-filtered ticks stall-free and
+significance gate against p0) and the HMM's advance prior. It was the _median of
+per-tick advance fractions_: with ~71% of through-filtered ticks stall-free and
 small per-tick denominators (~10 trips) quantising to 1.0, the median sat on the
 ceiling and floored to 0.999 — a rate no cell actually ran at, which made the
 significance test read a single stall in ten as significant.
@@ -5049,7 +5012,7 @@ that doesn't exist yet.
 count barely moves (242 → 195). That is the point, not a shortfall: the old
 fires were largely noise — at p0=0.999 a single stall reads significant — while
 at a realistic p0≈0.9 a genuine freeze still fires (`P(0/10 | 0.9) ≈ 3.5e-5`)
-but an ordinary single stall does not. The fix recalibrates *what* fires onto a
+but an ordinary single stall does not. The fix recalibrates _what_ fires onto a
 real normal rate; it is not a standalone accuracy jump (graded against the
 alert-derived label it buys nothing — that label is the wrong truth). Its value
 is that the quantity every movement-defined call rests on is now correct, which
@@ -5074,7 +5037,7 @@ normals are comparable; persistence is measured only across genuinely adjacent
 **Presence (the suspended axis).** 97.8% of cells have trains present; of those
 76.2% clear the 3-match floor, 23.8% are present-but-sparse (overnight / low
 frequency). No trains at all: ~2%. "Suspended / no-service" is a real but small
-state and it is a *presence* distinction — trains absent — not a point on the
+state and it is a _presence_ distinction — trains absent — not a point on the
 advance axis.
 
 **The degradation axis is a continuum, not clusters.** Baseline-relative advance
@@ -5097,11 +5060,11 @@ asymmetry is unambiguous: a memoryless per-tick threshold (today's
 dwell/transitions is warranted.
 
 **What this means for the state space.** The alert model's three states don't
-transfer as-is. Movement has a *presence* axis (running / sparse / absent) and a
-*continuous* degradation axis when running. A discrete label can carry at most:
+transfer as-is. Movement has a _presence_ axis (running / sparse / absent) and a
+_continuous_ degradation axis when running. A discrete label can carry at most:
 suspended = trains absent (presence), normal vs degraded = one chosen cut on the
 continuous advance-vs-baseline axis. There is no movement evidence for a third
-*advancing* regime — the disrupted/suspended split the alert model draws is an
+_advancing_ regime — the disrupted/suspended split the alert model draws is an
 alert distinction, not a movement one. Two candidate architectures, to decide
 deliberately: a 2-running-state + presence discrete HMM with a threshold cut and
 learned dwell, vs a continuous-severity semi-Markov model. The data leans toward
@@ -5320,7 +5283,7 @@ measured.** The likely reason scheduled-service weighting still leaves the
 shuttle high is that its platform crowd is largely IN-SYSTEM TRANSFERS —
 riders coming off the 4/5/6/7 to cross to Times Sq — which are never
 fare-swiped and are absent from the entry-rate feed entirely. If so, no
-reallocation of *entries* reaches a demand that isn't entries. That is a
+reallocation of _entries_ reaches a demand that isn't entries. That is a
 hypothesis consistent with the transfer blind spot logged on 08-24, not a
 measurement: this session established schedules (GTFS) and direction (OD), not
 the shuttle's transfer share. Quantifying it would need a transfer-flow
@@ -5342,7 +5305,6 @@ un-instrumented floor. Whether the ~40% shuttle reduction earns a new
 GTFS-derived baseline artifact + Worker loader, and whether to add the OD
 direction axis, is a scope call, and the production sign-off still wants the
 real-trace replay that this worktree cannot run.
-
 
 ## 2026-08-25 — implemented the scheduled-service split (local, uncommitted): a GTFS-derived per-platform weight, all-or-nothing per complex, pooling Saturday and Sunday like the ridership `we` cell
 
@@ -5390,7 +5352,6 @@ real `station_wait` + ridership baseline in R2, which this worktree cannot
 decrypt — and actually publishing the baseline + deploying. The share
 reduction is the mechanism of the fix and it is measured; the absolute
 per-tick number wants that replay before a production sign-off.
-
 
 ## 2026-08-25 — parked the direction axis as a diagnostic, not a split input; the demand asymmetry is real and large, but nothing here maps it onto a physical platform
 
@@ -5488,18 +5449,18 @@ against. 96 episodes, 182 normal stretches, 15 routes. Both arms are the same
 classifier over the same archive; the `before` arm is the same params doc with
 the fit stripped.
 
-| | judged/tick | cells ever judged | gradeable episodes |
-| --- | --- | --- | --- |
-| before | 19.8 | 494 / 1,658 (29.8%) | 30 / 96 |
-| after | **1,657.8** | **1,658 / 1,658 (100%)** | **52 / 96** |
+|        | judged/tick | cells ever judged        | gradeable episodes |
+| ------ | ----------- | ------------------------ | ------------------ |
+| before | 19.8        | 494 / 1,658 (29.8%)      | 30 / 96            |
+| after  | **1,657.8** | **1,658 / 1,658 (100%)** | **52 / 96**        |
 
 Coverage moved as intended, and it bought 22 more episodes that could be scored
 at all rather than only more cell-ticks.
 
-| arm | episode share | normal share | ratio | CIs disjoint |
-| --- | --- | --- | --- | --- |
-| before | 0.401 [0.245, 0.611] | 0.082 [0.051, 0.123] | 4.88 | yes |
-| after | **0.474 [0.398, 0.552]** | **0.142 [0.111, 0.180]** | **3.33** | yes |
+| arm    | episode share            | normal share             | ratio    | CIs disjoint |
+| ------ | ------------------------ | ------------------------ | -------- | ------------ |
+| before | 0.401 [0.245, 0.611]     | 0.082 [0.051, 0.123]     | 4.88     | yes          |
+| after  | **0.474 [0.398, 0.552]** | **0.142 [0.111, 0.180]** | **3.33** | yes          |
 
 Share = disrupted over TESTABLE cells on the route (normal + disrupted), per
 tick, bootstrapped over episodes. The cost is visible and real: the base rate on
@@ -5553,12 +5514,12 @@ itself. `segment_replay.Policy` makes the accumulator's two
 levers replayable, so both axes and their cross can be scored on one statistic.
 Same causal split, 110 episodes, 196 normal stretches, 1,958 scored ticks:
 
-| arm | decay | window | judged/tick | coverage | gradeable episodes | episode share | normal share | ratio |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| status quo | 0.80 | 25 min | 20.0 | 1.2% | 33/110 | 0.367 [0.224, 0.552] | 0.082 [0.052, 0.121] | 4.49 |
-| window | 0.94 | 83 min | 688.6 | 41.5% | 82/110 | 0.020 [0.009, 0.047] | 0.010 [0.007, 0.014] | 2.00 |
-| throughput | 0.80 | 25 min | 1,657.7 | 100% | 58/110 | 0.486 [0.421, 0.519] | 0.133 [0.106, 0.166] | 3.65 |
-| **both** | 0.94 | 83 min | 1,652.8 | 99.7% | **90/110** | 0.334 [0.196, 0.419] | 0.064 [0.056, 0.073] | **5.21** |
+| arm        | decay | window | judged/tick | coverage | gradeable episodes | episode share        | normal share         | ratio    |
+| ---------- | ----- | ------ | ----------- | -------- | ------------------ | -------------------- | -------------------- | -------- |
+| status quo | 0.80  | 25 min | 20.0        | 1.2%     | 33/110             | 0.367 [0.224, 0.552] | 0.082 [0.052, 0.121] | 4.49     |
+| window     | 0.94  | 83 min | 688.6       | 41.5%    | 82/110             | 0.020 [0.009, 0.047] | 0.010 [0.007, 0.014] | 2.00     |
+| throughput | 0.80  | 25 min | 1,657.7     | 100%     | 58/110             | 0.486 [0.421, 0.519] | 0.133 [0.106, 0.166] | 3.65     |
+| **both**   | 0.94  | 83 min | 1,652.8     | 99.7%    | **90/110**         | 0.334 [0.196, 0.419] | 0.064 [0.056, 0.073] | **5.21** |
 
 Every arm but `window` has disjoint episode/normal intervals. The 41.5% here
 independently reproduces that branch's own 42.28%, which is the cross-check that
@@ -5594,12 +5555,12 @@ window opens, so the search starts inside the alarm and every latency pins to
 Measured from the onset tick itself, with episodes already alarming AT the onset
 counted separately and excluded rather than scored as a zero:
 
-| arm | window | already alarming | measurable | detected | median | p90 | clean-before | detected |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| status quo | 25 min | 21 | 89 | 4 | 12 min | 30 min | 12 | 2 |
-| window | 83 min | 22 | 88 | 3 | 10 min | 30 min | 53 | 1 |
-| throughput | 25 min | 37 | 73 | **11** | 15 min | 430 min | 14 | **6** |
-| both | 83 min | 50 | 60 | 7 | 10 min | 35 min | 27 | 3 |
+| arm        | window | already alarming | measurable | detected | median | p90     | clean-before | detected |
+| ---------- | ------ | ---------------- | ---------- | -------- | ------ | ------- | ------------ | -------- |
+| status quo | 25 min | 21               | 89         | 4        | 12 min | 30 min  | 12           | 2        |
+| window     | 83 min | 22               | 88         | 3        | 10 min | 30 min  | 53           | 1        |
+| throughput | 25 min | 37               | 73         | **11**   | 15 min | 430 min | 14           | **6**    |
+| both       | 83 min | 50               | 60         | 7        | 10 min | 35 min  | 27           | 3        |
 
 **This is much less flattering than the lead-window run, and correctly so.** That
 run credited `both` with 61 detections of 110; 50 of those were the alarm already
@@ -5634,12 +5595,12 @@ while publishing old evidence.
 Same causal split; this archive pass held 94 episodes, 176 normal stretches and
 1,735 scored ticks:
 
-| arm | window | call ratio | published ratio | published episode share | published normal share | onset detections | median |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| status quo | 25 min | 3.72 | 3.20 | 0.188 | 0.059 | 1/76 | 20 min |
-| window | 83 min | 1.86 | 1.55 | 0.009 | 0.006 | 2/76 | 30 min |
-| throughput | 25 min | 3.64 | 3.65 | 0.489 | 0.134 | **7/59** | 35 min |
-| **both** | 83 min | **5.32** | **5.30** | 0.341 | **0.064** | 5/49 | **10 min** |
+| arm        | window | call ratio | published ratio | published episode share | published normal share | onset detections | median     |
+| ---------- | ------ | ---------- | --------------- | ----------------------- | ---------------------- | ---------------- | ---------- |
+| status quo | 25 min | 3.72       | 3.20            | 0.188                   | 0.059                  | 1/76             | 20 min     |
+| window     | 83 min | 1.86       | 1.55            | 0.009                   | 0.006                  | 2/76             | 30 min     |
+| throughput | 25 min | 3.64       | 3.65            | 0.489                   | 0.134                  | **7/59**         | 35 min     |
+| **both**   | 83 min | **5.32**   | **5.30**        | 0.341                   | **0.064**              | 5/49             | **10 min** |
 
 Episode/normal intervals are disjoint for every arm except `window` alone.
 
@@ -5718,12 +5679,12 @@ fit causally on the vehicle archive 2026-08-06..08-19 and scored on
 08-20..08-26; 2,013 scored ticks, 114 assigned_n episodes, 202 normal runs, 16
 routes):
 
-| arm | decay | window | judged/tick | coverage | gradeable eps | pub episode share | pub normal share | ratio | CIs disjoint |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| status quo | 0.80 | 25 min | 20.3 | 28.9% | 34 | 0.279 [0.173, 0.443] | 0.056 [0.035, 0.082] | 5.00 | yes |
-| window | 0.94 | 83 min | 690 | 93.5% | 84 | 0.012 [0.005, 0.029] | 0.006 [0.004, 0.008] | 2.04 | **no** |
-| throughput | 0.80 | 25 min | 1,658 | 100% | 59 | 0.475 [0.380, 0.517] | 0.129 [0.100, 0.166] | 3.67 | yes |
-| **both (shipped)** | 0.94 | 83 min | 1,652 | 100% | **91** | 0.350 [0.190, 0.454] | **0.063 [0.055, 0.071]** | **5.59** | yes |
+| arm                | decay | window | judged/tick | coverage | gradeable eps | pub episode share    | pub normal share         | ratio    | CIs disjoint |
+| ------------------ | ----- | ------ | ----------- | -------- | ------------- | -------------------- | ------------------------ | -------- | ------------ |
+| status quo         | 0.80  | 25 min | 20.3        | 28.9%    | 34            | 0.279 [0.173, 0.443] | 0.056 [0.035, 0.082]     | 5.00     | yes          |
+| window             | 0.94  | 83 min | 690         | 93.5%    | 84            | 0.012 [0.005, 0.029] | 0.006 [0.004, 0.008]     | 2.04     | **no**       |
+| throughput         | 0.80  | 25 min | 1,658       | 100%     | 59            | 0.475 [0.380, 0.517] | 0.129 [0.100, 0.166]     | 3.67     | yes          |
+| **both (shipped)** | 0.94  | 83 min | 1,652       | 100%     | **91**        | 0.350 [0.190, 0.454] | **0.063 [0.055, 0.071]** | **5.59** | yes          |
 
 The pairing that ships — decay 0.94, floor 3, throughput on transitions —
 publishes a 5.6x episode/normal separation with disjoint CIs and full coverage on
@@ -5775,11 +5736,13 @@ boundary (Friday-night weekday service landing Saturday morning, Sunday-night
 weekend service landing Monday morning). A mid-week 25:10 row wraps into
 `wd[1]`, which is the class Tuesday-Friday 01:10 actually reads — same-class
 spillover, not corruption. So the corrupted set is: overnight cells containing
->=24:00 departures whose service day's class differs from the next wall-clock
-day's, a subset of the 3.35% of rows, not "every overnight cell near a
-boundary". The shipped exclusion drops all >=24:00 rows regardless, which is
-broader than the corruption but the only shape a two-bin artifact can carry
-honestly.
+
+> =24:00 departures whose service day's class differs from the next wall-clock
+> day's, a subset of the 3.35% of rows, not "every overnight cell near a
+> boundary". The shipped exclusion drops all >=24:00 rows regardless, which is
+> broader than the corruption but the only shape a two-bin artifact can carry
+> honestly.
+
 ## 2026-08-27 — supply-ratio 1.7-2.1x on weekend late nights: denominator is correct, the thin 2-weekend median is the amplifier
 
 origin: agent
@@ -5836,3 +5799,89 @@ UTC 00-03 of the next day, so a weekend-only fetch of the ET Sat/Sun UTC prefixe
 silently drops every Sunday-ET late night (they live under the Monday UTC prefix)
 — a partial fetch gave a `we23` median of 14.5 vs the true 13.0. Fetch the full
 contiguous window (as train_em does) or the recompute will not reconcile.
+
+## 2026-08-31 — negative result: the published movement condition and the independent assigned_n label are statistically independent, so assigned_n cannot adjudicate movement detection (0/173 severe, base≈false-alarm≈0.1%)
+
+origin: agent
+
+New reusable harness `training/movement_validation.py` (+ `tests/test_movement_validation.py`)
+grades the published movement-primary condition (worker/src/movement_state.ts
+deriveMovementState, mirrored by load_r2.build_movement_truth, through the regime
+clock at the live DEBOUNCE_TICKS=1) against the only reference in the archive that
+is independent IN DERIVATION of the vehicle-position signal it reads: the
+trip-updates `assigned_n` degradation label (training.degradation_label). Vehicle
+positions themselves cannot adjudicate the condition — the condition is derived
+from them. Episode-bootstrap detection / false-alarm / onset-latency, CIs,
+counted exclusions, following segment_coverage.py.
+
+**Window.** Advance + assigned_n baselines fitted causally on 2026-07-28..08-10
+(14d); scored held-out 2026-08-11..08-31 (21d), the current operating point
+(pooled through-filtered advance baseline, prior_strength=8 / disrupted_ratio=0.5
+/ alpha=0.05). 6,039 scored movement ticks, 211 advance cells; truth = 252
+assigned_n episodes (173 severe ≤0.15×baseline, 79 partial, 0 unrateable), 381
+confirmed-normal runs, 18 routes, episode median 9 ticks (45 min), 1,126
+(route, schedule_bin) baseline cells.
+
+**The reconstruction fires, but flat across the label.** Call mix over 111,578
+judged route-ticks: 110 disrupted, 111,468 normal, **0 suspended** — disrupted
+base rate **0.099%** (same order as the 0.30% the 08-26 calibration measured on a
+different fortnight; the classifier is alive, not dead). Then, disrupted arm,
+raw calls:
+
+- detection.all: 1 of 84 gradeable episodes ever fired — tick_rate **0.000
+  [0.000,0.002]**, unit_rate **0.012 [0.000,0.036]**.
+- detection.severe (near-suspension, supply ≤15% of baseline, the subset where
+  the two feeds MUST physically coincide): **0 of 40 gradeable episodes**, tick
+  and unit rate **0.000**. Published surface: **0 of 70**.
+- detection.partial: unit_rate 0.023.
+- false_alarm on confirmed-normal runs: 217/381 gradeable, tick_rate **0.00101
+  [0.00058,0.00163]**, unit_rate 0.194 [0.143,0.249].
+
+**The finding.** false-alarm tick-rate (0.101%) ≈ disrupted base rate (0.099%) ≈
+detection tick-rate (~0.0–0.1%). The movement condition fires at ~0.1% of ticks
+whether supply is normal, partially cut, or fully collapsed — its firing carries
+essentially **zero mutual information** with assigned_n, in either direction. At
+base rate 0.099% over episodes of median 9 ticks, chance predicts ≈0.75 firings
+across the 84 gradeable episodes; we observed 1. Detection is at chance. This
+replicates and strengthens the 2026-08-20 cross-tab (0/785 assigned_n-disrupted
+ticks read movement-disrupted) at n=252 episodes / 111k route-ticks.
+
+**Why, and what it means.** assigned_n measures SUPPLY (trains dispatched);
+movement measures FLOW (whether running trains advance). A route with 85% of its
+trains pulled but the remaining 15% moving fine is supply-collapsed and correctly
+movement-normal — so even on the severe tail the flow signal does not (and
+arguably should not) fire. The independence is a property of the two signals, not
+a defect in the classifier. Consequence: **assigned_n cannot serve as a detection
+truth for the movement flow axis — it can neither confirm nor refute a
+movement-disrupted call.** No independent detection truth for the flow axis exists
+in the archive: vehicle positions ARE the signal, assigned_n is orthogonal, and
+the alert feed lags with no true-negative class (escalation.py). Onset latency is
+therefore undefined here: over episodes the vehicle feed could actually judge
+(≥1 scored movement tick on the route), 1 of 84 all / **0 of 40 severe** detected.
+The exclusions are themselves telling — **168 of 252 episodes (133 of 173
+severe) had NO judged movement tick anywhere in their span**: a supply collapse
+leaves too few cross-tick matches to form a movement call at all, so the flow
+signal is not merely silent on these, it is structurally blind to them (counted
+as n_ungradeable, never charged to detection).
+
+**Reconstruction limit, stated not hidden.** Offline suspended is vehicle-only
+(build_movement_truth keys it on vehicles_n==0) and fired 0 times, so `not_normal`
+≡ `disrupted` throughout; the live worker additionally reads suspended when
+assigned_n==0, which this harness cannot reproduce. But that live suspended arm is
+gated on assigned_n itself, so validating it against an assigned_n truth is
+circular — it would only confirm the two feeds agree a dead route is dead, not
+that the FLOW signal detects anything. The genuinely independent question is the
+disrupted arm's, and its answer is above.
+
+**Verdict for the promotion gate (q087 / 4ih.10).** This validation does NOT
+supply independent detection evidence for promoting the movement condition, and
+by construction it cannot — the axis is orthogonal. What it DOES establish: the
+published condition's absolute alarm rate on independently-confirmed-normal supply
+is very low (0.10% of ticks [0.06,0.16]), i.e. it does not flood normal service
+with disrupted calls — but since that equals the base rate, it is a low-base-rate
+property, not proof of supply-concordance. Recommendation: do not treat
+cross-feed detection agreement as a cleared gate; there is no archived truth that
+can clear it. The movement condition's trustworthiness rests on its calibration
+and low false-alarm behaviour (settled 2026-08-26) plus the alert-corroboration
+lower bound (escalation.py), not on independent detection agreement. Harness run
+offline only; nothing published.

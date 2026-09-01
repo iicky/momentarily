@@ -33,6 +33,7 @@ from training.train_em import (
     MIN_DATA_DAYS,
     PARAMS_KEY,
     SCHEMA_VERSION,
+    SERVICE_SIDECAR_WINDOW_DAYS,
     VERSIONED_PARAMS_PREFIX,
     CorpusStats,
     MovementInputs,
@@ -1095,12 +1096,18 @@ def test_main_threads_service_baselines_to_their_writers(
     )
     sentinel_baseline: dict[str, Any] = {"SENTINEL_ROUTE": {"0": 6.0}}
     sentinel_schedule_rate: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 0.5}}
+    # The tod_bin emission baseline stays on the training window; the published
+    # schedule_bin sidecar must come from the DEDICATED wider window, so give the
+    # two windows distinct hourly sentinels and assert the sidecar took the wide
+    # one.
+    sentinel_hourly_training: dict[str, Any] = {"TRAIN_WINDOW": {"wd06": 1.0}}
     sentinel_hourly: dict[str, Any] = {"SENTINEL_ROUTE": {"wd06": 6.0}}
     sentinel_hourly_quantiles: dict[str, Any] = {
         "SENTINEL_ROUTE": {"wd06": {"p10": 4.0, "p90": 8.0}}
     }
     captured_kwargs: dict[str, Any] = {}
     captured_service: dict[str, Any] = {}
+    service_windows: list[tuple[date, date]] = []
 
     def _fake_load_config() -> R2Config:
         return cfg
@@ -1126,15 +1133,19 @@ def test_main_threads_service_baselines_to_their_writers(
     def _fake_service_baseline(
         cfg_arg: R2Config, client: S3Client, start_date: date, end_date: date
     ) -> ServiceInputs:
+        service_windows.append((start_date, end_date))
+        # A window at least the sidecar width yields the published hourly cells;
+        # the narrower training window yields a distinct, throwaway hourly set.
+        wide = (end_date - start_date).days + 1 >= SERVICE_SIDECAR_WINDOW_DAYS
         return ServiceInputs(
             baseline_json=sentinel_baseline,
             n_cells=4,
             schedule_json=sentinel_schedule_rate,
             n_schedule=6,
-            hourly_json=sentinel_hourly,
+            hourly_json=sentinel_hourly if wide else sentinel_hourly_training,
             n_hourly=3,
-            hourly_quantiles_json=sentinel_hourly_quantiles,
-            n_hourly_quantiles=2,
+            hourly_quantiles_json=sentinel_hourly_quantiles if wide else {},
+            n_hourly_quantiles=2 if wide else 0,
             baseline_by_cell={},
             service_by_tick={},
         )
@@ -1179,9 +1190,23 @@ def test_main_threads_service_baselines_to_their_writers(
     assert exit_code == 0
     assert captured_kwargs["service_baseline"] == sentinel_baseline
     assert "service_baseline_hourly" not in captured_kwargs
+    # The published sidecar is decoupled from the 14-day training window: it comes
+    # from the dedicated wider window so thin weekend cells don't abstain and stomp
+    # the backfilled baseline.
     assert captured_service["hourly"] == sentinel_hourly
     assert captured_service["quantiles"] == sentinel_hourly_quantiles
     assert captured_kwargs["schedule_rate"] == sentinel_schedule_rate
+    # tod_bin emission baseline fetched over the training window; the sidecar over
+    # a window at least SERVICE_SIDECAR_WINDOW_DAYS wide and ending the same day.
+    training_window = (date(2026, 6, 1), date(2026, 6, 14))
+    assert training_window in service_windows
+    sidecar_windows = [
+        (s, e)
+        for (s, e) in service_windows
+        if (e - s).days + 1 >= SERVICE_SIDECAR_WINDOW_DAYS
+    ]
+    assert sidecar_windows, service_windows
+    assert all(e == date(2026, 6, 14) for _s, e in sidecar_windows)
 
 
 def test_main_passes_advance_priors_through_to_train(

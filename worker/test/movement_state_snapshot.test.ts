@@ -65,6 +65,10 @@ describe('buildSnapshot: movement-determined condition', () => {
     const a = snap.route_status.A!;
     expect(a.condition).toBe('disrupted');
     expect(a.condition_source).toBe('movement');
+    // The badge's own clock is the movement regime's entered_at, NOT the HMM
+    // argmax clock (inference.regime_entered_at === NOW here).
+    expect(a.condition_entered_at).toBe(NOW - 3600);
+    expect(a.inference?.regime_entered_at).toBe(NOW);
     // HMM still recorded under inference for the forecast surfaces.
     expect(a.inference?.condition).toBe('normal');
   });
@@ -83,6 +87,8 @@ describe('buildSnapshot: movement-determined condition', () => {
     const b = snap.route_status.B!;
     expect(b.condition_source).toBe('unknown');
     expect(b.condition).toBe('unknown');
+    // No movement regime → no honest badge clock; never borrow the HMM's.
+    expect(b.condition_entered_at).toBeNull();
   });
 
   test('movement is ignored without a movementStates arg (back-compat)', () => {
@@ -117,6 +123,10 @@ describe('buildSnapshot: movement-determined condition', () => {
     const z = snap.route_status.Z!;
     expect(z.condition).toBe('not_scheduled');
     expect(z.condition_source).toBe('schedule');
+    // Schedule arm wins even though a movement regime is present; it has no
+    // honest start (we track the announced END, not when the non-run began), so
+    // the badge clock is withheld rather than showing the movement regime's.
+    expect(z.condition_entered_at).toBeNull();
   });
 
   test('stale movement state is ignored (condition is unknown)', () => {

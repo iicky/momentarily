@@ -870,6 +870,17 @@ code {
 .headline .alt {
   color: var(--muted);
 }
+/* "Status held for X" — the badge's own clock, sits directly under the headline
+   so the reader ties it to the badge, not to the model regime age further down. */
+.held-for {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -6px 0 12px;
+}
+.held-for strong {
+  color: var(--text);
+  font-weight: 600;
+}
 .src-tag {
   font-size: 10px;
   text-transform: uppercase;

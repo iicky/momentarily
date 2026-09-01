@@ -10,6 +10,7 @@ import {
   alertHeadline,
   fmtAgo,
   fmtMinutes,
+  heldFor,
   fmtProb,
   supplyBand,
   supplyBars,
@@ -733,6 +734,18 @@ function RouteDrawer({
           </div>
         );
       })()}
+
+      {/* The badge's own clock: how long THIS published state has held, from the
+          movement regime's entered_at. Published (non-null) only when the badge
+          is movement-sourced; a schedule/unknown/hmm badge has no honest start,
+          so it gets no row rather than borrowing the model's regime age below —
+          that one times the HMM argmax and flips independently of the badge. */}
+      {r.condition_entered_at != null && (
+        <div className="held-for">
+          {conditionLabel(r.condition)} for{" "}
+          <strong>{heldFor(snap.generated_at - r.condition_entered_at)}</strong>
+        </div>
+      )}
 
       <div className="section-title">MTA alerts</div>
       {r.alerts.length === 0 ? (

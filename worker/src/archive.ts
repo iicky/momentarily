@@ -5,6 +5,7 @@
  * runs, calibration notebooks) reconstruct the corpus by listing prefixes.
  *
  *   archive/alerts/YYYY-MM-DD/<updated_at>-<alert_id>.json
+ *   archive/alerts_liveness/YYYY-MM-DD/<observed_at>.json
  *   archive/ene/YYYY-MM-DD/HH0000-<source>.json
  *
  * We dedupe alerts by (alert_id, updated_at) — an alert that persists for hours
@@ -79,6 +80,75 @@ export async function archiveNewAlerts(
 
   lastSeen.alerts = seen;
   return written;
+}
+
+/**
+ * This tick's alert-fetch outcome. Two states, not three: a fetch that
+ * completes at the HTTP layer is 'success' regardless of what it returns —
+ * payload validity is a downstream concern (see archiveNewAlerts /
+ * extractEntities below), not a fetch-liveness one. What index.ts's comment
+ * calls the "stale fallback" — reusing the prior successful fetch's
+ * timestamp instead of stamping observedAt — is not a third outcome; it IS
+ * 'fail'. The fallback is exactly what makes 'fail' distinguishable from
+ * 'success' in the archived record (see fetched_at below).
+ */
+export type AlertsFetchOutcome = 'success' | 'fail';
+
+export interface AlertsLiveness {
+  outcome: AlertsFetchOutcome;
+  /** Epoch of the data this record actually reflects: observedAt on
+   * success, or the last known-good fetch's time carried forward on
+   * failure — never a fabricated "now" for a tick that fetched nothing. */
+  fetched_at: number;
+}
+
+/**
+ * Map this tick's raw alerts-fetch result to the archived liveness record.
+ * Pure and kept apart from archiveAlertsLiveness below so the outcome
+ * mapping — including the stale-fallback fetched_at on failure — is
+ * testable without an R2 bucket.
+ */
+export function deriveAlertsLiveness(success: boolean, fetchedAt: number): AlertsLiveness {
+  return { outcome: success ? 'success' : 'fail', fetched_at: fetchedAt };
+}
+
+/**
+ * Archive this tick's alert-fetch liveness — one tiny (~80-byte) object per
+ * fetch attempt, independent of archiveNewAlerts above. archiveNewAlerts only
+ * writes when an alert's (id, updated_at) version actually changes, so a quiet
+ * successful tick and a total feed outage both write zero archive/alerts/
+ * objects and are otherwise indistinguishable to an offline reader — this
+ * closes that gap.
+ *
+ * KEYED ON observedAt, WHICH IS EXECUTION WALL-CLOCK, NOT THE SCHEDULED MINUTE
+ * (index.ts: `const observedAt = Math.floor(Date.now() / 1000)`; the cron's
+ * scheduled minute is the separate `scheduledAt`, and index.ts explains why the
+ * 5-minute gate reads that one instead). Spelled out because it is easy to read
+ * this as tick-keyed and conclude a retry overwrites: it does not. Two attempts
+ * at the same scheduled minute normally start at least a second apart, so they
+ * land under two keys and BOTH are kept.
+ *
+ * That is deliberate, and it is why this differs from archiveTripUpdateMetric/
+ * archiveVehicleMetric below: those are gated on the alpha CAS winner, so only
+ * one invocation per tick ever writes them. This call is never gated, precisely
+ * so a failed first attempt and a succeeding retry are both on the record. A
+ * reader reconstructing liveness should treat the attempts within a scheduled
+ * minute as a set (any success means the alerts were fetched for that minute),
+ * not assume a single record. Collapsing them here would silently erase
+ * whichever attempt lost, which is exactly the evidence this archive exists to
+ * keep.
+ */
+export async function archiveAlertsLiveness(
+  bucket: R2Bucket,
+  liveness: AlertsLiveness,
+  observedAt: number,
+): Promise<void> {
+  const key = `archive/alerts_liveness/${utcDate(observedAt)}/${observedAt}.json`;
+  await bucket.put(
+    key,
+    JSON.stringify({ observed_at: observedAt, ...liveness }),
+    { httpMetadata: { contentType: 'application/json' } },
+  );
 }
 
 export async function archiveEneSnapshot(

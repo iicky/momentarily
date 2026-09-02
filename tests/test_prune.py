@@ -81,3 +81,28 @@ def test_trace_prefix_uses_its_own_narrower_window() -> None:
     )
     expired = collect_expired(client, "b", NOW)  # type: ignore[arg-type]
     assert expired["archive/trace/"] == ["archive/trace/2026-05-02/1000.json"]
+
+
+def test_long_window_archives_are_policed() -> None:
+    # archive/vehicles/, archive/trip_updates/, and archive/alerts_liveness/
+    # get a 3650d "effectively keep" window rather than being left out of
+    # the table entirely — this asserts they are still policed, not
+    # silently unbounded.
+    client = _FakeClient(
+        [
+            "archive/vehicles/2010-01-01/1.json",  # >3650d old → expired
+            "archive/vehicles/2026-06-01/2.json",  # 10d old → kept
+            "archive/trip_updates/2010-01-01/1.json",  # >3650d old → expired
+            "archive/trip_updates/2026-06-01/2.json",  # 10d old → kept
+            "archive/alerts_liveness/2010-01-01/1.json",  # >3650d old → expired
+            "archive/alerts_liveness/2026-06-01/2.json",  # 10d old → kept
+        ]
+    )
+    expired = collect_expired(client, "b", NOW)  # type: ignore[arg-type]
+    assert expired["archive/vehicles/"] == ["archive/vehicles/2010-01-01/1.json"]
+    assert expired["archive/trip_updates/"] == [
+        "archive/trip_updates/2010-01-01/1.json"
+    ]
+    assert expired["archive/alerts_liveness/"] == [
+        "archive/alerts_liveness/2010-01-01/1.json"
+    ]

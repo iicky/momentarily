@@ -60,11 +60,11 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from itertools import pairwise
-from zoneinfo import ZoneInfo
 
 from momentarily.hmm import schedule_bin
+from training.eval_common import et_date, nearest_rank
 from training.gtfs_static import (
     GTFS_STATIC_URL,
     Calendar,
@@ -77,16 +77,6 @@ from training.gtfs_static import (
     through_stops,
 )
 from training.trace import Arrival
-
-_NYC_TZ = ZoneInfo("America/New_York")
-
-
-def _et_date(epoch_seconds: int) -> date:
-    """The America/New_York calendar date a tick falls on — the night unit the
-    independent-night gate counts, mirroring load_r2._et_date and the zone
-    schedule_bin buckets by."""
-    return datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ).date()
-
 
 # --- reference-stop selection ---
 
@@ -398,12 +388,6 @@ class WaitCell:
     n_nights: int
 
 
-def _nearest_rank(ordered: Sequence[float], q: float) -> float:
-    n = len(ordered)
-    idx = min(n - 1, int(q * n))
-    return ordered[idx]
-
-
 def typical_actual_baseline(
     waits: Mapping[tuple[str, str], Sequence[TickWait]],
     *,
@@ -431,7 +415,7 @@ def typical_actual_baseline(
             awt_by_cell[cell].append(tw.awt_sec)
             if tw.cv is not None:
                 cv_by_cell[cell].append(tw.cv)
-            nights[cell].add(_et_date(tw.tick))
+            nights[cell].add(et_date(tw.tick))
 
     out: dict[tuple[str, str, str], WaitCell] = {}
     for cell, values in awt_by_cell.items():
@@ -440,11 +424,11 @@ def typical_actual_baseline(
         ordered = sorted(values)
         cvs = sorted(cv_by_cell.get(cell, []))
         out[cell] = WaitCell(
-            p10=_nearest_rank(ordered, 0.10),
-            p50=_nearest_rank(ordered, 0.50),
-            p90=_nearest_rank(ordered, 0.90),
-            cv_p50=_nearest_rank(cvs, 0.50) if cvs else None,
-            cv_p90=_nearest_rank(cvs, 0.90) if cvs else None,
+            p10=nearest_rank(ordered, 0.10),
+            p50=nearest_rank(ordered, 0.50),
+            p90=nearest_rank(ordered, 0.90),
+            cv_p50=nearest_rank(cvs, 0.50) if cvs else None,
+            cv_p90=nearest_rank(cvs, 0.90) if cvs else None,
             n_ticks=len(values),
             n_nights=len(nights[cell]),
         )

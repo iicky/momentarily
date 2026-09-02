@@ -69,9 +69,19 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 from momentarily.hmm import schedule_bin
+from training.eval_common import (
+    NYC_TZ as _NYC_TZ,
+)
+from training.eval_common import (
+    alert_night_witness,
+    et_midnight,
+    snapshot_tick_witness,
+)
+from training.eval_common import (
+    service_night as _service_night,
+)
 from training.headway_eval import Rate, Unit, night_bootstrap
 from training.load_r2 import (
     ServiceQuantiles,
@@ -85,31 +95,12 @@ if TYPE_CHECKING:
     from training.load import TickObservation
     from training.r2_client import R2Config
 
-_NYC_TZ = ZoneInfo("America/New_York")
-
 
 # ET weekend hours treated as "late night" — the evening-through-overnight band
 # where reduced trackwork service makes the per-cell distribution bimodal. `we23`
 # (the journal's named case) and its neighbours, plus the after-midnight hours
-# 0-3 that belong to the SAME service night (see _service_night).
+# 0-3 that belong to the SAME service night (eval_common.service_night).
 LATE_NIGHT_HOURS: frozenset[int] = frozenset({20, 21, 22, 23, 0, 1, 2, 3})
-
-# ET hours after midnight that belong to the PRIOR calendar date's service night
-# — a train running at 01:00 Sunday is part of Saturday night's service, not a
-# new night. Mirrors the after-midnight service-class wrap (journal ~2026 hourly
-# amplifier / schedule wrap). schedule_bin is deliberately NOT changed; this key
-# governs only the bootstrap/labelling night unit inside this tool.
-_AFTER_MIDNIGHT_HOURS: frozenset[int] = frozenset({0, 1, 2, 3})
-
-
-def _service_night(epoch_seconds: int) -> date:
-    """The ET service-night a tick belongs to: its ET date, rolled back one day
-    when the ET hour is 0-3, so Sat 23:00 and Sun 01:00 share one night (Saturday)
-    and Mon 01:00 belongs to Sunday's night. This is the resampling/label unit,
-    replacing plain _et_date so a night does not split at midnight."""
-    dt = datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ)
-    d = dt.date()
-    return d - timedelta(days=1) if dt.hour in _AFTER_MIDNIGHT_HOURS else d
 
 
 def is_weekend_late_tick(
@@ -438,18 +429,13 @@ def _service_series_over(
     this set is the ground truth for "a snapshot existed here" — unlike alert
     observation ticks, which are reconstructed from active_periods and can span a
     collection gap."""
-    from training.load_r2 import (
-        _snap_tick,  # pyright: ignore[reportPrivateUsage]
-        build_service_series,
-        fetch_trip_update_metrics,
-    )
+    from training.load_r2 import build_service_series, fetch_trip_update_metrics
 
     print(f"fetching trip_updates {start}..{end}", file=sys.stderr)
     bodies = fetch_trip_update_metrics(
         cfg, start_date=start, end_date=end, client=client
     )
-    witness = {_snap_tick(int(b.get("observed_at") or 0)) for b in bodies}
-    return build_service_series(bodies), witness
+    return build_service_series(bodies), snapshot_tick_witness(bodies)
 
 
 def _alerts_over(
@@ -460,18 +446,11 @@ def _alerts_over(
     The alerts fetch is a separate request from the trip-updates cron, so a night
     whose cron ran but archived NO alert version anywhere is an alerts outage
     reading falsely quiet, not genuine silence."""
-    from training.load_r2 import (
-        _snap_tick,  # pyright: ignore[reportPrivateUsage]
-        build_tick_observations,
-        fetch_alert_versions,
-    )
+    from training.load_r2 import build_tick_observations, fetch_alert_versions
 
     print(f"fetching alert_versions {start}..{end}", file=sys.stderr)
     bodies = fetch_alert_versions(cfg, start_date=start, end_date=end, client=client)
-    alert_nights = {
-        _service_night(_snap_tick(int(b.get("observed_at") or 0))) for b in bodies
-    }
-    return build_tick_observations(bodies), alert_nights
+    return build_tick_observations(bodies), alert_night_witness(bodies)
 
 
 def run_split(
@@ -573,7 +552,7 @@ def run_paired(
     long_start = fit_end - timedelta(days=fit_days_long - 1)
     short_start = fit_end - timedelta(days=fit_days_short - 1)
     long_series, _ = _service_series_over(cfg, client, long_start, fit_end)
-    short_cut = _et_midnight(short_start)
+    short_cut = et_midnight(short_start)
     short_series = {k: v for k, v in long_series.items() if k[1] >= short_cut}
     score_series, score_snapshots = _service_series_over(
         cfg, client, score_start, score_end
@@ -617,15 +596,6 @@ def run_paired(
             "short_fit_tick_gate_would_ship": _rate_json(fa_short),
         },
     }
-
-
-def _et_midnight(d: date) -> int:
-    """Epoch seconds at ET midnight starting date `d` — the cutoff for slicing the
-    short fit off the long series. Must be ET, not UTC: every night concept here
-    (schedule_bin, _et_date) is ET, and a UTC-midnight cut would fold 20:00-23:59
-    ET of the PRIOR date — the weekend-late band under study — into the short
-    window, contaminating its p90."""
-    return int(datetime(d.year, d.month, d.day, tzinfo=_NYC_TZ).timestamp())
 
 
 def main(argv: Sequence[str] | None = None) -> int:

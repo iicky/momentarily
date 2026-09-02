@@ -76,8 +76,11 @@ test("platformCrowding takes the cap from the surface, not a local constant", ()
   const v = platformCrowding(pc, "127N", OBSERVED);
   assert.equal(v.estimated, true);
   assert.equal(v.estimated && v.riders, 400);
-  // Exactly at the cap still estimates; the worker abstains only beyond it.
-  assert.equal(platformCrowding(surface(10, 45, 45), "127N", OBSERVED).estimated, true);
+  // Pin the boundary from both sides: just under the widened cap still
+  // estimates, exactly at it abstains — matching the worker's own inclusive
+  // comparison (a gap of exactly the cap abstains too).
+  assert.equal(platformCrowding(surface(10, 44, 45), "127N", OBSERVED).estimated, true);
+  assert.equal(platformCrowding(surface(10, 45, 45), "127N", OBSERVED).estimated, false);
 });
 
 test("platformCrowding abstains rather than reporting an empty platform", () => {

@@ -24,11 +24,13 @@
 import type { AlphaState, RouteRoll } from './alpha';
 import { readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
 import {
+  archiveAlertsLiveness,
   archiveEneSnapshot,
   archiveNewAlerts,
   archiveTraceRows,
   archiveTripUpdateMetric,
   archiveVehicleMetric,
+  deriveAlertsLiveness,
 } from './archive';
 import { updateStationWait } from './crowding';
 import type { RouteSnapshot } from './derive';
@@ -343,14 +345,38 @@ export default {
     // On failure, fall back to the last successful alerts fetch so the
     // snapshot reports the feed gap honestly.
     let alertsFeedFresh = lastSeen.alerts_at;
+    // Whether the fetch itself round-tripped, independent of alertsPayload's
+    // truthiness — fetchJson resolves (never throws) even for a literal
+    // JSON `null` body, which would otherwise be misread as a fetch failure
+    // by the liveness record below. Feeds step 2b only; every existing gate
+    // in this function still keys off alertsPayload, unchanged.
+    let alertsFetchOk = false;
     try {
       alertsPayload = await fetchJson(FEEDS.alerts);
+      alertsFetchOk = true;
       alertsFeedFresh = observedAt;
       lastSeen.alerts_at = observedAt;
     } catch (err) {
       console.error('alerts fetch failed; feed gap this tick:', err);
     }
     step('2-fetch-alerts');
+
+    // --- Step 2b: archive this tick's alert-fetch liveness ---
+    // Unconditional, in its own try/catch, and placed BEFORE step 3's
+    // `alertsPayload !== null` gate so a failed fetch — which skips step 3
+    // entirely — still gets a record, and nothing in the fetch's own catch
+    // block above can suppress it. See archive.ts's archiveAlertsLiveness
+    // for why this record exists.
+    try {
+      await archiveAlertsLiveness(
+        env.MOMENTARILY,
+        deriveAlertsLiveness(alertsFetchOk, alertsFeedFresh),
+        observedAt,
+      );
+    } catch (err) {
+      console.error('alerts liveness archive failed:', err);
+    }
+    step('2b-alerts-liveness');
 
     // --- Step 3: archive new versions ---
     if (alertsPayload !== null) {

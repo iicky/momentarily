@@ -19,13 +19,20 @@ const fetchState = vi.hoisted(() => ({
   // network/upstream failure rather than an empty-but-successful feed —
   // Promise.allSettled in index.ts treats these two very differently.
   protobufFailUrls: new Set<string>(),
+  // Same idea for fetchJson (e.g. FEEDS.alerts) — a rejected promise, not an
+  // empty-but-successful `{}` response, so index.ts's try/catch around the
+  // alerts fetch takes its catch branch like a real upstream outage would.
+  jsonFailUrls: new Set<string>(),
 }));
 
 vi.mock('../src/fetch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/fetch')>();
   return {
     ...actual,
-    fetchJson: async (url: string) => fetchState.jsonByUrl.get(url) ?? {},
+    fetchJson: async (url: string) => {
+      if (fetchState.jsonFailUrls.has(url)) throw new Error(`mock fetch failure: ${url}`);
+      return fetchState.jsonByUrl.get(url) ?? {};
+    },
     fetchProtobuf: async (url: string) => {
       fetchState.protobufCalls.push(url);
       if (fetchState.protobufFailUrls.has(url)) throw new Error(`mock fetch failure: ${url}`);
@@ -169,6 +176,7 @@ beforeEach(() => {
   fetchState.protobufByUrl.clear();
   fetchState.protobufCalls = [];
   fetchState.protobufFailUrls.clear();
+  fetchState.jsonFailUrls.clear();
 });
 
 describe('tickMinute', () => {
@@ -386,6 +394,103 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     expect(traceRowsAt(store, traceKeys[1]!)).toEqual([
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: true, stop_seq: 1 }),
     ]);
+  });
+});
+
+describe('scheduled: alert-fetch liveness record (archive/alerts_liveness/)', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+  const NEXT_BOUNDARY_AT = BOUNDARY_AT + 300; // +5 minutes
+
+  function livenessKey(observedAt: number): string {
+    const date = new Date(observedAt * 1000).toISOString().slice(0, 10);
+    return `archive/alerts_liveness/${date}/${observedAt}.json`;
+  }
+
+  async function runTick(
+    env: Env,
+    observedAt: number,
+  ): Promise<void> {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(observedAt * 1000);
+    try {
+      await worker.scheduled(scheduledAt(observedAt), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
+
+  test('a successful, alert-free tick still writes a liveness record even though archiveNewAlerts writes nothing', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runTick(env, BOUNDARY_AT);
+
+    // The quiet-success case this record exists to disambiguate: zero new
+    // alert versions archived (nothing changed), same as a total outage
+    // would produce — but the liveness record still lands.
+    expect(keysWithPrefix(store, 'archive/alerts/')).toHaveLength(0);
+    expect(jsonAt(store, livenessKey(BOUNDARY_AT))).toEqual({
+      observed_at: BOUNDARY_AT,
+      outcome: 'success',
+      fetched_at: BOUNDARY_AT,
+    });
+  });
+
+  test('a failed alerts fetch STILL writes a liveness record, with outcome "fail"', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonFailUrls.add(FEEDS.alerts);
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runTick(env, BOUNDARY_AT);
+
+    // Cold start: no prior successful fetch, so the stale fallback is 0 —
+    // still recorded honestly rather than omitted or faked fresh.
+    expect(jsonAt(store, livenessKey(BOUNDARY_AT))).toEqual({
+      observed_at: BOUNDARY_AT,
+      outcome: 'fail',
+      fetched_at: 0,
+    });
+    // The 5-minute pipeline otherwise degrades gracefully around the gap —
+    // this test only pins the liveness record, not the whole tick.
+  });
+
+  test('stale-fallback branch: a fetch failure after a prior success reports the STALE fetched_at, not the current tick', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    // Tick 1: alerts fetch succeeds, alerts_at advances to BOUNDARY_AT.
+    await runTick(env, BOUNDARY_AT);
+    expect(jsonAt(store, livenessKey(BOUNDARY_AT))).toMatchObject({ outcome: 'success' });
+
+    // Tick 2: alerts fetch now fails. The record must report BOUNDARY_AT —
+    // the last known-good fetch — not NEXT_BOUNDARY_AT, which would silently
+    // claim the feed was live when it was not.
+    fetchState.jsonFailUrls.add(FEEDS.alerts);
+    await runTick(env, NEXT_BOUNDARY_AT);
+
+    expect(jsonAt(store, livenessKey(NEXT_BOUNDARY_AT))).toEqual({
+      observed_at: NEXT_BOUNDARY_AT,
+      outcome: 'fail',
+      fetched_at: BOUNDARY_AT,
+    });
+  });
+
+  test('the published snapshot contract is untouched: alertsFreshness (v1/snapshot.json) still reflects the same stale fallback the archive record now also captures', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runTick(env, BOUNDARY_AT);
+    fetchState.jsonFailUrls.add(FEEDS.alerts);
+    await runTick(env, NEXT_BOUNDARY_AT);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as { freshness: { subway_alerts: number } };
+    expect(snapshot.freshness.subway_alerts).toBe(BOUNDARY_AT);
   });
 });
 

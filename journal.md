@@ -6646,3 +6646,146 @@ liveness); the
 ABSOLUTE FA levels (0.5%-12%) should be read as alert-quiet rates under a
 night-granular witness, not certified-normal rates. A tick-certified label
 needs a per-tick alert-fetch success record the Worker does not archive today.
+
+## 2026-09-02 — the nearest-rank off-by-one that hopped the published p90 across the bimodal gap: FS/we20's upper service bound was 18 trains where its normal mode tops out at 6
+
+origin: agent
+
+Consolidation pass on the eval seams, prompted by four review-caught bugs in one
+day across three independently-written tools. Extracted training/eval_common.py
+and migrated the duplicated seams onto it. One of the "small" fixes turned out
+not to be small.
+
+THE BUG. Nearest-rank was implemented as `int(q*n)` in two places
+(headway.py `_nearest_rank`, load_r2.py `compute_service_quantiles`). The correct
+0-indexed rank is `ceil(q*n)-1`, which equals `floor(q*n)` for every NON-integer
+product and is one rank lower exactly when `q*n` lands on an integer. A test
+asserted the buggy values (p10=2.0, p90=10.0 for the ten values 1..10, where
+nearest-rank gives 1.0 and 9.0), which is why it survived review twice.
+
+WHY IT WAS NOT COSMETIC. n=120 is the common weekend-late cell size, and
+0.9*120=108 is an integer, so every such cell took rank 108 instead of 107. On
+the bimodal cells that motivated the whole weekend-baseline investigation, ranks
+107 and 108 sit on OPPOSITE SIDES of the bimodal gap. Measured on the live
+35-day window (2026-07-29..09-01, 1122 published cells):
+
+  FS/we20  sorted[100:] = [4,6,6,6,6,6,6,6,18,18,18,18,18,18,18,19,19,19,19,19]
+           rank 108 -> p90 = 18      rank 107 -> p90 = 6
+  J/we23   rank 108 -> 16            rank 107 -> 9
+  1/we21   rank 108 -> 22            rank 107 -> 17
+
+So the published upper service bound for the Franklin Ave shuttle's weekend
+evening was 18 trains, three times the top of its normal mode. p90 moved on
+116/1122 cells (mean -1.586), p10 on 44/1122 (mean -1.045). The bound is what
+the Worker divides by the cell median to get service_high_ratio, so the meter
+could effectively never read high on these cells, and every above-p90 false-alarm
+rate measured against them was understated. Rebuilt and published the sidecar
+(state/service_baseline.json v1788375377, 27 routes, 1122 cells);
+params_trained_at 1788229972 unchanged, so the frozen model is untouched.
+
+FLOATING POINT, CHECKED NOT ASSUMED. `ceil(q*n)-1` would re-introduce the same
+off-by-one if `q*n` came out a hair above an integer in binary. Scanned q in
+{0.10, 0.50, 0.90} for every n in 1..200000 against exact rational arithmetic:
+zero mismatches. The implementation still snaps the product (`round(q*n, 9)`) so
+that stays true of a q added later.
+
+GATE FIGURES AFTER THE FIX (the weekend night-gate counterfactual, same
+--paired design, score 2026-08-12..09-01, 88 shared cells, n=13 route-nights):
+long-35d fit 0.1138 [0.0064, 0.2901] 71/624 vs short-13d 0.1234 [0.0192, 0.2933]
+77/624 — ratio 1.08x, down from 1.18x, CIs still heavily overlapping. The
+short-fit figure is byte-identical to the pre-fix run because 13-day cells do not
+hit an integer product; the long fit rose (65 -> 71 alarmed) because the corrected
+p90 is a tighter threshold. The verdict does not move: night-gating still shows
+NO measurable false-alarm benefit, only window-adequacy deferral. Decision taken:
+keep the gate on deferral grounds, leave the tod_bin emission ungated.
+
+NEGATIVE RESULT — the liveness witness cost nothing, so it buys certainty rather
+than trading it. Gated the wait signal's confirmed-normal label on the same
+two-witness rule the supply night-gate eval uses (a collected vehicle body with
+this route's own line-group feed fresh, AND an alert version archived somewhere
+on the system that service night). Expected a 10-15% sample loss. Measured over
+2026-08-12..09-02: both-axes-only 112,384 route-ticks, witnessed 112,384 —
+ZERO dropped. Breakdown: 0 ticks with no collected body, 0 with the route's own
+feed group stale, 0 nights with no alert version. The archive was simply healthy
+across this window, the same way the trace's stall handling has never once fired
+(max inter-poll gap 120s over 21 days). So the label is now PROVEN rather than
+assumed at no cost — but the rule is untested against a real outage, exactly like
+the stall path, and its value will only show up in a window that has one.
+
+Refreshed wait figures on the corrected quantiles (2026-08-12..09-02, 944
+baseline cells): gate-a above_p90 0.0954 [0.0894, 0.1015] (was 0.0929), sustained
+0.0551 (was 0.0527), twice_typical 0.0191 (unchanged — it is p50-referenced and
+p50's rank did not move); gate-b schedule reference 0.4430 [0.4239, 0.4626] (was
+0.445) vs own-cell 0.0956 (was 0.093). The above-p90 rates rose because the
+corrected p90 is tighter, which is the expected direction. Exposure differs from
+the earlier entry (402 route-nights / 153,374 tick-readings against 334 /
+145,619); the witness rule drops nothing and the service-night key can only
+merge nights, so the growth is not from either change. Most likely the supply
+axis abstains on fewer cells as the trip-updates archive lengthens past the
+8-night gate — NOT verified, and flagged here rather than asserted.
+
+SEAMS NOW SHARED, AND WHAT DELIBERATELY IS NOT. training/eval_common.py owns
+et_date, service_night, et_midnight, snap_tick, nearest_rank, and the two
+witness builders; headway.py, load_r2.py, headway_eval.py and
+service_night_gate_eval.py all import them, retiring three copies of the ET-date
+helper and one each of the service-night, ET-midnight and witness builders. Each
+tool's CLUSTERING UNIT was left alone on purpose: the wait and supply evals
+cluster by night, the movement and online-FDR tools score episodes, and episodes
+are genuinely their unit. Forcing those onto nights would have moved the
+published detection-latency figure as a side effect of a refactor, which is the
+category of change that caused this pass in the first place.
+
+## 2026-09-02 — CORRECTION to the entry above: the witness result is an audit trail, not proof of normality; and the raw-retention decision was left half-made
+
+origin: self
+
+Review caught two overclaims in the entry above. Both are mine and both are the
+same kind of error — treating an absence of contrary evidence as positive
+evidence.
+
+1. "The label is now PROVEN rather than assumed" is wrong, and the sentence
+following it (that the rule is untested) contradicts it in the same breath. What
+the zero-exclusion measurement establishes is narrow: over 2026-08-12..09-02 the
+two-witness rule removed 0 of 112,384 route-ticks, so adopting it cost no sample.
+That is all. It does NOT establish that those ticks were normal:
+
+  - The alert-side witness is NIGHT-granular. A mid-night alerts outage following
+    one successful fetch is still indistinguishable from genuine quiet in this
+    window. The per-tick liveness record the Worker now archives closes that gap,
+    but only for windows after its deploy — not retroactively for this one.
+  - A filter that has excluded nothing has not been shown to discriminate. It is
+    unexercised, exactly like the trace stall path it resembles, and its value is
+    only demonstrable in a window containing a real outage.
+
+Correct reading: each label now CARRIES positive evidence that the archive was
+recording, where before it carried none. That is an improvement in auditability,
+not a certification of normality. "Normal" here remains the absence of a detected
+problem under a night-granular witness.
+
+2. Raw retention was encoded half-way. archive/vehicles/ and archive/trip_updates/
+moved from unpoliced to an explicit 3650-day window, which is defensible on its
+own (silence replaced by policy, 3 MB/day combined). But framing that as "keep the
+historicals" while archive/trace/ is still deleted at 30 days is misleading,
+because trace is the ONLY prefix whose retention materially costs anything and by
+far the most valuable one to keep: it is the per-minute per-train census from
+which stop-level timing, headways and traversals are all reconstructed. Measured
+2026-09-02, at R2 Standard list ($0.015/GB-month):
+
+  prefix                window   steady GB   $/mo
+  archive/trace/            30d        2.7   0.04   <- 89.9 MB/day
+  archive/vehicles/       3650d        9.1   0.14   <- 2.5 MB/day
+  archive/trip_updates/   3650d        1.8   0.03   <- 0.5 MB/day
+  archive/traversals/     3650d        6.6   0.10   <- 1.8 MB/day, derived
+
+  trace at 365d = 32.8 GB (~$0.49/mo); at 3650d = 328 GB (~$4.92/mo), which is
+  16x every other prefix combined and still under five dollars a month.
+
+So the 30-day trace cap is not a cost decision — at these volumes nothing here is
+a cost decision. It is a decision about whether stop-level history older than a
+month is worth keeping, and today the answer encoded in the code is no: no model
+can ever be evaluated on more than 30 days of stop-level data, and the headway
+corpus is permanently capped at ~a month however long the project runs. That
+tradeoff was made when trace was the largest prefix by two orders of magnitude
+and is worth revisiting on its own terms rather than inheriting it by silence.
+Deliberately NOT changed here: it is a standing decision with a documented
+rationale, and changing it belongs in its own change with its own reasoning.

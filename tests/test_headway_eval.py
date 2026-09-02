@@ -4,10 +4,11 @@ severity report's disagreement/feed-context accounting. Synthetic data only."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from training.eval_common import service_night
 from training.headway import TickWait, WaitCell
 from training.headway_eval import (
     Unit,
@@ -32,13 +33,61 @@ def _cell(p50: float, p90: float) -> WaitCell:
     )
 
 
-# --- confirmed-normal is the AND of two axes, abstention excluded ---
+# --- confirmed-normal is the AND of two axes, then two liveness witnesses ---
+
+
+def _witnessed(*ticks: int) -> tuple[dict[int, set[str]], set[date]]:
+    """Both witnesses satisfied for `ticks`: route A's line-group feed fresh at
+    each tick, and an alert version archived on each tick's service night."""
+    return (
+        {t: {"ace"} for t in ticks},
+        {service_night(t) for t in ticks},
+    )
 
 
 def test_confirmed_normal_requires_both_axes():
-    mv = {("A", 100): "normal", ("A", 200): "normal", ("A", 300): "disrupted"}
-    sup = {("A", 100): "normal", ("A", 200): "disrupted"}  # 300 absent = abstain
-    assert confirmed_normal(mv, sup) == {("A", 100)}
+    t1, t2, t3 = _epoch(10), _epoch(11), _epoch(12)
+    mv = {("A", t1): "normal", ("A", t2): "normal", ("A", t3): "disrupted"}
+    sup = {("A", t1): "normal", ("A", t2): "disrupted"}  # t3 absent = abstain
+    fresh, nights = _witnessed(t1, t2, t3)
+    got = confirmed_normal(mv, sup, fresh=fresh, alert_nights=nights)
+    assert got == {("A", t1)}
+
+
+def test_confirmed_normal_excludes_ticks_the_archive_cannot_witness():
+    """Both axes read the same archive, so a collection gap makes them agree on
+    "nothing wrong" for want of any evidence. An unwitnessed tick is dropped."""
+    t1, t2 = _epoch(10), _epoch(11)
+    mv = {("A", t1): "normal", ("A", t2): "normal"}
+    sup = {("A", t1): "normal", ("A", t2): "normal"}
+    fresh, nights = _witnessed(t1)  # t2 has no collected body
+    assert confirmed_normal(mv, sup, fresh=fresh, alert_nights=nights) == {("A", t1)}
+
+
+def test_confirmed_normal_excludes_ticks_whose_own_feed_group_stalled():
+    """A tick can be collected while the route's own line-group feed is stale —
+    its trains simply vanish from the trace, which is common-mode blindness, not
+    calm service. Route A is governed by the 'ace' group."""
+    t1, t2 = _epoch(10), _epoch(11)
+    mv = {("A", t1): "normal", ("A", t2): "normal"}
+    sup = {("A", t1): "normal", ("A", t2): "normal"}
+    fresh = {t1: {"ace"}, t2: {"bdfm"}}  # t2 collected, but not A's group
+    nights = {service_night(t1), service_night(t2)}
+    assert confirmed_normal(mv, sup, fresh=fresh, alert_nights=nights) == {("A", t1)}
+
+
+def test_confirmed_normal_excludes_nights_with_no_alert_version_archived():
+    """The alerts feed is a separate fetch with a stale-fallback, so cron
+    liveness alone cannot prove quiet. A night with no alert archived anywhere is
+    an outage reading as calm, and is excluded even though both axes say normal
+    and the vehicle feed was fresh."""
+    t1 = _epoch(10, day=20)
+    t2 = _epoch(10, day=21)  # a different service night
+    mv = {("A", t1): "normal", ("A", t2): "normal"}
+    sup = {("A", t1): "normal", ("A", t2): "normal"}
+    fresh = {t1: {"ace"}, t2: {"ace"}}
+    nights = {service_night(t1)}  # t2's night saw no alert version at all
+    assert confirmed_normal(mv, sup, fresh=fresh, alert_nights=nights) == {("A", t1)}
 
 
 # --- night bootstrap withholds the interval below two clusters ---

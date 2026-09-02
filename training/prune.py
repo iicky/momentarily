@@ -53,6 +53,36 @@ DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     # Tiny — 541 windows over five days — so the window is set by usefulness
     # rather than size.
     ("archive/windows/", 3650),
+    # Raw per-tick vehicle census (archive/vehicles/) and per-tick trip-
+    # assignment census (archive/trip_updates/), same treatment for the same
+    # reason: both are read back at most 35 days (training/
+    # backfill_service_baseline.py's DEFAULT_WINDOW_DAYS / train_em.
+    # SERVICE_SIDECAR_WINDOW_DAYS, the longest lookback of any current reader
+    # of either), but neither is capped at that headroom because both are
+    # raw enough to answer questions no reader has been written for yet —
+    # open work is explicitly blocked on the archive covering more than a
+    # 35-day window. Unlike archive/trace/, size isn't the constraint here:
+    # measured 2026-09-02, archive/vehicles/ is 2.5 MB/day (21,017 objects,
+    # 0.18 GB over 74 days, 2026-06-21..2026-09-02) and archive/trip_updates/
+    # is 0.5 MB/day (22,931 objects, 0.04 GB over 80 days,
+    # 2026-06-15..2026-09-02) — combined ~3 MB/day, ~1.1 GB/year, against
+    # archive/trace/'s 89.9 MB/day. As with archive/traversals/ and
+    # archive/windows/ above, the window is set by future usefulness rather
+    # than by size, and set explicitly so both prefixes are still policed
+    # rather than silently unbounded.
+    ("archive/vehicles/", 3650),
+    ("archive/trip_updates/", 3650),
+    # Per-tick liveness record for the alerts fetch (archive/alerts_liveness/),
+    # written by worker/src/archive.ts's archiveAlertsLiveness every 5-minute
+    # tick regardless of CAS outcome, so fetch reliability itself becomes
+    # evaluable. One ~70-75-byte JSON body plus a ~50-char key per tick, 288
+    # ticks/day: ~21-25 KB/day, estimated by the implementer at introduction
+    # (not yet measured against the live bucket) — smaller than every other
+    # prefix in this table. A tiny permanent evaluation input, not a raw
+    # stream capped by size, so it gets the same effectively-keep treatment
+    # as archive/vehicles/ above: kept for future usefulness and set
+    # explicitly so it stays policed rather than silently unbounded.
+    ("archive/alerts_liveness/", 3650),
     # NOT date-partitioned: archive/gtfs/ is content-addressed by sha256, so the
     # date matcher below never matches it and it is intentionally absent from
     # this table. Deleting a feed artifact by age would break replay of exactly

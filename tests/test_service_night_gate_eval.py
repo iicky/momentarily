@@ -8,11 +8,10 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from momentarily.hmm import Observation, schedule_bin
+from training.eval_common import et_midnight
 from training.load import TickObservation
 from training.load_r2 import ServiceQuantiles, compute_service_quantiles
 from training.service_night_gate_eval import (
-    _et_midnight,  # pyright: ignore[reportPrivateUsage]
-    _service_night,  # pyright: ignore[reportPrivateUsage]
     abstention_tradeoff,
     false_alarm_rate,
     is_weekend_late_tick,
@@ -26,8 +25,9 @@ _ET = ZoneInfo("America/New_York")
 
 
 def _tick(y: int, mo: int, d: int, h: int) -> int:
-    """Epoch seconds for a wall-clock ET hour — schedule_bin/_et_date both read
-    ET, so build the fixtures in ET to land in the intended bin and night."""
+    """Epoch seconds for a wall-clock ET hour — schedule_bin and the service-night
+    key both read ET, so build the fixtures in ET to land in the intended bin
+    and night."""
     return int(datetime(y, mo, d, h, tzinfo=_ET).timestamp())
 
 
@@ -44,7 +44,7 @@ def test_short_fit_cutoff_is_et_midnight_not_utc():
     kept. A UTC-midnight cut would keep the eve's 20:00-23:59 ET, folding the very
     weekend-late band under study into the short window's p90."""
     short_start = date(2026, 8, 8)  # a Saturday
-    cutoff = _et_midnight(short_start)
+    cutoff = et_midnight(short_start)
     eve_2300 = _tick(2026, 8, 7, 23)  # 23:00 ET the night before
     start_0000 = _tick(2026, 8, 8, 0)  # 00:00 ET of short_start
     assert eve_2300 < cutoff  # excluded from the short fit
@@ -63,13 +63,6 @@ def test_late_night_filter_is_weekend_late_service_by_service_night():
     assert not is_weekend_late_tick(_tick(2026, 8, 15, 1))  # Sat 01 -> Fri night, OUT
     assert not is_weekend_late_tick(_tick(2026, 8, 15, 12))  # Sat midday
     assert not is_weekend_late_tick(_tick(2026, 8, 18, 1))  # Tue 01 -> Mon night
-
-
-def test_service_night_rolls_after_midnight_hours_to_prior_date():
-    assert _service_night(_tick(2026, 8, 15, 23)) == date(2026, 8, 15)  # Sat eve
-    assert _service_night(_tick(2026, 8, 16, 1)) == date(2026, 8, 15)  # Sun 01 -> Sat
-    assert _service_night(_tick(2026, 8, 17, 1)) == date(2026, 8, 16)  # Mon 01 -> Sun
-    assert _service_night(_tick(2026, 8, 16, 4)) == date(2026, 8, 16)  # 04:00 stays
 
 
 def test_night_labels_key_by_service_night_merges_across_midnight():

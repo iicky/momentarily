@@ -736,15 +736,31 @@ def _assigned_series(route: str, vals: list[int]) -> dict[tuple[str, int], int]:
 
 
 def test_compute_service_quantiles_nearest_rank_p10_p90():
-    """Nearest-rank on the cell's own sorted assigned_n samples: for the 10
-    values 1..10, p10 is sorted[n // 10] (the 2nd-smallest) and p90 is
-    sorted[int(n * 0.9)] (the largest) — both an OBSERVED assigned_n value,
-    never interpolated between two samples."""
+    """Nearest-rank on the cell's own sorted assigned_n samples: 1-indexed rank
+    ceil(q*n), so for the 10 values 1..10 p10 is the smallest and p90 the 9th —
+    both an OBSERVED assigned_n value, never interpolated between two samples.
+
+    n=10 is deliberately a case where q*n is an integer for both quantiles,
+    which is the only case where the rank is ambiguous in practice: taking
+    int(q*n) instead selects one rank too high (2.0 and 10.0 here), widening
+    both published bounds outward and understating every false-alarm rate
+    measured against them."""
     series = _assigned_series("A", list(range(1, 11)))  # 1..10, n=10
     cells = compute_service_quantiles(series, min_samples=10)
     cell = cells[("A", tod_bin(T0))]
-    assert cell.p10 == 2.0
-    assert cell.p90 == 10.0
+    assert cell.p10 == 1.0
+    assert cell.p90 == 9.0
+
+
+def test_compute_service_quantiles_nearest_rank_non_integer_product():
+    """The non-integer case is unchanged by the rank fix: for n=7, p90 is
+    ceil(6.3)=7th = the largest, and p10 is ceil(0.7)=1st = the smallest. Pins
+    that the correction touched only the integer boundary, not every quantile."""
+    series = _assigned_series("A", list(range(1, 8)))  # 1..7, n=7
+    cells = compute_service_quantiles(series, min_samples=7)
+    cell = cells[("A", tod_bin(T0))]
+    assert cell.p10 == 1.0
+    assert cell.p90 == 7.0
 
 
 def test_compute_service_quantiles_omits_cells_below_min_samples():

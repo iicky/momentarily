@@ -28,6 +28,7 @@ from blake3 import blake3
 
 from momentarily.hmm import Observation, schedule_bin, tod_bin
 from momentarily.mapping import is_planned_work_id
+from training.eval_common import et_date, nearest_rank
 from training.hierarchical import PooledCell, partially_pool
 from training.load import TICK_SECONDS, TickObservation
 from training.r2_client import R2Config, get_object_bytes, load_config, make_client
@@ -507,8 +508,13 @@ SERVICE_MIN_NIGHTS = 8
 def _et_date(epoch_seconds: int) -> date:
     """The America/New_York calendar date a tick falls on — the unit
     independent-night gating counts, so autocorrelated same-night ticks collapse
-    to one draw. Same zone schedule_bin/tod_bin already bucket by."""
-    return datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ).date()
+    to one draw. Same zone schedule_bin/tod_bin already bucket by.
+
+    Thin wrapper on the shared definition, kept as a module-local name because
+    every caller here is a per-hour or per-block cell, for which the calendar
+    date IS the right unit (each date contributes one observation of that hour).
+    Pools spanning several hours of one evening must use `service_night`."""
+    return et_date(epoch_seconds)
 
 
 # Baselines are keyed on (route, time bucket), and which bucket is a real
@@ -583,9 +589,11 @@ def compute_service_quantiles[BinKey: (int, str)](
     compute_baseline: a cell present in one is present in the other (pass the
     SAME min_nights), so a caller can always pair a quantile with its median.
 
-    Nearest-rank on the cell's own sorted assigned_n samples: p10 is
-    sorted[n // 10], p90 is sorted[int(n * 0.9)] (0-indexed) — both are always
-    an OBSERVED assigned_n value, never interpolated between two samples."""
+    Nearest-rank on the cell's own sorted assigned_n samples, so both bounds are
+    always an OBSERVED assigned_n value, never interpolated between two samples.
+    See eval_common.nearest_rank for why the rank is ceil(q*n)-1 and not
+    int(q*n) — the two differ exactly when q*n is an integer, and this function
+    previously took the higher rank, widening every published bound outward."""
     buckets: dict[tuple[str, BinKey], list[int]] = {}
     nights: dict[tuple[str, BinKey], set[date]] = {}
     for (route, tick), assigned in series.items():
@@ -597,9 +605,9 @@ def compute_service_quantiles[BinKey: (int, str)](
         if len(vals) < min_samples or len(nights[key]) < min_nights:
             continue
         ordered = sorted(vals)
-        n = len(ordered)
         out[key] = ServiceQuantiles(
-            p10=float(ordered[n // 10]), p90=float(ordered[int(n * 0.9)])
+            p10=float(nearest_rank(ordered, 0.10)),
+            p90=float(nearest_rank(ordered, 0.90)),
         )
     return out
 

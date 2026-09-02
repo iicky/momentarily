@@ -35,14 +35,14 @@ import random
 import statistics
 import sys
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import groupby
 from typing import TYPE_CHECKING, cast
-from zoneinfo import ZoneInfo
 
 from momentarily.hmm import schedule_bin
+from training.eval_common import alert_night_witness, et_date, service_night
 from training.headway import (
     HEADWAY_MIN_NIGHTS,
     TICK_SECONDS,
@@ -62,13 +62,6 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
     from training.r2_client import R2Config
-
-_NYC_TZ = ZoneInfo("America/New_York")
-
-
-def _et_date(epoch_seconds: int):
-    """ET calendar date of a tick — the night unit clusters resample on."""
-    return datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ).date()
 
 
 # route -> the GTFS-RT line-group feed whose freshness governs it, so a
@@ -90,13 +83,44 @@ ROUTE_FEED_GROUP: dict[str, str] = {
 def confirmed_normal(
     movement: Mapping[tuple[str, int], str],
     supply: Mapping[tuple[str, int], str],
+    *,
+    fresh: Mapping[int, set[str]],
+    alert_nights: Set[date],
 ) -> set[tuple[str, int]]:
-    """(route, tick) pairs BOTH axes independently judged normal. A tick either
-    axis abstains on (absent from its map) or calls not-normal is excluded, so
-    the reference is only service two orthogonal-ish signals agree is ordinary."""
-    return {
-        k for k, v in movement.items() if v == "normal" and supply.get(k) == "normal"
-    }
+    """(route, tick) pairs BOTH axes independently judged normal AND the archive
+    can be PROVEN to have been recording at.
+
+    A tick either axis abstains on (absent from its map) or calls not-normal is
+    excluded, so the reference is only service two orthogonal-ish signals agree
+    is ordinary. That agreement is necessary but not sufficient: both axes read
+    the same archive, so a collection gap makes them agree on "nothing wrong"
+    for want of any evidence at all. Two liveness witnesses are therefore also
+    required, matching the supply night-gate eval's rule:
+
+      1. the tick is in `fresh` (a vehicle body was really collected then) and
+         this route's own line-group feed was among the fresh ones, so a
+         per-group stall is not read as calm service; AND
+      2. the tick's SERVICE night is in `alert_nights`, so an alerts-fetch
+         outage is not read as an absence of alerts.
+
+    Both witnesses are required arguments rather than options: the whole failure
+    mode here is that an unwitnessed label looks better than a witnessed one, so
+    there is deliberately no way to ask for the flattering version.
+    """
+    out: set[tuple[str, int]] = set()
+    for (route, tick), verdict in movement.items():
+        if verdict != "normal" or supply.get((route, tick)) != "normal":
+            continue
+        feeds = fresh.get(tick)
+        if feeds is None:
+            continue
+        group = ROUTE_FEED_GROUP.get(route)
+        if group is not None and group not in feeds:
+            continue
+        if service_night(tick) not in alert_nights:
+            continue
+        out.add((route, tick))
+    return out
 
 
 # --- night-clustered bootstrap ---
@@ -228,7 +252,7 @@ def false_alarm_gate(
             cell = baseline.get(_cell_of(tw))
             if cell is None:
                 continue
-            night = (route, _et_date(tw.tick).isoformat())
+            night = (route, service_night(tw.tick).isoformat())
             for flag, fired in (
                 ("above_p90", above_p90(tw, cell)),
                 ("twice_typical", twice_typical(tw, cell)),
@@ -277,7 +301,7 @@ def schedule_vs_typical(
             sched = swt.get(_cell_of(tw))
             if cell is None or sched is None:
                 continue
-            night = (route, _et_date(tw.tick).isoformat())
+            night = (route, service_night(tw.tick).isoformat())
             totals[night] = totals.get(night, 0) + 1
             sched_units.setdefault(night, []).append(
                 1 if tw.awt_sec > schedule_excess * sched else 0
@@ -312,7 +336,10 @@ def saturday_head_to_head(
             continue
         by_cell: dict[str, list[float]] = {}
         for tw in series:
-            if _et_date(tw.tick).isoformat() != day:
+            # Calendar date, not service night: this report is scoped to the
+            # cells touched on ONE named day, and its buckets are per-hour, so
+            # each date contributes one observation of each hour.
+            if et_date(tw.tick).isoformat() != day:
                 continue
             by_cell.setdefault(schedule_bin(tw.tick), []).append(tw.awt_sec)
         for sbin, awts in sorted(by_cell.items()):
@@ -572,9 +599,11 @@ def _truths(
     dict[tuple[str, int], str],
     dict[tuple[str, int], bool],
     dict[int, set[str]],
+    set[date],
 ]:
     """Movement, supply, and alert truths over the window, movement fit on a
-    leading window that ends before it (held out)."""
+    leading window that ends before it (held out), plus the alerts-fetch
+    liveness witness the confirmed-normal label is gated on."""
     from training.degradation_label import BIN_FN, degraded_now_truth
     from training.gtfs_static import load_topology, through_stops
     from training.load_r2 import (
@@ -625,11 +654,12 @@ def _truths(
         {k: v for k, v in all_series.items() if k[1] >= boundary}, supply_base
     )
 
-    obs = build_tick_observations(
-        fetch_alert_versions(cfg, start_date=start, end_date=end, client=client)  # type: ignore[arg-type]
+    alert_bodies = fetch_alert_versions(  # type: ignore[arg-type]
+        cfg, start_date=start, end_date=end, client=client
     )
+    obs = build_tick_observations(alert_bodies)
     has_delays = {(o.route_id, o.tick): o.observation.has_delays for o in obs}
-    return movement, supply, has_delays, fresh
+    return movement, supply, has_delays, fresh, alert_night_witness(alert_bodies)
 
 
 def _rate_json(r: Rate) -> dict[str, object]:
@@ -665,11 +695,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"reconstructing trace {start}..{end}", file=sys.stderr)
     waits = _reconstruct_waits(cfg, client, reference_stops, start, end)
     print("building movement/supply/alert truths", file=sys.stderr)
-    movement, supply, has_delays, fresh = _truths(
+    movement, supply, has_delays, fresh, alert_nights = _truths(
         cfg, client, start, end, args.fit_days
     )
 
-    normal = confirmed_normal(movement, supply)
+    normal = confirmed_normal(movement, supply, fresh=fresh, alert_nights=alert_nights)
     baseline = typical_actual_baseline(
         waits, normal_ticks=dict.fromkeys(normal, True), min_nights=HEADWAY_MIN_NIGHTS
     )

@@ -352,11 +352,12 @@ export type PlatformCrowdingView =
 // the client clock instead.
 //
 // The cap is the publisher's own, read off `method.max_gap_minutes` rather than
-// hardcoded here, and applied to OUR elapsed time. Past it the linear
+// hardcoded here, and applied to OUR elapsed time. At or past it the linear
 // accumulation stops describing a crowd — people give up and leave, and the
 // platform is usually out of service rather than jammed — which is why the
 // worker abstains on 1.04% of gaps. Extrapolating past a line the publisher
-// itself refused to cross would be this page inventing data.
+// itself refused to cross would be this page inventing data. Inclusive, to
+// match the worker's own comparison: a gap of exactly the cap abstains too.
 export function platformCrowding(
   pc: PlatformCrowding | null | undefined,
   platformId: string,
@@ -368,7 +369,7 @@ export function platformCrowding(
   // Clamped: a client clock running behind the publisher's must not subtract
   // riders off the front of the crowd.
   const minutesSince = Math.max(0, (nowSec - est.last_train_at) / 60);
-  if (minutesSince > pc.method.max_gap_minutes)
+  if (minutesSince >= pc.method.max_gap_minutes)
     return { estimated: false, reason: "gap_exceeds_cap", minutesSince };
   const riders = Math.round(est.entries_per_min * minutesSince);
   return {

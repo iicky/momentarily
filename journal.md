@@ -6422,3 +6422,227 @@ bound the fleet alarm COUNT the premise cited) but the absence of a flow-axis
 truth to control FDR against. Offline only; nothing published or wired live.
 
 ---
+
+## 2026-09-01 — night-gating the supply baseline: the weekend-late false-alarm amplifier is a fit-WINDOW-length effect, not a within-window cell partition
+
+origin: agent
+
+Offline eval of the supply baseline's independent-night gate (`SERVICE_MIN_NIGHTS=8`
+on `compute_baseline`/`compute_service_quantiles`), against the frozen
+v1787792319 artifact, via `training/service_night_gate_eval.py`. Fit the
+baseline+quantiles on a trailing window, score above-p90 false alarms on a
+DISJOINT confirmed-normal window (out-of-sample — in-sample above-p90 is ~0.10 by
+construction because every night feeds its own p90; the amplifier only bites
+nights the baseline never saw).
+
+**The gate lowers confirmed-normal weekend-late FA ~7x, same-cell.** Paired
+counterfactual, fit_end 2026-08-11, score 08-12..09-01: on the SAME 169
+weekend-late (route, schedule_bin) cells, the SAME 29 confirmed-normal
+(route,night) clusters / 348 ticks, the only thing varied is fit-window breadth.
+A 13-day fit (what a tick-gate would ship) reads above-p90 FA 0.0402
+[0.0057,0.0920], 14/348; a 35-day fit (the window the night gate forces) reads
+0.0057 [0.0000,0.0172], 2/348. Point ratio 7.1x, but the 95% night-bootstrap CIs
+TOUCH at ~0.017 — directional, not decisively separated at n=29 clusters. Likely
+conservative: the whole score window sits in the low-supply mode (a regime shift
+around 2026-07-20 took weekend late service from ~16 to ~9 trains and it stayed
+there), so score nights rarely exceed even a thin p90; the effect is larger when
+service returns to the high mode.
+
+**The benefit is temporal (window adequacy), NOT the within-window partition
+gk0z hypothesized.** On a single 35-day window, 169 of 184 weekend-late cells
+already clear the 8-night gate at 0.57% FA; the 15 that don't are merely
+sparsely-covered, and show 0% FA on their few nights — the thin cells inside one
+window are not systematically worse. The amplifier lives across window LENGTH:
+on 13 days every weekend-late cell has ~4 nights (0 clear the gate, all 172 are
+silenced); on 35 days ~10 nights. So the gate's real function is to REFUSE a
+thin-window publish and defer until ~a month accrues, at which point the same
+cells publish at 6-7x lower FA — not to discriminate good cells from bad within
+a window.
+
+**Abstention cost is small and redundant.** Steady-state (35-day window) the gate
+silences 15/184 weekend-late cells; over the score window those carry 3
+confirmed-normal and 34 disrupted nights, silencing 4 flagged disrupted-nights
+and 0 spurious — and all 4 are nights the alert feed already marks disrupted, so
+the supply axis silencing loses redundant signal, not unique signal.
+
+**The named bimodal targets (1/2/J we-cells) reproduce structurally but their
+forward FA is UNMEASURABLE here.** Over 35 days their per-night medians are
+plainly bimodal — route 1 we22/we23 span 2.1x (9..19, 8..16), route 2 we23 2.12x
+(8..17, median 9, p90 17), route J we22/we23 6.6-7.3x — matching the journal's
+1.7-2.1x, and the 35-day p90 spans both modes (route 2 we23 p90=17 covers the
+high nights) where a thin 13-day low-mode fit (p90~9) would flag every one. BUT
+routes 1/2/J carried an acute alert (delays/suspension/unplanned service-change)
+on EVERY weekend late night in the score window: 0 confirmed-normal weekend-late
+nights, so their individual out-of-sample FA cannot be measured — the supply
+axis on those exact cells is also where the alert feed is least silent.
+
+**Confirmed-normal is alert-consistency, and must keep planned advisories.**
+First cut excluded `has_planned`; routine "Planned -" trackwork advisories
+blanket nearly every weekend night, which zeroed every named-cell score night.
+Excluding only ACUTE alerts (planned kept; `has_service_change` already drops
+planned via its prefix guard) is correct: a genuinely reduced night reads LOW and
+never fires the above-p90 surplus flag, so keeping planned nights eligible cannot
+inflate the FA. This is a consistency reference (shared ATS-sourced service
+state), not an independent one.
+
+Verdict: night-gating measurably (directionally, CIs touching) lowers
+confirmed-normal weekend-late FA at negligible, redundant abstention cost — but
+the mechanism is window-adequacy deferral, not the cell partition the bead
+proposed, and the named 1/2/J cells can't be individually graded in a window
+where the alert feed never calls them normal.
+
+## 2026-09-01 — night-gate FA benefit does NOT survive a window shift: the 7x was one transient; revises the entry above
+
+origin: agent
+
+Follow-up to the entry directly above (same-day night-gating eval). Reran the
+SAME paired counterfactual (same night-bootstrap, same acute-only
+confirmed-normal, same 35d-vs-13d fit design, same tool) over two more score
+windows to try to separate the touching CIs. The effect did not strengthen — it
+COLLAPSED, and the requested high-mode window turned out infeasible in-archive.
+Three runs side by side, above-p90 confirmed-normal FA on the SAME shared cells,
+only fit-window breadth varied:
+
+- **August, fit_end 08-11, score 08-12..09-01** (original): 169 cells, 29 night
+  clusters. short-13d 0.0402 [0.0057,0.0920] 14/348 vs long-35d 0.0057
+  [0,0.0172] 2/348. 7.1x, CIs touch.
+- **August, fit_end 08-04, score 08-05..09-01** (widened to 4 weekends): 167
+  cells, 37 clusters. short-13d 0.0090 [0,0.0203] 4/444 vs long-35d 0.0090
+  [0,0.0203] 4/444. **1.0x — identical, the amplifier is gone.**
+- **mid-July high-supply score, fit_end 07-07, score 07-08..07-19** (requested):
+  **0 shared cells.** trip_updates coverage starts 2026-06-15 and the high-supply
+  mode ends ~07-19, so a 35d trailing fit reaches back only ~23d (~6 weekend
+  nights); no weekend-late cell clears the 8-night gate, night_pass is empty, and
+  the paired comparison is unmeasurable. A stable-high-mode test with the fixed
+  35/8 design cannot be run in this archive.
+
+**What this means.** The 7x in the first entry rested on ~12 excess alarmed ticks
+from ONE transient — the late-August (~08-22..27) return-to-high-service nights,
+scored against a 13d fit ending 08-11 that sat entirely in the low-supply mode.
+Move fit_end one week earlier and those exceedances leave the confirmed-normal
+set, and the thin- and wide-fit p90s classify every score tick identically
+(4/444 both). So the false-alarm reduction is NOT a robust property of the gate;
+it is a fragile, window-placement-specific artifact carried by a single regime
+transient, and it does not reproduce.
+
+**What DOES survive** is the mechanism, not the payoff: the gate's only lever is
+window-adequacy deferral (13d = ~4 weekend nights, all cells silenced; 35d = ~10,
+they publish). It never triages good cells from bad WITHIN a window — the 15
+sparse abstainers on a 35d window showed 0% FA, not elevated. So the earlier
+"night-gating measurably lowers FA" reads too strong; the honest claim is that
+the gate defers a thin-window publish, and whether that deferral prevents real
+false alarms depends entirely on whether a supply regime shift happens to land in
+the deferred window — which in the one measurable case it did (7x) and in the
+shifted case it did not (1x). Verdict stays open and moves toward negative on the
+FA payoff; the deferral rationale stands on its own.
+
+Boundary-bug note (pre-commit review): the short paired-fit was sliced at UTC
+midnight while every night concept here is ET, so it folded 20:00-23:59 ET of the
+eve of short_start — the weekend-late band itself — into the short window's p90.
+Fixed to cut at ET midnight (_et_midnight) with a pinning test; rerunning both
+windows (fit_end 08-11 and 08-04, same seeds/design) reproduced the figures above
+BIT-FOR-BIT (short 0.0402 14/348 / long 0.0057 2/348; and 0.0090 4/444 both) — the
+leaked eve band was too few ticks to move any nearest-rank p90 across an above-p90
+decision, so no reported number changes.
+
+## 2026-09-01 — CORRECTION: the night-gate FA benefit was a measurement artifact; two review-caught bugs reverse it to "no measurable effect". Revises both 2026-09-01 night-gate entries above
+
+origin: agent
+
+The pre-commit adversarial review caught two real bugs in
+`training/service_night_gate_eval.py`; fixing them erases the false-alarm
+benefit reported in the two entries above. Both prior entries' FA figures are
+SUPERSEDED by this one.
+
+**Bug 1 — the quietest, most-normal nights were dropped from the denominator.**
+`build_tick_observations` emits a row only for a (route, tick) some alert's
+informed_entity named, so an entirely alert-free route-night (full weekend
+service, no trackwork advisory) has NO observation and vanished from
+`night_labels` — making "confirmed-normal" contingent on planned-advisory
+coverage and systematically excluding the high-supply full-service nights, which
+are exactly the ones that read above a trackwork-suppressed p90. Quantified on
+the two score windows: 11 (08-12..09-01) and 9 (08-05..09-01) weekend-late
+service route-nights were alert-free-but-witnessed (other routes observed at
+those ticks -> genuinely alert-free, not an archive gap; 0 pure-gap nights).
+Fixed: `night_labels(obs, service_ticks=...)` labels a service night normal when
+alert-free AND the archive was live over it (coverage witness), excluding true
+gaps.
+
+**Bug 2 — hourly cells of one night counted as independent bootstrap draws.**
+`false_alarm_rate` made each (route, schedule_bin, night) its own resampling unit,
+so a route's we20..we03 hours on one night counted as up to 8 independent draws —
+the same pseudo-replication the tick-autocorrelation memory warns against.
+Fixed to cluster by (route, NIGHT), aggregating all of a night's hourly cells
+into one unit, matching headway_eval. This does not move the point estimate, only
+the cluster count and CI width.
+
+**Corrected numbers (paired same-cell counterfactual, above-p90 confirmed-normal
+FA, short-13d vs long-35d fit):**
+
+- score 08-12..09-01 (169 cells): was short 0.0402 / long 0.0057 (7.1x, n=29
+  "nights"). NOW short 0.0870 [0.0225,0.1785] 94/1081 vs long 0.0759
+  [0.0063,0.1719] 82/1081, **ratio 1.15x, n=13 route-nights, CIs heavily
+  overlap.** The 7x gap is gone; both fits over-fire ~8% on the quiet
+  full-service nights, and even the 35-day p90 does not cover them.
+- score 08-05..09-01 (167 cells): was short 0.0090 / long 0.0090 (1.0x, n=37).
+  NOW short 0.0044 [0,0.0098] 4/913 vs long 0.0044 [0,0.0098] 4/913, **1.0x,
+  n=12, identical.**
+
+**Revised verdict (supersedes both entries above): night-gating does NOT
+measurably lower confirmed-normal weekend-late false alarms.** Short and long fit
+are statistically indistinguishable (1.0-1.15x, CIs overlapping), and the FA
+LEVEL is set by window placement (0.44% at one week's shift, ~8% at another), not
+by the gate. The apparent 7x rested entirely on the two bugs: excluding the quiet
+high-supply nights and treating correlated hours as independent draws. What still
+holds is only the mechanism, not a payoff — the gate defers a thin-window publish
+(window adequacy); it does not demonstrably prevent false alarms. The bimodality
+of the named 1/2/J cells is real (per-night spans 2.1-7.3x, unchanged), but a
+wider fit window does not cover the high mode any better than a thin one here, so
+the gate is not the lever that fixes it.
+
+Witness-hardening note (final review iteration): the alert-free-normal coverage
+witness was changed from reconstructed alert observation ticks (which a
+long-running alert can extend across a collection gap) to trip-updates
+snapshot-presence (the snapped observed_at of the fetched bodies, one per cron
+tick regardless of alert quietness), with a pinning test that a synthetic alert
+spanning a gap does NOT witness it. Reran both windows: bit-identical to the
+figures above (0 archive-gap nights, ~120s max inter-poll cadence), so no number
+changes — the hardening removes a latent fabrication path, not a measured error.
+
+Two further hardenings (final review iteration) — figures updated, verdict
+unchanged. (a) NIGHT KEY: the resampling/label unit is now the SERVICE night
+(ET hours 0-3 roll to the prior date), so Sat 23:00 + Sun 01:00 are one cluster
+and Mon 00-03 stays in Sunday's weekend-late night (Sat 00-03, being Friday's
+night, drops out); membership follows the service night, not schedule_bin.
+(b) ALERT WITNESS: the archive carries no per-tick alert-fetch liveness (the
+trip-updates fresh_feeds is vehicle feeds only), and alerts is a separate fetch
+from the cron, so an alert-free night is called normal only when BOTH a
+trip-updates snapshot exists over it AND some alert-version was archived
+system-wide that service night; a witnessed-cron night with no alert archived is
+an alerts outage and is excluded. Reran the paired same-cell counterfactual:
+
+- score 08-12..09-01: shared cells 169 -> 88 (merged service-nights + Mon-edge +
+  outage exclusions raise the 8-night bar), short-13d 0.1234 [0.0192,0.2933]
+  77/624 vs long-35d 0.1042 [0.0032,0.2804] 65/624, ratio 1.18x, n=13
+  route-nights, CIs heavily overlap.
+- score 08-05..09-01: short 0.0052 [0,0.0139] 3/576 vs long 0.0052 [0,0.0139]
+  3/576, identical, n=12.
+
+The point estimates shifted (was 0.087/0.076 and 0.0044/0.0044) but the verdict
+is IDENTICAL: night-gating does not measurably lower confirmed-normal
+weekend-late FA — short and long fit stay statistically indistinguishable
+(1.0-1.18x, overlapping CIs) and the FA level is set by window placement
+(0.5%-12%), not the gate. All prior-entry FA figures are superseded by these.
+
+Label-semantics addendum (final review round): "confirmed-normal" here is
+night-witnessed ALERT-QUIET, not tick-certified normal. The archive carries no
+per-tick alert-fetch liveness record (fresh_feeds covers vehicle feeds only;
+alertsFreshness exists only in the live snapshot), so the witness proves the
+alerts fetch succeeded at least once that service night — a mid-night alerts
+outage could still mislabel later quiet ticks. The PAIRED short-vs-long verdict
+scores identical ticks under identical labels in both arms, so any label error
+is shared by construction (its direction is indeterminate without per-tick
+liveness); the
+ABSOLUTE FA levels (0.5%-12%) should be read as alert-quiet rates under a
+night-granular witness, not certified-normal rates. A tick-certified label
+needs a per-tick alert-fetch success record the Worker does not archive today.

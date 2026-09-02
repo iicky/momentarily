@@ -6789,3 +6789,28 @@ tradeoff was made when trace was the largest prefix by two orders of magnitude
 and is worth revisiting on its own terms rather than inheriting it by silence.
 Deliberately NOT changed here: it is a standing decision with a documented
 rationale, and changing it belongs in its own change with its own reasoning.
+
+## 2026-09-02 — arithmetic correction: the 10-year trace ratio is 18.7x, not 16x
+
+origin: self
+
+Review caught a bad denominator in the retention table above. The claim "328 GB
+... which is 16x every other prefix combined" divided by 20.2 GB, which is every
+prefix INCLUDING trace's own 2.7 GB at its current 30-day window — so the
+comparison quietly counted part of its own subject. Every other prefix combined
+is 17.52 GB (vehicles 9.12 + trip_updates 1.82 + traversals 6.57, all at 3650d),
+and 328.1 / 17.52 = 18.73. Corrected ratio: ~18.7x, on ~$0.26/mo of other-prefix
+storage.
+
+Every other figure in that table is unchanged and re-verified: trace 2.70 GB at
+30d, vehicles 9.12, trip_updates 1.82, traversals 6.57; trace 32.8 GB (~$0.49/mo)
+at 365d and 328.1 GB (~$4.92/mo) at 3650d. The conclusion the table was drawn to
+support does not move — a decade of raw trace is still under five dollars a
+month, and the 30-day cap is still an analytical decision rather than a cost one.
+
+Noting the shape of the mistake because it is the same one the entry two above
+corrects in a different guise: both came from letting a convenient aggregate
+stand in for the quantity actually named. There the aggregate was "no witness
+excluded anything" standing in for "the labels are proven"; here it was "all
+prefixes" standing in for "every OTHER prefix". A number is only defensible
+against the sentence it is written into.

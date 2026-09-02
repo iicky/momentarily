@@ -6640,7 +6640,9 @@ per-tick alert-fetch liveness record (fresh_feeds covers vehicle feeds only;
 alertsFreshness exists only in the live snapshot), so the witness proves the
 alerts fetch succeeded at least once that service night — a mid-night alerts
 outage could still mislabel later quiet ticks. The PAIRED short-vs-long verdict
-is insensitive to this (any contamination sits identically in both arms); the
+scores identical ticks under identical labels in both arms, so any label error
+is shared by construction (its direction is indeterminate without per-tick
+liveness); the
 ABSOLUTE FA levels (0.5%-12%) should be read as alert-quiet rates under a
 night-granular witness, not certified-normal rates. A tick-certified label
 needs a per-tick alert-fetch success record the Worker does not archive today.

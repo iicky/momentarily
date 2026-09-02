@@ -25,8 +25,10 @@ Confirmed-normal is night-witnessed ALERT-QUIET, not tick-certified normal: no
 per-tick alert-fetch liveness record exists in the archive, so the witness
 proves at least one successful alerts fetch per service night, and a mid-night
 alerts outage could mislabel later quiet ticks. The paired short-vs-long
-comparison is insensitive to that (contamination sits identically in both
-arms); absolute FA levels are alert-quiet rates, not certified-normal rates.
+comparison scores identical ticks under identical labels in both arms, so any
+label error is shared by construction (direction indeterminate without
+per-tick liveness); absolute FA levels are alert-quiet rates, not
+certified-normal rates.
 
 Confirmed-normal is an alert-feed consistency reference, not an independent one:
 a (route, night) is confirmed-normal when NO tick that night carried an ACUTE

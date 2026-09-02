@@ -6209,3 +6209,61 @@ MovementRegimeSchema — this only threads it to the output. Schema regenerated
 python parity 2, both typechecks clean. Not deployed: the Worker must ship for
 `condition_entered_at` to appear on the live feed; viz reads it back-compat
 (field absent → no row).
+
+## 2026-09-01 — observed-headway wait signal: schedule reference false-alarms 44.5% of confirmed-normal service, own-cell 9.3%; stop-level history is only 21 days
+origin: agent
+
+Built the offline observed-headway reconstruction at a per-route/direction
+reference stop and its own-cell typical-actual AWT/CV baseline, and graded the
+wait signal against the movement and supply axes and the alert feed over
+2026-08-12..09-02. Numbers a reader would not have guessed:
+
+Substrate. Stop-level timing is reconstructable ONLY from archive/trace/ (the
+per-minute vehicle census), which begins 2026-08-12 — 21 days. archive/trip_updates/
+reaches back to 2026-06-15 but carries only the compact assigned_n service metric,
+no stop_time_updates, so it cannot yield a headway however far back it goes. So the
+headway corpus is 21 days, not the 90 the assigned_n archive spans. Volume:
+3.69M reconstructed arrivals, 129,531 successive-train headways at 50 reference
+stops, 234,664 five-minute tick-aligned AWT readings. Reference-stop rule (the
+max-scheduled-trips through-stop) lands on a served-by-all-patterns stop
+(coverage 1.000) for all 25 routes x 2 directions, so no train is missed.
+
+Feed stalls are a real concern but did not occur: the trace's max inter-poll gap
+over 21 days is 120s (one missed minute); zero gaps exceed the 240s stall
+threshold, so 0 of 129,531 headways are feed-gap-excluded. The handling exists
+and is unit-tested; the archive just never exercised it.
+
+The load-bearing result (why the baseline must be own-cell, not schedule). On
+confirmed-normal ticks (movement AND supply both call normal), a schedule-SWT
+reference (AWT > 1.25xSWT) fires on 0.445 [0.424, 0.466] of ticks, night-
+bootstrapped over 334 route-nights; the own-cell p90 reference fires on 0.093
+[0.087, 0.099]. A timetable baseline flags ~45% of confirmed-NORMAL service as
+excess wait, 4.8x the own-cell rate. Mechanism: SWT = sched_headway/2 assumes
+CV=0, but delivered service always has CV>0, so AWT > SWT by construction of real
+bunching, not degradation. The 2026-08-22 Saturday (1/2 ran weekday-level
+service) is the vivid instance: the schedule reference flags 52 of 92 route-cells
+that day; an illustrative ungated own-cell baseline places the delivered AWT
+inside p10..p90 on 90 of 92. (The disciplined 8-night own-cell baseline ABSTAINS
+on every weekend cell — 0 of 1023 fitted — because only 3 weekends of stop-level
+history exist; 939 of 1109 weekday cells fit, median 14 nights.)
+
+False alarms vs the movement arm's 0.00101/tick certified bound (gate a,
+confirmed-normal, 145,619 ticks / 334 route-nights). A bare above-p90 flag fires
+0.0929 [0.0869, 0.0990] — the ~0.10 percentile identity, not an alarm; a
+sustained (>=6-tick / 30-min) above-p90 flag fires 0.0527 [0.0478, 0.0579]; a
+twice-typical (AWT > 2xp50) flag fires 0.0191 [0.0164, 0.0218]. All land 19x-92x
+above the movement bound. Read: the wait signal is a continuous reading, not a
+drop-in rare-event alarm at the movement discipline. Caveat that bounds all of
+gate (a): the reconstructed headways ride the same ATS/vehicle-position stream
+the movement detector reads, so movement-confirmed-normal is a consistency
+reference, not an independent one.
+
+Severity tiers (own-cell quantile exceedance, first-pass cutpoints) disagree with
+the movement condition almost completely and track the alert feed instead. Of
+2,523 tier-2 (severe) headway ticks, the movement condition independently called
+not-normal on 1; 2,418 (95.8%) coincide with a Delays alert. 105 severe ticks are
+headway-only (no movement, no Delays) and every one of the top disagreement
+windows is feed-clean (coverage and group-freshness >= 0.99), so they are genuine
+functional disagreements, not common-mode blindness. Tier prevalence over fitted
+(weekday) cells: 83.5% normal / 13.3% degraded / 3.2% severe; tier-2 episode
+dwell median 20 min, p90 55, max 135.

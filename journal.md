@@ -6209,3 +6209,71 @@ MovementRegimeSchema — this only threads it to the output. Schema regenerated
 python parity 2, both typechecks clean. Not deployed: the Worker must ship for
 `condition_entered_at` to appear on the live feed; viz reads it back-compat
 (field absent → no row).
+## 2026-09-01 — the MTA Major Incidents log is a monthly aggregate with zero trace overlap: it cannot adjudicate movement-arm misses
+
+origin: agent
+
+Joined the MTA's official Major Incidents log to our archive as the first
+EXTERNAL truth source (`training/major_incidents.py`). The mission premise —
+that this log is the only identified path to measuring the movement detector's
+misses, because every internal signal rides the same ATS-sourced feeds — is
+sound about the SOURCE but defeated by its GRANULARITY and its TIMING. Two
+structural facts, both measured, bound what the join can ever do:
+
+1. NOT INCIDENT-LEVEL. The published dataset (NYS Open Data `ereg-mcvp`) is a
+   MONTHLY AGGREGATE: 5791 rows, one per (month, division, line, day_type,
+   category) carrying a COUNT, 2015-01..2026-07, updated 2026-08-28. No
+   timestamps, no per-incident rows. The only sibling (`g937-7k7c`,
+   Delay-Causing Incidents, a sub-major superset) has the identical
+   monthly-aggregate shape (24640 rows). There is no incident-level public
+   companion — metrics.mta.info renders these same aggregates. A month x line
+   count cannot be aligned to an archive window by timestamp, so the achievable
+   join is PREVALENCE ANCHORING, never per-episode miss adjudication.
+
+2. ZERO TRACE OVERLAP. Movement condition and headway severity are reconstructed
+   only from archive/trace. R2 substrate bounds, probed 2026-09-01:
+     alerts        2026-06-03 .. 2026-09-02
+     trip_updates  2026-06-15 .. 2026-09-02   (supply axis)
+     vehicles      2026-06-21 .. 2026-09-02
+     trace         2026-08-12 .. 2026-09-02   (movement + headway)
+   The dataset's last published month is 2026-07; trace begins 2026-08-12, 15
+   days after that month ends. Incident-months overlapping each signal: alerts
+   {2026-06, 2026-07}, supply {2026-06, 2026-07}, movement {}, headway {}. The
+   movement arm's misses therefore remain STRUCTURALLY UNMEASURABLE against this
+   source — not at the wrong granularity, but with no overlapping day at all.
+   Movement-arm miss rate: WITHHELD; n episode-alignable incidents = 0.
+
+The only signals that overlap the incident-months are the common-mode alert feed
+and supply axis — the very signals this external truth was meant to check. Even
+their prevalence anchor is confounded, and instructively so. MTA majors: June 56
+(our coverage partial: alerts from 06-03, supply from 06-15), July 86 (full).
+Against our canonical severe-only truth (tier>=2, planned excluded):
+
+  - EPISODE count collapses to 0 (June) / 1 (July) network-wide, because without
+    the predictions presence-mask every open-ended severe alert runs to the
+    window end and is dropped as a >24h standing advisory. That measures the
+    missing mask, not the feed — rejected.
+  - Mask-free, closure-free ROUTE-DAYS (days a route carried any severe alert)
+    instead INFLATE: June 274, July 447 severe route-days of ~930 (30 routes x 31
+    days), with routes like W/N/A/M/J at 30/31 days — near-permanent Severe
+    Delays advisories, not 30 distinct incidents.
+
+So the one joinable signal misses the MTA scale in BOTH directions depending on
+how you bound it, because an MTA "major incident" (a discrete 50+-train
+operational event) and our alert "severe" state (an advisory the MTA leaves up
+for hours to weeks) are different objects with different temporal semantics and
+are NOT subtractable. This is not a failure of the join; it is the positive case
+for wanting an operationally-defined external source — and the demonstration that
+THIS external source, at monthly aggregate with no timestamps and no trace
+overlap, still cannot supply the movement-miss truth 2bc.22 asks for. What it
+CAN anchor: a top-severity PREVALENCE (≈52-86 major incidents/month network-wide,
+Signals the largest category — 41 of 86 in July), useful to kt3's severity-tier
+framing, useless for per-episode adjudication.
+
+Line mapping blind spots, documented as data: JZ fans to both J and Z (the MTA
+counts the Nassau St skip-stop pair as one line, so a per-route join
+double-counts it); the three named shuttles map S 42nd->GS, S Rock->H,
+S Fkln->FS; no SI and no express variants in the source. Ingest/mapping/coverage
+logic is hermetic and tested (18 cases); the R2 prevalence read lives behind
+main(). 2023->2024 methodology break labeled by `era_for`; the joined window is
+entirely post-2024, so the break does not bite here.

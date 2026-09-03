@@ -7205,3 +7205,284 @@ is the 0.93 cap on 28 of 28 routes irrespective of the training population.
 
 Numbers, gates and verdict in the previous entry are unaffected. Only the claim
 about the state the codebase is left in needed narrowing.
+## 2026-09-03 — the committed movement_transitions stream cannot supply censoring at all, and losing it biases atom_p up by 0.105
+
+origin: agent
+
+Groundwork for switching `dwell_movement`'s source from the `published_condition`
+tick replay to the Worker's own committed `v1/movement_transitions`. The switch
+was gated on the stream spanning a training window AND the two fits grading at
+least as well as each other. The measured span/coverage/agreement/grade numbers
+need R2 and are pending a credential grant, but two findings fell out of the
+code alone, and neither is fixed by letting the stream accumulate longer — which
+is the assumption the gate was written under.
+
+**1. The stream carries transitions only, so it has no censoring information.**
+`v1/movement_transitions` is a transition log; there is no committed per-tick
+census beside it. So `dwell.dwell_samples_by_cell` falls to
+`dwell._open_regimes`, which can only read a route's still-open regime off that
+route's LAST transition record, and is blind to any route that never
+transitioned inside the window. Measured on a controlled case (three
+transitions on route A, plus a QUIET route holding `normal` for the whole
+window):
+
+| censoring source                | routes with cells | QUIET's normal cell        |
+|---------------------------------|-------------------|----------------------------|
+| stream-only inference           | `['A']`           | absent entirely            |
+| prediction-derived census       | `['A', 'QUIET']`  | n=0, n_censored=1, 1396059s |
+
+QUIET does not get a censored cell under the stream — it gets no cell. Per
+`pooled_dwell`'s own docstring the steadiest routes are "the ones this
+estimator exists to serve", so a clean cutover to the committed stream drops
+exactly them. Reaching back for the prediction-derived open-regime map would
+re-import the replay's tick census and so would not be a cutover at all.
+
+**2. Losing the census biases the one-tick atom rate UP.** Mechanism:
+`pooled_dwell._atom_counts` counts a right-censored observation as informative
+only once it has outlived the atom (`d > atom_sec`), and never as an atom. A
+census-only open *disrupted* regime is therefore pure non-atom evidence, and
+dropping it raises `n_atom / n_informative`. Isolated with A/B/C each holding
+three one-tick and one 2400s disrupted exit, final regime closed so both
+configurations agree all three sit in `normal` at window end — leaving D and E's
+open disrupted regimes, which no transition record exists for, as the only
+difference:
+
+| configuration                 | cells | atom_p                        |
+|-------------------------------|-------|-------------------------------|
+| stream-only                   | 6     | 0.75 (A/B/C)                  |
+| census, D/E withheld          | 6     | 0.75 (A/B/C)  ← isolation check |
+| census + D/E open disrupted   | 8     | 0.645 (A/B/C), 0.6397 (D/E)   |
+
+Dropping the census moves atom_p 0.645 → 0.75: +0.105 absolute, +16% relative,
+and two cells lost. Since `atom_p` is P(episode lasts exactly one tick), an
+inflated atom makes the recovery forecast systematically too optimistic in the
+first tick — the region the atom was introduced to fix in the first place.
+
+NEGATIVE RESULT, recorded because the sign is the whole point: the first attempt
+at (2) measured atom_p moving the *other* way, 0.6 → 0.645, and would have
+supported the opposite conclusion. The construction left A/B/C's final disrupted
+regime open, so stream-only inference handed them a spurious censored disrupted
+observation and the two configurations differed in two places at once; the D/E
+effect was swamped by the artifact. The isolation check row above (census with
+D/E withheld reproducing stream-only exactly) is what makes the third row
+attributable to D/E and nothing else. A two-configuration comparison that
+differs in two places measures neither.
+
+Methodology note for the pending grade, same failure mode in a different guise:
+a sparse source publishes fewer cells and so abstains on every held-out episode
+whose (route, state) it never reached, taking its mean CRPS over an easier
+subset. On synthetic data the committed-side fit scored 108 of 218 held-out
+episodes against the replay's 218/218, and the two means were not comparable
+quantities. The grade has to be PAIRED on the episodes every fit can score
+(there: replay 4.933 vs committed 5.029) with the abstention count reported
+beside it, or the sparser source wins by declining to answer.
+
+## 2026-09-03 — correction: "no censoring at all" overstates it; the stream is blind to no-transition routes specifically
+
+origin: agent
+
+The entry above is headlined "cannot supply censoring at all", which is wrong as
+written and wrong in the direction that flatters its own conclusion. Correcting
+it in place is not an option here, so: the precise claim is narrower.
+
+`dwell._open_regimes` DOES supply a right-censored observation for any route
+that transitioned inside the window — it reads that route's still-open regime
+off the `new_state` of its last transition record. The stream-only path is
+blind only to routes with NO transition in the window, because there is no
+record to read a regime off. That is the QUIET row in the table above, and it
+is the real deficit: it covers the steadiest routes, which is why it bites.
+
+The evidence for the narrower claim was already sitting in the same entry and I
+read past it twice. Route A gets a cell under stream-only censoring in the
+first table. And the discarded first attempt at the atom_p measurement failed
+precisely BECAUSE stream-only inference supplied a censored observation —
+A/B/C's final disrupted regime was left open, so the stream handed them a
+spurious censored disrupted sample and moved atom_p the other way. An
+experiment whose failure mode is "the stream censored something" cannot support
+"the stream censors nothing".
+
+Neither of the two numbers moves: QUIET still gets no cell rather than a
+censored one, and withholding the census still moves atom_p 0.645 -> 0.75
+(+0.105, +16% relative) with two cells lost. What changes is the scope of the
+mechanism, and therefore what a fix would have to do — the gap is confined to
+no-transition routes, not to censoring generally.
+
+Same shape of error as the two retention-table corrections above: a convenient
+aggregate ("no censoring") standing in for the quantity actually measured
+("censoring for no-transition routes"). Third instance in this journal, so
+worth naming as a habit rather than an incident — the headline of a finding
+drifts broader than its experiment unless the experiment's scope is written
+into the sentence.
+
+## 2026-09-03 — withdrawn: "do not switch the dwell_movement source" was never a measured verdict
+
+origin: agent
+
+Withdrawing the framing, not the numbers, of the two entries above.
+
+The dwell_movement source switch was gated on measured quantities: the
+committed stream's span over a real training window, its per-route coverage
+against the tick replay, onset agreement, and graded fits on held-out ticks.
+None of those were measured — the R2 credential grant never arrived, and there
+is no local archive. Every number in the two entries above came from synthetic
+fixtures constructed by hand to isolate one mechanism at a time.
+
+Those fixtures cannot satisfy the gate, and they cannot overturn it either.
+They support a mechanism and a prediction: that a switch would degrade the fit
+through lost censoring rather than through any difference in signal, and that
+the cell-count criterion will fail when someone reads the window. That is a
+hypothesis with a mechanism behind it. It is not a finding about the archive,
+and reporting it as "do not switch" borrowed the authority of measurement for
+evidence that had none.
+
+The defensible state is: blocked, no verdict in either direction. The census
+gap is filed separately so the mechanism survives whichever way the real
+numbers land.
+
+What each claim can actually carry:
+
+- supportable: "on a controlled fixture, withholding the open-regime census
+  moves atom_p 0.645 -> 0.75 and drops 2 of 8 cells, because _atom_counts
+  credits a censored observation as non-atom evidence only once it outlives
+  the atom"
+- supportable: "the stream is a transition log, so stream-only inference is
+  blind to routes with no transition in the window"
+- NOT supportable without reading the archive: "the committed stream grades
+  worse than the replay", "do not switch"
+
+This is the third correction of the same shape in one session — the retention
+table's denominator, the "no censoring at all" headline, and now the verdict
+itself. The first two were single claims drifting broader than their
+experiments; this one is the whole task's conclusion doing it, which is the
+same mistake with more at stake. The rule that would have caught all three: a
+sentence may only claim what its experiment's scope allows, so write the scope
+into the sentence and the overreach becomes unsayable.
+
+## 2026-09-03 — the committed route-scope transition stream is not accumulating, it is being overwritten: segment and route share one R2 key
+
+origin: agent
+
+Measured the dwell_movement source switch on the real archive (window train
+2026-08-14..2026-08-27, holdout 2026-08-28..2026-09-03, route scope,
+debounce_ticks=1). Verdict: do not switch. The reason is not the one the gate
+anticipated, and not the one the two entries above predicted either.
+
+Headline numbers, against the 13-vs-124 baseline from 2026-08-12:
+
+| source          | records | routes | episodes | span                    |
+|-----------------|---------|--------|----------|-------------------------|
+| committed route | 93      | 21     | 37       | 08-11T23:50 → 08-26T13:35 |
+| tick replay     | 324     | 22     | 102      | 08-14T00:00 → 09-03T13:05 |
+
+Onset agreement rose from 10/13 (0.77) to **86/93 (0.9247)**, so where the
+stream speaks it agrees with the replay: this is genuinely a change of source
+and not of signal. Route coverage 0.9545 (only `M` missing). Fitted medians
+agree exactly (median ratio 1.0). Cell count holds: replay 44, committed 41.
+
+And yet the stream's last route record is 2026-08-26, with **zero route-scope
+records for the eight consecutive days 08-27..09-03**, plus zeroes on
+08-22/23/24. Per-day route vs segment counts:
+
+| date  | route | segment |
+|-------|-------|---------|
+| 08-20 | 5     | 138     |
+| 08-26 | 35    | 90      |
+| 08-27 | 0     | 8733    |
+| 08-29 | 0     | 10068   |
+| 09-03 | 0     | 6571    |
+
+**Root cause.** `worker/src/grading.ts` `writeMovementTransitions` builds its
+key from `observedAt` alone — no scope component — and R2 `bucket.put`
+overwrites. `worker/src/index.ts` calls it twice per tick: route scope at :897,
+then segment scope at :937. Every tick with a segment change destroys that
+tick's route records. Route records survive only on ticks where the segment
+clock happened to be quiet. Segment volume rose ~60x on 08-27 (~150/day to
+8–11k/day) and route scope hit zero on exactly that date.
+
+Confirmed by reading every file's scope set on sampled whole days: **never a
+single mixed-scope file.** 08-20: 106 files, 101 segment-only, 5 route-only.
+08-26: 84 files, 79 segment-only, 5 route-only. 08-29: 287 files, 287
+segment-only, 0 route-only. A same-key overwrite produces exactly that; an
+append or a scope-partitioned key never could. Filed as its own P0 bug.
+
+Also stale as of this measurement: `movement_backfill.py`'s module docstring
+says segment-scope regimes "have never been wired up online". They are, at
+8–11k records/day, and they are the reason route scope is gone.
+
+**Two retractions, both mine.**
+
+The entries above predicted the census gap would be the binding constraint —
+that the cell count would collapse without the prediction-derived open-regime
+map. It did not: 41 cells vs 44, comfortably inside a 10% bar. The census
+mechanism is real (independently reproduced on two fixtures) but it is not what
+is stopping this switch, and the census work it motivates is a nice-to-have rather
+than a prerequisite. I extrapolated a hand-built fixture to production and got
+the wrong deficit.
+
+Second, subtler, and the more useful lesson: the criterion I wrote gated on
+cell COUNT, and count survived while quality did not. `n_own` collapses 16 → 7
+and `n_atom` 42 → 18 — the committed fit publishes nearly as many cells, but
+fewer than half carry a one-tick atom and most are pooled rather than
+self-supported. A threshold on `n_cells` is blind to that. A criterion is only
+as good as the quantity it names, and I named the easy one.
+
+The held-out grade could not be computed at all: the holdout offers 4 replay
+episodes, 2 scorable by every fit, and 0 from the committed stream. n=2 is not
+a grade — `segment_grade.MIN_ARM_HOPS` is 10 for exactly this reason ("an AUC
+over three hops is not a weak result, it is not a result"), so it abstains
+rather than reporting a number that would look like evidence.
+
+Net: the gate assumed the stream needed time. It does not need time; it needs
+the write fixed. Once that lands and a window accumulates, criteria 1/2/4 are
+worth re-running — agreement and cell count already pass, and on this evidence
+the switch looks more likely to be justified than not.
+
+## 2026-09-03 — the dwell source grader dropped boundary-straddling regimes; latent, and provably inert on the graded window
+
+origin: agent
+
+The train/holdout split in the source grader selected training transitions with
+`exited_at < split_ts`. A regime that began inside the training half but exited
+during the holdout was therefore discarded entirely, when what the boundary
+actually tells us is `dwell > split_ts - regime_entered_at` — a right-censored
+observation, and typically a long one, since long regimes are the ones most
+likely to straddle a boundary. Dropping them biases every fit short.
+
+Worse, it biases them unequally. The replay fit recovers most of that evidence
+from the per-tick census (`movement_open_regimes`), which observes every live
+route regardless of whether it transitioned. The committed-source fit has no
+census, so for it the loss is total — and that configuration is precisely the
+one the cell-count criterion grades. The defect handicapped the source it was
+being used to judge.
+
+Fixed by censoring straddling regimes at `split_ts`, derived from each source's
+OWN records (`regime_entered_at < split_ts <= exited_at`). For the committed
+source that keeps the cutover clean: its own record proves the regime was open
+at the boundary, so nothing is borrowed from the replay's census.
+
+**Effect on the graded window: none.** Re-ran and diffed the full report —
+byte-identical. Two independent reasons, both checked directly rather than
+assumed:
+
+1. The committed stream's straddle map is empty. Nothing spans 2026-08-28
+   because the stream is already dead from 08-27, so there was nothing on that
+   side to drop.
+2. The replay's straddle map holds 6 routes (B, C, D, 4, 7, R, all `normal`),
+   and all 6 were already in the 22-route census map, which supersedes.
+   Straddle routes absent from the census: none.
+
+So every reported number stands on a now-correct split: agreement 86/93,
+cells 41 vs 44, `n_own` 16 → 7, `n_atom` 42 → 18, criterion 4 abstained.
+
+Recording it anyway, because "no effect on this window" and "harmless" are
+different claims. The two reasons it cancelled are both artefacts of this
+particular window — one of them is the very outage the measurement exists to
+report. On any window where the committed stream is alive the straddle map is
+non-empty and the old code would quietly understate that source. When the
+write bug is fixed and the criteria are re-run, they have to be re-run with the
+corrected split or the committed source is graded with a handicap it does not
+deserve.
+
+A latent bug that cancels for reasons unrelated to its logic is still a bug,
+and a measurement that agrees with itself for the wrong reason is not
+corroborated. The diff is the evidence here, not the agreement.

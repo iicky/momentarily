@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
@@ -40,6 +41,7 @@ from momentarily.hmm import (
     schedule_bin,
     service_responsibility,
 )
+from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, LEGACY_SEVERITY_FLOOR
 from training.drift import build_input_profile
 from training.dwell import (
     DwellQuantiles,
@@ -176,6 +178,44 @@ def _cap_self_loops(
     )
 
 
+def self_loop_diagonal(params: HMMParams) -> tuple[float, float, float]:
+    """The transition matrix's self-loop diagonal, per state. Read BEFORE
+    _cap_self_loops to see what EM actually wanted: whether the clamp is a rare
+    guard or is doing the modelling, and by how much it has to move each state,
+    is only visible pre-clamp. This has been hand-patched in twice to answer
+    that; it lives here so the answer is reproducible from a plain run."""
+    return (
+        params.transition[0][0],
+        params.transition[1][1],
+        params.transition[2][2],
+    )
+
+
+def self_loop_excess(
+    params: HMMParams, max_self: tuple[float, float, float] = MAX_SELF_LOOP
+) -> tuple[float, float, float]:
+    """Per-state amount by which the pre-clamp diagonal exceeds its ceiling.
+    Zero when the clamp would not fire; never negative, so a state under its cap
+    does not net out against one over it when these are averaged."""
+    diag = self_loop_diagonal(params)
+    return (
+        max(0.0, diag[0] - max_self[0]),
+        max(0.0, diag[1] - max_self[1]),
+        max(0.0, diag[2] - max_self[2]),
+    )
+
+
+def implied_median_dwell_minutes(self_loop: float) -> float:
+    """Median dwell in minutes implied by a geometric self-loop on the 5-min
+    grid: the p such that P(dwell > p) = 0.5 under repeated Bernoulli(1 - a_ss)
+    exit trials. inf when the self-loop is degenerate (>= 1)."""
+    if self_loop >= 1.0:
+        return math.inf
+    if self_loop <= 0.0:
+        return TICK_SECONDS / 60.0
+    return (TICK_SECONDS / 60.0) * math.log(0.5) / math.log(self_loop)
+
+
 def _aligned_window(start: date, end: date) -> tuple[int, int]:
     """Tick-aligned UTC window covering [start, end+1day)."""
     start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
@@ -192,6 +232,7 @@ def load_series_by_route(
     *,
     movement_fields: Callable[[str, int], dict[str, Any] | None] | None = None,
     service_fields: Callable[[str, int], dict[str, Any] | None] | None = None,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
 ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
     """Single R2 pass: fetch alerts, build per-route quiet-filled series.
 
@@ -210,6 +251,12 @@ def load_series_by_route(
     (service_ratio/has_service). Both are merged onto the same observation, the
     way the live filter folds both the previous tick's movement and service
     metrics into one Observation. Without either the series is alerts-only.
+
+    `severity_floor` decides which alerts count as disruption evidence in the
+    built observation (see load.alert_observation). LEGACY_SEVERITY_FLOOR is the
+    no-op serving build; a higher floor is a DIAGNOSTIC build whose emission
+    distribution the Worker does not reproduce, so it must not be published —
+    main() enforces that.
     """
     client = make_client(cfg)
     # Hash the exact key set we fetch — the manifest fingerprint and the training
@@ -229,7 +276,9 @@ def load_series_by_route(
         mask = presence_mask_from_predictions(predictions)
     except Exception as exc:
         print(f"presence-mask: prediction load failed ({exc}); raw reconstruction")
-    all_ticks = build_tick_observations(bodies, active_mask=mask)
+    all_ticks = build_tick_observations(
+        bodies, active_mask=mask, severity_floor=severity_floor
+    )
     if not all_ticks:
         return (
             {},
@@ -260,7 +309,11 @@ def load_series_by_route(
     seen_routes = {t.route_id for t in all_ticks}
     for route in sorted(seen_routes):
         filled: list[TickObservation] = fill_quiet_ticks(
-            all_ticks, route, start_tick=start_tick, end_tick=last_tick
+            all_ticks,
+            route,
+            start_tick=start_tick,
+            end_tick=last_tick,
+            severity_floor=severity_floor,
         )
         if movement_fields is None and service_fields is None:
             by_route[route] = [t.observation for t in filled]
@@ -287,6 +340,7 @@ def train(
     prior_strength: float = 100.0,
     min_ticks: int = MIN_TICKS_PER_ROUTE,
     advance_priors: dict[str, float] | None = None,
+    pre_clamp_diagonals: dict[str | None, tuple[float, float, float]] | None = None,
 ) -> tuple[HMMParams, dict[str, HMMParams]]:
     """Returns (global_prior, per_route_params). Doesn't touch R2.
 
@@ -295,6 +349,13 @@ def train(
     hardcoded default, so the movement emission's normal state anchors on the
     line's real cross-tick advance fraction. Routes without a measured baseline
     keep the global prior's default.
+
+    `pre_clamp_diagonals`, when given, is filled with the self-loop diagonal EM
+    converged to BEFORE _cap_self_loops touched it — keyed by route, with None
+    for the pooled global-prior fit. It is an out-parameter rather than a return
+    value so every existing caller is unaffected; the only consumer is the
+    clamp-pressure diagnostic, and a route that inherited the prior (too few
+    ticks) is absent because it had no fit of its own.
     """
     if not series_by_route:
         raise ValueError("no observations to train on")
@@ -307,6 +368,8 @@ def train(
     # fit_em returns canonical state order (normal/disrupted/suspended), so the
     # per-state self-loop caps land on the regimes they were tuned for. Capping
     # before canonicalization applied them to arbitrary EM indices.
+    if pre_clamp_diagonals is not None:
+        pre_clamp_diagonals[None] = self_loop_diagonal(global_prior)
     global_prior = _cap_self_loops(global_prior)
 
     out: dict[str, HMMParams] = {}
@@ -327,6 +390,8 @@ def train(
             prior_params=prior,
             prior_strength=prior_strength,
         )
+        if pre_clamp_diagonals is not None:
+            pre_clamp_diagonals[route] = self_loop_diagonal(fitted)
         out[route] = _cap_self_loops(fitted)
     return global_prior, out
 
@@ -452,6 +517,194 @@ def _report_service_diagnostics(
                 f"{route:<5} {STATES[s]:<10} {svc_w:>10.2f} {dm:>9} "
                 f"{mu[s]:>8.4f} {sigma[s]:>8.4f}"
             )
+
+
+# Severity tier a route-tick must reach to count as a severe episode in the
+# dwell-fit diagnostic. Deliberately the canonical grading floor, so the fit is
+# scored against the same population the grader treats as a real incident.
+SEVERE_EPISODE_TIER = CANONICAL_SEVERITY_FLOOR
+
+
+@dataclass(frozen=True)
+class DwellFit:
+    """Quality of one fitted geometric self-loop against observed episode
+    durations, in ticks. `n` counts only uncensored episodes — a run touching
+    either end of the window has an unobserved duration and would bias every
+    statistic downward, so it is excluded and counted separately."""
+
+    n: int
+    n_censored: int
+    empirical_median_ticks: float
+    implied_median_minutes: float
+    mean_loglik: float
+    ks: float
+
+
+def severe_episode_ticks(
+    series: list[Observation], *, tier: int = SEVERE_EPISODE_TIER
+) -> tuple[list[int], int]:
+    """Durations, in ticks, of the maximal runs where the tick's peak alert
+    severity reaches `tier`. Returns (uncensored_durations, n_censored).
+
+    Read off max_severity_tier, which every builder populates from the
+    unfiltered alert list, so this segments the SAME severe population whatever
+    floor the series' likelihood channels were built under — that is what makes
+    the floored and unfloored fits comparable on one yardstick. `series` must be
+    the contiguous quiet-filled tick sequence the fit consumed.
+    """
+    runs: list[int] = []
+    censored = 0
+    run = 0
+    for i, obs in enumerate(series):
+        if obs.max_severity_tier >= tier:
+            run += 1
+            continue
+        if run:
+            # A run starting at index 0 was already active when the window
+            # opened; its onset is unobserved.
+            if run == i:
+                censored += 1
+            else:
+                runs.append(run)
+            run = 0
+    if run:
+        censored += 1  # still active at the last tick: no observed recovery
+    return runs, censored
+
+
+def geometric_dwell_fit(
+    durations: list[int], self_loop: float, n_censored: int
+) -> DwellFit:
+    """Score a geometric dwell with parameter `self_loop` against observed
+    durations in ticks.
+
+    The self-loop IS a geometric dwell model: P(k ticks) = a^(k-1)(1-a). So the
+    honest question is not whether the implied median looks plausible but how
+    well that geometric describes the durations — mean per-episode log-likelihood
+    (higher is better) and the KS distance between the empirical ECDF and
+    F(k) = 1 - a^k (lower is better).
+
+    The dwell is a DISCRETE distribution on the tick grid, so the KS statistic
+    is the sup over integer k of |ECDF(k) - F(k)| with both step functions taken
+    right-continuous. Taking the sup over the closure instead — reading the ECDF
+    on both sides of each jump — would floor the statistic at the largest atom's
+    probability (0.2 for a=0.8) even on a perfectly matching sample, which makes
+    it useless for telling the two arms apart. Every integer up to the longest
+    observed episode is evaluated, not only the observed ones, because the model
+    has mass on unobserved values and the sup can sit there.
+    """
+    n = len(durations)
+    implied = implied_median_dwell_minutes(self_loop)
+    if n == 0:
+        return DwellFit(0, n_censored, math.nan, implied, math.nan, math.nan)
+    ordered = sorted(durations)
+    mid = n // 2
+    median = float(ordered[mid]) if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+    a = min(max(self_loop, 1e-12), 1.0 - 1e-12)
+    log_a = math.log(a)
+    mean_loglik = sum((k - 1) * log_a + math.log1p(-a) for k in ordered) / n
+    ks = 0.0
+    seen = 0
+    idx = 0
+    for k in range(1, ordered[-1] + 1):
+        while idx < n and ordered[idx] == k:
+            seen += 1
+            idx += 1
+        ks = max(ks, abs(seen / n - (1.0 - a**k)))
+    return DwellFit(n, n_censored, median, implied, mean_loglik, ks)
+
+
+def _report_severity_diagnostics(
+    series_by_route: dict[str, list[Observation]],
+    global_prior: HMMParams,
+    per_route: dict[str, HMMParams],
+    pre_clamp: dict[str | None, tuple[float, float, float]],
+    *,
+    min_ticks: int,
+    severity_floor: int,
+) -> None:
+    """Print the two things a severity-floored refit can actually be judged on:
+    clamp pressure on the pre-clamp diagonals, and how well each fitted
+    disrupted self-loop describes the tier>=2 episode durations.
+
+    Reading: if the disrupted regime was being defined by chronic ordinary
+    Delays, its pre-clamp diagonal is pinned against the ceiling (EM wants the
+    long tier-1 tail) and its geometric fits the severe durations badly. Under a
+    floor that removes tier-1 from the state definition, clamp pressure on the
+    disrupted row should fall and the severe dwell fit should improve. Both
+    numbers are printed for every state and route so a null result is as legible
+    as a positive one.
+    """
+    minutes_per_tick = TICK_SECONDS / 60.0
+    print("=== severity diagnostics ===")
+    print(
+        f"severity_floor={severity_floor} "
+        f"(serving floor {LEGACY_SEVERITY_FLOOR}; canonical truth floor "
+        f"{CANONICAL_SEVERITY_FLOOR})"
+    )
+    print(f"self-loop caps (normal, disrupted, suspended) = {MAX_SELF_LOOP}")
+
+    fitted_routes = [r for r in sorted(per_route) if r in pre_clamp]
+    print(
+        f"\n--- clamp pressure: {len(fitted_routes)} routes with their own fit "
+        f"({len(per_route) - len(fitted_routes)} inherited the prior at "
+        f"min_ticks={min_ticks}) ---"
+    )
+    gdiag = pre_clamp.get(None)
+    if gdiag is not None:
+        gexc = tuple(max(0.0, gdiag[s] - MAX_SELF_LOOP[s]) for s in range(len(STATES)))
+        print(
+            "global prior pre-clamp diag = "
+            f"({gdiag[0]:.4f}, {gdiag[1]:.4f}, {gdiag[2]:.4f}) "
+            f"excess = ({gexc[0]:.4f}, {gexc[1]:.4f}, {gexc[2]:.4f})"
+        )
+    print(f"{'state':<10} {'over_cap':>10} {'mean_excess':>12} {'max_excess':>11}")
+    for s in range(len(STATES)):
+        excesses = [max(0.0, pre_clamp[r][s] - MAX_SELF_LOOP[s]) for r in fitted_routes]
+        over = sum(1 for e in excesses if e > 0)
+        mean_e = sum(excesses) / len(excesses) if excesses else math.nan
+        print(
+            f"{STATES[s]:<10} {f'{over}/{len(fitted_routes)}':>10} "
+            f"{mean_e:>12.4f} {max(excesses, default=math.nan):>11.4f}"
+        )
+
+    print(
+        f"\n--- disrupted dwell fit vs tier>={SEVERE_EPISODE_TIER} episodes "
+        "(post-clamp self-loop, the one that ships) ---"
+    )
+    print(
+        f"{'route':<6} {'n':>4} {'cens':>5} {'emp_med_m':>10} {'impl_med_m':>11} "
+        f"{'mean_ll':>9} {'ks':>7} {'a11':>7} {'a11_pre':>8}"
+    )
+    pooled: list[int] = []
+    pooled_censored = 0
+    for route in fitted_routes:
+        series = series_by_route.get(route, [])
+        durations, censored = severe_episode_ticks(series)
+        pooled.extend(durations)
+        pooled_censored += censored
+        a11 = per_route[route].transition[1][1]
+        fit = geometric_dwell_fit(durations, a11, censored)
+        print(
+            f"{route:<6} {fit.n:>4} {fit.n_censored:>5} "
+            f"{fit.empirical_median_ticks * minutes_per_tick:>10.1f} "
+            f"{fit.implied_median_minutes:>11.1f} {fit.mean_loglik:>9.4f} "
+            f"{fit.ks:>7.4f} {a11:>7.4f} {pre_clamp[route][1]:>8.4f}"
+        )
+    pooled_fit = geometric_dwell_fit(
+        pooled, global_prior.transition[1][1], pooled_censored
+    )
+    print(
+        f"{'POOLED':<6} {pooled_fit.n:>4} {pooled_fit.n_censored:>5} "
+        f"{pooled_fit.empirical_median_ticks * minutes_per_tick:>10.1f} "
+        f"{pooled_fit.implied_median_minutes:>11.1f} {pooled_fit.mean_loglik:>9.4f} "
+        f"{pooled_fit.ks:>7.4f} {global_prior.transition[1][1]:>7.4f} "
+        f"{(gdiag[1] if gdiag else math.nan):>8.4f}"
+    )
+    print(
+        "\nPOOLED scores every route's severe episodes against the global "
+        "prior's disrupted self-loop — the params a thin route inherits."
+    )
 
 
 # Emission channels dropped from the published params. The Worker reads
@@ -1237,7 +1490,43 @@ def main(argv: Iterable[str] | None = None) -> int:
         "then exit without writing. Answers whether the service Gaussian is fitted "
         "on observed supply or just carries its prior — the fit-or-drop evidence.",
     )
+    parser.add_argument(
+        "--severity-floor",
+        type=int,
+        default=LEGACY_SEVERITY_FLOOR,
+        help="severity tier a disruptive alert must reach to count as disruption "
+        f"evidence in the training observation (default {LEGACY_SEVERITY_FLOOR}, "
+        "the no-op serving build). Above the serving floor the emission "
+        "distribution no longer matches what the Worker produces, so the run is "
+        "diagnostic only and refuses to write params.",
+    )
+    parser.add_argument(
+        "--diagnose-severity",
+        action="store_true",
+        help="after fitting, report pre-clamp self-loop diagonals per state and "
+        f"how well each fitted disrupted self-loop describes the tier>="
+        f"{CANONICAL_SEVERITY_FLOOR} episode durations, then exit without "
+        "writing. Pair with --severity-floor to compare the severe-only build "
+        "against the serving build on one window.",
+    )
     args = parser.parse_args(argv)
+    if args.severity_floor != LEGACY_SEVERITY_FLOOR and not (
+        args.dry_run
+        or args.diagnose_severity
+        or args.diagnose_advance
+        or args.diagnose_service
+    ):
+        print(
+            f"ERROR: --severity-floor {args.severity_floor} differs from the "
+            f"serving floor {LEGACY_SEVERITY_FLOOR}, so these params would be "
+            "fitted on an alert-count distribution the Worker never produces "
+            "(worker/src/derive.ts counts every non-planned alert). Publishing "
+            "them would ship a train/serve emission mismatch. Re-run with "
+            "--diagnose-severity or --dry-run, or wire the identical floor into "
+            "the Worker first.",
+            file=sys.stderr,
+        )
+        return 1
 
     cfg = load_config()
     end_date = date.fromisoformat(args.end) if args.end else datetime.now(UTC).date()
@@ -1337,6 +1626,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         end_date,
         movement_fields=movement_fields,
         service_fields=service_fields,
+        severity_floor=args.severity_floor,
     )
     if not series:
         print("no observations in archive — skipping training", file=sys.stderr)
@@ -1352,7 +1642,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             return 1
     if n_baseline_cells == 0 and not (
-        args.dry_run or args.allow_empty_baseline or args.diagnose_advance
+        args.dry_run
+        or args.allow_empty_baseline
+        or args.diagnose_advance
+        or args.diagnose_severity
     ):
         print(
             "ERROR: movement advance-baseline is EMPTY (0 cells) -- refusing to "
@@ -1369,12 +1662,30 @@ def main(argv: Iterable[str] | None = None) -> int:
             "movement-primary condition will publish 'unknown' for every route.",
             file=sys.stderr,
         )
+    # The sink is only requested by the clamp-pressure diagnostic, so a normal
+    # publish run calls train() exactly as it always did.
+    pre_clamp: dict[str | None, tuple[float, float, float]] = {}
+    train_kwargs: dict[str, Any] = {}
+    if args.diagnose_severity:
+        train_kwargs["pre_clamp_diagonals"] = pre_clamp
     global_prior, per_route = train(
         series,
         prior_strength=args.prior_strength,
         min_ticks=args.min_ticks,
         advance_priors=route_advance_rates,
+        **train_kwargs,
     )
+
+    if args.diagnose_severity:
+        _report_severity_diagnostics(
+            series,
+            global_prior,
+            per_route,
+            pre_clamp,
+            min_ticks=args.min_ticks,
+            severity_floor=args.severity_floor,
+        )
+        return 0
 
     if args.diagnose_advance:
         _report_advance_diagnostics(

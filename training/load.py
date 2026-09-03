@@ -11,13 +11,17 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from momentarily.hmm import Observation, tod_bin
-from momentarily.mapping import is_planned_work_id
+from momentarily.mapping import (
+    LEGACY_SEVERITY_FLOOR,
+    is_planned_work_id,
+    severity_tier,
+)
 
 # Cron cadence — collector polls every 5 min, ticks align on this boundary.
 TICK_SECONDS = 300
@@ -33,10 +37,86 @@ class TickObservation:
     route_id: str
     tick: int  # epoch seconds, snapped to TICK_SECONDS
     observation: Observation
-    # Counted (HMM-included) alert_types active on this route-tick. Only the R2
-    # truth builder populates it — used by the review to grade ground truth by
-    # severity; the HMM training path leaves it empty.
+    # Every non-planned alert_type active on this route-tick, BEFORE any severity
+    # floor — the raw list both the severity grading and the severity-floored
+    # observation build derive from. Populated by both builders (the local
+    # collector one below and load_r2.build_tick_observations).
     disruptive_types: tuple[str, ...] = ()
+
+
+def alert_observation(
+    counted: Sequence[tuple[int, str]],
+    tick: int,
+    *,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
+) -> Observation:
+    """Build the HMM observation for one route-tick from its counted alerts.
+
+    `counted` is (sort_order, alert_type) for the alerts that survived the
+    planned-work id filter, in any order. Shared by the local-collector loader
+    and the R2 reconstruction so the two paths cannot drift — they were
+    duplicate copies of this logic.
+
+    `severity_floor` selects between two builds:
+
+      - floor <= mapping.LEGACY_SEVERITY_FLOOR is the SERVING build and applies
+        no filter at all: every alert that survived the planned-work id filter
+        counts, exactly as worker/src/derive.ts does it. This branch is explicit
+        rather than a degenerate case of the comparison below, so the arm every
+        pre/post measurement is baselined against is byte-identical to the
+        pre-severity build by construction, not by arithmetic coincidence.
+      - a higher floor keeps only alerts reaching that severity tier, dropping
+        BOTH tier-0 (Information, Station Notice, unknown types) and sub-floor
+        disruptive alerts from the scored channels — alert_count, severity_sum,
+        has_suspended_alert, has_delays, has_service_change. At floor 2
+        (mapping.CANONICAL_SEVERITY_FLOOR) the scored population is exactly the
+        one truth_version 2 grades: Severe Delays and suspensions. That is the
+        point — the latent disrupted regime stops being defined by chronic
+        ordinary Delays, which is what it was 94% made of.
+
+    has_planned is the exception: it reads the unfiltered list under every floor.
+    It reports whether planned work is up rather than how severe the disruption
+    is, and a "Planned -" alert_type arriving under a non-planned id is tier 0,
+    so a floor that silenced it would lose the flag entirely.
+    """
+    tiers = [severity_tier(at) for at in (at for _so, at in counted)]
+    all_types = [at for _so, at in counted]
+    if severity_floor <= LEGACY_SEVERITY_FLOOR:
+        scored = list(counted)
+    else:
+        scored = [
+            (so, at)
+            for (so, at), tier in zip(counted, tiers, strict=True)
+            if tier >= severity_floor
+        ]
+    scored_types = [at for _so, at in scored]
+    return Observation(
+        alert_count=len(scored),
+        severity_sum=sum(so for so, _at in scored),
+        has_suspended_alert=_match(
+            scored_types, ("Suspend", "No Trains"), exclude_prefix="Planned -"
+        ),
+        has_delays=_match(
+            scored_types, ("Delays", "Severe Delays"), exclude_prefix="Planned -"
+        ),
+        has_service_change=_match(
+            scored_types,
+            (
+                "Service Change",
+                "Trains Rerouted",
+                "Reroute",
+                "Stops Skipped",
+                "Express to Local",
+                "Local to Express",
+            ),
+            exclude_prefix="Planned -",
+        ),
+        has_planned=any(at.startswith("Planned -") for at in all_types),
+        tod_bin=tod_bin(tick),
+        max_severity_tier=max(tiers, default=0),
+        severity_floor=severity_floor,
+        has_minor_alert=any(1 <= tier < severity_floor for tier in tiers),
+    )
 
 
 def _snap_tick(epoch: int) -> int:
@@ -74,12 +154,15 @@ def iter_records(paths: Iterable[Path]) -> Iterator[dict[str, Any]]:
 
 def build_observations(
     records: Iterable[dict[str, Any]],
+    *,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
 ) -> list[TickObservation]:
     """Aggregate raw alert poll records into per-(route, tick) observations.
 
     Multiple polls within a 5-min window are merged: an alert seen in any poll
     of that window counts once. Sort_order is summed across distinct alerts in
-    the route×tick bucket.
+    the route×tick bucket. `severity_floor` is passed through to
+    alert_observation — floor 1 is the no-op serving build.
     """
     # bucket[tick][route_id] = {alert_id: (sort_order, alert_type)}
     bucket: dict[int, dict[str, dict[str, tuple[int, str]]]] = {}
@@ -123,41 +206,14 @@ def build_observations(
                 for aid, (so, at) in alerts.items()
                 if not is_planned_work_id(aid)
             ]
-            alert_count = len(counted)
-            severity_sum = sum(so for so, _at in counted)
-            types = [at for _so, at in counted]
             out.append(
                 TickObservation(
                     route_id=route_id,
                     tick=tick,
-                    observation=Observation(
-                        alert_count=alert_count,
-                        severity_sum=severity_sum,
-                        has_suspended_alert=_match(
-                            types,
-                            ("Suspend", "No Trains"),
-                            exclude_prefix="Planned -",
-                        ),
-                        has_delays=_match(
-                            types,
-                            ("Delays", "Severe Delays"),
-                            exclude_prefix="Planned -",
-                        ),
-                        has_service_change=_match(
-                            types,
-                            (
-                                "Service Change",
-                                "Trains Rerouted",
-                                "Reroute",
-                                "Stops Skipped",
-                                "Express to Local",
-                                "Local to Express",
-                            ),
-                            exclude_prefix="Planned -",
-                        ),
-                        has_planned=any(at.startswith("Planned -") for at in types),
-                        tod_bin=tod_bin(tick),
+                    observation=alert_observation(
+                        counted, tick, severity_floor=severity_floor
                     ),
+                    disruptive_types=tuple(at for _so, at in counted),
                 )
             )
     return out
@@ -188,6 +244,8 @@ def fill_quiet_ticks(
     route_id: str,
     start_tick: int | None = None,
     end_tick: int | None = None,
+    *,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
 ) -> list[TickObservation]:
     """Return a contiguous sequence of ticks for one route, inserting quiet
     observations (no alerts) for ticks where the route had no entry.
@@ -195,6 +253,11 @@ def fill_quiet_ticks(
     The HMM needs evenly-spaced observations to compute dwell times correctly;
     without filling, a quiet route that vanishes from the data would look like
     its dwell time stretched across the gap.
+
+    `severity_floor` only tags the inserted quiet ticks, so the whole series
+    reports one floor rather than a mix of the caller's and the default. It must
+    match the floor `observations` was built under; a quiet tick has no alerts
+    and so is identical under every floor.
     """
     route_obs = [o for o in observations if o.route_id == route_id]
     if not route_obs:
@@ -219,6 +282,7 @@ def fill_quiet_ticks(
                         severity_sum=0,
                         has_suspended_alert=False,
                         tod_bin=tod_bin(tick),
+                        severity_floor=severity_floor,
                     ),
                 )
             )
@@ -226,11 +290,16 @@ def fill_quiet_ticks(
     return out
 
 
-def load_route_series(data_dir: Path, route_id: str) -> list[TickObservation]:
+def load_route_series(
+    data_dir: Path,
+    route_id: str,
+    *,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
+) -> list[TickObservation]:
     """End-to-end convenience: read all alerts/*.jsonl under data_dir, build
     observations, return one route's contiguous tick series."""
     alerts_dir = data_dir / "alerts"
     paths = sorted(alerts_dir.glob("*.jsonl"))
     records = iter_records(paths)
-    observations = build_observations(records)
-    return fill_quiet_ticks(observations, route_id)
+    observations = build_observations(records, severity_floor=severity_floor)
+    return fill_quiet_ticks(observations, route_id, severity_floor=severity_floor)

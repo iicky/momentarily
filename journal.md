@@ -7034,3 +7034,174 @@ archive is a claim about deployed behaviour and dates it, and every one of these
 three would have been read later as evidence about what the bucket contains. A
 key-shape boundary in particular is exactly the kind of assertion a future
 reader would trust instead of listing the bucket.
+## 2026-09-03 — the severity signal the HMM never had, and the tier-1 channel that would have undone it
+
+origin: agent
+
+The latent `disrupted` regime was measured at 94.3% ordinary tier-1 Delays
+(1024/1086 not-normal route-ticks) while the grading truth counts severity >= 2
+only. Closing that on the training path turned up three things worth keeping.
+
+**The severity was being computed and then dropped, not never computed.** The
+standing note pointed at `training/load.py` saying the HMM path leaves
+`disruptive_types` empty — but that is the LOCAL collector loader, which the
+trainer never calls. `load_r2.build_tick_observations`, the one it does call, was
+already populating it. The break is one step later: `load_series_by_route`
+discards the `TickObservation` tag and hands EM a bare `Observation`, and
+`Observation` had no severity field at all. Severity reached the boundary and
+died there. Same conclusion, different line — and the difference matters because
+the fix belongs on `Observation`, not on the loader.
+
+**The two loaders were independent copies.** `load.py` and `load_r2.py` each
+carried their own observation build, including their own `_match`, and there were
+three copies of the quiet-tick fill. That duplication is exactly why a channel
+could reach one path and not the other. Both now call one shared builder with a
+parity test asserting identical output at both floors.
+
+**The obvious cheap fix would have re-created the confound.** Splitting
+`has_delays` into ordinary and severe per-state Bernoullis looks like the minimal
+change, and it is wrong. EM is unsupervised: it maximises likelihood, and the
+tier-1 cluster carries roughly 17x the mass of the severe one, so nothing stops
+it re-discovering ordinary Delays, taking the `disrupted` index, and taking the
+disrupted dwell back with it. Capacity to separate two populations is not an
+incentive to separate them. So tier-1 is removed from the state definition
+outright — floor 2 scores only tier >= 2, exactly `truth_version 2`'s population
+— and survives only as non-scored provenance (`max_severity_tier`,
+`has_minor_alert`) so diagnostics can segment the same severe episodes under both
+arms. The floor-independence of `max_severity_tier` is what makes the pre/post
+comparison meaningful: both arms are scored against the identical episode set.
+
+Two details that would have produced wrong numbers if taken from the textbook:
+
+*The discrete KS.* Scoring a fitted self-loop against episode durations needs a
+KS statistic, and the continuous convention — reading the ECDF on both sides of
+each jump — floors it at the largest atom's probability. At a = 0.8 that is 0.20
+on a *perfectly matching* sample, which would have made the statistic unable to
+separate the arms at all. It now compares right-continuous step functions at
+every integer up to the longest episode, and a matching sample scores under 0.05.
+
+*Censoring direction.* Episodes touching either window end are excluded rather
+than truncated. Truncating biases every dwell statistic downward — the direction
+that flatters the fit — so the cheap choice is the one that would have manufactured
+a positive result.
+
+Consequence accepted and pinned by a test rather than left to surprise a refit:
+every Service Change type maps to tier 1 under `mapping.severity_tier`, so floor
+2 silences `has_service_change` entirely. That is `truth_version 2`'s own stance,
+not an oversight; disagreeing with it means moving `TRUTH_VERSION`.
+
+The floored arm cannot be published: `worker/src/derive.ts` counts every
+non-planned alert, so a floored fit's emission distribution is one the Worker
+never produces, and shipping it would be a train/serve mismatch.
+`mapping.LEGACY_SEVERITY_FLOOR` exists to make that contract checkable, and
+`train_em.main` refuses the write before it reads a credential.
+
+**Not yet measured.** The refit that decides whether any of this helps — pre-clamp
+diagonals and tier>=2 dwell fit, floor 1 vs floor 2 on one window — is blocked on
+R2 credentials, not on code. A synthetic fixture confirms only that the
+instrumentation fires and is legible: disrupted over-cap 1/1 -> 0/1, mean excess
++0.0281 -> 0.0000, pre-clamp a11 0.9581 -> 0.9000, with `normal` moving the other
+way (0/1 -> 1/1) as predicted once tier-1 ticks read quiet. That is a fixture, not
+evidence, and its severe episodes are a degenerate point mass at 10 ticks that no
+geometric can fit, so its dwell-fit numbers say nothing. The instrumentation is
+now permanent behind `--diagnose-severity` instead of being hand-patched into
+`_cap_self_loops` a third time.
+
+## 2026-09-03 — the severity floor measures negative, because the clamp pins 28 of 28 routes
+
+origin: agent
+
+Refit both arms on 2026-08-06..09-03, 28 routes, all fitted on their own data,
+identical corpus and prior — only `--severity-floor` differs.
+
+```
+                over_cap        mean_excess       max_excess
+normal      22/28 -> 26/28   0.0118 -> 0.0173  0.0247 -> 0.0246
+disrupted   24/28 -> 20/28   0.0370 -> 0.0305  0.0691 -> 0.0677
+suspended   18/28 ->  8/28   0.0278 -> 0.0068  0.0689 -> 0.0552
+```
+
+Both gates fail. Disrupted over-cap 24/28 -> 20/28 against a <=12/28 gate, and
+mean pre-clamp excess 0.0370 -> 0.0305 against a <=0 gate. The pooled tier>=2
+dwell fit is *bit-identical* between arms — mean log-likelihood -5.6172 and KS
+0.1565 in both, on n=600 uncensored episodes. Of the 14 routes carrying any
+severe episode, the fit improves on 1, worsens on 2, and is unchanged on 11.
+
+**Why nothing could move.** Under the serving build the shipped disrupted
+self-loop is pinned at exactly the 0.93 cap on **28 of 28 routes**. Every route
+ships the same disrupted dwell and it is the cap's value, not any route's fit:
+`_cap_self_loops` is doing the modelling and EM's disrupted row is discarded
+wholesale. The training population therefore cannot influence the shipped
+number, and "the dwell is learned from the wrong population" is not operative for
+the quantity that ships — it is not learned from any population. Under floor 2
+that falls to 21/28, and only two of the seven newly-unpinned routes carry a
+severe episode, which is exactly why C3 barely registers.
+
+The severity signal *does* work on its own terms: global pre-clamp `a11` moves
+0.9834 -> 0.9744, so EM genuinely wants a shorter disrupted dwell once ordinary
+Delays stop defining the state. It is just an order of magnitude short of the
+ceiling, and the ceiling is what ships.
+
+**The accident is confirmed to 2.2 minutes.** The cap implies a 47.8-minute
+median; the pooled empirical tier>=2 median measures 50.0. The suspicion that the
+cap "happens to sit near the tier>=2 median of 50 min, which is probably why
+nobody noticed" is now measured on n=600 episodes instead of 45. The shipped
+number is already nearly right for the severe population *by coincidence*, which
+is why a severity floor has nothing to improve — and why retuning the cap is a
+worse idea than when that warning was written, not a better one. Moving it would
+break the one quantity that is accidentally correct.
+
+So the 94%-ordinary-Delays conflation is real, is now fixed, and has been
+measured as **not** the cause of either symptom it was proposed to explain:
+recovery MAE and IQR coverage (refuted 2026-08-24, grader arm mismatch) and now
+the dwell misfit. Two independent refutations of one causal story. What the
+refit actually exposes is that a single geometric self-loop under a hard ceiling
+cannot represent the disrupted dwell for *any* route — 28/28 pinned is the
+evidence — which is a hazard-shape question, not a severity question.
+
+One lead recorded and deliberately not chased: the **suspended** row responds
+~4x more strongly than the disrupted row this work targeted, over-cap 18/28 ->
+8/28, mean excess 0.0278 -> 0.0068. The plausible mechanism is that suspension
+episodes stop being padded by adjacent ordinary-Delays ticks once tier-1 no
+longer competes for the non-normal states. That is a hypothesis from one table,
+not a result, and it is the largest single movement in the whole comparison.
+
+The negative result cost nothing to keep: the training path now carries severity,
+the two loaders share one observation builder instead of being independent copies
+(which is how severity reached one path and not the other), and the pre-clamp
+diagonals are permanently instrumented rather than hand-patched a third time.
+None of that depended on the gates passing — which is the point of having written
+the gates down first.
+
+## 2026-09-03 — correction: the severity conflation is measurable, not fixed
+
+origin: agent
+
+The entry above says "the 94%-ordinary-Delays conflation is real, is now fixed,
+and has been measured as not the cause of either symptom." The middle clause is
+wrong and is withdrawn.
+
+Floor 2 is diagnostic-only by construction — the trainer refuses to publish a
+floored fit while `worker/src/derive.ts` counts every non-planned alert, and
+that refusal is the point of the change, not a limitation of it. The default and
+only publishable build is still floor 1. So the production training path counts
+alerts exactly as it did before, and the latent disrupted regime is still 94.3%
+ordinary tier-1 Delays in every params set that actually ships. Nothing about
+shipped behaviour changed.
+
+Stated without the overclaim, what landed is: severity now *reaches* the training
+observation, the two loaders share one builder rather than being independent
+copies, the pre-clamp diagonals and tier>=2 dwell fit are permanently
+instrumented, a severity floor is parameterised and measurable end to end, and a
+guard prevents publishing the floored build while serving disagrees. That is an
+instrumented negative experiment plus the plumbing to run it — a capability, not
+a behavioural fix.
+
+The distinction is worth the correction because it changes what a reader would
+do next. "Fixed" invites someone to assume the disrupted regime is now
+severity-clean and reason downstream from that; it is not, and on this
+measurement there is no reason to make it so, since the shipped disrupted dwell
+is the 0.93 cap on 28 of 28 routes irrespective of the training population.
+
+Numbers, gates and verdict in the previous entry are unaffected. Only the claim
+about the state the codebase is left in needed narrowing.

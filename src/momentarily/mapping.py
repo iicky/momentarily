@@ -138,6 +138,14 @@ def severity_tier(alert_type: str | None) -> int:
 CANONICAL_SEVERITY_FLOOR = 2
 TRUTH_VERSION = 2
 
+# The floor the SERVING path applies to the alerts it counts into the HMM
+# observation: 1, i.e. none — every non-planned alert counts, tier-1 included.
+# Named so the train/serve gap is checkable rather than implicit: a trainer that
+# counts alerts under a different floor fits an emission distribution the Worker
+# does not produce, and must not publish those params. worker/src/derive.ts is
+# the other half of this contract.
+LEGACY_SEVERITY_FLOOR = 1
+
 
 def coarse_condition(category: str) -> str:
     """Non-model severity fallback for the Python publisher.

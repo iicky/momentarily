@@ -20,6 +20,18 @@ count evidence and saturated the posterior (reliability mass piled at the
 extremes). The gamma_alpha/gamma_beta params remain in the schema for
 back-compat but are vestigial.
 
+max_severity_tier and has_minor_alert are carried for the same reason and under
+the same rule: they are deterministic functions of the alert list the flags
+already score, so neither is a likelihood channel. They exist so the offline
+diagnostics can segment tier>=2 episodes, and see what tier-1 mass a floored
+build discarded, straight off a fitted Observation series with no second archive
+pass. Deliberately NOT fitted per state: a per-state tier-1 Bernoulli would let
+EM re-discover the ordinary-Delays cluster and hand it the `disrupted` dwell
+again — the measured failure a severity floor exists to remove: the latent
+`disrupted` regime was 94% ordinary tier-1 Delays. Under a floored build the
+model sees a tier-1-only tick as quiet, which is exactly what the canonical
+truth (mapping.CANONICAL_SEVERITY_FLOOR, truth_version 2) already grades it as.
+
 Hand-rolled — no extra deps. Forward algorithm for filtering, Baum-Welch for the
 weekly refit (training loop will live separately and call into here).
 
@@ -41,6 +53,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
+
+from momentarily.mapping import LEGACY_SEVERITY_FLOOR
 
 State = Literal["normal", "disrupted", "suspended"]
 STATES: tuple[State, ...] = ("normal", "disrupted", "suspended")
@@ -107,6 +121,17 @@ class Observation:
     # it out (no baseline or feed gap) so the tick scores on the other channels.
     service_ratio: float | None = None
     has_service: bool = False
+    # Severity provenance of the alerts behind this tick — NOT likelihood
+    # channels (see the module docstring). max_severity_tier is the highest
+    # mapping.severity_tier over the alerts the builder COUNTED; severity_floor
+    # is the floor that build applied, so a series states on its face whether it
+    # is the legacy breadth build or a severe-only one; has_minor_alert says a
+    # sub-floor alert was active on this tick and was therefore kept out of the
+    # counted channels. Together they let a diagnostic reconstruct both the
+    # tier>=2 episode structure and the tier-1 mass a floored build dropped.
+    max_severity_tier: int = 0
+    severity_floor: int = LEGACY_SEVERITY_FLOOR
+    has_minor_alert: bool = False
 
 
 @dataclass(frozen=True)

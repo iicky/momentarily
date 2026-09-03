@@ -26,11 +26,16 @@ from zoneinfo import ZoneInfo
 
 from blake3 import blake3
 
-from momentarily.hmm import Observation, schedule_bin, tod_bin
-from momentarily.mapping import is_planned_work_id
+from momentarily.hmm import schedule_bin, tod_bin
+from momentarily.mapping import LEGACY_SEVERITY_FLOOR, is_planned_work_id
 from training.eval_common import et_date, nearest_rank
 from training.hierarchical import PooledCell, partially_pool
-from training.load import TICK_SECONDS, TickObservation
+from training.load import (
+    TICK_SECONDS,
+    TickObservation,
+    alert_observation,
+    fill_quiet_ticks,
+)
 from training.r2_client import R2Config, get_object_bytes, load_config, make_client
 
 if TYPE_CHECKING:
@@ -215,6 +220,7 @@ def build_tick_observations(
     *,
     corpus_end: int | None = None,
     active_mask: PresenceMask | None = None,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
 ) -> list[TickObservation]:
     """Reconstruct per-(route, tick) observations from alert-version events.
 
@@ -228,6 +234,12 @@ def build_tick_observations(
 
     `active_mask`, when given, drops (route, tick) cells the live Worker never
     saw active — correcting the archive's over-extension past feed presence.
+
+    `severity_floor` is handed to load.alert_observation, which decides which
+    alerts count as disruption evidence. It does NOT affect disruptive_types,
+    which always carries the unfiltered non-planned list the severity grading
+    reads — so raising the floor changes the observation the HMM trains on
+    without touching the truth built from the same call.
     """
     if not bodies:
         return []
@@ -345,56 +357,17 @@ def build_tick_observations(
                 for aid, (so, at) in alerts.items()
                 if not is_planned_work_id(aid)
             ]
-            types = [at for _so, at in counted]
-            obs = Observation(
-                alert_count=len(counted),
-                severity_sum=sum(so for so, _at in counted),
-                has_suspended_alert=_match(
-                    types,
-                    ("Suspend", "No Trains"),
-                    exclude_prefix="Planned -",
-                ),
-                has_delays=_match(
-                    types, ("Delays", "Severe Delays"), exclude_prefix="Planned -"
-                ),
-                has_service_change=_match(
-                    types,
-                    (
-                        "Service Change",
-                        "Trains Rerouted",
-                        "Reroute",
-                        "Stops Skipped",
-                        "Express to Local",
-                        "Local to Express",
-                    ),
-                    exclude_prefix="Planned -",
-                ),
-                has_planned=any(at.startswith("Planned -") for at in types),
-                tod_bin=tod_bin(tick),
-            )
             out.append(
                 TickObservation(
                     route_id=route_id,
                     tick=tick,
-                    observation=obs,
-                    disruptive_types=tuple(types),
+                    observation=alert_observation(
+                        counted, tick, severity_floor=severity_floor
+                    ),
+                    disruptive_types=tuple(at for _so, at in counted),
                 )
             )
     return out
-
-
-def _match(
-    types: list[str],
-    needles: tuple[str, ...],
-    *,
-    exclude_prefix: str | None = None,
-) -> bool:
-    for at in types:
-        if exclude_prefix and at.startswith(exclude_prefix):
-            continue
-        if any(needle in at for needle in needles):
-            return True
-    return False
 
 
 def load_route_series_r2(
@@ -403,39 +376,16 @@ def load_route_series_r2(
     start_date: date | None = None,
     end_date: date | None = None,
     config: R2Config | None = None,
+    severity_floor: int = LEGACY_SEVERITY_FLOOR,
 ) -> list[TickObservation]:
     """End-to-end: pull R2 archive, build observations, return one route's series."""
     bodies = fetch_alert_versions(config, start_date=start_date, end_date=end_date)
-    obs = build_tick_observations(bodies)
-    series = [o for o in obs if o.route_id == route_id]
-    if not series:
-        return []
-
-    # Fill quiet ticks the same way load.py does, so the HMM filter sees a
-    # contiguous grid (gaps in coverage mean "no alerts active," not "missing").
-    first_tick = series[0].tick
-    last_tick = series[-1].tick
-    by_tick = {o.tick: o for o in series}
-    out: list[TickObservation] = []
-    tick = first_tick
-    while tick <= last_tick:
-        if tick in by_tick:
-            out.append(by_tick[tick])
-        else:
-            out.append(
-                TickObservation(
-                    route_id=route_id,
-                    tick=tick,
-                    observation=Observation(
-                        alert_count=0,
-                        severity_sum=0,
-                        has_suspended_alert=False,
-                        tod_bin=tod_bin(tick),
-                    ),
-                )
-            )
-        tick += TICK_SECONDS
-    return out
+    obs = build_tick_observations(bodies, severity_floor=severity_floor)
+    # Fill quiet ticks the same way the local loader does, so the HMM filter sees
+    # a contiguous grid (gaps in coverage mean "no alerts active," not
+    # "missing"). Shared with load.py rather than reimplemented — this was a
+    # third copy of the same loop.
+    return fill_quiet_ticks(obs, route_id, severity_floor=severity_floor)
 
 
 # --- Trip-updates service metric: independent recovery truth ---

@@ -27,6 +27,7 @@ from training.eval import (
     calibrate,
     episode_support,
     independent_recovery_metrics,
+    load_movement_transitions,
     load_transition_matrices,
     movement_coverage_alarm,
     movement_truth_by_key,
@@ -1641,3 +1642,120 @@ def test_build_by_line_flows_into_calibration_feed():
     assert cal["by_line"]["1"]["n_predictions"] == 60
     # trimmed: recovery keeps overall + per_regime only
     assert set(cal["by_line"]["1"]["recovery"]) == {"overall", "per_regime"}
+
+
+class _FakeMovementArchive:
+    """An R2 stand-in holding a literal key -> JSONL body map, listing by prefix.
+
+    Mirrors the two things load_movement_transitions actually uses: a paginated-
+    free list_objects_v2 and a get_object. Keys are compared as opaque strings,
+    so a loader that started parsing them would be visible here.
+    """
+
+    def __init__(self, objects: dict[str, str]) -> None:
+        self._objects = objects
+        self.listed_prefixes: list[str] = []
+
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
+        prefix = str(kwargs["Prefix"])
+        self.listed_prefixes.append(prefix)
+        return {
+            "Contents": [
+                {"Key": k} for k in sorted(self._objects) if k.startswith(prefix)
+            ],
+            "IsTruncated": False,
+        }
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        return {"Body": io.BytesIO(self._objects[str(kwargs["Key"])].encode())}
+
+
+def _movement_line(*, ts: int, scope: str, key: str, route: str) -> str:
+    return json.dumps(
+        {
+            "ts": ts,
+            "scope": scope,
+            "key": key,
+            "route": route,
+            "prev_state": "normal",
+            "new_state": "disrupted",
+            "regime_entered_at": ts - 600,
+            "exited_at": ts,
+            "dwell_sec": 600,
+        }
+    )
+
+
+def test_load_movement_transitions_reads_old_and_new_key_shapes_together() -> None:
+    """The archive holds two key shapes and both must load.
+
+    Objects written before the Worker's key fix are `<ts>.jsonl` and hold one
+    scope each — the second of the tick's two writes overwrote the first. Newer
+    objects are `<ts>-<scope>.jsonl`, one per scope. A window spanning the fix
+    sees both, and within one day. Listing is by date prefix and the scope filter
+    reads the record field, so nothing here may depend on the key shape.
+    """
+    day = "2026-09-02"
+    archive = _FakeMovementArchive(
+        {
+            # Old shape: one object, segment only — the clobber's survivor.
+            f"v1/movement_transitions/{day}/1000.jsonl": _movement_line(
+                ts=1000, scope="segment", key="Q|north|Q05N", route="Q"
+            ),
+            # New shape, same day: both scopes survive as separate objects.
+            f"v1/movement_transitions/{day}/2000-route.jsonl": _movement_line(
+                ts=2000, scope="route", key="A", route="A"
+            ),
+            f"v1/movement_transitions/{day}/2000-segment.jsonl": _movement_line(
+                ts=2000, scope="segment", key="A|south|A15S", route="A"
+            ),
+            # A neighbouring day must not leak in.
+            "v1/movement_transitions/2026-09-04/3000-route.jsonl": _movement_line(
+                ts=3000, scope="route", key="F", route="F"
+            ),
+        }
+    )
+    client = cast("S3Client", archive)
+    window = (date(2026, 9, 2), date(2026, 9, 3))
+
+    every = load_movement_transitions(client, "bucket", *window)
+    assert [(r.ts, r.scope) for r in every] == [
+        (1000, "segment"),
+        (2000, "route"),
+        (2000, "segment"),
+    ]
+    # Only the requested days were listed, by whole-day prefix.
+    assert archive.listed_prefixes == [
+        "v1/movement_transitions/2026-09-02/",
+        "v1/movement_transitions/2026-09-03/",
+    ]
+
+    # The route record lives in a new-shape key and the loader must find it —
+    # this is the read the dwell_movement fit was starved of for eight days.
+    route_only = load_movement_transitions(client, "bucket", *window, scope="route")
+    assert [r.key for r in route_only] == ["A"]
+
+    # Old-shape objects still reach a scope-filtered read.
+    segment_only = load_movement_transitions(client, "bucket", *window, scope="segment")
+    assert [r.key for r in segment_only] == ["Q|north|Q05N", "A|south|A15S"]
+
+
+def test_load_movement_transitions_keeps_both_scopes_of_one_tick() -> None:
+    """Two objects sharing a ts differ only by the key's scope suffix. The loader
+    must return both records, not deduplicate on ts — the whole point of the
+    Worker's key change is that one tick can commit two scopes."""
+    archive = _FakeMovementArchive(
+        {
+            "v1/movement_transitions/2026-09-02/1700-route.jsonl": _movement_line(
+                ts=1700, scope="route", key="A", route="A"
+            ),
+            "v1/movement_transitions/2026-09-02/1700-segment.jsonl": _movement_line(
+                ts=1700, scope="segment", key="A|south|A15S", route="A"
+            ),
+        }
+    )
+    out = load_movement_transitions(
+        cast("S3Client", archive), "bucket", date(2026, 9, 2), date(2026, 9, 2)
+    )
+    assert sorted(r.scope for r in out) == ["route", "segment"]
+    assert {r.ts for r in out} == {1700}

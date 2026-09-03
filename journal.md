@@ -6958,3 +6958,79 @@ answer includes something truthful, the encoding is the bug and the guard will
 convert a correct answer into a withheld one. "Withhold when unsure" is not
 free; it has a cost paid by the consumer, and it is the wrong trade against a
 number that was simply rounded badly.
+## 2026-09-03 — the movement_transitions key had no scope, so segment writes ate route writes for 8 days
+
+origin: agent
+
+`writeMovementTransitions` keyed on `observedAt` alone —
+`v1/movement_transitions/<date>/<ts>.jsonl` — and `index.ts` calls it twice per
+tick: route clock at index.ts:897, segment clock at index.ts:937, same
+`observedAt`. R2 `put` replaces. The second write therefore deleted the first
+on every tick that had a segment change.
+
+Numbers, from an archive scan over 2026-08-12..09-03: route-scope
+records per day ran 13, 25, 5, 0, 0, 35 through 08-26 while segment ran 90-238,
+then segment jumped ~60x on 08-27 (8733, 8170, 10068, 10928, 8525, 6571) and
+route went to exactly 0 on that same date and stayed there for eight days. The
+mechanism is confirmed structurally, not just by correlation: no archived object
+has ever contained both scopes. 2026-08-20 — 106 files, 101 segment-only, 5
+route-only. 2026-08-26 — 84 files, 79 segment-only, 5 route-only. 2026-08-29 —
+287 files, all segment-only. A same-key overwrite produces exactly that
+partition; an append or a scope-partitioned key never could.
+
+Fixed by putting scope in the key (`<ts>-<scope>.jsonl`) rather than merging both
+scopes into one put. The deciding factor is the reader:
+`training.eval.load_movement_transitions` lists by whole-day prefix and filters
+on the record's `scope` FIELD, never parsing the key — so scope-in-key needs
+zero reader change and the entire pre-fix archive keeps loading unchanged beside
+the new shape. Merging into one put would instead have coupled the two writers,
+which sit in different try blocks with independent fail-soft behaviour: a
+segment-step failure would have taken the route records with it.
+
+`writeMovementTransitions` now groups by scope internally and puts one object
+per scope present, instead of reading the scope off `records[0]`. That removes
+the caller invariant entirely — no input can mislabel a key, and no two puts
+from one tick can collide — rather than documenting an invariant that a third
+callsite would silently break.
+
+Audited the rest of the write path while here: `writeMovementTransitions` is the
+only writer under this prefix (two callsites, both in index.ts), and both are
+awaited sequentially inside one `scheduled` handler, so there was never a
+concurrency race — the loss was purely the shared key.
+
+Not recoverable: the eight days of route-scope records are gone, overwritten in
+place. `training.movement_backfill` can reconstruct that window offline from
+`archive/vehicles`, which is what the movement dwell fit already reads, so the
+hole blocks the *committed-stream* switch rather than the fit
+itself. Its module docstring claimed segment-scope regimes "have never been
+wired up online"; they are, and they were the thing doing the overwriting.
+
+## 2026-09-03 — correction: the route-scope loss is ongoing, not eight closed days
+
+origin: agent
+
+The entry above says "the eight days of route-scope records are gone" and "the
+key is scope-partitioned now". Both read as a completed cutover. They are not.
+The fix lives in worker/src/grading.ts in an uncommitted worktree and has NOT
+been deployed — deploying is the user's call — so the deployed Worker is still
+keying on `<ts>.jsonl` and is still overwriting route scope on every tick with a
+segment change, right now. The correct statement is: route scope has been empty
+since 2026-08-27 and stays empty until that file ships. Eight days is the count
+at the time of writing, not a closed interval.
+
+The same overclaim had leaked into three docstrings and is corrected there:
+`training.eval.load_movement_transitions` had dated the key-shape boundary to
+2026-09-03, which would have told a future reader that anything after that date
+is scoped; it now describes the two shapes and explicitly says not to infer a
+cutover date from it. `training/movement_backfill.py` had "the key is
+scope-partitioned now" and a closed 08-27..09-03 window; both now say the loss
+continues until deployment. grading.ts's own module comment said "until this
+suffix was deployed".
+
+Worth naming the shape of the error, because it is a specific hazard of writing
+a fix and its documentation in the same sitting: the tense of the code under
+your cursor is not the tense of production. A docstring that describes an
+archive is a claim about deployed behaviour and dates it, and every one of these
+three would have been read later as evidence about what the bucket contains. A
+key-shape boundary in particular is exactly the kind of assertion a future
+reader would trust instead of listing the bucket.

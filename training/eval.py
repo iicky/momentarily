@@ -326,7 +326,19 @@ def load_movement_transitions(
     scope: str | None = None,
 ) -> list[MovementTransitionRecord]:
     """Committed movement-regime changes over the window. `scope` filters to
-    'route' or 'segment'; None returns both."""
+    'route' or 'segment'; None returns both.
+
+    Two key shapes can appear under these date prefixes and both must load.
+    Unscoped `<ts>.jsonl` objects hold one scope each — whichever of the
+    Worker's two per-tick writes landed last, since they collided on the key
+    (journal.md 2026-09-03). Scoped `<ts>-<scope>.jsonl` objects are one per
+    scope, so both survive. Which shape a given day holds depends on what the
+    deployed Worker was writing that day, so treat neither as current and do
+    not infer a cutover date from here. Nothing in this function parses the
+    key: listing is by date prefix and the filter below reads each record's own
+    `scope` field, so the shapes may mix freely within a window and within a
+    day.
+    """
     rows = _read_listed_jsonl(
         client,
         bucket,

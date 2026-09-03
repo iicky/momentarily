@@ -1,12 +1,21 @@
 """Offline reconstruction of the movement regime-transition stream.
 
 The Worker clocks movement regimes online (worker/src/regime.ts) straight from
-live vehicle positions and archives every commit to
-v1/movement_transitions/<date>/<ts>.jsonl (training.eval.load_movement_transitions).
-That stream only exists from the day the regime clock shipped, and only at
-route scope — segment-scope regimes have never been wired up online
-(worker/src/index.ts calls advanceRegimes with scope='route' only; segment_flow.ts
-is a separate per-station roll-up, not a regime clock).
+live vehicle positions and archives every commit under
+v1/movement_transitions/<date>/ (training.eval.load_movement_transitions), at
+BOTH route and segment scope — worker/src/index.ts calls advanceRegimes twice a
+tick, once on the route clock and once on the segment clock in the segment_flow
+step, and the segment clock commits 8-11k records/day.
+
+Two things still make that stream insufficient on its own. It only exists from
+the day each clock shipped, so it cannot span a training window that starts
+earlier. And the two per-tick writes shared one R2 key, so the segment write
+overwrote the route write: route scope is empty from 2026-08-27 onward — the
+date segment volume rose ~60x — even though the route clock was running the
+whole time (journal.md 2026-09-03). The write is scope-partitioned in
+worker/src/grading.ts, but route scope keeps being overwritten until that
+Worker is deployed, and the days already lost were overwritten in place and
+cannot be recovered from this stream.
 
 This module reconstructs the SAME transition stream offline from archives that
 already exist, through the identical debounce (training.regime.replay_regimes)
@@ -26,9 +35,9 @@ sources:
                            positions, re-classified here with the Python mirror
                            of the Worker's classifier (training.load_r2.
                            derive_movement_state / training.segments.
-                           classify_segment). The ONLY source that reaches
-                           segment scope, and the only one that covers the three
-                           weeks before the movement arm shipped (published_condition
+                           classify_segment). The only OFFLINE source that
+                           reaches segment scope, and the only one that covers
+                           the three weeks before the movement arm shipped (published_condition
                            read ~100% `unknown` there — journal.md 2026-08-11,
                            "the movement arm was blind for three weeks").
 

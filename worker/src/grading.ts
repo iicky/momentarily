@@ -12,10 +12,18 @@
  *     write no file. Provides ground-truth dwell times for recovery_minutes
  *     calibration.
  *
- *   v1/movement_transitions/YYYY-MM-DD/<ts>.jsonl
+ *   v1/movement_transitions/YYYY-MM-DD/<ts>-<scope>.jsonl
  *     The same, for the movement arm's debounced regimes, at both route and
  *     segment scope. This is the stream the movement dwell curves are fitted
  *     from — the filter's argmax flips describe a different signal.
+ *
+ *     The `-<scope>` suffix is load-bearing: index.ts commits the route clock
+ *     and the segment clock in two separate puts on the same tick, so a key of
+ *     `<ts>.jsonl` alone made the second put overwrite the first. It did —
+ *     route scope has been empty since 2026-08-27 and stays empty until this
+ *     file is deployed, see journal.md 2026-09-03. Readers list by date prefix
+ *     and filter on the record's own `scope` field, so the unscoped keys the
+ *     archive already holds still load beside the new ones.
  *
  * All three prefixes are listable by date for the Python grader.
  */
@@ -155,17 +163,37 @@ export async function writeTransitions(
   });
 }
 
+/**
+ * Commit this tick's movement-regime changes, one R2 object per scope present.
+ *
+ * Partitioning by scope is the whole point: index.ts calls this twice on the
+ * same tick with the same observedAt, once per clock, and an R2 put replaces
+ * rather than appends. Keying on observedAt alone therefore made the segment
+ * write delete the route write, which it did for eight days — see the module
+ * comment. Grouping here rather than trusting the caller to pass a single
+ * scope means no key can be mislabelled and no two puts from one tick can
+ * target the same key.
+ */
 export async function writeMovementTransitions(
   bucket: R2Bucket,
   observedAt: number,
   records: MovementTransitionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
-  const key = `v1/movement_transitions/${utcDate(observedAt)}/${observedAt}.jsonl`;
-  const body = records.map((r) => JSON.stringify(r)).join('\n');
-  await bucket.put(key, body, {
-    httpMetadata: { contentType: 'application/x-ndjson' },
-  });
+  const byScope: Record<string, MovementTransitionRecord[]> = {};
+  for (const r of records) {
+    (byScope[r.scope] ??= []).push(r);
+  }
+  const date = utcDate(observedAt);
+  await Promise.all(
+    Object.entries(byScope).map(([scope, group]) =>
+      bucket.put(
+        `v1/movement_transitions/${date}/${observedAt}-${scope}.jsonl`,
+        group.map((r) => JSON.stringify(r)).join('\n'),
+        { httpMetadata: { contentType: 'application/x-ndjson' } },
+      ),
+    ),
+  );
 }
 
 /**

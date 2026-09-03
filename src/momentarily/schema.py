@@ -142,9 +142,14 @@ class Inference(BaseModel):
     recovery_minutes_low: int  # 25th percentile
     recovery_minutes_high: int  # 75th percentile
 
-    # True when the dwell estimate saturated its ceiling — the regime is so
-    # persistent (self-loop ≈ 1, typical of open-ended planned work) that the
-    # model can't bound when it ends. recovery_minutes is clamped in that case.
+    # True whenever recovery_minutes is NOT a prediction, in which case it and
+    # its bounds all carry the ceiling. Three producers: the dwell estimate
+    # saturated its ceiling or outlived every observed dwell (the regime is so
+    # persistent — self-loop ≈ 1, typical of open-ended planned work — that the
+    # model can't bound when it ends); no arm describing the published condition
+    # could answer a live recovery question; or the arm that produced the
+    # recovery block disagrees with is_disrupted about whether there is a
+    # disruption at all.
     recovery_indeterminate: bool = False
 
     # Forward predictions.

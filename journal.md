@@ -6814,3 +6814,147 @@ stand in for the quantity actually named. There the aggregate was "no witness
 excluded anything" standing in for "the labels are proven"; here it was "all
 prefixes" standing in for "every OTHER prefix". A number is only defensible
 against the sentence it is written into.
+
+## 2026-09-03 — the obvious fix for the self-contradictory inference block is the wrong one
+
+origin: agent
+
+J published `inference.is_disrupted=true` with `p_disrupted=0.999992` beside
+`recovery_minutes=0`, `[0,0]`, `recovery_indeterminate=false`. The tempting fix
+is to stop deriving `is_disrupted` from the alert shadow and derive it from the
+published, movement-primary condition — the badge said `normal`, so the flag
+should have said false and the whole contradiction disappears. That fix is
+wrong, and what makes it wrong is not in worker/ at all.
+
+Three viz surfaces gate the recovery string on this exact field, not on the
+published condition: viz/app/page.tsx:485, viz/app/lines/page.tsx:94,
+viz/app/lines/[route]/page.tsx:187. So `is_disrupted` is not really "is this
+line disrupted" — operationally it is "is the recovery number in this block
+worth showing". For a route with no movement read the published condition is
+`unknown`, `publishedNotNormal` is false, and the alert-HMM arm supplies a
+genuine estimate: live H published 80 [55,100] that way. Deriving the flag from
+the published condition turns H's flag false and silences an honest estimate,
+trading a self-contradictory row on J for a silently emptied row on H. The
+consumer that reads the flag decides what the flag is allowed to mean.
+
+So the arms stay as they are and the composition is guarded instead: withhold
+via the existing ceiling convention (1440 + `recovery_indeterminate=true`)
+whenever `is_disrupted` is true and the arm that produced the recovery block was
+timing a `normal` regime. The single-arm rows are untouched by construction —
+the schedule arm only runs on `publishedNotNormal` and the alert-HMM arm only on
+`condition !== 'normal'`, so only the movement arm can report "nothing to
+recover from" under a flag that says otherwise. Pre-fix, the four
+behaviour-preservation cases in worker/test/inference_arm_agreement.test.ts all
+pass and only the J case fails, which is the evidence that the guard is
+load-bearing on exactly one row shape.
+
+`p_normal_in_30min` is deliberately left published on the withheld row. It
+forecasts the PUBLISHED condition, which is `normal`, so 0.998 "still normal in
+30 min" is correct and is the best-measured number in the block (AUC 0.856 on
+movement-sourced rows vs 0.261 on alert-sourced). Nulling it would discard real
+signal to tidy up a field-naming problem.
+
+The residual smell is untouched and belongs to the contract, not the model: a
+rider-facing boolean whose real meaning is "which arm answered" cannot be made
+coherent while `recovery_minutes` is a non-nullable integer, because "no
+estimate" has to be spelled as a real number that means something else.
+
+## 2026-09-03 — correction: the arm enumeration in the entry above was wrong, and wrong in the way that entry warned about
+
+origin: agent
+
+The entry above closes with a claim that does not survive: "the schedule arm
+only runs on publishedNotNormal and the alert-HMM arm only on
+condition !== 'normal', so only the movement arm can report 'nothing to recover
+from' under a flag that says otherwise." The first guard I shipped keyed off
+exactly that enumeration —
+
+    recovery_source !== 'movement' || movementRegime?.state !== 'normal'
+
+— and it has a reachable hole on the schedule arm.
+
+derive.ts's two alert predicates are not complements, and the code says so in
+plain sight (derive.ts:256): `alert_count` counts "real-time alerts and any
+other id", i.e. everything not `lmm:planned_work:*`, while `has_realtime_alert`
+matches only `lmm:alert:*`. An alert in a third namespace is therefore COUNTED —
+so `effectiveCondition` does not force `normal` and `is_disrupted` goes true —
+while leaving `has_realtime_alert` false, which is precisely the
+`!schedule.hasRealtimeAlert` precondition `scheduleRecovery` needs. Add an
+active planned window and the schedule arm is selected on a route the flag calls
+disrupted. Then `remaining = max(0, round((resume - now) / 60))` rounds to 0 for
+any tick within 30 seconds of the announced resume, and `scheduledResumeAt`'s
+containment test is `now <= end` inclusive, so `overdue = now >= resume` fires at
+the boundary too. Published object: `is_disrupted: true`, `recovery_minutes: 0`,
+`[0, 0]`, `recovery_indeterminate: false`, `overdue: true` — the J defect exactly,
+on the arm the enumeration had assumed safe. Reproduced in
+worker/test/inference_arm_agreement.test.ts; pre-fix the two defect rows fail and
+the five behaviour-preservation rows pass.
+
+The irony is that the pre-existing gate's own comment (snapshot.ts:1094-1096)
+already argues against what I did: it is assembled at the single return point
+rather than per-arm because "there are five ways these values get set and a
+per-arm gate would silently miss the next one added." I wrote a per-arm gate
+anyway, one screen below that sentence, and it missed one of the five.
+
+The guard now keys off the answer instead of the arm: withhold when
+`is_disrupted` is true and the recovery block is a determinate, ZERO-WIDTH zero
+(`!indeterminate && minutes === 0 && low === 0 && high === 0`). Zero width is
+load-bearing, not decoration — a fitted curve with a sub-30-second median
+publishes `0` with a non-zero upper bound, which says "probably imminent, could
+be a while" and is a legitimate forecast. Only the zero-width determinate zero
+asserts the disruption is provably already over, which is the thing that cannot
+be true beside a live disruption claim. That predicate is also arm-count
+independent, so the next arm added inherits it.
+
+Generalisable, and the reason this is worth an entry: when a guard's safety
+argument is "the other N branches can't reach this state", the argument is only
+as good as an exhaustive reading of all N, and two predicates that sound like
+complements ("is it real-time" / "does it count as disruptive") frequently are
+not. Prefer a guard keyed on the invariant the object must satisfy over one
+keyed on the paths believed to violate it.
+
+## 2026-09-03 — the guard was masking an overloaded encoding, and the mask was worse than the bug
+
+origin: agent
+
+Third and last correction to the two entries above. Both call the schedule
+sub-30-second rounding a third "producer" of the contradictory object, and the
+entry above calls it "durable coverage of the schedule-arm zero". Neither
+survives. The commit hook rejected the branch on it, correctly.
+
+The case I pinned was a planned resume 20 seconds in the FUTURE
+(`overdue = false`). That is a truthful imminent recovery. `Math.round(20/60)`
+published it as a determinate `[0,0]`, and my composition guard then converted
+that to `1440 / recovery_indeterminate=true` — so a route about to come back in
+under a minute published "we cannot say when this recovers". A false unknown is
+user-visible and strictly worse than the zero it replaced, and I had written a
+test asserting that behaviour as correct.
+
+The actual defect was never composition, it was ENCODING. `round` overloaded 0
+to mean two different things on the same arm:
+
+  - "the announced time has already passed" (the `overdue` clamp), and
+  - "the announced time is less than 30 seconds away".
+
+The first contradicts a live disruption claim. The second is a perfectly good
+forecast. Guarding the collision papers over the overload and, in the branch I
+nearly landed, resolves it in favour of the wrong one. Fixing the encoding costs
+one operator: the countdown ceils, so a strictly-positive wait is structurally
+>= 1 (no clamp needed), and 0 belongs to `overdue` alone. Ceil also never
+under-promises the wait, which is the right direction for an ETA, and it is
+identical to round on whole-minute resumes — every pre-existing schedule
+assertion (1800s->30, 5400s->90, 30min->30) is untouched, which is why the
+change is invisible to the other 33 test files.
+
+Only after that does the invariant predicate become exactly right rather than
+approximately right: a determinate zero-width zero now means one thing, so
+`is_disrupted && determinate && [0,0]` is precisely the contradiction and
+nothing else. The guard did not change. Its PRECONDITION got established.
+
+Generalisable, and sharper than the lesson in the entry above: a guard that
+fires on a value is only sound if that value is unambiguous, and mine was not.
+Before adding a sentinel check, ask what else can produce the sentinel — if the
+answer includes something truthful, the encoding is the bug and the guard will
+convert a correct answer into a withheld one. "Withhold when unsure" is not
+free; it has a cost paid by the consumer, and it is the wrong trade against a
+number that was simply rounded badly.

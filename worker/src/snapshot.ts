@@ -100,9 +100,12 @@ interface Inference {
   regime_age_seconds: number;
   recovery_minutes_low: number;
   recovery_minutes_high: number;
-  // True when the dwell estimate saturated MAX_RECOVERY_MINUTES — the regime
-  // is so persistent the model can't bound when it ends. recovery_minutes and
-  // its bounds are clamped to the ceiling in that case.
+  // True whenever recovery_minutes is NOT a prediction, in which case it and
+  // its bounds all carry MAX_RECOVERY_MINUTES. Three producers: the dwell
+  // estimate saturated the ceiling or outlived every observed dwell; no arm
+  // that describes the published condition could answer a live recovery
+  // question; or the arm that produced the recovery block disagrees with
+  // is_disrupted about whether there is a disruption at all.
   recovery_indeterminate: boolean;
   // A forecast about the PUBLISHED condition, or nothing. The condition in
   // route_status is movement-primary; this number comes from whichever arm
@@ -1004,7 +1007,15 @@ function buildInference(
     // tick — clamp to 0 rather than count down past it. Next tick an extension
     // or a newly-posted real-time alert takes over via precedence.
     overdue = now >= resume;
-    const remaining = Math.max(0, Math.round((resume - now) / 60));
+    // A FUTURE resume must never produce 0. Rounding overloaded the value: a
+    // wait under 30 seconds rounded down to a determinate [0,0], which is
+    // indistinguishable from the overdue clamp's 0 meaning "the announced time
+    // has already passed" — so a truthful "back in 20 seconds" published as
+    // "already over". Ceiling a strictly-positive wait is structurally >= 1, so
+    // no clamp is needed, and 0 is now reserved for `overdue` alone. Ceil also
+    // never under-promises the wait, the safe direction for an ETA. Whole-minute
+    // resumes are unaffected (ceil == round on exact multiples).
+    const remaining = overdue ? 0 : Math.ceil((resume - now) / 60);
     recovery_minutes = remaining;
     recovery_minutes_low = remaining;
     recovery_minutes_high = remaining;
@@ -1113,14 +1124,85 @@ function buildInference(
     recovery_indeterminate = true;
   }
 
+  // Shadow-HMM disruption flag: whether the alert-derived regime reads a live
+  // disruption. The PUBLISHED disruption is route_status.condition (movement-
+  // primary); this tracks the HMM view that also anchors the recovery forecast.
+  // normal (incl. planned-only, zero realtime alerts) and not_scheduled never
+  // count.
+  //
+  // DELIBERATE POSITION (2026-09-03): this stays the alert shadow rather than
+  // becoming published-condition-derived, even though a rider-facing
+  // "disrupted" that can contradict the badge above it is a real smell. It is
+  // the flag that says "the arm anchoring this block reads a disruption", and
+  // the alert arm is still the arm that answers whenever no movement curve
+  // exists — a route with no movement read publishes condition 'unknown' and a
+  // usable alert-arm recovery estimate (H, live: 80 [55,100]). Deriving this
+  // from the published condition would turn that row's flag false and silence
+  // an estimate that is honest, because viz gates the recovery string on this
+  // field (viz/app/page.tsx, viz/app/lines/page.tsx,
+  // viz/app/lines/[route]/page.tsx) and homeassistant-mta-subway reads
+  // recovery_minutes as a published integer. So the composition is fixed here
+  // instead, and the naming smell is a known, deliberate residual.
+  const is_disrupted = condition !== "normal" && condition !== "not_scheduled";
+
+  // Cross-arm composition guard. is_disrupted is the alert arm's read and the
+  // recovery block comes from whichever arm recovery_source names; where those
+  // arms disagree, each is self-consistent but the composed object is not.
+  // Observed live on J (generated_at=1788394231): is_disrupted true with
+  // p_disrupted=0.999992 published beside recovery_minutes=0, interval [0,0],
+  // recovery_indeterminate=false — an object asserting a 99.9992%-certain
+  // disruption that recovers in exactly zero minutes, determinately.
+  //
+  // Keyed off the ANSWER the selected arm produced, not off a list of arms
+  // assumed to be timing a disruption, for the same reason the gate above is
+  // assembled here rather than per-arm: an arm enumeration silently misses a
+  // path. It missed one. The movement arm's `normal` branch is the obvious
+  // producer of a determinate zero, but the schedule arm reaches the identical
+  // object via `overdue`, because derive.ts's two alert predicates are not
+  // complements — alert_count counts "real-time alerts and any other id"
+  // (derive.ts:256) while has_realtime_alert matches only lmm:alert:*, so a
+  // third-namespace alert makes is_disrupted true while leaving
+  // scheduleRecovery's !hasRealtimeAlert precondition satisfied.
+  //
+  // This predicate is only correct because a determinate zero-width zero means
+  // exactly one thing: recovery is already complete. That is a property of the
+  // arms, and it did NOT hold until the schedule countdown was changed to ceil
+  // — rounding published [0,0] for a resume up to 30 seconds in the FUTURE, so
+  // withholding here turned a truthful "back in 20 seconds" into a
+  // user-visible false unknown, worse than the zero it replaced. The encoding
+  // was the bug; guarding its collision would have entrenched it. Any new arm
+  // must keep 0 meaning "already over" or fix its own encoding, not widen this
+  // guard.
+  //
+  // Width still matters independently: a fitted curve whose median rounds to 0
+  // with a non-zero upper bound says "probably imminent, could be a while",
+  // which is a legitimate forecast and must survive. Withheld the same way the
+  // ceiling gate above withholds: recovery_indeterminate says the number is not
+  // a prediction and the value carries the ceiling, rather than a fabricated
+  // confident zero. Not null, for the same contract reason.
+  //
+  // p_normal_in_30min is deliberately left alone. It forecasts the PUBLISHED
+  // condition, which on the J row is normal, so "0.998 chance still normal in
+  // 30 min" is both correct and the best-measured number in the block (AUC
+  // 0.856 on movement-sourced rows); nulling it would discard real signal to
+  // paper over the flag's naming.
+  const claimsRecoveryAlreadyComplete =
+    !recovery_indeterminate &&
+    recovery_minutes === 0 &&
+    recovery_minutes_low === 0 &&
+    recovery_minutes_high === 0;
+
+  if (is_disrupted && claimsRecoveryAlreadyComplete) {
+    recovery_minutes = MAX_RECOVERY_MINUTES;
+    recovery_minutes_low = MAX_RECOVERY_MINUTES;
+    recovery_minutes_high = MAX_RECOVERY_MINUTES;
+    recovery_indeterminate = true;
+  }
+
   return {
     condition,
     recovery_minutes,
-    // Shadow-HMM disruption flag: whether the alert-derived regime reads a live
-    // disruption. The PUBLISHED disruption is route_status.condition (movement-
-    // primary); this tracks the HMM view that also anchors the recovery forecast.
-    // normal (incl. planned-only, zero realtime alerts) and not_scheduled never count.
-    is_disrupted: condition !== "normal" && condition !== "not_scheduled",
+    is_disrupted,
     p_normal: probs[0],
     p_disrupted: probs[1],
     p_suspended: probs[2],

@@ -304,7 +304,7 @@ export default function MapPage() {
 
       {note && <Prose className="grp-note" spans={note} />}
 
-      <div className="maprow">
+      <div className="maprow mapbleed">
         <div className="mapframe">
           {diagram && ctx ? (
             <svg

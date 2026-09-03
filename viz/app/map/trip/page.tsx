@@ -111,7 +111,7 @@ function MapView() {
       ) : trip.markers.length === 0 ? (
         <div className="note">No stations with coordinates for this trip.</div>
       ) : (
-        <div className="map-layout">
+        <div className="map-layout mapbleed">
           <MapCanvas snap={snap} trip={trip} onPick={(id) => router.push(`/stations/${id}`)} />
           <SegPanel snap={snap} route={route} trip={trip} />
         </div>

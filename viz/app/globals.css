@@ -1457,11 +1457,32 @@ code {
   font-family: var(--mono);
 }
 
+/* Full bleed: a map canvas escapes .wrap's 1100px measure to centre on the
+   viewport, up to a cap, while the page's headings, controls, caveats and prose
+   stay in their column (they don't carry this class). margin-left is derived
+   from the parent so the block centres in the viewport regardless of how wide
+   .wrap actually is; the cap keeps an ultrawide display framing the map rather
+   than stretching the band to its edges. Both map canvases are portrait (the
+   network diagram is 0.645 w/h, the trip map 0.844), so the diagram inside is
+   sized to its own aspect and centred in this band — the band gives it room to
+   grow past the 1100px column, it does not stretch it to fill landscape width. */
+.mapbleed {
+  width: min(100vw - 40px, 1400px);
+  margin-left: calc(50% - min(50vw - 20px, 700px));
+}
+
 .map-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   gap: 20px;
   align-items: start;
+}
+/* Under full bleed the trip map hugs a capped column (a wider column would
+   only make the portrait canvas taller, not more legible); the map+panel
+   pair centres in the band. */
+.map-layout.mapbleed {
+  grid-template-columns: minmax(0, 900px) 320px;
+  justify-content: center;
 }
 .map-canvas {
   position: relative;
@@ -1517,7 +1538,8 @@ code {
 }
 
 @media (max-width: 760px) {
-  .map-layout {
+  .map-layout,
+  .map-layout.mapbleed {
     grid-template-columns: 1fr;
   }
   .station-cols {
@@ -1559,6 +1581,14 @@ code {
   gap: 16px;
   align-items: start;
 }
+/* Under full bleed the map column hugs the height-driven diagram (the auto
+   track), the detail panel keeps its fixed width, and the pair centres in
+   the band — a wide viewport frames the diagram rather than stranding it
+   small in the middle of a stretched column. */
+.maprow.mapbleed {
+  grid-template-columns: auto 280px;
+  justify-content: center;
+}
 .mapframe {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1568,7 +1598,18 @@ code {
 }
 /* Height-driven: the aspect comes from the asset (set inline from its view
    box), so the SVG takes exactly the width its geometry needs and centres in
-   the column rather than letterboxing a near-square map in a wide one. */
+   the column rather than letterboxing a near-square map in a wide one.
+
+   The height is what sets the size, and it is deliberately kept at 76vh so the
+   map still FITS THE FOLD. Because the asset is portrait (view box 1028x1595,
+   aspect 0.645) a taller cap is also the only way it grows wider — but the
+   trade is bad at every realistic viewport: measured at 2560x1440, going to
+   88vh bought 111px of width (706 -> 817, on a 2560px screen) and cost the
+   bottom of the network, which fell 47px below the fold on its own and 114px
+   once the route-filter control row sits above it. A map you must scroll to
+   see the end of is worse than a slightly narrower one you can read at a
+   glance. Widening this canvas for real is a change to the ASSET's aspect in
+   training/diagram.py, not to this height. */
 .diagram {
   display: block;
   height: 76vh;
@@ -1677,8 +1718,10 @@ code {
 }
 
 @media (max-width: 980px) {
-  .maprow {
+  .maprow,
+  .maprow.mapbleed {
     grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
   }
 }
 

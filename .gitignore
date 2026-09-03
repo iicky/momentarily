@@ -43,3 +43,4 @@ CLAUDE.md
 
 # Local agent memory (Mnemopi) — not for upstream
 banks/
+.murk-*.env

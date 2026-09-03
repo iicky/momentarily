@@ -62,8 +62,13 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    system-ui, sans-serif;
+  font:
+    14px/1.5 "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
 }
 
 a {
@@ -303,7 +308,9 @@ a:hover {
   fill: currentColor;
 }
 .smark.high {
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 70%, transparent));
+  filter: drop-shadow(
+    0 0 3px color-mix(in srgb, var(--accent) 70%, transparent)
+  );
 }
 
 /* Proportional supply meter (drawer). Fixed 0–200% scale with ticks at the two
@@ -592,7 +599,6 @@ a:hover {
 .muted {
   color: var(--muted);
 }
-
 
 /* --- Models page --- */
 .controls {
@@ -1553,6 +1559,65 @@ code {
   position: relative;
   z-index: 1;
 }
+/* Line filter: route bullets that toggle. Too many lines to fit as segmented
+   buttons, but the site already speaks the bullet language, so a lit bullet in
+   its line colour is on and a hollow dimmed one is off — legible without relying
+   on colour alone. Takes its own row under the segmented controls. */
+.linefilter {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.linefilter-bullets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+/* Scoped past .controls button so the bullet stays a circle, not a pill. */
+.linefilter .routebul {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  color: #fff;
+  cursor: pointer;
+  transition:
+    opacity 120ms,
+    filter 120ms;
+}
+.linefilter .routebul:hover {
+  filter: brightness(1.12);
+}
+.linefilter .routebul.off {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+  opacity: 0.7;
+}
+.linefilter .routebul.off:hover {
+  opacity: 1;
+  filter: none;
+}
+.linefilter-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+/* Says the coverage numbers stay system-wide while lines are hidden. */
+.filter-note {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.filter-note strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 .maprow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
@@ -2098,17 +2163,39 @@ a.trip-stop-name:hover {
 .gauge-fine {
   color: var(--unknown);
 }
-.gauge.low .gauge-fill { stroke: var(--suspended); }
-.gauge.low .gauge-dot { fill: var(--suspended); }
-.gauge.low .gauge-value { fill: var(--suspended); }
-.gauge.thin .gauge-fill { stroke: var(--disrupted); }
-.gauge.thin .gauge-dot { fill: var(--disrupted); }
-.gauge.thin .gauge-value { fill: var(--disrupted); }
-.gauge.normal .gauge-fill { stroke: var(--normal); }
-.gauge.normal .gauge-dot { fill: var(--normal); }
-.gauge.high .gauge-fill { stroke: var(--accent); }
-.gauge.high .gauge-dot { fill: var(--accent); }
-.gauge.high .gauge-value { fill: var(--accent); }
+.gauge.low .gauge-fill {
+  stroke: var(--suspended);
+}
+.gauge.low .gauge-dot {
+  fill: var(--suspended);
+}
+.gauge.low .gauge-value {
+  fill: var(--suspended);
+}
+.gauge.thin .gauge-fill {
+  stroke: var(--disrupted);
+}
+.gauge.thin .gauge-dot {
+  fill: var(--disrupted);
+}
+.gauge.thin .gauge-value {
+  fill: var(--disrupted);
+}
+.gauge.normal .gauge-fill {
+  stroke: var(--normal);
+}
+.gauge.normal .gauge-dot {
+  fill: var(--normal);
+}
+.gauge.high .gauge-fill {
+  stroke: var(--accent);
+}
+.gauge.high .gauge-dot {
+  fill: var(--accent);
+}
+.gauge.high .gauge-value {
+  fill: var(--accent);
+}
 
 /* Which trained params are live, in the header sub-line. Monospace so a version
    epoch reads as an identifier, not prose. */

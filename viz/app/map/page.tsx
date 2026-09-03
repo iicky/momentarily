@@ -26,6 +26,16 @@ import type {
   OverlayId,
 } from "@/lib/overlays";
 import type { DirectionFilter } from "@/lib/segments";
+import {
+  drawnRoutes,
+  edgeShown,
+  isRouteOn,
+  parseSelection,
+  serializeSelection,
+  stationShown,
+  toggleRoute,
+} from "@/lib/routeFilter";
+import type { RouteSelection } from "@/lib/routeFilter";
 import type { Snapshot } from "@/lib/types";
 
 const POLL_MS = 60_000;
@@ -74,6 +84,13 @@ export default function MapPage() {
   const [trains, setTrains] = useState<TrainsFeed>({ state: "loading" });
   const [hover, setHover] = useState<string | null>(null);
   const [pinned, setPinned] = useState<string | null>(null);
+  // Which lines are drawn. null = every line, the default and the resting map.
+  // Seeded from the URL so a shared filtered link opens already narrowed.
+  const [sel, setSel] = useState<RouteSelection>(() =>
+    typeof window === "undefined"
+      ? null
+      : parseSelection(window.location.search),
+  );
   const [view, setView] = useState<View>(HOME);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const drag = useRef<{ x: number; y: number; view: View } | null>(null);
@@ -128,6 +145,27 @@ export default function MapPage() {
     [overlayId],
   );
 
+  // The lines the diagram actually draws an edge for — the filter's roster.
+  const allRoutes = useMemo(
+    () => (diagram ? drawnRoutes(diagram) : []),
+    [diagram],
+  );
+  const shownCount = allRoutes.filter((route) => isRouteOn(sel, route)).length;
+
+  // Reflect the selection in the URL so a filtered map is shareable, using
+  // history.replaceState rather than the router: this is a view parameter, not
+  // a navigation, and it must not remount the page or push a history entry on
+  // every toggle. Skipped until the roster is known, so serialize can
+  // canonicalise all-on to an absent param.
+  useEffect(() => {
+    if (typeof window === "undefined" || allRoutes.length === 0) return;
+    const url = new URL(window.location.href);
+    const value = serializeSelection(sel, allRoutes);
+    if (value === null) url.searchParams.delete("routes");
+    else url.searchParams.set("routes", value);
+    window.history.replaceState(null, "", url);
+  }, [sel, allRoutes]);
+
   // The scheduled-time bins are a sort over every timed hop in one service
   // class, and they depend on the asset and the class alone — never on the
   // snapshot.
@@ -154,16 +192,28 @@ export default function MapPage() {
     [diagram, snap, filter, serviceClass, fetchedAt, scale, trains],
   );
 
+  // Filter is a SUBSET of what the overlay already painted, never a re-paint:
+  // each stroke keeps the exact colour the overlay attributed it, so hiding
+  // lines can't spread a branch's verdict onto a sibling it wasn't measured for.
   const painted = useMemo(
-    () => (ctx === null ? [] : paintEdges(active, ctx)),
+    () =>
+      ctx === null
+        ? []
+        : paintEdges(active, ctx).filter((p) => edgeShown(p.edge, sel)),
+    [active, ctx, sel],
+  );
+  const note = useMemo(
+    () => (ctx === null ? null : active.note(ctx)),
     [active, ctx],
   );
-  const note = useMemo(() => (ctx === null ? null : active.note(ctx)), [active, ctx]);
   const legend = useMemo(
     () => (ctx === null ? null : active.legend(ctx)),
     [active, ctx],
   );
-  const stamp = useMemo(() => (ctx === null ? null : active.stamp(ctx)), [active, ctx]);
+  const stamp = useMemo(
+    () => (ctx === null ? null : active.stamp(ctx)),
+    [active, ctx],
+  );
   const caveat = useMemo(
     () => (ctx === null ? null : (active.caveat?.(ctx) ?? null)),
     [active, ctx],
@@ -174,12 +224,14 @@ export default function MapPage() {
   // reader wants to interrogate, and the panel answers for both directions.
   const hits = useMemo(
     () =>
-      (diagram?.edges ?? []).map((edge) => ({
-        id: edgeId(edge),
-        edge,
-        d: edgePath(edge),
-      })),
-    [diagram],
+      (diagram?.edges ?? [])
+        .filter((edge) => edgeShown(edge, sel))
+        .map((edge) => ({
+          id: edgeId(edge),
+          edge,
+          d: edgePath(edge),
+        })),
+    [diagram, sel],
   );
   const byEdge = useMemo(() => {
     const out: Record<string, DiagramEdge> = {};
@@ -199,7 +251,10 @@ export default function MapPage() {
       e.preventDefault();
       const p = toLocal(e.clientX, e.clientY, svg, diagram.view_box);
       setView((v) => {
-        const k = Math.min(ZOOM_MAX, Math.max(1, v.k * Math.exp(-e.deltaY / 400)));
+        const k = Math.min(
+          ZOOM_MAX,
+          Math.max(1, v.k * Math.exp(-e.deltaY / 400)),
+        );
         // Hold the point under the cursor still: t' = t + p·(k − k').
         return { k, x: v.x + p.x * (v.k - k), y: v.y + p.y * (v.k - k) };
       });
@@ -296,7 +351,76 @@ export default function MapPage() {
         <button onClick={() => setView(HOME)} disabled={view === HOME}>
           Reset view
         </button>
+        {/* Route bullets that toggle: 28 lines won't fit as segmented buttons,
+            but the site already speaks the route-bullet language. A lit bullet
+            is on and wears its line colour; a dimmed hollow one is off. Plain
+            click toggles, alt/shift-click isolates that one line. */}
+        {allRoutes.length > 0 && diagram && (
+          <div className="linefilter" role="group" aria-label="Lines shown">
+            <div className="linefilter-bullets">
+              {allRoutes.map((route) => {
+                const on = isRouteOn(sel, route);
+                return (
+                  <button
+                    key={route}
+                    type="button"
+                    className={`bullet routebul${on ? "" : " off"}`}
+                    aria-pressed={on}
+                    title={`${diagram.routes[route]?.name ?? route} — ${
+                      on ? "click to hide" : "click to show"
+                    }, alt-click to isolate`}
+                    style={
+                      on
+                        ? {
+                            background:
+                              diagram.routes[route]?.color ?? "var(--unknown)",
+                          }
+                        : undefined
+                    }
+                    onClick={(e) =>
+                      e.altKey || e.shiftKey
+                        ? setSel(new Set([route]))
+                        : setSel((s) => toggleRoute(s, route, allRoutes))
+                    }
+                  >
+                    {route}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="linefilter-actions">
+              <button
+                type="button"
+                onClick={() => setSel(null)}
+                disabled={sel === null}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setSel(new Set())}
+                disabled={sel !== null && shownCount === 0}
+              >
+                None
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* When lines are hidden, the numbers below still count the whole system.
+          A coverage fraction that silently described 28 lines while two are
+          drawn is exactly the kind of number this project won't publish, so the
+          filter says out loud that those figures stay system-wide. */}
+      {sel !== null && allRoutes.length > 0 && (
+        <p className="filter-note">
+          Showing <strong>{shownCount}</strong> of {allRoutes.length} lines. The
+          coverage and legend figures below stay <em>system-wide</em> — they
+          count every line, not just the ones drawn here.
+          {overlayId === "trains" &&
+            " Train markers are per-stop and can't be attributed to a line, so all are shown regardless of this filter."}
+        </p>
+      )}
 
       {/* A caveat that changes what the picture means goes where the picture
           is, at full width, not in a tooltip. */}
@@ -345,7 +469,9 @@ export default function MapPage() {
                       // Width, not just opacity: `disrupted` already paints at
                       // full opacity, so an opacity-only highlight is invisible
                       // on exactly the strokes a reader most wants to select.
-                      strokeWidth={p.paint.width + (selected ? SELECT_WIDTH : 0)}
+                      strokeWidth={
+                        p.paint.width + (selected ? SELECT_WIDTH : 0)
+                      }
                       strokeOpacity={selected ? 1 : p.paint.opacity}
                       strokeDasharray={p.paint.dash ?? undefined}
                       strokeLinecap="round"
@@ -358,15 +484,20 @@ export default function MapPage() {
                     via non-scaling-stroke, and a dot has no stroke to do that
                     with, so it would balloon to a blob at full zoom. */}
                 {view.k >= DOT_ZOOM &&
-                  Object.entries(diagram.stations).map(([id, station]) => (
-                    <circle
-                      key={id}
-                      className="stationdot"
-                      cx={station.x}
-                      cy={station.y}
-                      r={DOT_RADIUS / view.k}
-                    />
-                  ))}
+                  Object.entries(diagram.stations)
+                    // Union rule: a stop drops only once every line through it is
+                    // hidden, so a transfer stays while a selected line still
+                    // calls there and nothing is left as an orphan dot.
+                    .filter(([, station]) => stationShown(station, sel))
+                    .map(([id, station]) => (
+                      <circle
+                        key={id}
+                        className="stationdot"
+                        cx={station.x}
+                        cy={station.y}
+                        r={DOT_RADIUS / view.k}
+                      />
+                    ))}
                 {Layer && <Layer ctx={ctx} k={view.k} />}
                 {/* Transparent wide strokes on top: thin lines are unhittable. */}
                 {hits.map((hit) => (
@@ -379,29 +510,34 @@ export default function MapPage() {
                   />
                 ))}
                 {/* An inset is a component drawn away from where it is. Say so
-                    on the map, not just in the asset. */}
-                {diagram.insets.map((inset) => (
-                  <g key={inset.routes.join()} className="inset">
-                    <rect
-                      x={inset.box[0] - 10}
-                      y={inset.box[1] - 10}
-                      width={inset.box[2] + 20}
-                      height={inset.box[3] + 26}
-                      rx={4}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    <text
-                      x={inset.box[0] - 10}
-                      y={inset.box[1] + inset.box[3] + 12}
-                      fontSize={11 / view.k}
-                    >
-                      {inset.routes
-                        .map((r) => diagram.routes[r]?.name ?? r)
-                        .join(", ")}{" "}
-                      — inset, {Math.round(inset.scale * 100)}% scale
-                    </text>
-                  </g>
-                ))}
+                    on the map, not just in the asset. Dropped when none of its
+                    lines are shown, so the filter leaves no empty labelled box. */}
+                {diagram.insets
+                  .filter((inset) =>
+                    inset.routes.some((r) => isRouteOn(sel, r)),
+                  )
+                  .map((inset) => (
+                    <g key={inset.routes.join()} className="inset">
+                      <rect
+                        x={inset.box[0] - 10}
+                        y={inset.box[1] - 10}
+                        width={inset.box[2] + 20}
+                        height={inset.box[3] + 26}
+                        rx={4}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <text
+                        x={inset.box[0] - 10}
+                        y={inset.box[1] + inset.box[3] + 12}
+                        fontSize={11 / view.k}
+                      >
+                        {inset.routes
+                          .map((r) => diagram.routes[r]?.name ?? r)
+                          .join(", ")}{" "}
+                        — inset, {Math.round(inset.scale * 100)}% scale
+                      </text>
+                    </g>
+                  ))}
               </g>
             </svg>
           ) : (
@@ -516,7 +652,10 @@ function Prose({ className, spans }: { className: string; spans: NoteSpan[] }) {
 function Swatch({ item }: { item: LegendItem }) {
   if (item.shape === "ring") {
     return (
-      <i className="lg-ring" style={{ borderColor: item.color ?? "var(--text)" }} />
+      <i
+        className="lg-ring"
+        style={{ borderColor: item.color ?? "var(--text)" }}
+      />
     );
   }
   if (item.color === null) return <i className={`lg-${item.shape} ghost`} />;
@@ -526,7 +665,9 @@ function Swatch({ item }: { item: LegendItem }) {
       "transparent 5px 8px)";
     return <i className="lg-dash" style={{ backgroundImage: dashes }} />;
   }
-  return <i className={`lg-${item.shape}`} style={{ background: item.color }} />;
+  return (
+    <i className={`lg-${item.shape}`} style={{ background: item.color }} />
+  );
 }
 
 function EdgeDetail({

@@ -175,7 +175,7 @@ def _km_cdf_at(points: list[tuple[int, float]], horizon: int) -> float:
     return out
 
 
-def _make_cell(
+def make_cell(
     samples: list[DwellSample], tail_fn: TailFn | None = None
 ) -> DwellQuantiles:
     """Build a DwellQuantiles from (duration, completed) samples via
@@ -184,6 +184,10 @@ def _make_cell(
 
     With `tail_fn`, a log-logistic [shape, scale] tail is fit to the same
     samples and stored on the cell for the Worker's past-the-curve splice.
+
+    Public because it is the single-cell seam offline consumers build a
+    nonparametric climatology from — one KM body over a pooled sample set,
+    rather than the per-(route, state) grouping compute_dwell_quantiles* do.
     """
     points = km_cdf_points(samples)
     n_events = sum(1 for _d, completed in samples if completed)
@@ -636,7 +640,7 @@ def compute_dwell_quantiles(
     for (route, state), samples in by_cell.items():
         if sum(1 for _d, completed in samples if completed) < min_samples:
             continue
-        out[route][state] = _make_cell(samples, tail_fn)
+        out[route][state] = make_cell(samples, tail_fn)
     return dict(out)
 
 
@@ -678,7 +682,7 @@ def compute_dwell_quantiles_by_alert(
     for (route, state, alert_type), samples in by_cell.items():
         if len(samples) < min_samples:
             continue
-        out[route][state][alert_type] = _make_cell(samples, tail_fn)
+        out[route][state][alert_type] = make_cell(samples, tail_fn)
     return {
         r: {s: dict(by_at) for s, by_at in by_state.items()}
         for r, by_state in out.items()
@@ -720,7 +724,7 @@ def compute_dwell_quantiles_by_cause(
     for (route, state, cause), samples in by_cell.items():
         if len(samples) < min_samples:
             continue
-        out[route][state][cause] = _make_cell(samples, tail_fn)
+        out[route][state][cause] = make_cell(samples, tail_fn)
     return {
         r: {s: dict(by_cause) for s, by_cause in by_state.items()}
         for r, by_state in out.items()

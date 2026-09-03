@@ -387,7 +387,7 @@ def test_movement_open_regimes_threads_counts_from_stop_to_segment_scope(
     """Same terminal-stall fixture as segment_ticks_from_vehicle_bodies's own
     test, reconstructed end to end through movement_open_regimes (source=
     'vehicles', scope='segment') -- proves counts_from_stop actually reaches
-    the C1 contract entrypoints (via _ticks_for), not just the lower-level
+    the C1 contract entrypoints (via ticks_for), not just the lower-level
     builder."""
     bodies = [_segment_body(t(i), {"A>A": 2}) for i in range(4)]
 

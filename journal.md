@@ -7486,3 +7486,280 @@ deserve.
 A latent bug that cancels for reasons unrelated to its logic is still a bug,
 and a measurement that agrees with itself for the wrong reason is not
 corroborated. The diff is the evidence here, not the agreement.
+## 2026-09-03 — the movement dwell arm's whole history of skill numbers is quoted against a hindsight baseline, and the mixture it is judged on was already shipped
+
+origin: agent
+
+Two findings, neither of which needed the archive, plus the committed harness
+that was missing.
+
+**The "next iteration" this arm is still tracked against has been shipped since
+2026-08-12.** The one-tick point mass with a per-route shrunk rate and a
+left-truncated conditional tail is `pooled_dwell.atom_fits` / `mixture_cell`,
+wired through `train_em._movement_dwell(atom_sec=TICK_SECONDS)` (commit
+46d138f). The figures still being quoted for this arm — CRPS skill -0.10, and
+an offline -0.088 -> -0.023 — predate it; the causal grade after it landed was
+continuous -0.1391, single global atom -0.0582, per-route shrunk -0.0606. So
+the open question was never "build the mixture", it was "re-measure", and that
+could not be done: the five scripts that produced those numbers lived in /tmp
+and were deleted. `training/movement_dwell_grade.py` is that grading, committed
+and tested, runnable as one command.
+
+**Every skill number this arm has ever been judged by is measured against
+perfect hindsight, and nobody said so.** `recovery_dist_report` builds its CRPS
+baseline from the empirical CDF of the graded population's OWN durations
+(recovery_dist.py:195). The model is a forecast; the baseline is not. That is
+defensible as a fixed yardstick, but it means "-0.06 vs climatology" does not
+mean "worse than a forecaster using climatology" — it means "worse than a
+forecaster who already knew this window's duration distribution". The harness
+now reports both: `oracle_skill` (that yardstick, kept so the numbers stay
+comparable to the record) and `causal_skill`, the ratio against the SAME
+climatology fitted on the train window only. On synthetic one-tick-dominated
+ticks (23 matched episodes, 61% one tick) the causal climatology's own
+oracle_skill is -0.0028, so there the hindsight advantage is ~0.3% of CRPS and
+the gap really is the model's; whether that holds on real data is exactly the
+unmeasured question, and it is the number the verdict on this arm should turn
+on. Flagging the distinction rather than the conclusion: the archive run is
+blocked on an R2 grant.
+
+A second methodological repair in the same harness: variants disagree on
+coverage (`n_no_curve` differs, because which routes have a train-window cell
+depends on the form), so grading each on its own scorable subset compares CRPS
+means over different populations AND against different baselines. All variants
+are now scored on the episode intersection, which also makes the oracle
+baseline literally identical across rows — asserted in a test rather than
+assumed.
+
+**The atom estimator leans on a per-tick census, and the deficit is narrower
+than "the stream has no censoring".** `dwell._open_regimes` does censor any
+route that transitioned in the window, reading its open regime off the
+new_state of its last transition. The blind spot is routes with NO transition —
+which, since a route completes a `normal` regime only by leaving normal, is
+exactly the steadiest ones. That bites the mixture specifically:
+`pooled_dwell._atom_counts` credits a right-censored observation as evidence
+ABOUT the point mass only once it has outlived the atom, and never as an atom
+itself, so a never-transitioned route sitting in a disrupted regime is pure
+NON-atom evidence. Drop it and the fitted one-tick rate can only rise.
+Measured on two independent fixtures: on the source side atom_p 0.645 -> 0.750
+(+0.105 absolute, +16% relative, 2 cells lost); on the harness's own fixture
+0.601 -> 0.625 with the never-transitioned route's cell disappearing.
+
+The trap that makes such a delta easy to misattribute, recorded because the
+first attempt on the source side hit it: transition-derived inference can hand
+a mover a SPURIOUS censored observation, so a fixture whose movers still sit in
+open not-normal regimes at the boundary moves atom_p for two reasons at once
+and can get the right sign from the wrong cause. The isolation check that
+separates them is asserting that a censused fit with the never-transitioned
+routes withheld reproduces the no-census fit EXACTLY (verified: identical
+atom_p 0.625 on all three routes); only the remaining delta is attributable.
+Consequence for the arm: model form and source selection are not separable
+here, because a transitions-only source biases the published p0 up and shrinks
+coverage before any question of signal quality arises.
+
+NOT MEASURED, and the reason: the refreshed CRPS numbers on the current archive
+(three more weeks of data, and a movement truth that changed underneath the
+2026-08-12 grade — the baseline desaturation plus through-stop filtering took
+one window from 14 episodes to 56, adding the 45-160min multi-tick tail the old
+cut was blind to). `murk_get` reports no active grant covering this thread for
+the R2 keys, and the key file was deliberately not slot-linked around it. The
+first run when access lands should be a REPRODUCTION check on the historical
+window (train 2026-06-21..07-25, eval 07-26..08-11), where oracle_skill ought
+to land near continuous -0.139 / shipped -0.061 before any refreshed number is
+trusted.
+
+## 2026-09-03 — correction: the dwell grading harness is not committed, it is uncommitted in a worktree
+
+origin: agent
+
+The entry above calls `training/movement_dwell_grade.py` "committed" twice —
+"the committed harness that was missing" and "that grading, committed and
+tested". Both are wrong. Nothing was committed: the harness and its tests exist
+only as working-tree changes on a worktree branch, awaiting review. Verified
+against the record rather than from memory — `git log` shows no commit for
+either file.
+
+The word was doing real work in that entry's argument, so the correction is not
+cosmetic. The contrast being drawn was against the five /tmp scripts that
+produced the 2026-08-12 numbers and were deleted, and the property that
+mattered there was DURABILITY. An uncommitted file in one worktree does not yet
+have it. What is true today: the grading is written down as a module with tests
+instead of as a throwaway script, and it will be durable once the diff is
+reviewed and lands. Until then the 2026-08-12 numbers remain the last ones
+anybody can reproduce, and they remain unreproducible.
+
+Same shape of error as the two corrections from 2026-09-02: a word that asserts
+more than was done, in a sentence whose point depended on exactly that word.
+
+## 2026-09-03 — the movement dwell arm was never worse than climatology: the baseline it lost to was a hindsight oracle, and per-route p0 is the only part the floor actually blocks
+
+origin: agent
+
+Refreshed the arm with a grading harness rather than throwaway scripts, and
+three of the four things this task was opened to establish came out different
+from the brief.
+
+**The harness reproduces the record before anything else here is believed.**
+Historical window, historical truth (vehicles-derived, train 2026-06-21..07-25,
+eval 07-26..08-11, 64 episodes, one-tick share 0.609), all five forms on one
+matched population:
+
+| variant     | CRPS  | oracle_skill | causal_skill | mean PIT |
+| ----------- | ----- | ------------ | ------------ | -------- |
+| shipped     | 7.824 | -0.0807      | **+0.0314**  | 0.537    |
+| global_atom | 7.796 | -0.0767      | +0.0350      | 0.538    |
+| continuous  | 8.375 | -0.1568      | **-0.0368**  | 0.588    |
+| pooled      | 7.740 | -0.0691      | **+0.0418**  | 0.535    |
+| km_pooled   | 8.078 | **-0.1157**  | 0.000        | 0.769    |
+
+oracle_skill lands on the record: continuous -0.157 against the journal's
+-0.1391, shipped -0.081 against -0.0606, on 64 episodes against 74 (mine fits
+the advance baseline in-window; the 2026-08-12 run fit it on a clean earlier
+window and applied it forward, so the populations are close, not identical).
+
+**The decisive number is km_pooled's own oracle_skill: -0.1157.** That is the
+same climatology, fitted causally on the train window, scored by the metric
+this arm has been judged by since it opened — and it loses to that metric by
+about as much as the model did. `recovery_dist_report` builds its CRPS baseline
+from the empirical CDF of the graded population's OWN durations
+(recovery_dist.py:195), so "worse than climatology" was never a comparison
+against a climatology forecast; it was a comparison against a forecaster who
+already knew the eval window's duration distribution. Against the honest
+baseline the shipped mixture is POSITIVE, +0.0314.
+
+**On the current production source the sign flips outright.** The replay
+(published_condition) source, train 2026-08-12..08-24, eval 08-25..09-03, 34
+episodes / 22 matched / 12 no-curve, one-tick share 0.559:
+
+| variant     | CRPS  | oracle_skill | causal_skill | mean PIT |
+| ----------- | ----- | ------------ | ------------ | -------- |
+| shipped     | 1.351 | **+0.5862**  | -0.0288      | 0.504    |
+| global_atom | 1.349 | +0.5867      | -0.0277      | 0.504    |
+| continuous  | 1.535 | +0.5298      | **-0.1691**  | 0.510    |
+| pooled      | 1.316 | **+0.5969**  | **-0.0022**  | 0.505    |
+| km_pooled   | 1.313 | +0.5978      | 0.000        | 0.741    |
+
+The window is forced, not chosen: published_condition carries its first
+NOT_NORMAL route-ticks on 07-11, runs 0-12/day through 08-11, jumps to 21-95/day
+from 08-12, then collapses to 0-2/day after 08-27. 08-12..08-29 is the only
+dense stretch this source has.
+
+Honest reading of the two tables together: **the arm is at parity with a
+climatology forecast** (+0.031 and -0.029, both within noise at n=64 and n=22),
+and clearly better than the continuous curve it replaced. Neither "the mixture
+fixed it" nor "the floor wins" was the right frame; the acceptance gate was
+comparing a forecast to an oracle.
+
+**PIT lobes are gone.** This investigation opened on [0,0,38,0,14,0,0,2,8,14] — a
+38-episode bin that was 100% one-tick and a 22-episode high lobe that was 100%
+multi-tick. Shipped now reads [3,0,1,5,2,3,2,4,0,2] at mean PIT 0.504.
+
+**Per-route p0 is the one thing the floor really does block.** `pooled` — a
+single unconditional cell per state, served to every route — equals or beats
+the per-route form on BOTH populations (+0.0418 vs +0.0314; -0.0022 vs -0.0288).
+The estimator says so in its own output: parent_p 0.7400 with every one of 19
+routes shrunk into 0.7308-0.7452, a 0.014 spread across routes whose raw rates
+span 0.000 to 1.000. So 2026-08-26's "conditional dwell adds no skill over the
+unconditional median" is confirmed under CRPS and located precisely: the
+CONDITIONING is floor-limited, the point mass is not. The point mass is worth
++0.068 and +0.140 of causal skill over the continuous form on the two windows.
+
+NEGATIVE RESULT, and it corrects an emphasis of my own from earlier today: the
+per-tick census deficit is NOT binding in production. Same window with
+`--no-census`: cells 43 -> 41, n_own 20 -> 20, n_atom 42 -> 40, censored samples
+22 -> 21, and every grade identical to three decimals (shipped CRPS 1.351, same
+PIT histogram). The mechanism is real — a never-transitioned route in a
+disrupted regime is pure non-atom evidence, reproduced at atom_p 0.645 -> 0.750
+on a hand-built fixture — but a fixture built to isolate a mechanism says
+nothing about its production magnitude, and here the magnitude is two cells and
+zero skill. Same shape of error the source thread made and corrected in the
+opposite direction.
+
+Two harness bugs worth recording because both fail SILENTLY as "no episodes"
+or "wrong population", and both were invisible against the vehicles source:
+`extract_episodes` reads truth at exact 5-minute grid epochs while the
+prediction stream stamps `ts` with real publish time (…210, …132), so an
+unsnapped truth map graded 0 episodes on a window full of disruptions; and
+admitting every non-normal state includes `not_scheduled`, which is absent
+service rather than disruption and took the one-tick share from 0.61 to 0.034
+and distinct durations from 4 to 19. An episode is a NOT_NORMAL run.
+
+Recommendation left for the lead, not implemented: keep the mixture, drop the
+per-route dimension. It grades equal-or-better on both populations, removes the
+shrinkage machinery from the published path, and closes the 12-of-34 no-curve
+coverage gap that per-route cells open for routes missing from the train window.
+
+## 2026-09-03 — correction: the unconditional-mixture recommendation does not close the no-curve coverage gap, and the entry above had the evidence to know that
+
+origin: agent
+
+The entry above recommends collapsing the movement dwell block to an
+unconditional pooled mixture and claims it "closes the 12-of-34 no-curve
+coverage gap that per-route cells open for routes missing from the train
+window". That claim is false, and its own table refutes it: every variant in
+the acceptance run, `pooled` included, reports n_no_curve = 12. Identical.
+
+The mechanism, stated correctly: the pooled variant fits one cell and then
+serves it to the routes it saw in TRAINING. A route that appears only in the
+eval window is still absent from the lookup, so it still grades as no-curve.
+Pooling changes where a cell's parameters come from; it does not by itself
+change which keys resolve.
+
+Closing that gap needs a different change — a lookup-level fallback from an
+unknown (route, state) to the state's pooled cell — which is not what was
+recommended, is not implemented, and is not measured anywhere in this work. It
+is also not measurable through the harness as built: the matched-population
+design scores every variant on the episodes ALL of them can score, so a variant
+with better coverage cannot show its advantage there by construction. Any
+coverage claim would need a separate full-coverage measurement.
+
+What survives of the recommendation is the part that was actually measured:
+the unconditional mixture equals or beats the per-route form on skill on both
+populations (+0.0418 vs +0.0314 historical, -0.0022 vs -0.0288 current) and
+removes the per-route shrinkage machinery from the published path. The coverage
+sentence should be struck.
+
+Third correction today of the same kind, and worth naming as a pattern: a
+claimed benefit that no measurement in front of me supported, sitting one line
+away from the table that contradicted it.
+
+## 2026-09-03 — correction: "never worse than climatology" overstates the evidence; what is established is that the old comparison used the wrong baseline
+
+origin: agent
+
+The headline two entries above reads "the movement dwell arm was never worse
+than climatology". That is stronger than the numbers in its own tables support,
+and the direction of the overstatement is the flattering one.
+
+What the measurements do establish, and this part is solid: the negative skill
+this arm has been judged by was computed against `recovery_dist_report`'s CRPS
+baseline, which is the empirical CDF of the graded population's own durations
+(recovery_dist.py:195) — hindsight, not a forecast. On the historical population
+that baseline beats a CAUSAL fit of the same climatology by 0.116 skill, so the
+old "-0.10 vs climatology" reading conflated "worse than climatology" with
+"worse than an oracle". That conflation is real and is the finding.
+
+What is NOT established is the headline. Against the causal climatology the
+shipped mixture reads +0.0314 on the historical window (n=64) and -0.0288 on
+the current replay window (n=22). The second number is NEGATIVE. Two windows,
+opposite signs, both small, on 64 and 22 episodes, with no interval computed on
+either — I did not bootstrap them, so "within noise" is an assertion I have not
+earned either way. The defensible sentence is: current causal evidence is
+NEAR-PARITY and underpowered, and the sign is not resolved.
+
+Three claims from those entries, re-stated at the strength the evidence carries:
+
+- "The headline claim is false as stated" — holds only for the original
+  metric on the current source, where oracle_skill is +0.586. It does NOT hold
+  as a statement about a climatology forecast, where the current point estimate
+  is negative.
+- "At parity with a climatology forecast" — better read as "not distinguishable
+  from parity at these sample sizes", which is a statement about power, not
+  about the model.
+- The point-mass result (+0.068 and +0.140 causal skill over the continuous
+  form) is the one comparison that keeps its sign and its magnitude across both
+  windows and both truths. It is the finding here that does not need hedging.
+
+Fourth correction today, and the same shape as the other three: a summary
+sentence asserting more than the table beneath it. Recording the count because
+the pattern is the useful part — the tables were right every time; the prose
+over-reached every time.

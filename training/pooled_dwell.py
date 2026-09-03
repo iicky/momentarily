@@ -302,7 +302,7 @@ def partially_pooled_dwell(
 def cell_from_fit(pooled: PooledDwellFit) -> DwellQuantiles:
     """Render a fit into the DwellQuantiles shape the Worker already consumes.
 
-    Same contract as dwell._make_cell: a curve plus a log-logistic tail. The body
+    Same contract as dwell.make_cell: a curve plus a log-logistic tail. The body
     is parametric here rather than Kaplan-Meier, because for these cells the KM
     body is built from too few events to be worth preserving.
     """
@@ -311,7 +311,7 @@ def cell_from_fit(pooled: PooledDwellFit) -> DwellQuantiles:
     def cdf_at(t: float) -> float:
         return 1.0 - loglogistic_survival(t, fit.shape, fit.scale)
 
-    # n stays completed-exits-only, matching dwell._make_cell. It is the key the
+    # n stays completed-exits-only, matching dwell.make_cell. It is the key the
     # min-samples floor reads, and these cells deliberately bypass that floor: a
     # route whose normal regime never ended publishes n=0, n_censored=1. That is
     # the case this module exists for, not an empty cell — don't re-gate on n.

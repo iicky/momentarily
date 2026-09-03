@@ -307,7 +307,7 @@ def resolve_stop_filter(scope: str) -> StopFilter | None:
     return lambda route, direction, stop: (route, direction, stop) in through
 
 
-def _ticks_for(
+def ticks_for(
     client: S3Client,
     bucket: str,
     start_date: date,
@@ -317,6 +317,16 @@ def _ticks_for(
     source: str,
     counts_from_stop: StopFilter | None = None,
 ) -> list[tuple[int, Mapping[str, str]]]:
+    """Resolve a (scope, source) pair to per-tick calls: [(tick, {key: state})].
+
+    Public because it is consumed across modules: this is the seam an offline
+    grader reconstructs from when it needs the raw per-tick CENSUS rather than
+    the commits (reconstruct_movement_transitions) or the open-regime map
+    (movement_open_regimes), both of which are thin wrappers over it.
+
+    `source="auto"` resolves to published_condition at route scope and the
+    vehicle archive at segment scope — see the module docstring for why.
+    """
     if scope not in _VALID_SCOPES:
         raise ValueError(f"scope must be one of {_VALID_SCOPES}, got {scope!r}")
     resolved = source
@@ -368,7 +378,7 @@ def reconstruct_movement_transitions(
     admitted from_stops (see segment_ticks_from_vehicle_bodies). The
     published-condition source has no per-stop counts and is unaffected.
     """
-    ticks = _ticks_for(
+    ticks = ticks_for(
         client,
         bucket,
         start_date,
@@ -393,7 +403,7 @@ def movement_open_regimes(
 ) -> dict[str, tuple[str, int]]:
     """Each key's regime still open at end_date — see reconstruct_movement_transitions
     for the `source` and `counts_from_stop` resolution rules."""
-    ticks = _ticks_for(
+    ticks = ticks_for(
         client,
         bucket,
         start_date,

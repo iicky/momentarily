@@ -18,12 +18,11 @@ THE SPLIT IS CAUSAL, AND IT IS THE WHOLE POINT
 ----------------------------------------------
 Cells are fitted on [train_start, train_end] and graded on episodes that begin
 after it. Nothing from the eval window reaches a fitted curve. The one
-deliberate exception is the CRPS baseline: recovery_dist_report builds
-climatology from the graded population's OWN durations (recovery_dist.py:195),
-which is hindsight the model does not get. That asymmetry is the existing
-convention for every recovery grade in this repo and is kept so these numbers
-stay comparable to the ones already on the record -- but it means "skill < 0"
-is not by itself proof of a bad model. `km_pooled` below is what separates the
+deliberate exception is the ORACLE CRPS baseline: recovery_dist_report's
+`oracle_baseline_crps` is the graded population's OWN empirical duration CDF,
+which is hindsight the model does not get. It is reported because every number
+already on the record was quoted in it -- but it means "oracle_skill < 0" is
+not by itself proof of a bad model. `km_pooled` below is what separates the
 two: it is the same climatology fitted CAUSALLY, so the gap between its skill
 and zero is the hindsight advantage, and only what is left over is the model's.
 
@@ -404,11 +403,11 @@ def duration_histogram(eps: Sequence[Episode]) -> dict[str, Any]:
 #
 # TWO SKILLS, AND ONLY ONE OF THEM IS A FAIR COMPARISON BETWEEN VARIANTS.
 #
-# recovery_dist_report's own `skill` is measured against the empirical CDF of
-# the graded population's own durations — perfect hindsight the model never
-# gets. It is reported as `oracle_skill` because it is the figure every prior
-# number for this arm was quoted in, and dropping it would make the refresh
-# incomparable to the record. It is NOT the causal comparison.
+# recovery_dist_report's `oracle_skill` is measured against the empirical CDF
+# of the graded population's own durations — perfect hindsight the model never
+# gets. It is carried through under the same name because it is the figure
+# every prior number for this arm was quoted in, and dropping it would make the
+# refresh incomparable to the record. It is NOT the causal comparison.
 #
 # `causal_skill` is 1 - CRPS_variant / CRPS_km_pooled: the same climatology,
 # fitted on the train window only, so both sides are forecasts.
@@ -540,8 +539,13 @@ def grade_variants(
     if not matched:
         raise GradeBlocked(reason="no_common_episode", coverage=coverage, culprits=())
     ordered = sorted(matched)
+    # None: this harness takes its causal comparison from km_pooled's own CRPS
+    # (see the note above), not from an ECDF baseline inside the report, so the
+    # report contributes only the oracle column here.
     reports = {
-        name: recovery_dist_report([samples[k] for k in ordered])
+        name: recovery_dist_report(
+            [samples[k] for k in ordered], baseline_durations_min=None
+        )
         for name, (samples, _c, _n) in built.items()
     }
     climatology = reports.get("km_pooled")
@@ -561,8 +565,8 @@ def grade_variants(
                 "n_censored_excluded": n_censored,
                 "n_no_curve": n_no_curve,
                 "mean_crps": report.mean_crps,
-                "oracle_baseline_crps": report.baseline_crps,
-                "oracle_skill": report.skill,
+                "oracle_baseline_crps": report.oracle_baseline_crps,
+                "oracle_skill": report.oracle_skill,
                 "causal_skill": causal,
                 "mean_pit": report.mean_pit,
                 "pit": report.pit,

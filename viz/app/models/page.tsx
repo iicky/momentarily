@@ -266,8 +266,10 @@ export default function ModelsPage() {
                 the model&apos;s own condition calls, so this is self-consistency, not an
                 independent check — see the footer tag.) The card on the right sums
                 that up: one accuracy score (lower is better), compared against a
-                dead-simple baseline that just guesses the average every time.
-                Beating that baseline is the bar to clear.
+                dead-simple yardstick that just guesses the average recovery time.
+                On this view that yardstick is built from the same window&apos;s
+                realized recoveries — hindsight the model never had — so it is a
+                reference point, not a bar a forecast can fairly clear.
               </p>
               <div className="charts-row">
                 <RecoveryDistCurve result={recoveryDist} />

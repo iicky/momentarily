@@ -8,7 +8,9 @@ import {
   type RecoveryDistSample,
 } from "../lib/recovery_dist.ts";
 
-// Minimal report carrying only the fields recoveryVerdict reads.
+// Minimal report carrying only the fields recoveryVerdict reads. `skill` lands
+// on the oracle column: no training window, so the verdict falls back to it and
+// its copy must name it as hindsight.
 function report(
   pit: number[],
   meanPit: number,
@@ -16,7 +18,15 @@ function report(
   skill: number,
 ): RecoveryDistReport {
   return {
-    perRegime: { n: regimes, meanCrps: 0, baselineCrps: 0, skill, meanPit },
+    perRegime: {
+      n: regimes,
+      meanCrps: 0,
+      oracleBaselineCrps: 0,
+      oracleSkill: skill,
+      causalBaselineCrps: null,
+      causalSkill: null,
+      meanPit,
+    },
     pit,
     meanPit,
   } as unknown as RecoveryDistReport;
@@ -41,7 +51,7 @@ test("recoveryDistReport separates per-tick from per-regime weighting", () => {
     ...Array.from({ length: 8 }, () => sample("good:0", 2, 2)),
     ...Array.from({ length: 2 }, () => sample("bad:0", 3, 0)),
   ];
-  const r = recoveryDistReport(samples);
+  const r = recoveryDistReport(samples, null);
 
   assert.equal(r.perTick.n, 10);
   assert.equal(r.perRegime.n, 2);
@@ -55,25 +65,54 @@ test("recoveryDistReport separates per-tick from per-regime weighting", () => {
     r.perRegime.meanCrps > r.perTick.meanCrps,
     `per-regime ${r.perRegime.meanCrps} should exceed per-tick ${r.perTick.meanCrps}`,
   );
-  assert.ok(Number.isFinite(r.perTick.skill));
-  assert.ok(Number.isFinite(r.perRegime.skill));
+  assert.ok(Number.isFinite(r.perTick.oracleSkill));
+  assert.ok(Number.isFinite(r.perRegime.oracleSkill));
+  // No training durations were supplied, so the causal column must stay null
+  // rather than quietly repeating the hindsight number.
+  assert.equal(r.perTick.causalSkill, null);
+  assert.equal(r.perRegime.causalSkill, null);
 });
 
 test("recoveryDistReport collapses ticks from one regime into a single incident", () => {
   const samples: RecoveryDistSample[] = Array.from({ length: 12 }, () =>
     sample("solo:100", 2, 2),
   );
-  const r = recoveryDistReport(samples);
+  const r = recoveryDistReport(samples, null);
   assert.equal(r.perTick.n, 12);
   assert.equal(r.perRegime.n, 1);
 });
 
 test("recoveryDistReport handles the empty window", () => {
-  const r = recoveryDistReport([]);
+  const r = recoveryDistReport([], null);
   assert.equal(r.n, 0);
   assert.equal(r.perTick.n, 0);
   assert.equal(r.perRegime.n, 0);
   assert.ok(Number.isNaN(r.perRegime.meanCrps));
+});
+
+test("recoveryDistReport rejects an empty training window instead of degrading to oracle-only", () => {
+  // null means "no pre-window population, decided"; [] means a causal window
+  // was built and came out empty. Silently dropping the causal column here is
+  // how hindsight-relative numbers ship (mirrors the Python port's ValueError).
+  assert.throws(() => recoveryDistReport([sample("r:1", 2, 2)], []), /empty/);
+});
+
+test("recoveryDistReport: the causal baseline is fitted only on the durations handed in", () => {
+  // Same graded population both times; only the training window changes. A
+  // baseline that peeked at the eval durations could not move here.
+  const samples: RecoveryDistSample[] = [
+    sample("a:0", 2, 2),
+    sample("b:0", 3, 2),
+    sample("c:0", 1, 2),
+  ];
+  const near = recoveryDistReport(samples, [1, 2, 3]);
+  const far = recoveryDistReport(samples, [4, 4, 4]);
+  assert.equal(near.meanCrps, far.meanCrps);
+  assert.equal(near.oracleBaselineCrps, far.oracleBaselineCrps);
+  assert.notEqual(near.causalBaselineCrps, far.causalBaselineCrps);
+  // A training window that misses the truth is a worse forecast, so the model
+  // scores better against it — the causal column moves with the baseline alone.
+  assert.ok((far.causalSkill ?? 0) > (near.causalSkill ?? 0));
 });
 
 test("recoveryVerdict: too few incidents reads inconclusive", () => {
@@ -119,7 +158,7 @@ test("recoveryDistReport: absent predLeft leaves the PIT unrandomized (pins the 
     sample("r2:0", 2, 3), // idx 2, u = f[2] = 0
     sample("r3:0", 4, 0), // idx 4, u = f[4] = 1
   ];
-  const r = recoveryDistReport(samples);
+  const r = recoveryDistReport(samples, null);
   assert.equal(r.meanPit, 2 / 3);
   assert.deepEqual(r.pit, [1, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 });
@@ -131,7 +170,7 @@ test("recoveryDistReport: predLeft < u lands strictly inside [predLeft, u)", () 
     predCurve: stepCurve(2), // f = [0, 0, 1, 1, 1], u = f[2] = 1
     predLeft: 0,
   };
-  const r = recoveryDistReport([s]);
+  const r = recoveryDistReport([s], null);
   const frac = jumpFraction("atomic:7");
   // n === 1, so the mean is exactly the one randomized PIT value.
   assert.equal(r.meanPit, frac);

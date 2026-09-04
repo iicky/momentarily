@@ -2106,16 +2106,24 @@ export function AdvanceBaselineChart({ routes }: { routes: RouteBaselineDTO[] })
 export interface RecoveryWeighting {
   n: number;
   meanCrps: number;
-  baselineCrps: number;
-  skill: number;
+  // Hindsight: the graded window's own realized-duration CDF, not a forecast.
+  // Any copy built on oracleSkill must say which baseline it means.
+  oracleBaselineCrps: number;
+  oracleSkill: number;
+  // The same climatology fitted before the graded window; null when the report
+  // was built without one.
+  causalBaselineCrps: number | null;
+  causalSkill: number | null;
   meanPit: number;
 }
 
 export interface RecoveryDistResult {
   n: number;
   meanCrps: number;
-  baselineCrps: number;
-  skill: number;
+  oracleBaselineCrps: number;
+  oracleSkill: number;
+  causalBaselineCrps: number | null;
+  causalSkill: number | null;
   meanPit: number;
   perTick: RecoveryWeighting;
   perRegime: RecoveryWeighting;
@@ -2240,12 +2248,19 @@ export function RecoveryScoreCard({ result }: { result: RecoveryDistResult }) {
       : tone === "warn"
         ? "var(--disrupted)"
         : "var(--muted)";
-  const skillStr = (skill: number) =>
-    Number.isNaN(skill)
-      ? "—"
-      : skill >= 0
-        ? `beats the simple baseline by ${(skill * 100).toFixed(0)}%`
-        : `${Math.abs(skill * 100).toFixed(0)}% behind the simple baseline`;
+  // Two baselines, and the copy has to name the one it used: causalSkill is a
+  // comparison against a climatology FORECAST, oracleSkill against a baseline
+  // that already knew this window's durations. Calling either "the simple
+  // baseline" is how an oracle number gets read as forecast skill.
+  const skillStr = (w: RecoveryWeighting) => {
+    const causal = w.causalSkill;
+    const skill = causal ?? w.oracleSkill;
+    if (Number.isNaN(skill)) return "—";
+    const against = causal === null ? "hindsight climatology" : "climatology";
+    return skill >= 0
+      ? `beats ${against} by ${(skill * 100).toFixed(0)}%`
+      : `${Math.abs(skill * 100).toFixed(0)}% behind ${against}`;
+  };
   const perTick = result.perTick;
   const perRegime = result.perRegime;
 
@@ -2339,12 +2354,12 @@ export function RecoveryScoreCard({ result }: { result: RecoveryDistResult }) {
       <div className="grp-note" style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
         <div>
           <strong>Per-incident</strong> (each disruption weighted equally) ·{" "}
-          {fmt(perRegime.meanCrps)} min · {skillStr(perRegime.skill)} ·{" "}
+          {fmt(perRegime.meanCrps)} min · {skillStr(perRegime)} ·{" "}
           {perRegime.n.toLocaleString()} incidents
         </div>
         <div style={{ marginTop: 4, opacity: 0.8 }}>
           <strong>Per-tick</strong> (every forecast tick; long incidents dominate) ·{" "}
-          {fmt(perTick.meanCrps)} min · {skillStr(perTick.skill)} ·{" "}
+          {fmt(perTick.meanCrps)} min · {skillStr(perTick)} ·{" "}
           {perTick.n.toLocaleString()} ticks
         </div>
       </div>

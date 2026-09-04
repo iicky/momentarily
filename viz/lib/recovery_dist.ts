@@ -5,8 +5,16 @@
 // params.json dwell curve, sampled at every integer minute) and the realized
 // time-to-normal. We score with:
 //   - CRPS: ∫ (F_pred(t) − 1{t ≥ actual})² dt — one proper score over the whole
-//     curve, in minutes. A climatology baseline (the empirical realized CDF used
-//     as everyone's forecast) gives a skill score.
+//     curve, in minutes. Two climatology baselines turn that into a skill score,
+//     and they are NOT interchangeable: the ORACLE baseline is the empirical CDF
+//     of the graded population's OWN realized durations (hindsight — a
+//     forecaster who already knew this window), kept because every recovery
+//     number on the record was quoted in it; the CAUSAL baseline is the same
+//     empirical-CDF forecast fitted on a training window the caller passes in,
+//     so both sides of the ratio are forecasts. causalSkill is null (never a
+//     silent fallback to the oracle) when no training durations are supplied.
+//     Measured gap on the movement dwell arm: a causally-fitted climatology
+//     scores oracleSkill −0.1157 on its own graded window.
 //   - PIT: F_pred(actual). Calibrated ⇒ uniform on [0,1]; the average (meanPit)
 //     is a single readable "lean": <0.5 the model is too pessimistic (recoveries
 //     beat its forecast), >0.5 too optimistic.
@@ -37,8 +45,14 @@ export interface RecoveryDistSample {
 export interface RecoveryWeighting {
   n: number; // ticks (per-tick) or distinct regimes (per-regime)
   meanCrps: number; // minutes, lower better
-  baselineCrps: number; // climatology (empirical CDF) CRPS, minutes
-  skill: number; // 1 − meanCrps/baselineCrps; >0 beats climatology
+  // Hindsight: the graded population's own empirical duration CDF. Not a
+  // forecast — read the header before quoting oracleSkill.
+  oracleBaselineCrps: number;
+  oracleSkill: number; // 1 − meanCrps/oracleBaselineCrps
+  // Causal: the same empirical-CDF forecast fitted on the caller's training
+  // window. null when the caller supplied none.
+  causalBaselineCrps: number | null;
+  causalSkill: number | null; // 1 − meanCrps/causalBaselineCrps
   meanPit: number; // <0.5 pessimistic, >0.5 optimistic, 0.5 calibrated
 }
 
@@ -46,8 +60,10 @@ export interface RecoveryDistReport {
   // Per-tick headline kept at the top level for the curve view's back-compat.
   n: number;
   meanCrps: number;
-  baselineCrps: number;
-  skill: number;
+  oracleBaselineCrps: number;
+  oracleSkill: number;
+  causalBaselineCrps: number | null;
+  causalSkill: number | null;
   meanPit: number;
   perTick: RecoveryWeighting; // mirrors the top-level fields, named explicitly
   perRegime: RecoveryWeighting; // each disruption episode weighted equally
@@ -102,8 +118,10 @@ export function jumpFraction(key: string): number {
 const EMPTY_WEIGHTING: RecoveryWeighting = {
   n: 0,
   meanCrps: NaN,
-  baselineCrps: NaN,
-  skill: NaN,
+  oracleBaselineCrps: NaN,
+  oracleSkill: NaN,
+  causalBaselineCrps: null,
+  causalSkill: null,
   meanPit: NaN,
 };
 
@@ -113,8 +131,10 @@ function emptyReport(tMax: number): RecoveryDistReport {
   return {
     n: 0,
     meanCrps: NaN,
-    baselineCrps: NaN,
-    skill: NaN,
+    oracleBaselineCrps: NaN,
+    oracleSkill: NaN,
+    causalBaselineCrps: null,
+    causalSkill: null,
     meanPit: NaN,
     perTick: { ...EMPTY_WEIGHTING },
     perRegime: { ...EMPTY_WEIGHTING },
@@ -126,7 +146,28 @@ function emptyReport(tMax: number): RecoveryDistReport {
   };
 }
 
-export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistReport {
+export function recoveryDistReport(
+  samples: RecoveryDistSample[],
+  // Realized recovery durations, in minutes, from a window that closes before
+  // the graded one. Used only to build a rival FORECAST (their empirical CDF),
+  // never to score, so nothing about the graded population reaches them.
+  //
+  // Required, with no default, on purpose (mirrors the Python port): null is
+  // allowed and leaves causalSkill null, but it has to be typed by someone who
+  // decided this caller has no pre-window population. A default would let the
+  // next caller write recoveryDistReport(samples), render a number that looks
+  // like forecast skill, and never meet the distinction.
+  baselineDurationsMin: number[] | null,
+): RecoveryDistReport {
+  // An empty training window is a caller bug, not an absent baseline: null
+  // means "no pre-window population, decided"; [] means someone built a causal
+  // window and it came out empty, which must fail loudly rather than silently
+  // degrade to oracle-only reporting (mirrors the Python port's ValueError).
+  if (baselineDurationsMin !== null && baselineDurationsMin.length === 0) {
+    throw new Error(
+      "baselineDurationsMin is empty: pass null only when no pre-window population exists",
+    );
+  }
   const n = samples.length;
   if (!n) return emptyReport(240);
 
@@ -136,10 +177,22 @@ export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistR
 
   const actualsAsc = samples.map((s) => s.actualMin).sort((a, b) => a - b);
   const empAt = (t: number) => ecdf(actualsAsc, t);
+  // Both baselines are step functions of integer t only, so evaluate each once
+  // per minute instead of re-bisecting inside every sample's loop.
+  const oracleAt: number[] = [];
+  for (let t = 0; t < tMax; t++) oracleAt.push(empAt(t));
+  const causalAsc = baselineDurationsMin
+    ? [...baselineDurationsMin].sort((a, b) => a - b)
+    : null;
+  const causalAt: number[] | null = causalAsc ? [] : null;
+  if (causalAsc && causalAt) {
+    for (let t = 0; t < tMax; t++) causalAt.push(ecdf(causalAsc, t));
+  }
 
   const pit = new Array(10).fill(0);
   let crpsSum = 0;
   let baseSum = 0;
+  let causalSum = 0;
   let pitSum = 0;
   const predAccum = grid.map(() => 0);
 
@@ -147,7 +200,7 @@ export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistR
   // then episodes are weighted equally so one long incident can't dominate.
   const byRegime = new Map<
     string,
-    { crps: number; base: number; pit: number; count: number }
+    { crps: number; base: number; causal: number; pit: number; count: number }
   >();
 
   for (const s of samples) {
@@ -156,15 +209,21 @@ export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistR
     // CRPS at 1-min integration steps.
     let crps = 0;
     let base = 0;
+    let causal = 0;
     for (let t = 0; t < tMax; t++) {
       const ind = t >= y ? 1 : 0;
       const dp = f[t] - ind;
       crps += dp * dp;
-      const db = empAt(t) - ind;
+      const db = oracleAt[t] - ind;
       base += db * db;
+      if (causalAt) {
+        const dc = causalAt[t] - ind;
+        causal += dc * dc;
+      }
     }
     crpsSum += crps;
     baseSum += base;
+    causalSum += causal;
     const idx = Math.min(tMax, Math.max(0, Math.round(y)));
     let u = f[idx];
     // Spread the observation across the predictive jump it landed on, if any.
@@ -177,21 +236,36 @@ export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistR
     pit[Math.min(9, Math.max(0, Math.floor(u * 10)))] += 1;
     grid.forEach((t, i) => (predAccum[i] += f[t]));
 
-    const r = byRegime.get(s.regimeKey) ?? { crps: 0, base: 0, pit: 0, count: 0 };
+    const r = byRegime.get(s.regimeKey) ?? {
+      crps: 0,
+      base: 0,
+      causal: 0,
+      pit: 0,
+      count: 0,
+    };
     r.crps += crps;
     r.base += base;
+    r.causal += causal;
     r.pit += u;
     r.count += 1;
     byRegime.set(s.regimeKey, r);
   }
 
   const meanCrps = crpsSum / n;
-  const baselineCrps = baseSum / n;
+  const oracleBaselineCrps = baseSum / n;
+  const causalBaselineCrps = causalAt ? causalSum / n : null;
   const perTick: RecoveryWeighting = {
     n,
     meanCrps,
-    baselineCrps,
-    skill: baselineCrps > 0 ? 1 - meanCrps / baselineCrps : NaN,
+    oracleBaselineCrps,
+    oracleSkill: oracleBaselineCrps > 0 ? 1 - meanCrps / oracleBaselineCrps : NaN,
+    causalBaselineCrps,
+    causalSkill:
+      causalBaselineCrps === null
+        ? null
+        : causalBaselineCrps > 0
+          ? 1 - meanCrps / causalBaselineCrps
+          : NaN,
     meanPit: pitSum / n,
   };
 
@@ -199,26 +273,39 @@ export function recoveryDistReport(samples: RecoveryDistSample[]): RecoveryDistR
   const regimes = byRegime.size;
   let rCrps = 0;
   let rBase = 0;
+  let rCausal = 0;
   let rPit = 0;
   for (const r of byRegime.values()) {
     rCrps += r.crps / r.count;
     rBase += r.base / r.count;
+    rCausal += r.causal / r.count;
     rPit += r.pit / r.count;
   }
   const regimeBaseline = rBase / regimes;
+  const regimeCausal = causalAt ? rCausal / regimes : null;
+  const regimeCrps = rCrps / regimes;
   const perRegime: RecoveryWeighting = {
     n: regimes,
-    meanCrps: rCrps / regimes,
-    baselineCrps: regimeBaseline,
-    skill: regimeBaseline > 0 ? 1 - rCrps / rBase : NaN,
+    meanCrps: regimeCrps,
+    oracleBaselineCrps: regimeBaseline,
+    oracleSkill: regimeBaseline > 0 ? 1 - rCrps / rBase : NaN,
+    causalBaselineCrps: regimeCausal,
+    causalSkill:
+      regimeCausal === null
+        ? null
+        : regimeCausal > 0
+          ? 1 - regimeCrps / regimeCausal
+          : NaN,
     meanPit: rPit / regimes,
   };
 
   return {
     n,
     meanCrps,
-    baselineCrps,
-    skill: perTick.skill,
+    oracleBaselineCrps,
+    oracleSkill: perTick.oracleSkill,
+    causalBaselineCrps: perTick.causalBaselineCrps,
+    causalSkill: perTick.causalSkill,
     meanPit: perTick.meanPit,
     perTick,
     perRegime,
@@ -276,7 +363,15 @@ export function recoveryVerdict(result: RecoveryDistReport): RecoveryVerdict {
   const off = Math.abs(lean - 0.5);
   const uShape = ends > expected * 2 * 1.6; // extremes overweight → too narrow
   const humped = mid > expected * 4 * 1.3; // middle overweight → too wide
-  const skill = result.perRegime.skill;
+  // Prefer the causal comparison when the caller supplied a training window;
+  // the oracle number is a comparison against hindsight and the sentences below
+  // have to say so rather than call it "the baseline".
+  const causal = result.perRegime.causalSkill;
+  const skill = causal ?? result.perRegime.oracleSkill;
+  const against =
+    causal === null
+      ? "a baseline that already knew this window's durations"
+      : "a climatology forecast fitted before this window";
 
   let verdict: string;
   let explain: string;
@@ -309,9 +404,9 @@ export function recoveryVerdict(result: RecoveryDistReport): RecoveryVerdict {
 
   let warning: string | undefined;
   if (tone === "good" && skill < 0)
-    warning = `But it scores ${Math.abs(skill * 100).toFixed(0)}% worse than the dead-simple baseline — calibrated, yet no sharper than guessing the average. Calibration isn't skill.`;
+    warning = `But it scores ${Math.abs(skill * 100).toFixed(0)}% worse than ${against} — calibrated, yet no sharper. Calibration isn't skill.`;
   else if (tone === "warn" && skill >= 0.1)
-    warning = `Even so, it beats the simple baseline by ${(skill * 100).toFixed(0)}% — miscalibrated but still more informative than guessing the average.`;
+    warning = `Even so, it beats ${against} by ${(skill * 100).toFixed(0)}% — miscalibrated but still more informative.`;
 
   return { verdict, explain, tone, warning };
 }

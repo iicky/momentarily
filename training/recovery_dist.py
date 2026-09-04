@@ -11,9 +11,22 @@ Each sample carries the model's recovery CDF (reconstructed from the
 params.json dwell curve, sampled at every integer minute) and the realized
 time-to-normal. We score with:
   - CRPS: integral of (F_pred(t) - 1{t >= actual})^2 dt over the curve, in
-    minutes — one proper score over the whole curve. A climatology baseline
-    (the empirical realized CDF used as everyone's forecast) gives a skill
-    score.
+    minutes — one proper score over the whole curve. Two climatology baselines
+    turn that into a skill score, and they are NOT interchangeable:
+      * the ORACLE baseline is the empirical CDF of the graded population's own
+        realized durations. It is hindsight — a forecaster who already knew this
+        window's duration distribution — so `oracle_skill` is not the skill of
+        the model against a rival forecast. It is kept, and named for what it
+        is, because every recovery number on the record was quoted in it.
+      * the CAUSAL baseline is the same empirical-CDF forecast fitted on a
+        TRAINING window handed in by the caller, so both sides of the ratio are
+        forecasts. `causal_skill` is the honest "beats climatology" number, and
+        it is None (never a silent fallback to the oracle) when no training
+        durations are supplied.
+    Measured gap, movement dwell arm: a causally-fitted climatology scores
+    oracle_skill -0.1157 on its own graded window, i.e. the hindsight advantage
+    is large enough to manufacture a "worse than climatology" verdict out of a
+    forecast sitting at parity.
   - PIT: F_pred(actual). Calibrated => uniform on [0,1]; the average
     (mean_pit) is a single readable "lean": <0.5 the model is too pessimistic
     (recoveries beat its forecast), >0.5 too optimistic.
@@ -27,6 +40,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
@@ -94,8 +108,14 @@ class RecoveryWeighting:
 
     n: int  # ticks (per-tick) or distinct regimes (per-regime)
     mean_crps: float  # minutes, lower better
-    baseline_crps: float  # climatology (empirical CDF) CRPS, minutes
-    skill: float  # 1 - mean_crps/baseline_crps; >0 beats climatology
+    # Hindsight: the graded population's own empirical duration CDF. Not a
+    # forecast — see the module docstring before quoting oracle_skill.
+    oracle_baseline_crps: float
+    oracle_skill: float  # 1 - mean_crps/oracle_baseline_crps
+    # Causal: the same empirical-CDF forecast fitted on the caller's training
+    # window. None when the caller supplied none.
+    causal_baseline_crps: float | None
+    causal_skill: float | None  # 1 - mean_crps/causal_baseline_crps
     mean_pit: float  # <0.5 pessimistic, >0.5 optimistic, 0.5 calibrated
 
 
@@ -108,8 +128,10 @@ class RecoveryDistReport:
     # Per-tick headline kept at the top level for the curve view's back-compat.
     n: int
     mean_crps: float
-    baseline_crps: float
-    skill: float
+    oracle_baseline_crps: float
+    oracle_skill: float
+    causal_baseline_crps: float | None
+    causal_skill: float | None
     mean_pit: float
     per_tick: RecoveryWeighting  # mirrors the top-level fields, named explicitly
     per_regime: RecoveryWeighting  # each disruption episode weighted equally
@@ -156,7 +178,13 @@ def _js_round(x: float) -> int:
 def _empty_weighting() -> RecoveryWeighting:
     nan = float("nan")
     return RecoveryWeighting(
-        n=0, mean_crps=nan, baseline_crps=nan, skill=nan, mean_pit=nan
+        n=0,
+        mean_crps=nan,
+        oracle_baseline_crps=nan,
+        oracle_skill=nan,
+        causal_baseline_crps=None,
+        causal_skill=None,
+        mean_pit=nan,
     )
 
 
@@ -166,8 +194,10 @@ def _empty_report(t_max: int) -> RecoveryDistReport:
     return RecoveryDistReport(
         n=0,
         mean_crps=nan,
-        baseline_crps=nan,
-        skill=nan,
+        oracle_baseline_crps=nan,
+        oracle_skill=nan,
+        causal_baseline_crps=None,
+        causal_skill=None,
         mean_pit=nan,
         per_tick=_empty_weighting(),
         per_regime=_empty_weighting(),
@@ -181,10 +211,46 @@ def _empty_report(t_max: int) -> RecoveryDistReport:
     )
 
 
-def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistReport:
+def _skill(mean_crps: float, baseline_crps: float | None) -> float | None:
+    """1 - CRPS/baseline, or None when there is no baseline to divide by. A
+    degenerate (zero) baseline yields NaN, matching the oracle column."""
+    if baseline_crps is None:
+        return None
+    return 1 - mean_crps / baseline_crps if baseline_crps > 0 else float("nan")
+
+
+def recovery_dist_report(
+    samples: list[RecoveryDistSample],
+    *,
+    baseline_durations_min: Sequence[float] | None,
+) -> RecoveryDistReport:
     """Faithful port of recoveryDistReport (viz/lib/recovery_dist.ts): CRPS/PIT
     of each sample's predicted recovery CDF against its realized duration,
-    reported per-tick and per-regime (equal weight per distinct regime_key)."""
+    reported per-tick and per-regime (equal weight per distinct regime_key).
+
+    `baseline_durations_min` is the CAUSAL climatology: realized recovery
+    durations, in minutes, from a window that closes before the graded one.
+    They are used only to build a rival FORECAST (their empirical CDF), never
+    to score, so nothing about the graded population can reach them.
+
+    It has NO DEFAULT on purpose. Passing None is allowed and gives a report
+    whose only skill number is the hindsight `oracle_skill`, with `causal_skill`
+    reading None — but it has to be typed, at the call site, by someone who
+    decided the caller has no pre-window population. A default would let the
+    next caller write recovery_dist_report(samples), publish a number that looks
+    like forecast skill, and never meet the distinction. That is the exact
+    failure this module exists to undo.
+
+    An empty sequence is a caller bug, not an empty baseline: it means the
+    training window produced no episodes, and silently degrading to "no causal
+    column" would hide that. It raises.
+    """
+    if baseline_durations_min is not None and not len(baseline_durations_min):
+        raise ValueError(
+            "baseline_durations_min is empty: the training window yielded no "
+            "durations, so no causal climatology can be fitted. Widen it, or "
+            "pass None to grade against the oracle baseline alone."
+        )
     n = len(samples)
     if not n:
         return _empty_report(RECOVERY_TMAX_MIN)
@@ -197,9 +263,18 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
     def emp_at(t: float) -> float:
         return _ecdf(actuals_asc, t)
 
+    # Both baselines are step functions of integer t only, so evaluate each
+    # once per minute instead of re-bisecting inside every sample's loop.
+    oracle_at = [emp_at(t) for t in range(t_max)]
+    causal_asc = sorted(baseline_durations_min) if baseline_durations_min else None
+    causal_at = (
+        [_ecdf(causal_asc, t) for t in range(t_max)] if causal_asc is not None else None
+    )
+
     pit = [0] * 10
     crps_sum = 0.0
     base_sum = 0.0
+    causal_sum = 0.0
     pit_sum = 0.0
     pred_accum = [0.0] * len(grid)
 
@@ -208,6 +283,7 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
     # dominate.
     regime_crps: dict[str, float] = defaultdict(float)
     regime_base: dict[str, float] = defaultdict(float)
+    regime_causal: dict[str, float] = defaultdict(float)
     regime_pit: dict[str, float] = defaultdict(float)
     regime_count: dict[str, int] = defaultdict(int)
 
@@ -216,14 +292,19 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
         y = s.actual_min
         crps = 0.0
         base = 0.0
+        causal = 0.0
         for t in range(t_max):
             ind = 1.0 if t >= y else 0.0
             dp = f[t] - ind
             crps += dp * dp
-            db = emp_at(t) - ind
+            db = oracle_at[t] - ind
             base += db * db
+            if causal_at is not None:
+                dc = causal_at[t] - ind
+                causal += dc * dc
         crps_sum += crps
         base_sum += base
+        causal_sum += causal
         idx = min(t_max, max(0, _js_round(y)))
         u = f[idx]
         # Spread the observation across the predictive jump it landed on, if any.
@@ -238,16 +319,22 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
 
         regime_crps[s.regime_key] += crps
         regime_base[s.regime_key] += base
+        regime_causal[s.regime_key] += causal
         regime_pit[s.regime_key] += u
         regime_count[s.regime_key] += 1
 
     mean_crps = crps_sum / n
     baseline_crps = base_sum / n
+    causal_crps = causal_sum / n if causal_at is not None else None
     per_tick = RecoveryWeighting(
         n=n,
         mean_crps=mean_crps,
-        baseline_crps=baseline_crps,
-        skill=1 - mean_crps / baseline_crps if baseline_crps > 0 else float("nan"),
+        oracle_baseline_crps=baseline_crps,
+        oracle_skill=1 - mean_crps / baseline_crps
+        if baseline_crps > 0
+        else float("nan"),
+        causal_baseline_crps=causal_crps,
+        causal_skill=_skill(mean_crps, causal_crps),
         mean_pit=pit_sum / n,
     )
 
@@ -257,11 +344,18 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
     r_base = sum(regime_base[k] / regime_count[k] for k in regime_count)
     r_pit = sum(regime_pit[k] / regime_count[k] for k in regime_count)
     regime_baseline = r_base / regimes
+    r_causal = (
+        sum(regime_causal[k] / regime_count[k] for k in regime_count) / regimes
+        if causal_at is not None
+        else None
+    )
     per_regime = RecoveryWeighting(
         n=regimes,
         mean_crps=r_crps / regimes,
-        baseline_crps=regime_baseline,
-        skill=1 - r_crps / r_base if regime_baseline > 0 else float("nan"),
+        oracle_baseline_crps=regime_baseline,
+        oracle_skill=1 - r_crps / r_base if regime_baseline > 0 else float("nan"),
+        causal_baseline_crps=r_causal,
+        causal_skill=_skill(r_crps / regimes, r_causal),
         mean_pit=r_pit / regimes,
     )
 
@@ -274,8 +368,10 @@ def recovery_dist_report(samples: list[RecoveryDistSample]) -> RecoveryDistRepor
     return RecoveryDistReport(
         n=n,
         mean_crps=mean_crps,
-        baseline_crps=baseline_crps,
-        skill=per_tick.skill,
+        oracle_baseline_crps=baseline_crps,
+        oracle_skill=per_tick.oracle_skill,
+        causal_baseline_crps=per_tick.causal_baseline_crps,
+        causal_skill=per_tick.causal_skill,
         mean_pit=per_tick.mean_pit,
         per_tick=per_tick,
         per_regime=per_regime,
@@ -341,7 +437,16 @@ def recovery_verdict(result: RecoveryDistReport) -> RecoveryVerdict:
     off = abs(lean - 0.5)
     u_shape = ends > expected * 2 * 1.6  # extremes overweight → too narrow
     humped = mid > expected * 4 * 1.3  # middle overweight → too wide
-    skill = result.per_regime.skill
+    # Prefer the causal comparison when the caller supplied a training window;
+    # the oracle number is a comparison against hindsight and the sentence
+    # below has to say so rather than call it "the baseline".
+    causal = result.per_regime.causal_skill
+    skill = causal if causal is not None else result.per_regime.oracle_skill
+    against = (
+        "a climatology forecast fitted before this window"
+        if causal is not None
+        else "a baseline that already knew this window's durations"
+    )
 
     tone: Literal["good", "warn"]
     if u_shape and not humped:
@@ -380,15 +485,13 @@ def recovery_verdict(result: RecoveryDistReport) -> RecoveryVerdict:
     warning: str | None = None
     if tone == "good" and skill < 0:
         warning = (
-            f"But it scores {abs(skill * 100):.0f}% worse than the "
-            "dead-simple baseline — calibrated, yet no sharper than "
-            "guessing the average. Calibration isn't skill."
+            f"But it scores {abs(skill * 100):.0f}% worse than "
+            f"{against} — calibrated, yet no sharper. Calibration isn't skill."
         )
     elif tone == "warn" and skill >= 0.1:
         warning = (
-            f"Even so, it beats the simple baseline by {skill * 100:.0f}% "
-            "— miscalibrated but still more informative than guessing the "
-            "average."
+            f"Even so, it beats {against} by {skill * 100:.0f}% "
+            "— miscalibrated but still more informative."
         )
 
     return RecoveryVerdict(verdict=verdict, explain=explain, tone=tone, warning=warning)

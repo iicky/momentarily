@@ -352,7 +352,7 @@ def test_episode_recovery_excludes_censored_and_curve_less_episodes() -> None:
             return [300, 600, 900], None, None
         return None
 
-    result = episode_recovery(truth_eps, lookup)
+    result = episode_recovery(truth_eps, lookup, baseline_durations_min=None)
 
     assert result["n_censored_excluded"] == 2
     assert result["n_no_curve"] == 1
@@ -399,7 +399,9 @@ def test_episode_recovery_uses_cause_curve_then_falls_back_to_state_curve() -> N
         # state-level fallback: outlived by 600s -> PIT 1.0
         return [0, 100], None, None
 
-    result = episode_recovery([cause_ep, fallback_ep], lookup)
+    result = episode_recovery(
+        [cause_ep, fallback_ep], lookup, baseline_durations_min=None
+    )
 
     assert result["n_scored"] == 2
     assert result["n_no_curve"] == 0
@@ -743,7 +745,7 @@ def test_movement_dwell_lookup_from_params_absent_block_lands_in_n_no_curve() ->
     truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(6))
     assert len(truth_eps) == 1
 
-    result = episode_recovery(truth_eps, lookup)
+    result = episode_recovery(truth_eps, lookup, baseline_durations_min=None)
 
     assert result["n_no_curve"] == 1
     assert result["n_scored"] == 0
@@ -769,7 +771,7 @@ def test_episode_recovery_defaults_to_the_alert_shadow_label() -> None:
             else None
         )
 
-    result = episode_recovery(truth_eps, lookup)
+    result = episode_recovery(truth_eps, lookup, baseline_durations_min=None)
 
     assert result["graded_arm"] == SHADOW_ARM_LABEL
 
@@ -787,7 +789,9 @@ def test_episode_recovery_grades_a_movement_episode_against_a_movement_curve() -
     }
     lookup = movement_dwell_lookup_from_params(params)
 
-    result = episode_recovery(truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL)
+    result = episode_recovery(
+        truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL, baseline_durations_min=None
+    )
 
     assert result["graded_arm"] == MOVEMENT_ARM_LABEL
     assert result["n_scored"] == 1
@@ -796,15 +800,15 @@ def test_episode_recovery_grades_a_movement_episode_against_a_movement_curve() -
     assert math.isfinite(result["report"]["mean_pit"])
 
 
-# --- the CRPS baseline is the population actually graded, never the other arm's -----
+# --- the CRPS baselines: the graded population's own, and the caller's train window ---
 
 
 def test_movement_recovery_baseline_is_drawn_from_movement_durations_only() -> None:
-    """recovery_dist_report's empirical baseline (recovery_dist.py:160, `emp_at`)
-    is built from THIS call's samples alone. Two movement episodes (10 and 20
-    minutes) give an exact, hand-computed empirical CDF at t=10min: 1 of 2
-    durations <= 10 -> 0.5. Had an alert-shadow episode (hours, not minutes)
-    leaked into this baseline the value could not land on this exact fraction."""
+    """recovery_dist_report's ORACLE baseline (`oracle_baseline_crps`) is built
+    from THIS call's samples alone. Two movement episodes (10 and 20 minutes)
+    give an exact, hand-computed empirical CDF at t=10min: 1 of 2 durations
+    <= 10 -> 0.5. Had an alert-shadow episode (hours, not minutes) leaked into
+    this baseline the value could not land on this exact fraction."""
     truth = {
         ("M1", g(2)): "disrupted",
         ("M1", g(3)): "disrupted",  # 10-min episode
@@ -827,12 +831,58 @@ def test_movement_recovery_baseline_is_drawn_from_movement_durations_only() -> N
     }
     lookup = movement_dwell_lookup_from_params(params)
 
-    result = episode_recovery(truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL)
+    result = episode_recovery(
+        truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL, baseline_durations_min=None
+    )
 
     assert result["n_scored"] == 2
     grid = result["report"]["grid"]
     assert grid[2] == 10  # GRID_STEP=5 -> grid[2] is the 10-minute mark
     assert result["report"]["empirical_curve"][2] == _approx(0.5)
+
+
+def test_episode_recovery_publishes_a_causal_skill_only_when_given_a_train_window() -> (
+    None
+):
+    """The published scorecard must never let the hindsight number pass for a
+    climatology comparison. Without training durations `causal_skill` is null —
+    a visible omission — and with them it is a real number scored against a
+    baseline built from those durations alone."""
+    truth = {
+        ("M1", g(2)): "disrupted",
+        ("M1", g(3)): "disrupted",
+        ("M2", g(10)): "disrupted",
+        ("M2", g(11)): "disrupted",
+        ("M2", g(12)): "disrupted",
+        ("M2", g(13)): "disrupted",
+    }
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(20))
+    params: dict[str, Any] = {
+        "dwell_movement": {
+            "M1": {"disrupted": {"curve_sec": [300, 600, 900]}},
+            "M2": {"disrupted": {"curve_sec": [300, 600, 900]}},
+        }
+    }
+    lookup = movement_dwell_lookup_from_params(params)
+
+    bare = episode_recovery(
+        truth_eps, lookup, graded_arm=MOVEMENT_ARM_LABEL, baseline_durations_min=None
+    )
+    assert bare["report"]["causal_skill"] is None
+    assert bare["report"]["causal_baseline_crps"] is None
+    assert math.isfinite(bare["report"]["oracle_skill"])
+
+    causal = episode_recovery(
+        truth_eps,
+        lookup,
+        graded_arm=MOVEMENT_ARM_LABEL,
+        baseline_durations_min=[45.0, 60.0],
+    )
+    # Same graded population, so the model's own score cannot move; only the
+    # rival forecast changed.
+    assert causal["report"]["mean_crps"] == bare["report"]["mean_crps"]
+    assert causal["report"]["oracle_skill"] == bare["report"]["oracle_skill"]
+    assert math.isfinite(causal["report"]["causal_skill"])
 
 
 # --- episode_scorecard: the movement arm is additive, never replaces the shadow -----

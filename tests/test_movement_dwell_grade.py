@@ -134,12 +134,16 @@ def test_episode_samples_mirrors_episode_recovery():
     samples, n_censored, n_no_curve = _episode_samples(fitted.cells, eps)
 
     graded = episode_recovery(
-        eps, movement_dwell_lookup_from_params({"dwell_movement": fitted.cells})
+        eps,
+        movement_dwell_lookup_from_params({"dwell_movement": fitted.cells}),
+        baseline_durations_min=None,
     )
     assert graded["n_scored"] == len(samples)
     assert graded["n_censored_excluded"] == n_censored
     assert graded["n_no_curve"] == n_no_curve
-    mine = recovery_dist_report([samples[k] for k in samples])
+    mine = recovery_dist_report(
+        [samples[k] for k in samples], baseline_durations_min=None
+    )
     assert mine.mean_crps == graded["report"]["mean_crps"]
     assert mine.pit == graded["report"]["pit"]
 

@@ -45,18 +45,33 @@ def _report(
     pit: list[int], mean_pit: float, regimes: int, skill: float
 ) -> RecoveryDistReport:
     """Minimal report carrying only the fields recovery_verdict reads —
-    mirrors the TS oracle's report() builder."""
+    mirrors the TS oracle's report() builder. `skill` lands on the oracle
+    column: no training window, so the verdict falls back to it."""
     per_tick = RecoveryWeighting(
-        n=0, mean_crps=0.0, baseline_crps=0.0, skill=0.0, mean_pit=0.0
+        n=0,
+        mean_crps=0.0,
+        oracle_baseline_crps=0.0,
+        oracle_skill=0.0,
+        causal_baseline_crps=None,
+        causal_skill=None,
+        mean_pit=0.0,
     )
     per_regime = RecoveryWeighting(
-        n=regimes, mean_crps=0.0, baseline_crps=0.0, skill=skill, mean_pit=mean_pit
+        n=regimes,
+        mean_crps=0.0,
+        oracle_baseline_crps=0.0,
+        oracle_skill=skill,
+        causal_baseline_crps=None,
+        causal_skill=None,
+        mean_pit=mean_pit,
     )
     return RecoveryDistReport(
         n=0,
         mean_crps=0.0,
-        baseline_crps=0.0,
-        skill=skill,
+        oracle_baseline_crps=0.0,
+        oracle_skill=skill,
+        causal_baseline_crps=None,
+        causal_skill=None,
         mean_pit=mean_pit,
         per_tick=per_tick,
         per_regime=per_regime,
@@ -79,7 +94,7 @@ def test_report_separates_per_tick_from_per_regime_weighting() -> None:
     samples: list[RecoveryDistSample] = [_sample("good:0", 2, 2) for _ in range(8)] + [
         _sample("bad:0", 3, 0) for _ in range(2)
     ]
-    r = recovery_dist_report(samples)
+    r = recovery_dist_report(samples, baseline_durations_min=None)
 
     assert r.per_tick.n == 10
     assert r.per_regime.n == 2
@@ -90,23 +105,115 @@ def test_report_separates_per_tick_from_per_regime_weighting() -> None:
     # only two ticks, so equal-per-incident weighting must score worse than
     # per-tick.
     assert r.per_regime.mean_crps > r.per_tick.mean_crps
-    assert math.isfinite(r.per_tick.skill)
-    assert math.isfinite(r.per_regime.skill)
+    assert math.isfinite(r.per_tick.oracle_skill)
+    assert math.isfinite(r.per_regime.oracle_skill)
+    # No training durations were supplied, so the causal column stays None
+    # rather than quietly repeating the hindsight number.
+    assert r.per_tick.causal_skill is None
+    assert r.per_regime.causal_skill is None
 
 
 def test_report_collapses_ticks_from_one_regime_into_one_incident() -> None:
     samples: list[RecoveryDistSample] = [_sample("solo:100", 2, 2) for _ in range(12)]
-    r = recovery_dist_report(samples)
+    r = recovery_dist_report(samples, baseline_durations_min=None)
     assert r.per_tick.n == 12
     assert r.per_regime.n == 1
 
 
 def test_report_handles_the_empty_window() -> None:
-    r = recovery_dist_report([])
+    r = recovery_dist_report([], baseline_durations_min=None)
     assert r.n == 0
     assert r.per_tick.n == 0
     assert r.per_regime.n == 0
     assert math.isnan(r.per_regime.mean_crps)
+    assert r.causal_baseline_crps is None
+    assert r.causal_skill is None
+
+
+# --- the two baselines: hindsight oracle vs causal climatology ---
+
+
+def test_the_causal_baseline_never_sees_the_graded_durations() -> None:
+    """The leakage pin. The causal forecast is the empirical CDF of the
+    TRAINING durations and nothing else, so holding the graded population fixed
+    while moving only the training window must move only the causal column —
+    and a training window that is wrong about the truth must make the model
+    look BETTER, which a baseline peeking at the eval durations could not do."""
+    samples = [_sample("a:0", 2, 2), _sample("b:0", 3, 2), _sample("c:0", 1, 2)]
+    near = recovery_dist_report(samples, baseline_durations_min=[1, 2, 3])
+    far = recovery_dist_report(samples, baseline_durations_min=[4, 4, 4])
+
+    assert near.mean_crps == far.mean_crps
+    assert near.oracle_baseline_crps == far.oracle_baseline_crps
+    assert near.oracle_skill == far.oracle_skill
+    assert near.causal_baseline_crps != far.causal_baseline_crps
+    assert near.causal_skill is not None
+    assert far.causal_skill is not None
+    assert far.causal_skill > near.causal_skill
+
+
+def test_the_causal_baseline_is_the_score_of_its_own_forecast() -> None:
+    """The identity that proves causal_baseline_crps is a FORECAST'S CRPS and
+    not a separate formula: hand the training ECDF back in as the model's own
+    predicted curve and the graded mean_crps must equal it exactly."""
+    train = [1.0, 2.0, 2.0, 4.0]
+    samples = [_sample("a:0", 2, 2), _sample("b:0", 3, 1)]
+    graded = recovery_dist_report(samples, baseline_durations_min=train)
+
+    # The same empirical CDF the report fits, sampled on the same 0..4 grid.
+    train_cdf = [sum(1 for d in train if d <= t) / len(train) for t in range(5)]
+    as_forecast = recovery_dist_report(
+        [
+            RecoveryDistSample(
+                pred_curve=train_cdf, actual_min=s.actual_min, regime_key=s.regime_key
+            )
+            for s in samples
+        ],
+        baseline_durations_min=None,
+    )
+    assert as_forecast.mean_crps == graded.causal_baseline_crps
+    assert graded.causal_skill == 1 - graded.mean_crps / as_forecast.mean_crps
+
+
+def test_the_oracle_baseline_flatters_itself_against_the_causal_one() -> None:
+    """Why the distinction is load-bearing, in one assertion: the graded window
+    recovers in 1-2 minutes and the training window said 10, so the hindsight
+    baseline is a far sharper forecast than any causal one could have been. The
+    same model reads -1.0 against hindsight and +0.8 against the climatology it
+    could actually have had — a whole verdict's worth of difference, none of it
+    about the model."""
+    samples = [
+        _sample("a:0", 1, 2),
+        _sample("b:0", 1, 2),
+        _sample("c:0", 2, 2),
+        _sample("d:0", 2, 2),
+    ]
+    r = recovery_dist_report(samples, baseline_durations_min=[10.0, 10.0])
+    assert r.causal_baseline_crps is not None
+    assert r.causal_skill is not None
+    assert r.oracle_baseline_crps < r.causal_baseline_crps
+    assert r.oracle_skill == -1.0
+    assert r.causal_skill == 0.8
+
+
+def test_an_empty_training_window_is_refused_not_silently_dropped() -> None:
+    samples = [_sample("a:0", 2, 2)]
+    with pytest.raises(ValueError, match="no causal climatology"):
+        recovery_dist_report(samples, baseline_durations_min=[])
+
+
+def test_both_skills_survive_the_json_round_trip() -> None:
+    samples = [_sample("a:0", 2, 2), _sample("b:0", 3, 1)]
+    doc = json.loads(
+        json.dumps(
+            report_as_dict(recovery_dist_report(samples, baseline_durations_min=[1, 5]))
+        )
+    )
+    for block in (doc, doc["per_tick"], doc["per_regime"]):
+        assert isinstance(block["oracle_skill"], float)
+        assert isinstance(block["causal_skill"], float)
+        assert isinstance(block["oracle_baseline_crps"], float)
+        assert isinstance(block["causal_baseline_crps"], float)
 
 
 # --- recovery_verdict: reading the PIT shape ---
@@ -189,7 +296,7 @@ def test_pit_histogram_sums_to_n() -> None:
         RecoveryDistSample(pred_curve=linear_curve, actual_min=120.0, regime_key="r3"),
         RecoveryDistSample(pred_curve=linear_curve, actual_min=500.0, regime_key="r4"),
     ]
-    r = recovery_dist_report(samples)
+    r = recovery_dist_report(samples, baseline_durations_min=None)
     assert len(r.pit) == 10
     assert sum(r.pit) == r.n
 
@@ -198,7 +305,7 @@ def test_report_as_dict_is_json_serializable() -> None:
     samples: list[RecoveryDistSample] = [_sample("good:0", 2, 2) for _ in range(8)] + [
         _sample("bad:0", 3, 0) for _ in range(2)
     ]
-    r = recovery_dist_report(samples)
+    r = recovery_dist_report(samples, baseline_durations_min=None)
 
     round_tripped = json.loads(json.dumps(report_as_dict(r)))
     assert round_tripped["n"] == 10

@@ -341,7 +341,11 @@ def grade_recovery_timing(
         truth, types, window_start=eval_start_epoch, window_end=window_end_epoch
     )
     eval_eps = [e for e in eps if eval_start_epoch <= e.onset < eval_end_epoch]
-    rec = episode_recovery(eval_eps, lookup)
+    # None: truth is loaded only from eval_start, so this run holds no
+    # pre-window episode population to fit a causal climatology from. The grade
+    # publishes causal_skill null rather than dressing the hindsight baseline
+    # up as a climatology forecast.
+    rec = episode_recovery(eval_eps, lookup, baseline_durations_min=None)
     return {"n_eval_episodes": len(eval_eps), **rec}
 
 
@@ -754,9 +758,16 @@ def _print_report(doc: dict[str, Any]) -> None:
     report: dict[str, Any] = rec.get("report") or {}
     pr: dict[str, Any] = report.get("per_regime") or {}
     if n_scored and pr:
+        # The oracle baseline is this window's own duration CDF, so name it that
+        # way: it is not a forecast and "skill" against it is not skill over a
+        # climatology forecast. causal_skill prints only when a caller supplied
+        # a pre-window duration population; this one has none loaded.
+        causal = pr.get("causal_skill")
+        causal_col = "" if causal is None else f", causal skill {causal:+.2f}"
         print(
             f"  CRPS/min per-incident {pr['mean_crps']:.1f} "
-            f"(climatology {pr['baseline_crps']:.1f}, skill {pr['skill']:+.2f})"
+            f"(hindsight baseline {pr['oracle_baseline_crps']:.1f}, "
+            f"oracle skill {pr['oracle_skill']:+.2f}{causal_col})"
         )
         print(
             f"  PIT mean per-incident {pr['mean_pit']:.2f} "

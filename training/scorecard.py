@@ -23,7 +23,7 @@ Pure over its inputs so it grades without R2 and unit-tests on fixtures.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from statistics import median
 from typing import Any
 
@@ -216,6 +216,7 @@ def episode_recovery(
     dwell_lookup: DwellLookup,
     *,
     graded_arm: str = SHADOW_ARM_LABEL,
+    baseline_durations_min: Sequence[float] | None,
 ) -> dict[str, Any]:
     """Per-episode recovery CRPS/PIT over uncensored episodes with a dwell curve.
     The predicted curve is the model's recovery forecast for the episode's peak
@@ -224,12 +225,22 @@ def episode_recovery(
     `graded_arm` tags which dwell-curve population fed `dwell_lookup` — the
     alert-shadow HMM regime by default (dwell_lookup_from_params /
     cause_dwell_lookup, existing callers), or MOVEMENT_ARM_LABEL when the
-    caller passes movement_dwell_lookup_from_params. recovery_dist_report's
-    CRPS baseline is the empirical CDF of THIS call's own `truth_eps`
-    durations (recovery_dist.py:160) — grading the two arms via separate
-    calls, as episode_scorecard does, keeps each arm's baseline built only
-    from its own episode population; movement's minutes-long episodes never
-    dilute the alert shadow's hours-long baseline or vice versa.
+    caller passes movement_dwell_lookup_from_params.
+
+    TWO BASELINES, ONE OF WHICH IS HINDSIGHT. The report's
+    `oracle_baseline_crps` is the empirical CDF of THIS call's own `truth_eps`
+    durations — the graded window grading itself. Every published recovery
+    skill number predates the distinction and is measured against it, so it is
+    kept under a name that says so. Grading the two arms via separate calls, as
+    episode_scorecard does, still matters for it: movement's minutes-long
+    episodes never dilute the alert shadow's hours-long baseline or vice versa.
+
+    `baseline_durations_min` supplies the CAUSAL baseline — realized durations,
+    in minutes, from a window that closes before this one. Only then does the
+    report carry a `causal_skill`; passing None leaves that field None rather
+    than letting the oracle number pass for "vs climatology". It has no default:
+    every caller states which of the two it is, because the whole class of bug
+    here is a caller that never noticed there was a choice.
     """
     samples: list[RecoveryDistSample] = []
     n_censored = 0
@@ -258,7 +269,9 @@ def episode_recovery(
                 pred_left=pred_left,
             )
         )
-    report = recovery_dist_report(samples)
+    report = recovery_dist_report(
+        samples, baseline_durations_min=baseline_durations_min
+    )
     return {
         "graded_arm": graded_arm,
         "n_scored": len(samples),
@@ -388,6 +401,14 @@ def episode_scorecard(
     so a movement episode's minutes are never averaged against the alert
     shadow's hours. Omitted (the default) reproduces the pre-movement-arm
     payload shape exactly — no `recovery_movement` key at all.
+
+    Neither arm gets a CAUSAL baseline here: this scorecard is handed exactly
+    one window of truth episodes, and a climatology fitted before it needs a
+    pre-window episode population the caller does not load. Both arms therefore
+    publish `causal_skill: null` and an `oracle_skill` that is explicitly
+    hindsight-relative. Callers that DO hold a train/eval split (backtest's
+    grade_recovery_timing) pass `baseline_durations_min` to episode_recovery
+    directly and get the honest column.
     """
     model_eps = model_episodes(
         predictions, window_start=window_start, window_end=window_end
@@ -408,7 +429,15 @@ def episode_scorecard(
         "graded_arm": MOVEMENT_ARM_LABEL,
         "published_coverage": published_condition_coverage(predictions),
         "onset_latency": onset_latency(graded, model_eps),
-        "recovery": episode_recovery(graded, dwell_lookup, graded_arm=SHADOW_ARM_LABEL),
+        # None: this scorecard holds one window of episodes and no pre-window
+        # population, so neither arm can be given a causal climatology. See the
+        # note above — the omission is published, not papered over.
+        "recovery": episode_recovery(
+            graded,
+            dwell_lookup,
+            graded_arm=SHADOW_ARM_LABEL,
+            baseline_durations_min=None,
+        ),
         "false_alarms": false_alarms(gradeable_model_eps, graded, movement_truth),
     }
     if movement_dwell_lookup is not None:
@@ -417,6 +446,9 @@ def episode_scorecard(
         )
         movement_graded = [e for e in movement_eps if not e.standing]
         card["recovery_movement"] = episode_recovery(
-            movement_graded, movement_dwell_lookup, graded_arm=MOVEMENT_ARM_LABEL
+            movement_graded,
+            movement_dwell_lookup,
+            graded_arm=MOVEMENT_ARM_LABEL,
+            baseline_durations_min=None,
         )
     return card

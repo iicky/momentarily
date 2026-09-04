@@ -7763,3 +7763,43 @@ Fourth correction today, and the same shape as the other three: a summary
 sentence asserting more than the table beneath it. Recording the count because
 the pattern is the useful part — the tables were right every time; the prose
 over-reached every time.
+
+## 2026-09-03 — every recovery-skill consumer in the repo was oracle-relative, and only one of the five could be fixed rather than labelled
+
+origin: agent
+
+Audited every reader of the recovery CRPS baseline after the movement dwell
+re-grade. Five surfaces publish a skill number, and all five were computing it
+against the graded window's own empirical duration CDF:
+`recovery_dist.recovery_dist_report`, `scorecard.episode_recovery` (both arms,
+via `episode_scorecard` into the review summary), `backtest.grade_recovery_timing`'s
+printed line, `movement_dwell_grade.grade_variants` (already reporting the
+distinction), and the models page's `RecoveryScoreCard` through
+`viz/lib/recovery_dist.ts`. Two more surfaces mention the baseline in prose and
+carried no number: the go/no-go template's graduation criterion and the models
+page intro.
+
+The report now fits a CAUSAL climatology — the same empirical-CDF forecast, but
+over durations from a window the caller supplies that closes before the graded
+one — and emits `causal_skill` beside a renamed `oracle_skill`. The rename is
+the load-bearing part: `skill` and `baseline_crps` are gone, so no consumer can
+keep quoting the hindsight figure without typing the word oracle.
+
+How large the difference is on a hand-checkable case: a graded window that
+recovers in 1-2 minutes against a training window that said 10 gives the SAME
+model `oracle_skill -1.0` and `causal_skill +0.8`. That is a whole verdict's
+worth of spread with nothing about the model changing — the mechanism behind
+the -0.1157 a causally-fitted climatology scored against itself on the real
+movement population.
+
+What could not be fixed, only labelled, and this is the part worth remembering:
+`episode_scorecard` is handed exactly ONE window of truth episodes, and
+`backtest.grade_recovery_timing` loads truth only from `eval_start`. Neither has
+a pre-window episode population in memory, so neither can fit a causal
+climatology without new data loading. Both therefore publish `causal_skill:
+null` — visible, never a silent fallback to the oracle number. The published
+review summary still has no honest skill column; it now has an honestly named
+dishonest one. Rejected the cheap substitute of fitting the baseline from
+`train_trans` dwell spells in backtest: those are HMM regime spells, not
+severe-only truth episodes, so the ratio would be taken against a different
+population and would read as a real number while comparing two different things.

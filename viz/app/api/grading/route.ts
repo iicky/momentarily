@@ -311,7 +311,11 @@ export async function GET(req: NextRequest) {
         predLeft,
       });
     }
-    const recoveryDist = recoveryDistReport(recoverySamples);
+    // null: this route grades one requested window of the live stream and holds
+    // no earlier population to fit a climatology forecast from, so the report
+    // carries only its hindsight oracleSkill and causalSkill stays null. The
+    // card copy names which one it is showing.
+    const recoveryDist = recoveryDistReport(recoverySamples, null);
 
     // The model's belief over time, bucketed onto a fixed grid. Filtered
     // predictions only, so a line selection narrows this to that one band.

@@ -8275,3 +8275,31 @@ Seventh and eighth corrections on this arm. Six of the eight were caught by
 review or advisory rather than by me, and all eight have the same shape: code
 that ran, produced numbers, and described something other than what its label
 said.
+
+## 2026-09-04 — checked: the corrected 14/7 split does not reach into the partial current day, so the gate numbers stand
+
+origin: agent
+
+Raised in review: after the inclusive-split fix, does the reported window now
+evaluate through the partial current day it was chosen to exclude? Checked
+rather than argued, because it would invalidate the table if true.
+
+It does not. Both windows, read back off the run artefacts:
+
+    run              train span                      eval span                       eval ticks
+    13/8 (buggy)     08-14T00Z .. 08-27T00Z  13.00d   08-27T00Z .. 09-04T00Z  8.00d   2303 (8.00d)
+    14/7 (fixed)     08-14T00Z .. 08-28T00Z  14.00d   08-28T00Z .. 09-04T00Z  7.00d   2015 (7.00d)
+
+Current date is 2026-09-04 UTC. The eval upper bound is midnight at the START
+of 09-04, so today is excluded entirely and every evaluated day — 08-28 through
+09-03 — is a complete past day. 2015 ticks against 2016 possible for seven days
+is 99.95% coverage, which is what a run over complete days looks like.
+
+The upper bound is also IDENTICAL across the two runs. `split` was the only
+thing the fix moved; `t1` came from `aligned_window(..., eval_end)[1]` before
+and after. So the fix could not have extended the window forward even in
+principle, and the concern applies to neither run.
+
+Not re-running on a shifted window (08-13..09-02 was suggested). It would drop
+a complete day for no gain, and re-selecting a window after seeing the numbers
+is the one thing a pre-registered split exists to prevent.

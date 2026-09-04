@@ -3,9 +3,16 @@
  * `trains` object.
  *
  * Shape matches src/momentarily/schema.py's Snapshot. Surfaces whose upstream
- * source isn't wired yet (observations, stations, bridges, tunnels) emit as
- * empty placeholders so the schema_version=1 contract stays honored. alerts,
- * routes, and equipment are populated from the data already fetched each tick.
+ * source isn't wired yet (stations, bridges, tunnels) emit as empty
+ * placeholders so the schema_version=1 contract stays honored. alerts, routes,
+ * and equipment are populated from the data already fetched each tick.
+ *
+ * `observations` carries one entry per (route, direction) whose reference stop
+ * has a fresh measured headway (headway.ts). That is the one surface here fed
+ * by the GTFS-RT protobuf rather than the JSON feeds, and it is an
+ * Observation — a raw measurement — not an inference: no baseline, no model,
+ * no grade. Its feed lineage is published like every other surface's, on
+ * `freshness.vehicle_positions`.
  *
  * Output is publicly readable at https://feed.momentarily.nyc/v1/snapshot.json
  * via the R2 custom domain. Cache headers per ADR (max-age=60, s-maxage=300).
@@ -33,6 +40,8 @@ import type {
   RouteSnapshot,
 } from './derive';
 import { buildRoutes, metaForRoute } from './derive';
+import { MAX_READING_AGE_SECONDS, headwayObservations } from './headway';
+import type { HeadwayObservation } from './headway';
 import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
@@ -43,6 +52,7 @@ import { servicePercentile } from './movement_state';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
 import type {
+  HeadwayStateDoc,
   SegmentCondition,
   SegmentDwellDoc,
   SegmentFlowDoc,
@@ -204,6 +214,13 @@ interface Freshness {
   ferry_alerts: number | null;
   ene: number | null;
   stations_static: number | null;
+  // Last poll on which at least one GTFS-RT vehicle-position feed round-
+  // tripped. The upstream behind `observations` (and behind station_flow /
+  // segment_flow / platform_crowding), reported here so that surface's feed
+  // lineage is published exactly like the alert feeds' — a consumer can tell
+  // an absent observation caused by a feed outage from one caused by a
+  // service gap.
+  vehicle_positions: number | null;
 }
 
 interface Accessibility {
@@ -389,7 +406,11 @@ interface Snapshot {
   supported_modes: string[];
   freshness: Freshness;
   alerts: AlertOut[];
-  observations: unknown[];
+  // Raw measurements, peer to `alerts`. Today: one observed headway per
+  // (route, direction) whose reference stop has a fresh reading — see
+  // headway.ts. Empty on a cold start, a vehicle-feed outage, or a service
+  // gap long enough to age every reading out; never a fabricated zero.
+  observations: HeadwayObservation[];
   routes: Record<string, unknown>;
   stations: Record<string, StationOut>;
   equipment: EquipmentOut[];
@@ -499,6 +520,16 @@ export function buildSnapshot(args: {
    * than abstaining (unlike a missing ridership baseline, which is fatal to
    * the surface). */
   serviceWeightBaseline?: ServiceWeightBaselineDoc | null;
+  /** This tick's own observed-headway state (state/headway.json), threaded
+   * through in-memory from index.ts step 0 like stationWait rather than read
+   * back from R2 — so it is NOT one-tick-lagged. Null/undefined before the
+   * first vehicle poll after deploy, when the trainer has published no
+   * scheduled stopping patterns to pick reference stops from, or when step
+   * 0's read/update/write failed; `observations` is then empty. */
+  headway?: HeadwayStateDoc | null;
+  /** Epoch of the last poll on which a vehicle-position feed round-tripped,
+   * for freshness.vehicle_positions. Null before the first one. */
+  vehiclePositionsFreshness?: number | null;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -517,6 +548,18 @@ export function buildSnapshot(args: {
   const segmentFlowFresh =
     segmentFlow != null &&
     args.generatedAt - segmentFlow.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC;
+
+  // Same freshness posture as every other vehicle-derived surface: past
+  // MAX_MOVEMENT_STATE_AGE_SEC the feed is not being polled, so nothing
+  // measured from it is current. headwayObservations applies the second,
+  // narrower gate — MAX_READING_AGE_SECONDS on each individual reading —
+  // which asks whether trains are still running past that cell's stop.
+  const headwayDoc = args.headway ?? null;
+  const observations =
+    headwayDoc !== null &&
+    args.generatedAt - headwayDoc.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC
+      ? headwayObservations(headwayDoc, args.generatedAt)
+      : [];
   const segmentFlowOut =
     segmentFlow != null && segmentFlowFresh
       ? buildSegmentFlowOut(
@@ -653,9 +696,10 @@ export function buildSnapshot(args: {
       ferry_alerts: null,
       ene: args.eneFreshness ?? null,
       stations_static: args.stationsStaticFreshness ?? null,
+      vehicle_positions: args.vehiclePositionsFreshness ?? null,
     },
     alerts: args.alerts ?? [],
-    observations: [],
+    observations,
     routes: buildRoutes(),
     stations: args.stations ?? {},
     equipment: args.equipment ?? [],

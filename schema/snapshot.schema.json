@@ -599,6 +599,18 @@
           ],
           "default": null,
           "title": "Subway Alerts"
+        },
+        "vehicle_positions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vehicle Positions"
         }
       },
       "title": "Freshness",
@@ -825,8 +837,19 @@
       "type": "object"
     },
     "Observation": {
-      "description": "Continuous / instantaneous measurement of an entity.\n\nPeer to Alert. Empty in v1 of the publisher; populated when we wire upstream\nsources for travel-time (bridges/tunnels), headway, ETAs, tolls, occupancy.",
+      "description": "Continuous / instantaneous measurement of an entity.\n\nPeer to Alert, and deliberately NOT an Inference: nothing here is fitted,\nbaselined or graded. The value means only what it says it measured.\n\nPopulated in v1 with observed subway headway, from the Worker's GTFS-RT\nvehicle-position decode (worker/src/headway.ts). Reserved for the sources\nstill unwired: travel-time (bridges/tunnels), ETAs, tolls, occupancy.",
       "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationDirection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "entity_ref": {
           "title": "Entity Ref",
           "type": "string"
@@ -842,6 +865,18 @@
         "source": {
           "title": "Source",
           "type": "string"
+        },
+        "stop_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Id"
         },
         "unit": {
           "title": "Unit",
@@ -872,6 +907,13 @@
       ],
       "title": "Observation",
       "type": "object"
+    },
+    "ObservationDirection": {
+      "enum": [
+        "north",
+        "south"
+      ],
+      "type": "string"
     },
     "ParamsProvenance": {
       "description": "Identity of the trained params.json behind this snapshot's inference \u2014 the\none thing code_sha can't say, since the model version moves independently of\nthe deployed Worker. trained_at is the trainer's own version stamp; key is the\nimmutable versioned R2 object it maps to (state/params/v<trained_at>.json), so\na consumer can pin the exact params without a LIST. Both null means the Worker\nis on BOOTSTRAP params (no params.json published yet), not that identity was\nunavailable.",

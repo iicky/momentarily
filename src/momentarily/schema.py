@@ -17,6 +17,11 @@ type AlertSource = str
 type Mode = str
 type EquipmentType = Literal["elevator", "escalator"]
 
+# The two directions NYCT runs, as the N/S suffix on every stop_id normalises
+# to across the repo (worker/src/vehicles.ts directionOf,
+# training/gtfs_static.direction_of). Closed, unlike the open strings above.
+type ObservationDirection = Literal["north", "south"]
+
 
 class TimeRange(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -69,8 +74,12 @@ class Alert(BaseModel):
 class Observation(BaseModel):
     """Continuous / instantaneous measurement of an entity.
 
-    Peer to Alert. Empty in v1 of the publisher; populated when we wire upstream
-    sources for travel-time (bridges/tunnels), headway, ETAs, tolls, occupancy.
+    Peer to Alert, and deliberately NOT an Inference: nothing here is fitted,
+    baselined or graded. The value means only what it says it measured.
+
+    Populated in v1 with observed subway headway, from the Worker's GTFS-RT
+    vehicle-position decode (worker/src/headway.ts). Reserved for the sources
+    still unwired: travel-time (bridges/tunnels), ETAs, tolls, occupancy.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -81,6 +90,21 @@ class Observation(BaseModel):
     unit: str  # open: "seconds" | "minutes" | "dollars" | "percent" | ...
     observed_at: int
     source: str
+    # Where the measurement was taken, when that is part of what it means. A
+    # headway is measured at a point and per direction, so a route's two
+    # directional readings share entity_ref and are told apart by these: the
+    # canonical reference stop (one stable, documented stop per route and
+    # direction — training/headway.select_reference_stops) and the direction.
+    # Both None for a measurement whose entity_ref already locates it.
+    #
+    # `direction` is a CLOSED vocabulary, unlike the open strings above: NYCT
+    # gives exactly two directions, as the N/S suffix on every stop_id, and
+    # the whole repo normalises them to these two words (worker/src/vehicles.ts
+    # directionOf, training/gtfs_static.direction_of). Adding a third would be
+    # a schema change, not a new value in an open set — so it is a Literal and
+    # reaches the published JSON Schema as an enum.
+    direction: ObservationDirection | None = None
+    stop_id: str | None = None
 
 
 class DirectionLabels(BaseModel):
@@ -393,6 +417,11 @@ class Freshness(BaseModel):
     ferry_alerts: int | None = None
     ene: int | None = None
     stations_static: int | None = None
+    # Last poll on which at least one GTFS-RT vehicle-position feed round-
+    # tripped. The upstream behind `observations`, station_flow, segment_flow
+    # and the crowding surface — published so a consumer can tell an absent
+    # observation caused by a feed outage from one caused by a service gap.
+    vehicle_positions: int | None = None
 
 
 class CompatRouteSummary(BaseModel):

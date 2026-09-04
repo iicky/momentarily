@@ -72,6 +72,59 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     );
   });
 
+  test('a populated observations surface validates, enum and all', () => {
+    // The headway surface is the one thing in the snapshot fed by the GTFS-RT
+    // protobuf, and Observation.direction is a CLOSED vocabulary in the
+    // Pydantic model (ObservationDirection), so it reaches the JSON Schema as
+    // an enum. Validating a real populated surface here is what keeps
+    // headway.ts's HeadwayObservation from drifting off schema.py's
+    // Observation — the two are hand-mirrored.
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_300,
+      alertsFreshness: 1_700_000_300,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      vehiclePositionsFreshness: 1_700_000_300,
+      headway: {
+        observed_at: 1_700_000_300,
+        reference_at: 1_699_000_000,
+        reference_trained_at: 1_699_000_000,
+        reference_stops: { '1|north': '121N', '1|south': '122S' },
+        cells: {
+          '1|north': {
+            stop_id: '121N',
+            passings: [
+              { at: 1_700_000_060, trip: 'T1' },
+              { at: 1_700_000_300, trip: 'T2' },
+            ],
+          },
+          '1|south': {
+            stop_id: '122S',
+            passings: [
+              { at: 1_699_999_940, trip: 'S1' },
+              { at: 1_700_000_250, trip: 'S2' },
+            ],
+          },
+        },
+        trips: {},
+        gaps: [],
+      },
+    });
+    check(snap);
+    expect(snap.observations.length).toBe(2);
+    expect(snap.observations.map((o) => o.direction)).toEqual(['north', 'south']);
+    expect(snap.observations[0]).toMatchObject({
+      entity_ref: 'subway_route:1',
+      kind: 'headway',
+      unit: 'seconds',
+      value: 240,
+      stop_id: '121N',
+    });
+    expect(snap.freshness.vehicle_positions).toBe(1_700_000_300);
+  });
+
   test('snapshot carries a provenance block (falls back to unknown undeployed)', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,

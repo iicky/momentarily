@@ -214,12 +214,19 @@ describe('scheduled: the 5-minute pipeline gate', () => {
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: false }),
     ]);
 
-    // Nothing else did — with one deliberate exception: the per-minute
-    // platform-wait carry (state/station_wait.json) is allowed
-    // off the 5-minute boundary too, for the same reason the trace itself
-    // is — 1-minute resolution on when a train cleared a platform. No other
-    // state/ object moves: no 5-minute pipeline state (vehicle_stops.json
-    // included), no snapshot, no vehicles/trip-updates archive.
+    // Nothing else did — with two deliberate exceptions, both per-minute by
+    // design and both allowed off the 5-minute boundary for the same reason
+    // the trace itself is: the platform-wait carry
+    // (state/station_wait.json), which needs 1-minute resolution on when a
+    // train cleared a platform, and the observed-headway carry
+    // (state/headway.json), which needs it on when a train cleared a
+    // reference stop. headway.json is absent HERE only because this fixture
+    // publishes no state/segment_params.json, so there are no scheduled
+    // stopping patterns to pick a reference stop from and the surface
+    // abstains — see the off-boundary headway test below for the case where
+    // it does write. No other state/ object moves: no 5-minute pipeline
+    // state (vehicle_stops.json included), no snapshot, no
+    // vehicles/trip-updates archive.
     expect(keysWithPrefix(store, 'state/')).toEqual(['state/station_wait.json']);
     expect(store.has('v1/snapshot.json')).toBe(false);
     expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(0);
@@ -394,6 +401,162 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     expect(traceRowsAt(store, traceKeys[1]!)).toEqual([
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: true, stop_seq: 1 }),
     ]);
+  });
+});
+
+describe('scheduled: the observed-headway surface (state/headway.json)', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+  const NON_BOUNDARY_AT = BOUNDARY_AT + 180; // +3 minutes, minute 3
+
+  /** The trainer doc the reference-stop rule reads: a three-stop A-north
+   * pattern, so A02N is the one through-stop and becomes the measurement
+   * point. `cells`/`adjacency` are empty — the headway surface reads only
+   * `route_stops`. */
+  function publishSegmentParams(store: Map<string, StoredObject>): void {
+    store.set('state/segment_params.json', {
+      body: JSON.stringify({
+        schema_version: '1',
+        trained_at: 1_700_000_000,
+        min_share: 0.5,
+        topology_source: 'gtfs_static',
+        cells: {},
+        adjacency: {},
+        route_stops: {
+          'A|north': [{ stops: ['A01N', 'A02N', 'A03N'], n_trips: 5 }],
+        },
+      }),
+      etag: 'etag-seed',
+    });
+  }
+
+  interface HeadwayDoc {
+    observed_at: number;
+    reference_stops: Record<string, string>;
+    reference_trained_at: number;
+    cells: Record<string, { stop_id: string; passings: { at: number; trip: string }[] }>;
+    trips: Record<string, { cell: string; stop: string; at: number }>;
+  }
+
+  async function runAt(env: Env, at: number): Promise<void> {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(at * 1000);
+    try {
+      await worker.scheduled(scheduledAt(at), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
+
+  test('the carry runs off the 5-minute boundary, at its own reference stop', async () => {
+    // A train clears a stop in well under five minutes, so the passing
+    // detection has to see every minute — this is the assertion that the
+    // surface is genuinely per-minute and not silently gated to the pipeline.
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    publishSegmentParams(store);
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A02N' }),
+    );
+
+    await runAt(env, NON_BOUNDARY_AT);
+
+    const doc = jsonAt(store, 'state/headway.json') as HeadwayDoc;
+    // The rule picked the only through-stop of the published pattern.
+    expect(doc.reference_stops).toEqual({ 'A|north': 'A02N' });
+    expect(doc.reference_trained_at).toBe(1_700_000_000);
+    expect(doc.observed_at).toBe(NON_BOUNDARY_AT);
+    // The train is AT the reference stop, so it is carried awaiting its
+    // departure — no passing, and deliberately no cell yet.
+    expect(doc.trips).toEqual({ a: { cell: 'A|north', stop: 'A02N', at: NON_BOUNDARY_AT } });
+    expect(doc.cells).toEqual({});
+    // Still nothing from the 5-minute pipeline.
+    expect(store.has('v1/snapshot.json')).toBe(false);
+  });
+
+  test('a measured headway reaches the published snapshot as an observation', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    publishSegmentParams(store);
+
+    // Four one-minute polls: train a at the reference stop, a past it (one
+    // passing), train b at it, b past it (the passing that closes the gap).
+    const polls: [number, FakeVehicle][] = [
+      [BOUNDARY_AT, { tripId: 'a', routeId: 'A', stopId: 'A02N' }],
+      [BOUNDARY_AT + 60, { tripId: 'a', routeId: 'A', stopId: 'A03N' }],
+      [BOUNDARY_AT + 120, { tripId: 'b', routeId: 'A', stopId: 'A02N' }],
+      [BOUNDARY_AT + 300, { tripId: 'b', routeId: 'A', stopId: 'A03N' }],
+    ];
+    for (const [at, vehicle] of polls) {
+      fetchState.protobufByUrl.set(TRIP_UPDATE_FEEDS[0]![1], vehicleFeed(vehicle));
+      await runAt(env, at);
+    }
+
+    const doc = jsonAt(store, 'state/headway.json') as HeadwayDoc;
+    // Two passings recorded at the reference stop: a's departure at +60 and
+    // b's at +300. The published headway is derived from that pair.
+    expect(doc.cells['A|north']?.passings).toEqual([
+      { at: BOUNDARY_AT + 60, trip: 'a' },
+      { at: BOUNDARY_AT + 300, trip: 'b' },
+    ]);
+
+    // The last poll was a 5-minute boundary, so it published — and the
+    // measurement is on the public surface, with its measurement point.
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      observations: {
+        entity_ref: string;
+        kind: string;
+        value: number;
+        unit: string;
+        observed_at: number;
+        source: string;
+        direction: string;
+        stop_id: string;
+      }[];
+      freshness: { vehicle_positions: number | null };
+    };
+    expect(snapshot.observations).toEqual([
+      {
+        entity_ref: 'subway_route:A',
+        kind: 'headway',
+        value: 240,
+        unit: 'seconds',
+        observed_at: BOUNDARY_AT + 300,
+        source: 'gtfs_rt_vehicle_positions',
+        direction: 'north',
+        stop_id: 'A02N',
+      },
+    ]);
+    expect(snapshot.freshness.vehicle_positions).toBe(BOUNDARY_AT + 300);
+  });
+
+  test('with no trainer stopping patterns the surface abstains, and publishes empty', async () => {
+    // The observed-adjacency fallback doc carries route_stops: {} — there is
+    // no defensible measurement point, so nothing is written and nothing is
+    // published. Not a zero, not an arbitrary stop.
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    store.set('state/segment_params.json', {
+      body: JSON.stringify({
+        schema_version: '1',
+        trained_at: 1_700_000_000,
+        min_share: 0.5,
+        topology_source: 'observed',
+        cells: {},
+        adjacency: {},
+        route_stops: {},
+      }),
+      etag: 'etag-seed',
+    });
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A02N' }),
+    );
+
+    await runAt(env, BOUNDARY_AT);
+
+    expect(store.has('state/headway.json')).toBe(false);
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as { observations: unknown[] };
+    expect(snapshot.observations).toEqual([]);
   });
 });
 

@@ -2,10 +2,10 @@
  * Momentarily publisher — Cloudflare Worker entry point.
  *
  * Each cron tick:
- *   0. Fetch + decode the vehicle-position feeds and run the per-minute
- *      movement trace (every tick — see the hazard note at the top of
- *      `scheduled` for why this is the ONLY thing that runs off the
- *      5-minute boundary)
+ *   0. Fetch + decode the vehicle-position feeds, run the per-minute movement
+ *      trace, and fold the per-minute platform-wait and observed-headway
+ *      carries (every tick — see the hazard note at the top of `scheduled`
+ *      for why these are the ONLY things that run off the 5-minute boundary)
  *   1. Read rolling state (last_seen, alpha) + trained params from R2
  *   2. Fetch the MTA alerts feed
  *   3. Archive new (alert_id, updated_at) versions
@@ -46,6 +46,14 @@ import {
 } from './fetch';
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
+import {
+  HEADWAY_WRITE_ATTEMPTS,
+  detectPassings,
+  mergePassings,
+  referenceStopsStale,
+  resolveReference,
+  updateHeadwayState,
+} from './headway';
 import { deriveRouteServiceMetric } from './trip_updates';
 import type { TraceRow } from './vehicles';
 import {
@@ -94,6 +102,7 @@ import {
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import {
+  readHeadway,
   readLastSeen,
   readMovementMetric,
   readMovementState,
@@ -105,6 +114,7 @@ import {
   readStationFlow,
   readStationWait,
   readVehicleStops,
+  writeHeadway,
   writeLastSeen,
   writeMovementMetric,
   writeMovementState,
@@ -114,7 +124,14 @@ import {
   writeStationWait,
   writeVehicleStops,
 } from './state';
-import type { SegmentDwellDoc, SegmentFlowDoc, SegmentParamsDoc, StationFlowDoc, StationWaitDoc } from './state';
+import type {
+  HeadwayStateDoc,
+  SegmentDwellDoc,
+  SegmentFlowDoc,
+  SegmentParamsDoc,
+  StationFlowDoc,
+  StationWaitDoc,
+} from './state';
 
 export interface Env {
   MOMENTARILY: R2Bucket;
@@ -304,6 +321,107 @@ export default {
         stationWaitDoc = await readStationWait(env.MOMENTARILY);
       } catch (err) {
         console.error('station wait read failed; publishing without platform crowding:', err);
+      }
+    }
+
+    // Observed headway at each (route, direction)'s canonical reference stop —
+    // see headway.ts. Runs every minute for the same reason the platform-wait
+    // carry above does, only harder: a train clears a stop in well under five
+    // minutes, so on the 5-minute boundary alone most passings would never be
+    // observed at all and the surviving gaps would be multiples of the real
+    // headway. Reads and writes ONLY state/headway.json, plus a
+    // segment_params.json read on the daily reference-stop refresh — never
+    // vehicle_stops.json, never archive/vehicles/, so it cannot perturb the
+    // 5-minute advance signal every trained param assumes.
+    //
+    // A tick with no trace rows is skipped for the same two reasons as
+    // station_wait: folding zero rows in would expire every trip's pending
+    // departure and stamp a fresh observed_at over frozen state, defeating
+    // the freshness gate that is supposed to age the surface out.
+    let headwayDoc: HeadwayStateDoc | null = null;
+    if (rows.length > 0) {
+      try {
+        let read = await readHeadway(env.MOMENTARILY);
+        // The reference-stop map is a pure function of the trainer's scheduled
+        // stopping patterns and changes only when the MTA timetable does, so
+        // segment_params.json is read on a daily cadence, not per minute.
+        // Resolved ONCE, outside the retry below: a concurrent winner carries
+        // the same map, so a refold must not re-read 1.3 MB of trainer doc.
+        const trainerDoc = referenceStopsStale(read.state, observedAt)
+          ? await readSegmentParams(env.MOMENTARILY)
+          : null;
+        const reference = resolveReference(
+          read.state,
+          trainerDoc === null ? null : trainerDoc.route_stops ?? {},
+          trainerDoc?.trained_at ?? 0,
+          observedAt,
+        );
+        if (reference.at === observedAt) {
+          console.log(
+            `headway: reference stops refreshed — ${Object.keys(reference.stops).length} `
+            + `cells from segment_params trained_at=${reference.trained_at}`,
+          );
+        }
+        if (Object.keys(reference.stops).length === 0) {
+          // No trainer stopping patterns to pick a measurement point from (an
+          // observed-adjacency fallback doc carries none). Abstain rather than
+          // measure at an arbitrary stop.
+          console.log('headway: no reference stops available; observations abstain');
+        } else {
+          // Compare-and-swap. A lost race means an overlapping or retried cron
+          // advanced the doc between our read and our write; rewriting our
+          // version would drop the passings it recorded, and a dropped passing
+          // publishes later as one doubled headway. See state.ts HEADWAY_KEY
+          // for why this object cannot take station_wait.json's plain put.
+          //
+          // The passings our rows evidence are computed ONCE, against the base
+          // we read, because they are what we know and a later winner does
+          // not.
+          const ours = detectPassings(rows, reference, read.state, observedAt);
+          for (let attempt = 0; attempt < HEADWAY_WRITE_ATTEMPTS; attempt++) {
+            if (attempt > 0) read = await readHeadway(env.MOMENTARILY);
+            const prev = read.state;
+            const stale = prev !== null && prev.observed_at >= observedAt;
+            // Stale: an invocation for this minute or a later one already
+            // committed. Merge only our passings into its document. Refolding
+            // our whole poll would rebuild ITS trip carry from rows older than
+            // it, re-adding trips it already resolved so a later poll could
+            // fire them twice — see mergePassings.
+            const next = stale
+              ? mergePassings(prev, ours)
+              : updateHeadwayState(rows, reference, prev, observedAt);
+            if (await writeHeadway(env.MOMENTARILY, next, read.etag)) {
+              headwayDoc = next;
+              if (stale) {
+                console.warn(
+                  `headway: a later invocation won; merged ${ours.length} passing(s)`,
+                );
+              }
+              break;
+            }
+            console.warn(
+              `headway: write lost to a concurrent invocation `
+              + `(attempt ${attempt + 1}/${HEADWAY_WRITE_ATTEMPTS}); refolding`,
+            );
+          }
+          if (headwayDoc === null) {
+            // Exhausted. The last read is still a valid, fresher document, so
+            // publish from it rather than blanking the surface.
+            headwayDoc = read.state;
+            console.error('headway: write lost repeatedly; publishing the last read state');
+          }
+        }
+      } catch (err) {
+        console.error('headway update failed; publishing without observations:', err);
+      }
+    } else {
+      // Same posture as station_wait: carry the stored doc unmodified and let
+      // buildSnapshot's freshness gate age it out over ~30 min.
+      console.log('trace produced no rows; headway state carried forward untouched');
+      try {
+        headwayDoc = (await readHeadway(env.MOMENTARILY)).state;
+      } catch (err) {
+        console.error('headway read failed; publishing without observations:', err);
       }
     }
     step('0-trace');
@@ -610,6 +728,17 @@ export default {
         stationWait: stationWaitDoc,
         ridershipBaseline,
         serviceWeightBaseline,
+        headway: headwayDoc,
+        // At least one vehicle-position feed round-tripped this poll, else
+        // the last poll where one did (step 8b's own stamp). Null before the
+        // first, so an absent observations surface can be told apart from a
+        // feed that is simply not being polled.
+        vehiclePositionsFreshness:
+          vehicleFreshFeeds.length > 0
+            ? observedAt
+            : lastSeen.vehicles_at > 0
+              ? lastSeen.vehicles_at
+              : null,
       });
       step('6a-build-snapshot');
       try {

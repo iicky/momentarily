@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from momentarily.schema import (
     SCHEMA_VERSION,
     Bridge,
@@ -51,7 +54,7 @@ def test_compat_default_empty() -> None:
 
 
 def test_observation_round_trips() -> None:
-    """Observation is the new continuous-measurement slot for bridges/headway/etc."""
+    """Observation is the continuous-measurement slot for headway/bridges/etc."""
     obs = Observation(
         entity_ref="bridge:verrazano",
         kind="travel_time",
@@ -64,6 +67,67 @@ def test_observation_round_trips() -> None:
     assert payload["entity_ref"] == "bridge:verrazano"
     assert payload["kind"] == "travel_time"
     assert payload["value"] == 22.5
+    # A measurement whose entity_ref already locates it carries neither.
+    assert payload["direction"] is None
+    assert payload["stop_id"] is None
+
+
+def test_headway_observation_carries_its_measurement_point() -> None:
+    """The shape worker/src/headway.ts publishes: a raw headway reading, per
+    (route, direction), located at that cell's canonical reference stop.
+
+    direction and stop_id are what keep a route's two directional readings
+    apart — they share entity_ref, so without them the pair is ambiguous —
+    and stop_id is the measurement point a headway only means anything
+    relative to.
+    """
+    obs = Observation(
+        entity_ref="subway_route:1",
+        kind="headway",
+        value=240,
+        unit="seconds",
+        observed_at=1_700_000_300,
+        source="gtfs_rt_vehicle_positions",
+        direction="north",
+        stop_id="121N",
+    )
+    payload = json.loads(obs.model_dump_json())
+    assert payload == {
+        "entity_ref": "subway_route:1",
+        "kind": "headway",
+        "value": 240,
+        "unit": "seconds",
+        "observed_at": 1_700_000_300,
+        "source": "gtfs_rt_vehicle_positions",
+        "direction": "north",
+        "stop_id": "121N",
+    }
+
+
+def test_observation_direction_is_a_closed_vocabulary() -> None:
+    """Unlike kind/unit/source, direction is not an open string: NYCT runs two
+    directions and a third would be a schema change, so it is rejected rather
+    than passed through. The ignore is the point — the vocabulary is closed at
+    type-check time too, and this asserts it is also closed at runtime, where
+    a malformed trainer doc or hand-written payload actually arrives."""
+    with pytest.raises(ValidationError):
+        Observation(
+            entity_ref="subway_route:1",
+            kind="headway",
+            value=240,
+            unit="seconds",
+            observed_at=1_700_000_300,
+            source="gtfs_rt_vehicle_positions",
+            direction="northbound",  # pyright: ignore[reportArgumentType]
+        )
+
+
+def test_snapshot_observations_default_empty() -> None:
+    """A snapshot with no measured headway publishes an empty surface — the
+    honest reading on a cold start or a vehicle-feed outage, never a zero."""
+    snap = Snapshot(generated_at=0)
+    assert snap.observations == []
+    assert snap.freshness.vehicle_positions is None
 
 
 def test_bridge_with_crossings() -> None:

@@ -715,3 +715,119 @@ export async function writeStationWait(
     httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
   });
 }
+
+// Observed-headway measurement state at the canonical reference stops (see
+// headway.ts): the carried reference-stop map, each cell's last passing and
+// last completed reading, and the trip -> reference-stop carry the
+// departure-transition rule needs. Its own R2 object, updated every minute at
+// step 0 alongside station_wait.json — not gated to the 5-minute boundary,
+// because a train clears a stop in well under five minutes and a 5-minute
+// cadence would miss most passings outright; see the hazard comment in
+// index.ts.
+//
+// CAS on the etag, unlike station_wait.json's plain put — and the difference
+// is not incidental. station_wait.json survives a stale overwrite because
+// `platforms` only ever advances via Math.max and `trips` is rebuilt from the
+// current poll's rows, so a clobbered write costs at most one tick of
+// staleness and the next poll restamps it. This document has neither
+// property: it is a genuine read-modify-write over the PRIOR doc, and a
+// passing dropped by a stale overwrite is not recovered next poll — the train
+// is already past the reference stop, so the following interval spans two real
+// headways and publishes as one doubled reading. A plausible wrong number is
+// the worst failure this surface has, and it is exactly what the measurement
+// is built to avoid, so overlapping or retried crons (see r2.ts) must not be
+// able to cause it.
+//
+// CAS alone is not sufficient, only necessary: it makes a lost race visible
+// rather than silent. What makes the outcome CORRECT is that `passings` is a
+// ledger and insertion into it is commutative and idempotent, so a caller that
+// loses the race merges its own passings into the winner and both orders
+// converge on the same cell — see headway.ts mergePassings and index.ts step 0.
+export const HEADWAY_KEY = 'state/headway.json';
+
+const HeadwayPassingSchema = z.object({
+  at: z.number(),
+  trip: z.string(),
+});
+
+const HeadwayCellSchema = z.object({
+  stop_id: z.string(),
+  // Recent passings of the reference stop, ascending by `at`, capped at
+  // headway.ts HEADWAY_LEDGER_SIZE. A LEDGER rather than a scalar
+  // "last passing" because insertion into it is commutative and idempotent:
+  // that is what lets a concurrent invocation's passings be merged in after
+  // the fact, and what makes a retried poll a no-op. The published reading is
+  // derived from the last two entries.
+  passings: z.array(HeadwayPassingSchema).default([]),
+});
+export type HeadwayCell = z.infer<typeof HeadwayCellSchema>;
+
+const HeadwayTripSchema = z.object({
+  cell: z.string(),
+  stop: z.string(),
+  at: z.number(),
+});
+export type HeadwayTrip = z.infer<typeof HeadwayTripSchema>;
+
+const HeadwaySchema = z.object({
+  observed_at: z.number(),
+  reference_at: z.number(),
+  reference_trained_at: z.number(),
+  reference_stops: z.record(z.string(), z.string()),
+  cells: z.record(z.string(), HeadwayCellSchema),
+  trips: z.record(z.string(), HeadwayTripSchema),
+  // Windows during which the Worker was NOT polling, each (from, until]: a
+  // headway interval overlapping any of them may be missing observation rather
+  // than missing service, so it is not published.
+  //
+  // Document-level and derived purely from poll timestamps, deliberately NOT a
+  // per-cell or per-entry flag. A feed outage is global, and a flag consumed by
+  // "whichever passing lands newest" would depend on insertion order — two
+  // invocations merging the same passings in opposite orders would disagree
+  // about which interval crossed the gap. This form is a pure function of the
+  // poll clock, so it survives out-of-order insertion.
+  //
+  // A LIST, not just the latest window: a later gap must not overwrite an
+  // earlier one that a still-publishable interval spanned. Pruned to the
+  // horizon beyond which no publishable interval can reach (headway.ts
+  // pruneGaps), which also bounds it — every gap needs its own multi-poll
+  // silence, so only a few dozen can fit inside that horizon.
+  gaps: z
+    .array(z.object({ from: z.number(), until: z.number() }))
+    .default([]),
+});
+export type HeadwayStateDoc = z.infer<typeof HeadwaySchema>;
+
+/** Read the carried headway state with its etag, so the write back is a
+ * compare-and-swap. `state` is null when the object is absent or corrupt — the
+ * surface then rebuilds its reference-stop map and starts measuring from the
+ * next passing, publishing nothing until a cell has seen two trains. It never
+ * publishes a value it did not measure. A corrupt object still returns its
+ * etag, so the overwrite that replaces it is still conditional. */
+export async function readHeadway(
+  bucket: R2Bucket,
+): Promise<VersionedRead<HeadwayStateDoc | null>> {
+  const obj = await bucket.get(HEADWAY_KEY);
+  if (!obj) return { state: null, etag: null };
+  try {
+    return { state: HeadwaySchema.parse(await obj.json()), etag: obj.etag };
+  } catch (err) {
+    console.error('headway.json corrupt; resetting:', err);
+    return { state: null, etag: obj.etag };
+  }
+}
+
+/**
+ * Write headway.json with compare-and-swap on `etag` (from readHeadway).
+ * Returns false when a concurrent invocation already advanced the object.
+ */
+export async function writeHeadway(
+  bucket: R2Bucket,
+  doc: HeadwayStateDoc,
+  etag: string | null,
+): Promise<boolean> {
+  return conditionalPut(bucket, HEADWAY_KEY, JSON.stringify(doc), etag, {
+    contentType: 'application/json',
+    cacheControl: 'no-store',
+  });
+}

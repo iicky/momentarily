@@ -8303,3 +8303,283 @@ principle, and the concern applies to neither run.
 Not re-running on a shifted window (08-13..09-02 was suggested). It would drop
 a complete day for no gain, and re-selecting a window after seeing the numbers
 is the one thing a pre-registered split exists to prevent.
+## 2026-09-03 — the observations surface is populated, and the README's "protobuf feeds do not reach the public snapshot" was already false before it
+
+origin: agent
+
+`Snapshot.observations` now carries the observed headway per (route,
+direction): the seconds between the last two trains to serve that pair's
+canonical reference stop, measured off the vehicle feed in the Worker
+(`worker/src/headway.ts`, `state/headway.json`). The declared-but-empty slot
+is filled. Three things came out of the work that are worth more than the
+feature itself.
+
+**The README statement this task was told to update honestly was stale for
+reasons that have nothing to do with headway.** The brief flagged that
+publishing a derived headway would change the documented boundary — "the
+protobuf GTFS-RT feeds are decoded too, but only for offline HMM validation
+... They do not feed the public snapshot." Checking it before rewriting it:
+that sentence was ALREADY false. Vehicle positions were already driving
+`station_flow`, `segment_flow`, `platform_crowding` and the movement-observed
+`condition`; trip updates were already driving `service_condition`,
+`service_ratio` and `service_percentile` via assigned_n. Both protobuf feeds
+had been on the public surface since the movement and supply axes shipped. So
+the boundary did not move today — the documentation had been wrong for a
+while and this task is what read it closely enough to notice. Rewrote it to
+say what each feed actually feeds, and replaced the JSON-vs-protobuf framing
+with the distinction that does carry weight: measurement vs inference.
+
+**The passing detection deliberately does NOT match the offline arrival
+reconstruction, and the repo already had the measurement proving why.** The
+offline series (`training/trace.arrivals_from_trace`, which
+`training/headway.py` consumes) defines an arrival as the first snapshot
+STOPPED_AT a stop. `crowding.ts` records what that costs, measured on the real
+trace over 2026-08-20 07:00-11:00 ET: only 92.71% of stop transitions had the
+trip caught STOPPED_AT on the preceding poll, because a dwell shorter than the
+1-minute poll comes and goes with the stop_id changing underneath it. For
+crowding a missed sighting is a frozen clock; for headway it is worse — a
+missed passing does not lose a datum, it MERGES two real headways into one
+double-length reading. So the live surface keys on the stop_id transition (the
+departure), which is observed for every train that served the stop, and uses
+one definition rather than mixing arrival- and departure-stamped events and
+injecting a dwell of jitter into every other gap. This means roughly 7% of the
+offline headway series is doubles, and the offline and live series will not
+agree until that is reconciled — recorded on the epic for the rolling-window
+and scheduled-baseline work that will compare them.
+
+**The reference stops needed no new trainer artifact.** The selection rule was
+closed as a pure offline function with the mapping unpublished. Rather than add
+a publish step, the Worker applies the same rule to `route_stops` on
+`state/segment_params.json`, which the trainer already writes and which IS
+`gtfs_static.route_patterns()` — the consecutive-stop pairs summed over it
+reproduce `successors()` exactly, so the dominant-successor skeleton the
+through-stop test reads off is the same graph. Verified against the offline
+rule's own documented output on the committed patterns: 1|north=121N,
+2|north=120N, 7|south=714S, L=L15N/L16S, A=A55N/A55S, coverage 1.000 on all 50
+resolving cells. The rule abstains on exactly two, GS north and south — the
+42nd St shuttle is two stops, both terminals, so it has no interior stop to
+measure at and publishes no headway. That is the rule working, not a gap.
+
+**What is bounded, and why each bound exists.** Every refusal below produces no
+observation for the cell rather than a zero or a stale value: no second train
+seen yet; an interval crossing a poll gap (a gap in the FEED is not a gap in
+SERVICE); a value outside [30s, 7200s]; the same trip_id twice inside 120s; a
+trip carry older than 600s (NYCT reuses trip_ids, so a stale carry may be a
+different train); a completed reading older than 30 min, matched to the age
+every other vehicle-derived surface here is retired at. The lower bound is set
+at the physically impossible rather than the merely unusual on purpose —
+genuine bunching to ~60s is real service and must publish; what 30s catches is
+one train reported under two trip_ids, which the dup guard cannot see because
+the ids differ.
+
+**Contract change, flagged and approved rather than assumed.** `Observation`
+gained two OPTIONAL fields, `direction` and `stop_id`. The brief said the
+schema already reserved exactly this shape, and taken literally that does not
+work: headway is per (route, DIRECTION) while `entity_ref` is pinned to
+`subway_route:<route>`, so with only the six existing fields every route
+publishes two observations with identical entity_ref/kind/unit and different
+values, and northbound and southbound are indistinguishable. Folding direction
+into entity_ref contradicts the specified entity_ref and still drops the
+measurement point; collapsing the two directions needs an aggregation rule,
+which would be an inference. `direction` is a closed vocabulary
+(`ObservationDirection`, a Literal), so it reaches the published JSON Schema as
+an enum rather than as a documented convention.
+
+**Verification, stated at the strength it carries.** The reference-stop rule is
+checked against real recorded data — the committed `route_stops`. The passing
+detection and headway derivation are checked by unit test over SYNTHETIC
+per-minute trace sequences, plus three integration tests driving the real
+`scheduled` handler against a fake R2. Not recorded traces: no trace fixture is
+committed anywhere (`archive/trace/` is credentialed and pruned at 30 days),
+and no murk grant covers this worktree, so there was no live run against real
+R2. I started a script to poll the public MTA endpoints directly and killed it
+— the working rules say to fall back to fixtures rather than work around a
+missing grant, and hitting MTA production from a worker thread is not a call to
+make unasked. So: the arithmetic and the refusals are tested; that real trains
+at real reference stops produce non-empty observations is NOT yet observed, and
+the deploy is the first time it will be. `freshness.vehicle_positions` plus an
+empty `observations` array is the signal to watch if passings are not being
+detected.
+
+## 2026-09-03 — the headway surface, verified against live feeds: 37 cells publishing, and every silent cell explained by the alert feed
+
+origin: agent
+
+The entry above closed with "the arithmetic and the refusals are tested; that
+real trains at real reference stops produce non-empty observations is NOT yet
+observed". A grant landed, so it is observed now. 34 consecutive one-minute
+polls against the real MTA GTFS-RT feeds, 2026-09-03 21:05-21:35 ET, real
+trainer artifact, real workerd runtime.
+
+**Not against production R2, deliberately.** The instruction was `wrangler dev`
+against real R2, and taken literally that binds the live bucket: the scheduled
+handler would have written `v1/snapshot.json`, `state/alpha.json` and
+`state/last_seen.json`, publishing an unreviewed snapshot on
+feed.momentarily.nyc and racing the deployed Worker's CAS on two objects. Read
+`state/segment_params.json` from real R2 read-only, seeded it into a LOCAL R2,
+and pointed `wrangler dev --test-scheduled` at the live feeds instead. Same
+evidence, no production writes — confirmed after the fact: the remote snapshot
+still has `observations: []` and no `freshness.vehicle_positions` key, so it is
+still the old deployed code, and remote `state/headway.json` does not exist.
+
+**The production trainer doc resolves, which was the real unknown.** If
+`segment_params.json` in production had been written by the observed-adjacency
+fallback, `route_stops` would be `{}` and this surface would have abstained
+forever while every test passed. It is `topology_source: gtfs_static` with 52
+cells, and its `route_stops` is byte-identical to the committed
+`diagram.json` copy — so the picks pinned in the unit test are the picks
+production uses, and the test is not drifting from reality. 50 reference cells;
+the two abstentions are exactly GS north and south.
+
+**The numbers.** Per publish tick, n_obs 0 → 5 → 15 → 21 → 34 → 36 → 37 as
+cells warm up. 148 readings, min 60s, median ~600s, max 1681s, none outside
+[30s, 7200s], none zero. Of 34 cells with three or more readings, 26 moved and
+8 held — a held value being the honest reading when no train has passed since
+the last tick. The tightest gaps (Q|south and R|south at 60s, 7|north at 91s,
+L both at 120s) are real bunching on the frequent lines, and are exactly why
+the lower bound is set at the physically impossible rather than the merely
+unusual: a 60s bound would have censored four true readings.
+
+**The part worth keeping: 13 cells published nothing, and the alert feed
+explains all 13.** This is the check that would have caught a broken detector,
+because "some cells are empty" is what a broken detector and a correct one both
+look like until you ask why. N published nothing in either direction — and the
+alert says "No [N] service in Manhattan", while the N's reference stop R20 IS
+Union Square. 28 N trains were running and none of them went past the
+measurement point. R|north published nothing, alert "rerouted via the D and F
+in Manhattan", reference stop R27N in Manhattan; R|south, reference stop R36S
+in Brooklyn, published all window. Same route, one direction dark and one live,
+purely because of where its reference stop sits. W "service ends early", one
+vehicle. B is daytime-only and Z is peak-only, both zero vehicles at 21:00.
+
+So the surface is not silently broken, but it does have a structural limit the
+live run is what exposed: the measurement point is pinned to the static
+timetable, so a reroute takes the cell off the air. Abstaining is right and is
+what ships — it never fabricates a value — but the signal disappears exactly
+when service is disrupted, which is when it would be most worth having. Filed
+separately. The consequence for the rolling window and the viz is that holes in
+this series correlate with disruption, so any availability or coverage metric
+over it has to condition on the reroute alerts or it will read a planned
+reroute as missing data.
+
+## 2026-09-03 — correction: "same evidence, no production writes" claimed an equivalence the local-R2 run did not earn
+
+origin: agent
+
+The entry above justifies not using `wrangler dev --remote` — correctly, the
+handler would have published to feed.momentarily.nyc and raced the deployed
+Worker's CAS — and then says of the local-R2 substitute: "Same evidence, no
+production writes." The second half is true. The first half is not, and it is
+the same failure the four corrections from 2026-09-02 and 09-03 all have: a
+summary sentence asserting more than the thing beneath it.
+
+What was real R2: three read-only GETs. `state/segment_params.json` (1.3 MB),
+which is the load-bearing one — it is what established that production's
+trainer doc is `gtfs_static` with 52 `route_stops` cells and therefore that
+this surface resolves reference stops in production instead of abstaining
+forever while every test passes. Plus `v1/snapshot.json` and a list on
+`state/headway.json`, both only to prove I had not written them.
+
+What was a local miniflare bucket seeded with that doc: every read and write
+the handler performed — `readHeadway`/`writeHeadway`, `readSegmentParams`,
+station_wait, the alpha and last_seen CAS writes, the publish, the archive
+writes.
+
+What was genuinely live: the eight GTFS-RT endpoints, the decode,
+`deriveTrace`, `updateHeadwayState`, `headwayObservations`, `buildSnapshot`,
+and workerd as the runtime. So every number in that entry — 37 cells, 148
+readings, the bounds, 26 of 34 cells moving, the 13 silences the alert feed
+explained — is real trains through real code, and none of it is weakened by
+this correction. The claim that needed narrowing is the one about R2, not the
+one about the surface.
+
+What therefore remains unexercised: the etag/CAS and latency behaviour of the
+writes against the real bucket, and coexistence with the deployed Worker on the
+same keys. Worth stating that this is small rather than pretending it is
+nothing: `state/headway.json` is a plain put with no CAS by design, because the
+doc is a pure function of (this poll's rows, prior doc) with monotone per-cell
+timestamps, so a retried minute recomputes identical content and there is no
+update to lose a race over. And the one cost that does live on the hot path —
+the 1.3 MB `segment_params` parse — was exercised at true data volume, because
+the local bucket held the real object; it runs on cold start and then once a
+day on the refresh cadence, not every minute.
+
+The honest sentence is: verified against live feeds and a real production
+trainer doc, not against a production R2 write path. That distinction only
+closes at deploy.
+
+## 2026-09-03 — correction: state/headway.json had a real concurrency defect, and "there is no update to lose a race over" was wrong three times running
+
+origin: agent
+
+The two entries above both justify `state/headway.json` as a plain put by
+analogy to `station_wait.json`, and one of them says outright that the document
+is "a function of this poll's rows plus the prior doc, with monotone per-cell
+timestamps, so a retried cron minute recomputes the same content and there is
+no update to lose a race over." That is false, and the analogy is the reason it
+was believed. `station_wait.json` tolerates a stale overwrite because
+`platforms` only ever advances via `Math.max` and `trips` is rebuilt from the
+current poll's rows, so a clobbered write costs one tick of staleness and the
+next poll restamps it. The headway document had neither property: a cell's
+`last_at`/`headway_sec` were a genuine read-modify-write over the prior doc,
+and a passing dropped by a stale overwrite is not recovered — the train is
+already past the reference stop, so the next interval spans two real headways
+and publishes as ONE DOUBLED READING. A plausible wrong number is the worst
+thing this surface can emit, and it is precisely what the module was built to
+avoid, so shipping a known path to it would have been incoherent.
+
+Worth recording that the fix took three attempts, because each one was
+correct-but-insufficient in the same instructive way — each removed the failure
+I had just been shown and left the class intact:
+
+1. CAS on the etag. Makes the loss deterministic rather than order-dependent,
+   but the loser's passing is still discarded.
+2. Refold the loser's rows onto the winner. Recovers that passing, but
+   reconstructs the winner's trip carry from rows older than it — re-adding a
+   trip the winner had already resolved, which a later poll could fire a second
+   time. The dup-window guard catches that only when no other train passed in
+   between, so it was not a guarantee.
+3. Merge only the passings, via the sequential fold. Still wrong, and this is
+   the one that mattered: passings folded over a scalar `last_at` are NOT
+   COMMUTATIVE. If A saw T1 at t+60 and B saw T2 at t+120 from the same base,
+   applying B first makes the fold refuse T1 for being behind T2, and the
+   published reading becomes T0 -> T2 rather than the true T1 -> T2.
+
+The defect was the state SHAPE, not the merge. A cell now keeps a small ledger
+of recent passings (capped, `HEADWAY_LEDGER_SIZE`) and the reading is DERIVED
+from its last two distinct entries. Insertion into a sorted set is commutative
+and idempotent, so any interleaving of two invocations — and any retry —
+converges on the same cell, and the merge became sound rather than
+approximately sound.
+
+Two consequences that fell out of moving from a stored scalar to a derivation,
+both improvements I would not have found by patching:
+
+- The feed-gap refusal had the same order-dependence. It was a per-cell flag
+  consumed by "whichever passing lands newest", so two invocations merging the
+  same passings in opposite orders disagreed about which interval crossed the
+  outage. It is now a list of `(from, until]` windows on the document, derived
+  purely from the poll clock. A list, not the latest window: a later outage
+  must not overwrite an earlier one that a still-publishable pair spanned.
+  Pruned at `MAX_READING_AGE_SECONDS + MAX_HEADWAY_SECONDS`, which is exactly
+  the horizon beyond which no publishable interval can reach — safe by
+  construction rather than by guess, and bounded because each gap needs its own
+  multi-poll silence.
+- The sub-bound refusal got better. The old fold refused a too-short interval
+  but still advanced `last_at`, so a phantom entry (one train reissued under a
+  second trip_id, which the dup guard cannot see) left the previous good
+  reading in place by luck. The derivation now collapses entries closer than
+  MIN_HEADWAY_SECONDS to the earlier one, so the true previous headway stays
+  readable by rule instead of by accident.
+
+Eight concurrency regressions now pin this: the losing invocation's passing
+surviving, commutativity across both commit orders, idempotence under retry, no
+double-count of a departure the winner already had, the gap refusal surviving
+out-of-order insertion, and a later gap not un-refusing an interval an earlier
+one spanned. Suite 529.
+
+The pattern to keep: I reached for an existing precedent in the codebase and
+carried over its CONCLUSION ("plain put is fine here") without re-deriving the
+PROPERTY that made it true. The comment I wrote even stated the property —
+"monotone per-cell timestamps" — and it was not a property my document had. An
+analogy is not an argument.

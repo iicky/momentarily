@@ -37,7 +37,7 @@ left un-rewritten rather than published as a false empty read.
 ## What's in the snapshot
 
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata
-- **`observations`** — continuous measurements (travel times, headways, ETAs); empty in v1
+- **`observations`** — raw measurements, peer to `alerts`. Populated with the observed subway headway per (route, direction): the seconds between the last two trains to serve that pair's canonical reference stop, measured off the GTFS-RT vehicle feed. Each entry carries the `stop_id` it was measured at and the `direction`. A measurement, not an inference — no baseline, no model, no grade. Absent for a pair that hasn't seen two trains, whose reading is stale, or whose interval spanned a feed gap; empty on a cold start or a vehicle-feed outage, never a fabricated zero. Travel times, ETAs and tolls are still unwired.
 - **`routes`** — static per-route metadata (id, color, name)
 - **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, optional HMM-inferred `condition` + `recovery_minutes`
 - **`stations`**, **`station_status`** — per-station metadata + derived view (alerts affecting the stop, ADA status, equipment outage counts)
@@ -79,7 +79,25 @@ All fetched from the MTA developer gateway (`api-endpoint.mta.info`):
 
 The ridership feed is entry-side only — it has no `exits` column — and is reduced offline (`training/ridership.py`) to a per-station-complex entry-rate baseline behind the live platform-crowding estimate; it publishes with roughly a 10-day lag, so the ingest resolves its own trailing window against the feed's own latest available hour rather than against today.
 
-The published v1 snapshot is JSON-derived. The protobuf GTFS-RT feeds (trip updates and vehicle positions) are decoded too, but only for offline HMM validation — each tick archives a per-route service metric (assigned trips) and a movement metric (where trains are, advancing vs stalled across ticks), held out as independent truth for recovery and current-state classification. They do not feed the public snapshot.
+The protobuf GTFS-RT feeds (trip updates and vehicle positions) do reach the
+public snapshot. Every tick still archives what it decodes — a per-route
+service metric (assigned trips) and a movement metric (where trains are,
+advancing vs stalled across ticks) — and those archives remain the held-out
+truth the offline HMM validation is graded against. But they are no longer
+only that:
+
+- **vehicle positions** drive `observations` (the observed headway at each
+  route/direction's reference stop), `station_flow`, `segment_flow`,
+  `platform_crowding`, and the movement-observed `condition` in `route_status`.
+- **trip updates** drive the supply axis in `route_status` —
+  `service_condition`, `service_ratio` and `service_percentile`, all derived
+  from assigned trips against that cell's own baseline.
+
+Everything else in the snapshot is JSON-derived. The distinction that matters
+is not JSON vs protobuf but measurement vs inference: `observations` entries
+are raw readings, published with the stop they were measured at and no
+baseline applied, while the `condition`/`service_condition`/`inference` fields
+are model output and carry their own provenance and grading.
 
 ## Running it
 

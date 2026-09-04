@@ -817,9 +817,10 @@ function RouteDrawer({
         <>
           <div className="section-title">Predicted status</div>
           <div className="section-note">
-            What the model infers is happening right now. It weighs alerts,
-            train movement and train counts together, so it can differ from the
-            status above, which follows train movement alone.
+            What the model infers is happening right now. It weighs alerts
+            together with how the trains are actually moving, so it can differ
+            from the status shown above. How many trains are running is a
+            separate reading, not something this prediction folds in.
           </div>
           <div
             className="pbar"

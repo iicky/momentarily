@@ -380,6 +380,7 @@ def episode_scorecard(
     window_start: int,
     window_end: int,
     movement_dwell_lookup: DwellLookup | None = None,
+    baseline_durations_min: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Assemble the event-based scorecard: onset latency, per-episode recovery,
     and false-alarm episodes, each with its event count.
@@ -402,13 +403,14 @@ def episode_scorecard(
     shadow's hours. Omitted (the default) reproduces the pre-movement-arm
     payload shape exactly — no `recovery_movement` key at all.
 
-    Neither arm gets a CAUSAL baseline here: this scorecard is handed exactly
-    one window of truth episodes, and a climatology fitted before it needs a
-    pre-window episode population the caller does not load. Both arms therefore
-    publish `causal_skill: null` and an `oracle_skill` that is explicitly
-    hindsight-relative. Callers that DO hold a train/eval split (backtest's
-    grade_recovery_timing) pass `baseline_durations_min` to episode_recovery
-    directly and get the honest column.
+    The alert-shadow `recovery` arm takes a CAUSAL baseline through
+    `baseline_durations_min`: realized severe-truth incident durations, in
+    minutes, from a window that closes before this one. When the caller supplies
+    them the arm carries a real `causal_skill`; the default (None) leaves it
+    null — an honest omission, never the oracle number wearing the causal label.
+    The `recovery_movement` arm has no pre-window population plumbed here and so
+    still publishes `causal_skill: null`; callers that hold a train/eval split
+    (backtest's grade_recovery_timing) reach episode_recovery directly.
     """
     model_eps = model_episodes(
         predictions, window_start=window_start, window_end=window_end
@@ -429,14 +431,13 @@ def episode_scorecard(
         "graded_arm": MOVEMENT_ARM_LABEL,
         "published_coverage": published_condition_coverage(predictions),
         "onset_latency": onset_latency(graded, model_eps),
-        # None: this scorecard holds one window of episodes and no pre-window
-        # population, so neither arm can be given a causal climatology. See the
-        # note above — the omission is published, not papered over.
+        # Causal when the caller loaded a pre-window duration population, else
+        # None (published as null, never the oracle number relabelled).
         "recovery": episode_recovery(
             graded,
             dwell_lookup,
             graded_arm=SHADOW_ARM_LABEL,
-            baseline_durations_min=None,
+            baseline_durations_min=baseline_durations_min,
         ),
         "false_alarms": false_alarms(gradeable_model_eps, graded, movement_truth),
     }

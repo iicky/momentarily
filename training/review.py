@@ -778,6 +778,62 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     print(f"  {len(episodes)} incident episodes (severe-only truth)")
 
+    # Causal recovery-duration climatology for the §1 episode scorecard: realized
+    # severe-truth incident durations from a window that CLOSES before the graded
+    # one, so recovery CRPS skill is read against a forecast rather than the
+    # graded window's own hindsight CDF (recovery_dist's required-argument design
+    # refuses to let the graded population reach its own baseline). Reuses the
+    # advance baseline's pre-window [baseline_start, baseline_end]. Its own
+    # presence mask needs that window's predictions — severe alert tails otherwise
+    # never close and inflate every duration — so they are loaded here purely to
+    # close episodes and never mixed into `preds` or current_params.
+    pre_window_start = int(
+        datetime(
+            baseline_start.year, baseline_start.month, baseline_start.day, tzinfo=UTC
+        ).timestamp()
+    )
+    pre_window_end = int(
+        (
+            datetime(
+                baseline_end.year, baseline_end.month, baseline_end.day, tzinfo=UTC
+            )
+            + timedelta(days=1)
+        ).timestamp()
+    )
+    pre_preds = load_predictions(client, cfg.bucket, baseline_start, baseline_end)
+    pre_mask = presence_mask_from_predictions(pre_preds)
+    pre_truth_obs = load_truth_observations(
+        client, cfg.bucket, baseline_start, baseline_end, mask=pre_mask
+    )
+    pre_truth = mta_truth(pre_truth_obs, severity_floor=args.severity_floor)
+    pre_types = disruptive_types_by_key(pre_truth_obs)
+    pre_episodes = extract_episodes(
+        pre_truth, pre_types, window_start=pre_window_start, window_end=pre_window_end
+    )
+    recovery_baseline_min = [
+        e.duration_sec / 60.0
+        for e in pre_episodes
+        if not (e.left_censored or e.right_censored or e.standing)
+    ]
+    recovery_causal_baseline = {
+        "start": baseline_start.isoformat(),
+        "end": baseline_end.isoformat(),
+        "severity_floor": args.severity_floor,
+        "n_durations": len(recovery_baseline_min),
+        "source": "severe_truth_incident_durations (pre-window, presence-masked)",
+    }
+    if recovery_baseline_min:
+        print(
+            f"  recovery causal baseline {baseline_start}..{baseline_end}: "
+            f"{len(recovery_baseline_min)} uncensored severe-truth durations"
+        )
+    else:
+        print(
+            f"  recovery causal baseline {baseline_start}..{baseline_end}: EMPTY -> "
+            "episode_scorecard.recovery causal_skill stays null (no pre-window "
+            "incidents to fit a duration climatology)"
+        )
+
     try:
         params_doc: dict[str, Any] = json.loads(
             client.get_object(Bucket=cfg.bucket, Key=PARAMS_KEY)["Body"].read()
@@ -791,6 +847,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         dwell_lookup_from_params(params_doc),
         window_start=window_start,
         window_end=window_end,
+        baseline_durations_min=recovery_baseline_min or None,
     )
     onset = scorecard["onset_latency"]
     print(
@@ -967,6 +1024,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         "escalation": {"source": esc_source, **confirmation},
         "episodes": episodes_summary(episodes),
         "episode_scorecard": scorecard,
+        # Provenance of the causal duration climatology behind
+        # episode_scorecard.recovery.report.causal_skill: the pre-window it was
+        # fit on and how many uncensored severe-truth durations it drew. When
+        # n_durations is 0 the causal column is null, not the oracle number.
+        "recovery_causal_baseline": recovery_causal_baseline,
         "peer_scorecard": scorecard_peers,
         "station_flow": station_flows,
         "changepoint_alignment": {

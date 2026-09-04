@@ -8757,3 +8757,52 @@ null-direction, TRIP_GAP and the (at, trip) tie-break; the one remaining
 offline structural difference is `_reconstruct_waits`' per-day state reset
 (memory-bounding, pre-existing, shared with the arrivals path), which the
 single-window harness above does not hit.
+## 2026-09-04 — regenerated the models review on post-publish shadow data; the live model is the movement-trained successor 1788229972, not the requested 1788214744, and the newly-wired causal recovery skill lands negative (-1.70) on a one-route population
+
+origin: agent
+
+Regenerated `docs/review/2026-09-04-shadow-hmm/` over 2026-09-01..09-04 (4 days,
+last day partial), grading the post-publish shadow window with the movement-primary
+emission and the arm-producing-the-forecast recovery grade both live.
+
+**Version reconciliation.** The requested target was v1788214744 (movement-trained
+advance emission, published 2026-08-31 22:19 UTC). It was superseded ~4h13m later by
+1788229972 (published 2026-09-01 02:32 UTC), which has been live essentially the whole
+window. Of 32,654 predictions in-window: 1788229972 = 31,755 (from 02:35 on 09-01),
+1788214744 = 899 (00:00-02:35 only), rollback 1787792319 = 0. Both present versions are
+the same movement-trained lineage; no pre-movement model reached any graded block. Live
+params.json is 1788229972 with dwell_movement on 22 routes. Headline is 1788229972,
+isolated by current_params; a standalone re-gate of v1788214744 is not viable (live ~4h).
+
+**Scope wiring landed.** (1) movement_validation is now a recurring review scorecard
+number: published-disrupted false-alarm bound on confirmed-normal supply runs =
+**9.04e-05/tick [0, 3.08e-4]** over 116/175 gradeable runs (1 unit / 2 ticks of 22,115),
+~11x under the 0.00101/tick promotion bound — the one gate this window passes. Detection
+of assigned_n supply episodes is 0/21 (severe 0/7), the expected near-orthogonal
+corroboration read, not a pass bar. (2) The episode-scorecard recovery arm now carries a
+CAUSAL climatology: episode_scorecard forwards baseline_durations_min, and the review fits
+it on 238 presence-masked severe-truth durations from the pre-window 2026-08-18..08-31.
+The go/no-go template's "causal_skill null until wired" note is discharged.
+
+**Headline numbers (all measured; thin window, read as direction).** Recovery as a
+distribution (shadow arm, exit lookup keyed to the filter's regime clock): n_scored 35,
+CRPS 80.66 min, **causal_skill -1.70** (causal baseline 29.9), oracle_skill -2.13 (oracle
+baseline 25.8 — the easier target is the causal one, so the loss is not a hindsight
+artifact), PIT 0.173, verdict Overconfident. The recovery population is ~all route H
+(115/117 current-segment ticks; excluded_cross_arm 417 correctly dropped by the arm-gate),
+so the causal_skill sign is a single-route read this window, not a network statement.
+Onset detection 0/37 severe-truth episodes (movement arm raised 1 model episode total, and
+that one was movement-confirmed). Confusion (severe-only): normal recall 97.9%, disrupted
+recall 7.6% (59/780), suspended 0% (0/127); disrupted precision 8.0%. Changepoint 10/228
+matched +-30min (median |delta| 14.5min, mean +5.97min). Calibration/prequential only
+populate H30 (n=21,735); H60/H120 are n=0 (forward horizons run past the truncated window
+end). Current-segment low_sample=true (19<20 incidents).
+
+**Decision: NO-GO (hold).** condition and recovery_minutes both hold — thin window under
+the incident floor, negative causal recovery skill, weak severe detection on a truth
+near-orthogonal to the movement arm (so "not established", not family-level proof of a bad
+detector). The movement false-alarm gate passes. No 'cannot/never' claim is made.
+
+**Known residual (noted, not chased).** The retrain refreshed the service-baseline sidecar
+on another thin 13-day/2-weekend window, so the weekend-cell amplifier persists in supply
+ratios.

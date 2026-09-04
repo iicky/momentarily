@@ -547,6 +547,54 @@ def test_episode_scorecard_matches_the_verified_oracle() -> None:
     assert card["recovery"]["n_scored"] == 1
 
 
+def test_episode_scorecard_forwards_a_causal_baseline_to_the_shadow_recovery_arm() -> (
+    None
+):
+    """The review supplies a pre-window duration climatology; the scorecard must
+    thread it into the shadow `recovery` arm so its report carries a real
+    `causal_skill`. The default (None) leaves that column null rather than
+    letting the hindsight oracle number pass for a climatology comparison."""
+    # Two distinct-duration incidents (A 20min, B 30min) so the oracle baseline
+    # is non-degenerate and its skill is finite (a lone self-graded duration
+    # gives CRPS 0 -> nan skill, which would compare unequal to itself).
+    truth = {("A", g(k)): "disrupted" for k in range(2, 6)}
+    truth |= {("B", g(k)): "disrupted" for k in range(2, 8)}
+    truth_eps = extract_episodes(truth, {}, window_start=g(0), window_end=g(11))
+    assert len(truth_eps) == 2
+
+    def lookup(
+        route: str, state: str, _cause: str
+    ) -> tuple[list[int], list[float] | None, tuple[float, float] | None] | None:
+        if state == "disrupted":
+            return [300, 600, 900], None, None
+        return None
+
+    bare = episode_scorecard(
+        truth_eps, [], {}, lookup, window_start=g(0), window_end=g(11)
+    )
+    assert bare["recovery"]["n_scored"] == 2
+    assert bare["recovery"]["report"]["causal_skill"] is None
+    assert bare["recovery"]["report"]["causal_baseline_crps"] is None
+    assert math.isfinite(bare["recovery"]["report"]["oracle_skill"])
+
+    causal = episode_scorecard(
+        truth_eps,
+        [],
+        {},
+        lookup,
+        window_start=g(0),
+        window_end=g(11),
+        baseline_durations_min=[10.0, 20.0, 30.0],
+    )
+    assert causal["recovery"]["report"]["causal_skill"] is not None
+    assert causal["recovery"]["report"]["causal_baseline_crps"] is not None
+    # The oracle column is unaffected — same graded population, same hindsight CDF.
+    assert (
+        causal["recovery"]["report"]["oracle_skill"]
+        == bare["recovery"]["report"]["oracle_skill"]
+    )
+
+
 # --- standing advisories are held out of grading, not silently dropped ----------
 
 

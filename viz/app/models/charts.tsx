@@ -687,7 +687,7 @@ export function RecoverySummary({
       meta={{
         source: arm ?? "the model's own status stream",
         independent: false,
-        unit: "5 min / per incident",
+        unit: "5 min · per-tick & per-regime rows",
       }}
     >
       <table className="mini-table">
@@ -717,6 +717,13 @@ export function RecoverySummary({
           ))}
         </tbody>
       </table>
+      <p className="chart-note">
+        Graded on the{" "}
+        <strong>{arm ?? "model's own status stream"}</strong> arm: the recovery
+        estimate is keyed to that arm&apos;s regime clock. That is a different arm
+        from the movement-primary incident support in the header above, so the n
+        here counts this arm&apos;s ticks and incidents, not those.
+      </p>
       {currentParams?.low_sample && (
         <p className="chart-note">
           † The current model has been graded on {currentParams.n_regimes}{" "}

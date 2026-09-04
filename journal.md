@@ -7910,3 +7910,368 @@ Nothing in the condition-probability disposition moves: that verdict rests on
 Brier against a fixed severity-graded truth on the normal-now stratum, where the
 climatology question is settled by arithmetic (a ~0.999 constant forecast scores
 ~0.0009 either way), not by which window the reference was fitted on.
+## 2026-09-03 — the explicit-duration movement debounce is not identified from the movement calls; the dwell has to be pinned on the independent episode archive
+
+origin: agent
+
+Built the 2-state+presence explicit-duration (HSMM-style) debounce over the
+binary movement signal, to replace the memoryless geometric self-loop the
+published dwell currently asserts. The fit machinery, the r = 1 nest test, the
+episode-bootstrap intervals and the three-gate harness are committed. The gates
+themselves are NOT measured yet: gate 2's dwell population is the archived
+episode durations by design (below), and the R2 archive is not reachable from
+this worktree, so there are no real-data numbers here and none are claimed.
+
+Two things were measured, both on synthetic fixtures, and both changed the
+design rather than confirming it.
+
+FIRST: the model is not identified from the call stream alone.
+
+The natural fit is joint — sojourn distribution and emission error rates
+together on the movement calls. It does not work, and not for an optimiser
+reason. A one-tick not-normal call and a genuine one-tick episode predict
+exactly the same single tick, so the likelihood is free to prefer whichever is
+cheaper, and it prefers "genuine": an over-dispersed sojourn absorbs a blip
+more cheaply than any error channel can.
+
+On a stream carrying 32 known-false one-tick calls against 156 genuine
+not-moving ticks, a joint hard-EM fit reached a self-consistent fixed point
+with the emission error rate at its floor and r_hat = 0.315 — over-dispersion
+manufactured entirely by the contamination, against true episodes that were all
+4-10 ticks long. Its decode reproduced the raw calls tick for tick:
+156/32/10/5802 both ways. A debounce that debounces nothing.
+
+Adjudicating between EM starts on the marginal likelihood did not rescue it. A
+hard-EM fixed point's complete-data likelihood is not comparable across
+emission rates (the decode is chosen to agree with the calls, so a zero error
+rate looks perfect: -461.6 for the pass-through against -534.7), but the
+marginal likelihood — which integrates over paths and must pay for every
+disagreeing call it declared impossible — still chose the pass-through, -485.5
+against -874.4. The pass-through is the higher-likelihood explanation, not an
+artefact of the start or of the hard assignment.
+
+Reading only the NORMAL-state sojourn off the calls fails the same way, for a
+sharper reason. The entry hazard is the single term deciding whether one call
+can flip the state; a false call fragments a long normal run, which raises that
+hazard, which makes the next false call easier to believe. Fitting the
+not-moving dwell externally but the normal dwell on the calls still produced a
+pass-through.
+
+So both sojourn distributions are pinned on the archived EPISODE durations,
+whose onsets and recoveries the assigned_n supply feed adjudicates —
+independent-in-derivation from the vehicle-position flow signal being
+debounced. The normal-state sojourns are the gaps between adjudicated episodes,
+from the same record. Only the emission channel is fitted on the calls, and
+with the dwell pinned it is identified: two parameters, one criterion, a
+profile MLE on the train window.
+
+SECOND: with both dwells pinned, the memoryless arm cannot debounce at all.
+
+Same filter, same emission-fitting criterion, only the duration family
+differing. On a stream with 29 injected false-alarm ticks:
+
+    raw calls            tp 257  fp 29  fn 13  tn 9701
+    geometric (r = 1)    tp 257  fp 29  fn 13  tn 9701
+    negative binomial    tp 221  fp  1  fn 49  tn 9729
+
+The r = 1 arm is a pass-through, exactly. That is not a tuning failure: a
+memoryless dwell asserts a CONSTANT hazard, so it has no low early hazard to
+resist entry with, and the persistence knob a debounce needs does not exist in
+the family. The explicit-duration arm suppressed 28 of 29 false-alarm ticks and
+paid for it in detection ticks. Whether that trade clears the gates is a
+question about detection SUPPORT (episodes detected at all, not ticks) on real
+data, and it is not answered here.
+
+This is also why the incumbent for the ship/no-ship comparison is the deployed
+published surface and not the r = 1 arm. The r = 1 arm is the better scientific
+control — it isolates the duration family from every other difference between
+the two rules — but passing against it would only establish that the candidate
+beats a form nobody deployed. Both columns are reported; only the shipped one
+gates.
+
+Three method notes that cost real debugging and are worth not rediscovering:
+
+- A censored run observed open for t ticks tells us X >= t, not X > t: the
+  sojourn may have ended at its last observed tick with the recovery outside
+  the window. Using P(X > t) understates survival on every censored observation
+  and biases the fit toward shorter dwell — the direction that flatters the
+  memoryless incumbent.
+- The nest test cannot be run on a population produced by the candidate's own
+  Viterbi decode. The durations are then partly an artefact of the alternative
+  that generated them, and the geometric null is being asked to account for a
+  segmentation it never proposed; the statistic reliably favours NB and means
+  nothing. It cannot be run on the raw-call runs either — that is the
+  contaminated population above.
+- A leading normal gap is a RESIDUAL-life observation, conditional on survival
+  to the window boundary, not P(X >= gap). Scoring it as an ordinary censored
+  observation is a different likelihood. Those runs are dropped and counted
+  instead, which shortens the fitted normal sojourn, raises the entry hazard,
+  and makes the filter readier to fire — a bias against the candidate on false
+  alarms, so a candidate that holds the bound holds it conservatively.
+
+The sticky-kappa form stays rejected and nothing here resurrects it: the
+persistence lives entirely in the sojourn distribution, whose hazard resets on
+entry, so two short separated episodes both survive. There is a committed test
+for exactly that, because it is the property that distinguishes this form from
+the one that was thrown out.
+
+## 2026-09-04 — correction: "the memoryless arm cannot debounce at all" claims a family impossibility from one fixture's fitted parameters
+
+origin: agent
+
+The entry above is headed "with both dwells pinned, the memoryless arm cannot
+debounce at all", and says the persistence knob "does not exist in the family".
+That is stronger than the table underneath it supports, and it is the
+flattering direction for the arm I was building.
+
+What the measurement establishes: on one synthetic stream, with each arm's
+emissions fitted by the same criterion, the r = 1 arm AT ITS OWN FITTED
+PARAMETERS reproduced the raw calls exactly (tp 257 fp 29 fn 13 tn 9701, raw
+and geometric identical) while the negative binomial cut false-alarm ticks to
+1. That ordering is real and is the finding.
+
+What it does NOT establish is a claim about the geometric family. A geometric
+HMM with noisy emissions is perfectly capable of debouncing: the posterior
+accumulates evidence across ticks, and a small enough entry hazard weighed
+against the emission likelihood ratio will refuse a lone disagreeing call. Had
+that arm's fitted entry hazard come out lower, it would have suppressed blips
+too. I measured one parameterisation and wrote it up as an impossibility.
+
+The structural claim that does survive is narrower, and is the one worth
+keeping, because it holds whatever any fit lands on. A geometric dwell has one
+parameter doing two jobs: its hazard is constant, so P(a fresh sojourn ends
+immediately) equals P(an old one does), and the mean dwell is exactly 1/h.
+Requiring a low early hazard — which is what refusing a one-tick blip requires
+— therefore forces a long mean dwell. At h <= 0.02 the implied mean is >= 50
+ticks, so no geometric resists blips AND recovers promptly. An explicit
+duration decouples the two: r = 6, p = 0.42 gives an early hazard under 0.02
+with a mean under 12 ticks.
+
+The test that asserted the overclaim has been replaced by two: one pinning the
+measured ordering at fitted parameters and saying in its own docstring that it
+does not prove incapability, and one asserting the one-parameter-two-jobs
+tradeoff over the family rather than over a fixture.
+
+Also removed in the same pass: an emission-tempering exponent I had added to
+the filter on my own initiative. It defaulted to inert, so it moved no measured
+number, but it was exposed as a `--temper` CLI flag next to the gates, and a
+free knob adjacent to a ship/no-ship decision is an invitation to tune the
+decision. The dwell-form comparison is what was asked for; down-weighting call
+evidence against the duration prior is a separate change with its own
+parameter, and it is not in this arm.
+
+Fifth correction in two days of the same shape as the four the entry above
+records: the table was right, the sentence over-reached.
+
+## 2026-09-04 — explicit-duration movement debounce FAILS its dwell gate: the NB advantage is entirely in-sample (LR 108.57, p=2e-25) and reverses out of sample (-0.2745 nats/episode)
+
+origin: agent
+
+Gates measured on the real archive, train 2026-08-14..08-27 (14d) / eval
+2026-08-28..09-03 (7d), 24 routes, disrupted arm, 2000-resample episode
+bootstrap. Verdict FAIL on the pre-registered gates.
+
+    gate                          result
+    false-alarm CI vs 0.00101     PASS   0.00000/tick, CI high 0.00000, 107 runs / 23,799 judged ticks
+    dwell loglik strictly beats   FAIL   in-sample LR 108.57 (chi2_1 p=2.02e-25, r_hat=0.123);
+      geometric (r=1 nest)               held-out delta -0.2745 nats/episode, CI [-0.6786, +0.1463], n=12
+    detection support not fallen  PASS   1/63 vs shipped 1/63, paired delta +0.0000, CI [0, 0]
+
+The dwell fit itself is well behaved and the population is the right one: 101
+train episodes, mean 16.5 min, matching the ~14 min this signal's dwell is
+known to run at. NB fits r = 0.123 — heavy over-dispersion — with in-sample
+mean log-likelihood -1.4857 against the geometric's -2.0232, and the
+likelihood-ratio test is emphatic.
+
+None of that survives being a forecast. On the 12 held-out episodes the same
+fitted NB scores -0.2745 nats/episode WORSE than the geometric, with the
+interval straddling zero. An in-sample LR of 108 next to a negative held-out
+delta is the signature of a second parameter buying in-sample fit and not
+generalising, and gate 2 was written to require both halves precisely so that
+this could not be reported as a win.
+
+Read at the strength it carries: the failure is not strongly resolved either.
+The held-out interval [-0.6786, +0.1463] includes zero, on 12 episodes. The
+defensible sentence is that no strict out-of-sample improvement was
+demonstrated, which is what the gate demands and which was not delivered — not
+that the geometric was shown to be better.
+
+The thin eval half is material to that and is a fact about the window: 101
+episodes in 14 train days (7.2/day) against 12 in 7 eval days (1.7/day), a
+4x drop in rate. I am not re-splitting to look for a pass; the window was
+fixed before the numbers were seen and moving it after would be selecting on
+the outcome.
+
+Both surviving gates pass with essentially no discriminating power, and this
+should not be read as corroboration:
+
+- Gate 1: every surface — candidate, r = 1 arm, shipped clock, and the raw
+  calls — fired ZERO not-normal ticks on 107 assigned_n-confirmed-normal runs.
+  The gate compares 0.00000 against 0.00101. Nothing was distinguished.
+- Gate 3: candidate and shipped made IDENTICAL decisions on all 63 matched
+  corroborated episodes, so the paired bootstrap returns a degenerate [0, 0]
+  interval. Both detect 1 of 63. That 1.6% is the known supply-versus-flow
+  near-orthogonality, measured here rather than cited: movement reads
+  not-normal on 1.21% of judged ticks inside assigned_n episodes (26 of 2146)
+  against a 0.13% base rate — 9.3x enrichment, so the axes are not
+  independent, but far too little overlap for this population to adjudicate a
+  detection change.
+
+Two wiring defects found by running it, both of which produced confident wrong
+answers rather than errors, and both worth knowing about:
+
+- `ticks_for` keys calls on each body's raw `observed_at`, not the 5-minute
+  grid (mod 300 over one day: 10, 22, 52, 53, 54, 55, 56, 59, 67...). Every
+  span grader walks the grid, so an unsnapped stream misses every lookup: the
+  first real run offered 162 normal runs and 115 episodes and graded 0 of
+  each. The same trap is documented in the dwell harness; I rediscovered it.
+  It only surfaced as BLOCKED rather than as a table of zeros because the
+  degenerate-population guard refuses an empty denominator by name.
+- The first run fitted the dwell on assigned_n SUPPLY episode durations, which
+  is a different process from the movement signal being debounced. It gave a
+  not-moving mean of 178 min against the true ~16.5, and it PASSED all three
+  gates — held-out delta +0.1125 nats/episode, CI [+0.0286, +0.2047], n=115.
+  That pass was an artefact of grading the wrong durations. Worth recording
+  because the wrong wiring produced the more attractive result, and the only
+  thing that flagged it was the 178-versus-14-minute mismatch.
+
+An emission rate maximising on its grid boundary is now reported (`at_bound`).
+On the corrected run the NB arm's fitted false-call AND miss rates both sit on
+the lower edge, 0.0005 — the emission channel wants to trust the calls
+completely, which is the same pass-through attractor the synthetic work found,
+reached here from the data rather than from an initialisation.
+
+Recommendation follows the gates: do NOT ship the explicit-duration debounce on
+this evidence. The measured negative is the settled outcome. Nothing was wired
+into the serving or publish paths, and no tempered-composition write-up note is
+warranted, since that was conditional on all three gates passing.
+
+## 2026-09-04 — correction: the gate run above measured 13 train days and 8 eval days, not 14/7; corrected split keeps the FAIL but leaves only 6 held-out episodes
+
+origin: agent
+
+The entry above reports a 14-day train / 7-day eval split. It was 13 and 8.
+
+`load_inputs` took the split from `aligned_window(train_end, train_end)[0]`,
+which is midnight at the START of the inclusive last train day, so that whole
+day fell out of the train half and into eval. `aligned_window(a, b)` returns
+(midnight of a, midnight of b + 1 day) and the second element is the exclusive
+upper bound, which is why the shipped dwell harness spans the pair in ONE call.
+Fixed to match, extracted as `split_window` so the arithmetic is testable
+without the archive, and pinned by two tests on the day counts.
+
+Re-run with the corrected split, same window dates, same seed, same 2000
+resamples. The verdict does not change and the numbers all move:
+
+    quantity                previous (13d/8d)          corrected (14d/7d)
+    train / held-out eps    101 / 12                   107 / 6
+    r_hat                   0.123                      0.1408
+    NB mean dwell           16.5 min                   17.0 min
+    geometric self_loop     0.6967                     0.7060
+    in-sample LR (p)        108.57 (2.02e-25)          105.08 (1.17e-24)
+    held-out delta          -0.2745                    -0.1981
+    held-out CI             [-0.6786, +0.1463]         [-0.6644, +0.3583]
+    FA exposure             107 runs / 23,799 ticks    96 runs / 21,456 ticks
+    detection               1/63 vs shipped 1/63       1/55 vs shipped 1/55
+
+    gate 1 false-alarm CI vs 0.00101   PASS  0.00000/tick, CI high 0.00000
+    gate 2 dwell loglik                FAIL  in-sample significant, held-out CI low -0.6644
+    gate 3 detection support           PASS  1/55 vs 1/55, paired delta +0.0000
+    VERDICT                            FAIL
+
+The one day that moved carried SIX of the twelve held-out episodes. So the
+corrected measurement is the correct one and it is also the WEAKER one: gate 2
+now fails on six held-out episodes, with an interval spanning [-0.66, +0.36]
+that is consistent with anything from a large loss to a modest gain.
+
+That changes what the failure is worth saying. Under both splits the gate fails
+as written — no strict out-of-sample improvement was demonstrated — and the
+recommendation follows the gates. But "the explicit duration does not
+generalise here" is not something six episodes can establish, and the earlier
+entry's framing of the thin eval half as a caveat understates it: it is now the
+dominant limitation of the whole measurement. The in-sample result is
+unambiguous (LR 105 on 107 episodes, r_hat 0.141, mean 17.0 min against the
+~14 the lit review cites) and the out-of-sample test is close to uninformative.
+
+The honest state of this arm: settled NO on the gates as pre-registered, on
+evidence too thin to settle the underlying question. A rerun over a materially
+longer eval span is the cheap follow-up and the harness takes it as CLI args.
+
+Sixth correction on this arm, and the first one that was caught by review
+rather than by me. The defect produced a number that looked right — the split
+dates in the report were the requested ones, only the spans behind them were
+not — which is the same shape as the supply-versus-movement dwell mix-up in the
+entry above: a confident table describing a different measurement than its own
+label.
+
+## 2026-09-04 — two more defects in the debounce harness, both caught by adversarial review, neither moving the verdict
+
+origin: agent
+
+Review blocked the commit twice on the harness above. Both were real, both were
+in code I had already run and reported numbers from, and neither changes the
+FAIL.
+
+FIRST: the normal-sojourn population had no degenerate guard.
+
+`_refuse_degenerate` validated the episode dwell population and not the normal
+one, while `grade` fits the normal sojourn immediately and hands it to
+`params_from_fits` as the ENTRY HAZARD. `fit_dwell(())` returns NaN r and p,
+which propagate through `dwell_hazards` into NaN likelihoods and NaN gate
+numbers — a plausible table again, not an error.
+
+The path is reachable precisely BECAUSE left-truncated normal runs are dropped
+on purpose: a thin train window whose routes are either never disrupted or
+disrupted only after a leading gap has episode dwells and no usable normal
+dwells at all. Having deliberately discarded that evidence, the harness has to
+refuse rather than fit what is left. Added `no_normal_dwell` and
+`normal_dwell_all_censored` to the closed set of blocked reasons, with a test
+asserting the NaN parameters that made it dangerous.
+
+SECOND: the r = 1 control arm was being handicapped by pooling.
+
+`fit_emissions.build` and `Debounce.params_by_route` both rebuilt ONE pooled
+geometric fit and served it to every route, while the negative binomial arm got
+per-route fits. So gates 1 and 3 were comparing per-route fitting against
+pooling, not one duration family against the other — the "nested geometric"
+column was not a control at all.
+
+Fixed by carrying per-route fits in BOTH families from the same observations
+(`DwellModel.by_route_geometric`, looked up through one `fit_for(route,
+geometric=...)` so a caller cannot pair a per-route fit on one arm with a
+pooled fit on the other), with a test that fails if every route ends up sharing
+one geometric hazard.
+
+Re-ran with the symmetric control. The control's own fitted parameters moved —
+its emission miss rate from 0.3 to 0.0548, its train log-likelihood from
+-1014.6 to -999.4 — and every graded number is unchanged:
+
+    gate 1 false-alarm CI vs 0.00101   PASS  0.00000/tick, CI high 0.00000, 96 runs / 21,456 ticks
+    gate 2 dwell loglik                FAIL  LR 105.08 (chi2_1 p=1.17e-24, r_hat=0.1408);
+                                             held-out -0.1981 nats/episode, CI [-0.6644, +0.3583], n=6
+    gate 3 detection support           PASS  1/55 vs shipped 1/55, paired delta +0.0000
+    VERDICT                            FAIL
+
+Train dwell 107 episodes, mean 17.0 min, geometric self_loop 0.7060, in-sample
+mean log-likelihood -1.5693 (NB) against -2.0604 (geometric), 3 routes with
+their own fits. Every surface — candidate, control, shipped clock, raw calls —
+still fires zero not-normal ticks on the false-alarm exposure, and the
+candidate and the shipped clock still agree on all 55 corroborated episodes.
+
+Why the graded numbers did not move is worth stating rather than assuming: on
+this window the false-alarm exposure produces no firings from ANY surface and
+the detection population is a single detected episode out of 55, so there is no
+measurement there sensitive enough for a control-arm change to show up in. The
+defect was real and the gates it fed were too blunt to have revealed it. That
+is an argument about the power of gates 1 and 3, not a reason the fix was
+optional.
+
+Standing conclusion unchanged: FAIL on gate 2, recommendation follows the
+gates, nothing wired into serving or publish. The open question remains power —
+six held-out episodes cannot settle a dwell-form claim, and no gate on this
+window had two surfaces that disagreed.
+
+Seventh and eighth corrections on this arm. Six of the eight were caught by
+review or advisory rather than by me, and all eight have the same shape: code
+that ran, produced numbers, and described something other than what its label
+said.

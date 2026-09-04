@@ -567,23 +567,24 @@ def _reconstruct_waits(
     end: date,
 ) -> dict[tuple[str, str], list[TickWait]]:
     """Stream the trace archive day by day (~1440 objects/day) into per-reference-
-    stop arrivals, then headways, then tick-aligned waits. Per-day so the full
+    stop passings (transition-keyed departures), then headways, then tick-aligned
+    waits. Per-day so the full
     window's rows never sit in memory at once."""
     from training.load_r2 import date_range, fetch_objects, list_keys
-    from training.trace import Arrival, arrivals_from_trace
+    from training.trace import Passing, passings_from_trace
 
-    accum: dict[tuple[str, str], list[Arrival]] = defaultdict(list)
+    accum: dict[tuple[str, str], list[Passing]] = defaultdict(list)
     covered: list[int] = []
     for d in date_range(start, end):
         keys = list_keys(client, cfg.bucket, f"archive/trace/{d.isoformat()}/")  # type: ignore[attr-defined]
         covered.extend(int(k.rsplit("/", 1)[-1].split(".")[0]) for k in keys)
         bodies = fetch_objects(client, cfg.bucket, keys)  # type: ignore[attr-defined]
-        for key, arrs in reference_arrivals(
-            arrivals_from_trace(bodies), reference_stops
+        for key, ps in reference_arrivals(
+            passings_from_trace(bodies), reference_stops
         ).items():
-            accum[key].extend(arrs)
+            accum[key].extend(ps)
     for series in accum.values():
-        series.sort(key=lambda a: a.at)
+        series.sort(key=lambda p: p.at)
     events = headway_events(accum, sorted(covered))
     return {k: tick_aligned_waits(v) for k, v in events.items()}
 

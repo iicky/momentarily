@@ -359,7 +359,8 @@ export default {
         if (reference.at === observedAt) {
           console.log(
             `headway: reference stops refreshed — ${Object.keys(reference.stops).length} `
-            + `cells from segment_params trained_at=${reference.trained_at}`,
+            + `cells (${Object.keys(reference.fallbacks ?? {}).length} with reroute fallbacks) `
+            + `from segment_params trained_at=${reference.trained_at}`,
           );
         }
         if (Object.keys(reference.stops).length === 0) {

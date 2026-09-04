@@ -774,6 +774,15 @@ const HeadwaySchema = z.object({
   reference_at: z.number(),
   reference_trained_at: z.number(),
   reference_stops: z.record(z.string(), z.string()),
+  // Ordered fallback measurement points per 'route|direction', primary
+  // excluded, positional-spread first (headway.ts selectFallbackStops). When a
+  // planned reroute takes a route off its primary reference stop, the cell
+  // publishes from the highest-ranked fallback that is still being served —
+  // labelled with its actual stop_id — instead of going dark. Its ledger lives
+  // in a distinct cell keyed '<route>|<direction>|<stop>', so the primary
+  // series and every fallback series stay independent and comparable. Default
+  // {} so a doc written before this field parses as fallback-less.
+  reference_fallbacks: z.record(z.string(), z.array(z.string())).default({}),
   cells: z.record(z.string(), HeadwayCellSchema),
   trips: z.record(z.string(), HeadwayTripSchema),
   // Windows during which the Worker was NOT polling, each (from, until]: a

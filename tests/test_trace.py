@@ -17,6 +17,8 @@ from training.trace import (
     RIGHT,
     Traversal,
     arrivals_from_trace,
+    passings_and_catch_stats,
+    passings_from_trace,
     schedule_comparison,
     scheduled_for,
     to_dwell_samples,
@@ -293,6 +295,138 @@ def test_a_short_absence_does_not_split_a_run():
     (hop,) = traversals
     assert (hop.from_stop, hop.to_stop, hop.seconds) == ("A1S", "A2S", 240)
     assert stats.n_exact == 1
+
+
+# --- transition-keyed passings (headway measurement point) ----------------------
+
+
+def test_a_passing_fires_on_the_stop_transition_not_the_stopped_sighting():
+    """A departure is the poll by which the trip's stop_id has moved on. A train
+    standing at A1S then heading to A2S passed A1S once, stamped at the poll it
+    first reported A2S."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=True, seq=1)]),
+        _body(1, [_row("A1S", stopped=True, seq=1)]),
+        _body(2, [_row("A2S", stopped=False)]),
+    ]
+    (p,) = passings_from_trace(bodies)
+    assert (p.stop_id, p.stop_seq, p.at) == ("A1S", 1, T0 + 120)
+
+
+def test_a_sub_poll_dwell_is_caught_by_the_transition_and_missed_by_stopped():
+    """The bug this reconstruction fixes. A train whose dwell was shorter than
+    the poll is seen approaching A1S and then approaching A2S, never STOPPED_AT
+    A1S. The STOPPED_AT rule loses the A1S datum entirely; the transition sees
+    it, with stop_seq unknown because only a stopped sighting carries one."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=False)]),
+        _body(1, [_row("A2S", stopped=False)]),
+        _body(2, [_row("A3S", stopped=False)]),
+    ]
+    assert arrivals_from_trace(bodies) == []  # never caught standing anywhere
+    passings = passings_from_trace(bodies)
+    assert [(p.stop_id, p.stop_seq, p.at) for p in passings] == [
+        ("A1S", None, T0 + 60),
+        ("A2S", None, T0 + 120),
+    ]
+
+
+def test_the_last_stop_seen_has_no_passing():
+    """Its departure was never observed, so the trip is still standing there as
+    far as the feed knows — the same reason the live carry holds a trip at its
+    reference stop until it reports the next one."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=False)]),
+        _body(1, [_row("A2S", stopped=True, seq=2)]),
+    ]
+    passings = passings_from_trace(bodies)
+    assert [p.stop_id for p in passings] == ["A1S"]  # not A2S
+
+
+def test_passing_time_prefers_the_departing_rows_vehicle_ts():
+    """The stamp is the departing sighting's own finer measurement time, the
+    same preference _row_time makes for arrivals."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=True, seq=1)]),
+        _body(1, [_row("A2S", stopped=False, vehicle_ts=T0 + 47)]),
+    ]
+    (p,) = passings_from_trace(bodies)
+    assert p.at == T0 + 47  # the A2S row's vehicle_ts, not the T0+60 poll
+
+
+def test_a_reused_trip_id_after_a_long_absence_does_not_fire_a_stale_passing():
+    """NYCT reuses trip_ids. A trip last seen at A1S, gone longer than
+    TRIP_GAP_SECONDS, then reappearing far along is a different train: crediting
+    the old run with a passing of A1S at the new run's time would invent a gap.
+    The reused run still passes its own stops normally."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=True, seq=1)]),
+        _body(20, [_row("A5S", stopped=True, seq=5)]),  # 20 min later
+        _body(21, [_row("A6S", stopped=False)]),
+    ]
+    passings = passings_from_trace(bodies)
+    assert [p.stop_id for p in passings] == ["A5S"]  # A1S dropped, A5S fired
+
+
+def test_catch_stats_classify_caught_sub_poll_and_stopped_then_moved():
+    """The three classes the fix accounts for, on one trip. It is caught
+    standing at A1S then departs (caught); dwells sub-poll through A2S, never
+    standing (missed_never_stopped); stands at A3S then is seen moving off it
+    before reaching A4S (missed_stopped_then_moved). Three transitions, one of
+    each."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=True, seq=1)]),  # stand at A1S
+        _body(1, [_row("A2S", stopped=False)]),  # depart A1S (caught), sub-poll A2S
+        _body(2, [_row("A3S", stopped=True, seq=3)]),  # depart A2S (never stopped)
+        _body(3, [_row("A3S", stopped=False)]),  # moving, still A3S
+        _body(4, [_row("A4S", stopped=False)]),  # depart A3S (stopped-then-moved)
+    ]
+    passings, stats = passings_and_catch_stats(bodies)
+    assert [p.stop_id for p in passings] == ["A1S", "A2S", "A3S"]
+    assert stats.n_transitions == 3
+    assert (
+        stats.caught,
+        stats.missed_never_stopped,
+        stats.missed_stopped_then_moved,
+    ) == (
+        1,
+        1,
+        1,
+    )
+    assert stats.caught_fraction == 1 / 3
+
+
+def test_a_wild_departure_vehicle_ts_is_clamped_to_the_poll():
+    """A frozen or running-ahead clock on the departing sighting would poison
+    this headway and the next, so the stamp falls back to the poll — the same
+    clamp the live worker's passingTime applies, so the two series agree on the
+    departure time and not only the event."""
+    bodies = [
+        _body(0, [_row("A1S", stopped=True, seq=1)]),
+        _body(1, [_row("A2S", stopped=False, vehicle_ts=T0 + 999_999)]),  # bad clock
+    ]
+    (p,) = passings_from_trace(bodies)
+    assert p.at == T0 + 60  # the poll, not the absurd vehicle_ts
+
+
+def test_a_null_direction_departure_fires_no_passing():
+    """The live carry skips a directionless row (it cannot place one at a
+    directional reference cell); so does this, so a departure seen only without
+    a direction never becomes a passing."""
+    null_dir = {
+        "trip_id": "t1",
+        "route_id": "A",
+        "direction": None,
+        "stop_id": "A2S",
+        "stop_seq": None,
+        "stopped": False,
+        "vehicle_ts": None,
+    }
+    bodies = [
+        _body(0, [_row("A1S", stopped=True, seq=1)]),  # carry at A1S
+        _body(1, [null_dir]),  # departs to A2S, but directionless -> skipped
+    ]
+    assert passings_from_trace(bodies) == []
 
 
 # --- comparing a traversal to the timetable -------------------------------------

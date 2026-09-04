@@ -33,8 +33,11 @@
  *
  * WHAT COUNTS AS A PASSING. The DEPARTURE from the reference stop: the first
  * poll at which a trip last seen with stop_id = the reference stop reports a
- * different stop_id. NOT the STOPPED_AT sighting the offline arrival
- * reconstruction (training/trace.arrivals_from_trace) keys on, and the
+ * different stop_id. NOT the first STOPPED_AT sighting; the offline HEADWAY
+ * series now keys on the same transition (training/trace.passings_from_trace,
+ * consumed by training/headway.reference_arrivals), so the two surfaces measure
+ * one definition. (training/trace.arrivals_from_trace still keys on STOPPED_AT,
+ * but only the dwell/traversal work reads it now, not headways.) The
  * difference is measured, not stylistic: replaying the real trace over
  * 2026-08-20 07:00-11:00 ET found that only 92.71% of stop transitions had the
  * trip caught STOPPED_AT on the immediately preceding poll (see
@@ -71,6 +74,26 @@
  *     that long means there is no current headway, and republishing the last
  *     one would report a four-minute service that stopped running half an hour
  *     ago.
+ *
+ * WHAT SURVIVES A REROUTE. A planned reroute takes a route off its primary
+ * reference stop — the max-trips through-stop, which sits in the busy core the
+ * timetable is aggregated over — and the cell would otherwise go dark exactly
+ * when service is disrupted (observed live 2026-09-03: "No N service in
+ * Manhattan" darkened both N directions though 28 N trains ran; the R's
+ * Manhattan-referenced north direction went dark while its Brooklyn-referenced
+ * south stayed live). So each cell also carries ORDERED FALLBACK stops
+ * (selectFallbackStops): the best-ranked through-stop in each of the OTHER
+ * positional thirds of the line, spreading the candidates along the pattern so
+ * a fallback is MORE LIKELY to sit on a still-served segment. This is a
+ * positional heuristic, not a guarantee — thirds are pattern-index, not
+ * geography, and a reroute spanning several can still dark the cell. Each
+ * candidate keeps an INDEPENDENT
+ * ledger in its own cell (candidateCells), and headwayObservations publishes
+ * the highest-ranked candidate that currently has a reading — the primary under
+ * normal service, a served fallback when the primary has aged out. The reading
+ * is always labelled with its actual measurement stop (`stop_id`), so a fallback
+ * is never mistaken for the primary series and a full suspension — no candidate
+ * served — still abstains rather than inventing a value.
  */
 
 import type { HeadwayCell, HeadwayStateDoc, HeadwayTrip } from './state';
@@ -192,18 +215,82 @@ export const HEADWAY_LEDGER_SIZE = 6;
 // 'route|direction' — the key `route_stops`, state/headway.json's cells and the
 // offline toolkit all use — is built inline as `${route}|${direction}`.
 
+/** One through-stop of a cell, with the two quantities the reference rule ranks
+ * on: how many scheduled trips serve it and where it sits in the dominant
+ * pattern (for the middle tie-break and the positional-spread of fallbacks). */
+interface RankedStop {
+  stop: string;
+  trips: number;
+  pos: number; // index in the dominant pattern, or its length if absent
+}
+
 /**
- * Pick the canonical reference stop for every (route, direction) present in
- * the scheduled stopping patterns.
- *
- * RULE (see the module comment for why): among the cell's through-stops, the
- * one carrying the most scheduled trips; ties break toward the stop nearest the
- * middle of the most-run pattern, then the smaller stop id. Deterministic in
- * `routeStops`, so two Workers reading the same segment_params.json agree.
- *
- * Cells with no through-stop at all — a one- or two-stop pattern, or an
- * observed-adjacency fallback doc with no real stopping patterns — are absent
- * from the result rather than falling back to a terminal.
+ * The cell's through-stops — stops with both a scheduled predecessor and a
+ * scheduled successor in the dominant-successor skeleton, so terminals and yard
+ * leads are excluded — ranked by the documented rule: most scheduled trips
+ * first, ties toward the middle of the most-run pattern, then the smaller stop
+ * id. Shared by both the primary pick and the fallback pick so neither can
+ * drift from the through-stop gate. `total` is the cell's scheduled trips, for
+ * coverage; `patternLen` sizes the positional zones.
+ */
+function rankedThroughStops(
+  patterns: { stops: string[]; n_trips: number }[],
+): { ranked: RankedStop[]; total: number; patternLen: number } {
+  const succ = new Map<string, Map<string, number>>();
+  for (const pattern of patterns) {
+    for (let i = 0; i + 1 < pattern.stops.length; i++) {
+      const from = pattern.stops[i]!;
+      const to = pattern.stops[i + 1]!;
+      let tos = succ.get(from);
+      if (tos === undefined) {
+        tos = new Map<string, number>();
+        succ.set(from, tos);
+      }
+      tos.set(to, (tos.get(to) ?? 0) + pattern.n_trips);
+    }
+  }
+  const dominant = new Map<string, string>();
+  for (const [from, tos] of succ) {
+    let bestTo = '';
+    let bestN = -1;
+    for (const [to, n] of tos) {
+      if (n > bestN || (n === bestN && to < bestTo)) {
+        bestTo = to;
+        bestN = n;
+      }
+    }
+    dominant.set(from, bestTo);
+  }
+  const incoming = new Set(dominant.values());
+  const dominantPattern = patterns[0]!.stops;
+  const mid = dominantPattern.length / 2;
+  const total = patterns.reduce((sum, p) => sum + p.n_trips, 0);
+  const ranked: RankedStop[] = [];
+  for (const stop of dominant.keys()) {
+    if (!incoming.has(stop)) continue;
+    let trips = 0;
+    for (const p of patterns) if (p.stops.includes(stop)) trips += p.n_trips;
+    const at = dominantPattern.indexOf(stop);
+    ranked.push({ stop, trips, pos: at === -1 ? dominantPattern.length : at });
+  }
+  ranked.sort((a, b) =>
+    rankBefore(
+      [-a.trips, Math.abs(a.pos - mid), a.stop],
+      [-b.trips, Math.abs(b.pos - mid), b.stop],
+    )
+      ? -1
+      : 1,
+  );
+  return { ranked, total, patternLen: dominantPattern.length };
+}
+
+/**
+ * Pick the canonical PRIMARY reference stop for every (route, direction): the
+ * highest-ranked through-stop (rankedThroughStops). Same rule and output as
+ * before fallbacks existed, so the offline parity and every carried series are
+ * unchanged; the fallbacks (selectFallbackStops) are an addition consulted only
+ * when this stop sees no trains. Cells with no through-stop are absent rather
+ * than measured at a terminal.
  */
 export function selectReferenceStops(
   routeStops: RouteStops,
@@ -211,70 +298,64 @@ export function selectReferenceStops(
   const out: Record<string, ReferenceStop> = {};
   for (const [key, patterns] of Object.entries(routeStops)) {
     const sep = key.indexOf('|');
-    if (sep <= 0) continue;
-    const route = key.slice(0, sep);
-    const direction = key.slice(sep + 1);
-    if (patterns.length === 0) continue;
+    if (sep <= 0 || patterns.length === 0) continue;
+    const { ranked, total } = rankedThroughStops(patterns);
+    const primary = ranked[0];
+    if (primary === undefined) continue;
+    out[key] = {
+      route: key.slice(0, sep),
+      direction: key.slice(sep + 1),
+      stop_id: primary.stop,
+      n_scheduled_trips: primary.trips,
+      coverage: total > 0 ? primary.trips / total : 0,
+    };
+  }
+  return out;
+}
 
-    // The dominant-successor skeleton: per from_stop, the to_stop the most
-    // scheduled trips continue to (ties on the smaller stop id). Same
-    // construction as gtfs_static.successors() + dominant_successor().
-    const succ = new Map<string, Map<string, number>>();
-    for (const pattern of patterns) {
-      for (let i = 0; i + 1 < pattern.stops.length; i++) {
-        const from = pattern.stops[i]!;
-        const to = pattern.stops[i + 1]!;
-        let tos = succ.get(from);
-        if (tos === undefined) {
-          tos = new Map<string, number>();
-          succ.set(from, tos);
-        }
-        tos.set(to, (tos.get(to) ?? 0) + pattern.n_trips);
-      }
-    }
-    const dominant = new Map<string, string>();
-    for (const [from, tos] of succ) {
-      let bestTo = '';
-      let bestN = -1;
-      for (const [to, n] of tos) {
-        if (n > bestN || (n === bestN && to < bestTo)) {
-          bestTo = to;
-          bestN = n;
-        }
-      }
-      dominant.set(from, bestTo);
-    }
-    const incoming = new Set(dominant.values());
+/** Which third of the line a stop sits in, by position in the dominant
+ * pattern. The primary reference tie-breaks toward the middle, so its fallbacks
+ * are drawn from the outer thirds — the segments a core (typically Manhattan)
+ * reroute leaves running. */
+function positionZone(pos: number, patternLen: number): number {
+  if (patternLen <= 0) return 0;
+  const third = patternLen / 3;
+  return pos < third ? 0 : pos < 2 * third ? 1 : 2;
+}
 
-    // A through-stop has both a scheduled predecessor and a scheduled
-    // successor in that skeleton.
-    const dominantPattern = patterns[0]!.stops;
-    const mid = dominantPattern.length / 2;
-    const total = patterns.reduce((sum, p) => sum + p.n_trips, 0);
-    let best: ReferenceStop | null = null;
-    let bestRank: [number, number, string] | null = null;
-    for (const stop of dominant.keys()) {
-      if (!incoming.has(stop)) continue;
-      let trips = 0;
-      for (const p of patterns) if (p.stops.includes(stop)) trips += p.n_trips;
-      const at = dominantPattern.indexOf(stop);
-      const rank: [number, number, string] = [
-        -trips,
-        Math.abs((at === -1 ? dominantPattern.length : at) - mid),
-        stop,
-      ];
-      if (bestRank === null || rankBefore(rank, bestRank)) {
-        bestRank = rank;
-        best = {
-          route,
-          direction,
-          stop_id: stop,
-          n_scheduled_trips: trips,
-          coverage: total > 0 ? trips / total : 0,
-        };
-      }
+/**
+ * The ordered fallback reference stops per cell, primary excluded.
+ *
+ * A planned reroute darkens a CONTIGUOUS segment of a line (an alert says "no N
+ * service in Manhattan"), and the primary reference — the max-trips through-
+ * stop, tie-broken toward the middle — sits in exactly the busy core those
+ * the OTHER positional thirds: at most one per zone, spreading them along the
+ * pattern so a fallback is more likely to sit on a still-served segment. That
+ * is a heuristic, not a guarantee — a reroute spanning several thirds can dark
+ * every candidate. They pass the
+ * same through-stop gate as the primary (rankedThroughStops), so terminals stay
+ * excluded. Ordered by rank, so the surface prefers the busiest still-served
+ * stop. Empty for a cell with only one through-stop (nothing to fall back to).
+ */
+export function selectFallbackStops(
+  routeStops: RouteStops,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [key, patterns] of Object.entries(routeStops)) {
+    if (key.indexOf('|') <= 0 || patterns.length === 0) continue;
+    const { ranked, patternLen } = rankedThroughStops(patterns);
+    const primary = ranked[0];
+    if (primary === undefined || ranked.length <= 1) continue;
+    const usedZones = new Set([positionZone(primary.pos, patternLen)]);
+    const chosen: string[] = [];
+    for (const cand of ranked.slice(1)) {
+      const zone = positionZone(cand.pos, patternLen);
+      if (usedZones.has(zone)) continue;
+      usedZones.add(zone);
+      chosen.push(cand.stop);
+      if (chosen.length >= 2) break;
     }
-    if (best !== null) out[key] = best;
+    if (chosen.length > 0) out[key] = chosen;
   }
   return out;
 }
@@ -314,6 +395,7 @@ export function emptyHeadwayState(): HeadwayStateDoc {
     reference_at: 0,
     reference_trained_at: 0,
     reference_stops: {},
+    reference_fallbacks: {},
     cells: {},
     trips: {},
     gaps: [],
@@ -340,6 +422,11 @@ export function referenceStopsStale(
  * stops, and when. */
 export interface HeadwayReference {
   stops: Record<string, string>;
+  // Ordered fallback stops per 'route|direction', primary excluded — the
+  // measurement points the cell drops to when its primary sees no trains
+  // (selectFallbackStops). Each gets its own ledger cell keyed
+  // '<route>|<direction>|<stop>' (candidateCells), so the series stay separate.
+  fallbacks?: Record<string, string[]>;
   at: number;
   trained_at: number;
 }
@@ -362,6 +449,7 @@ export function resolveReference(
 ): HeadwayReference {
   const carried: HeadwayReference = {
     stops: prev?.reference_stops ?? {},
+    fallbacks: prev?.reference_fallbacks ?? {},
     at: prev?.reference_at ?? 0,
     trained_at: prev?.reference_trained_at ?? 0,
   };
@@ -371,7 +459,49 @@ export function resolveReference(
     stops[key] = ref.stop_id;
   }
   if (Object.keys(stops).length === 0) return carried;
-  return { stops, at: now, trained_at: trainedAt };
+  return {
+    stops,
+    fallbacks: selectFallbackStops(routeStops),
+    at: now,
+    trained_at: trainedAt,
+  };
+}
+
+/**
+ * The measurement cells a (route, direction) can publish from, primary first
+ * then its fallbacks, each an independent ledger. The primary keeps the bare
+ * '<route>|<direction>' key it always had; a fallback is keyed
+ * '<route>|<direction>|<stop>' so its passings never mix with the primary's.
+ *
+ *   cellStop     — every cell key -> the stop it measures (primary + fallbacks)
+ *   cellForStop  — 'route|direction' -> (stop -> cell key), for the trip carry
+ *   order        — 'route|direction' -> cell keys, primary-first, for the pick
+ */
+function candidateCells(
+  stops: Record<string, string>,
+  fallbacks: Record<string, string[]>,
+): {
+  cellStop: Record<string, string>;
+  cellForStop: Record<string, Record<string, string>>;
+  order: Record<string, string[]>;
+} {
+  const cellStop: Record<string, string> = {};
+  const cellForStop: Record<string, Record<string, string>> = {};
+  const order: Record<string, string[]> = {};
+  for (const [rd, stop] of Object.entries(stops)) {
+    cellStop[rd] = stop;
+    cellForStop[rd] = { [stop]: rd };
+    order[rd] = [rd];
+  }
+  for (const [rd, fbs] of Object.entries(fallbacks)) {
+    for (const stop of fbs) {
+      const key = `${rd}|${stop}`;
+      cellStop[key] = stop;
+      (cellForStop[rd] ??= {})[stop] = key;
+      (order[rd] ??= []).push(key);
+    }
+  }
+  return { cellStop, cellForStop, order };
 }
 
 /** A passing of a reference stop, before it is folded into a cell. */
@@ -395,20 +525,19 @@ export function detectPassings(
   prev: HeadwayStateDoc | null,
   now: number,
 ): HeadwayPassing[] {
-  const refStops = reference.stops;
+  const { cellStop } = candidateCells(reference.stops, reference.fallbacks ?? {});
   const carriedTrips = prev?.trips ?? {};
   const out: HeadwayPassing[] = [];
   for (const row of rows) {
     if (row.direction === null) continue;
-    const ref = refStops[`${row.route_id}|${row.direction}`];
-    // Still at (or heading to) the reference stop: the departure is ahead.
-    if (ref !== undefined && row.stop_id === ref) continue;
     const carried = carriedTrips[row.trip_id];
     if (carried === undefined) continue;
     if (now - carried.at > TRIP_GAP_SECONDS) continue; // may be a different train
-    if (refStops[carried.cell] !== carried.stop) continue; // point moved
-    // Last seen at a reference stop, now reporting somewhere else: it served
-    // that stop and has left.
+    if (cellStop[carried.cell] !== carried.stop) continue; // candidate removed since
+    // Still at (or heading to) the candidate it is carried at: departure ahead.
+    if (row.stop_id === carried.stop) continue;
+    // Last seen at a candidate reference stop, now reporting elsewhere: it
+    // served that stop and has left.
     out.push({
       cell: carried.cell,
       stop: carried.stop,
@@ -451,9 +580,10 @@ export function mergePassings(
   for (const [key, cell] of Object.entries(doc.cells)) {
     cells[key] = { stop_id: cell.stop_id, passings: [...cell.passings] };
   }
+  const { cellStop } = candidateCells(doc.reference_stops, doc.reference_fallbacks);
   const trips = { ...doc.trips };
   for (const p of passings) {
-    if (doc.reference_stops[p.cell] !== p.stop) continue; // point moved since
+    if (cellStop[p.cell] !== p.stop) continue; // point moved since
     insertPassing(cells, p);
     delete trips[p.trip];
   }
@@ -487,13 +617,14 @@ export function updateHeadwayState(
   prev: HeadwayStateDoc | null,
   now: number,
 ): HeadwayStateDoc {
-  const refStops = reference.stops;
+  const fallbacks = reference.fallbacks ?? {};
+  const { cellStop, cellForStop } = candidateCells(reference.stops, fallbacks);
   const base = prev ?? emptyHeadwayState();
 
   // Carry cells forward only where the measurement point still agrees.
   const cells: Record<string, HeadwayCell> = {};
   for (const [key, cell] of Object.entries(base.cells)) {
-    if (refStops[key] !== cell.stop_id) continue;
+    if (cellStop[key] !== cell.stop_id) continue;
     const newest = cell.passings[cell.passings.length - 1];
     if (newest === undefined) continue;
     if (now - newest.at > HEADWAY_PRUNE_SECONDS) continue;
@@ -510,18 +641,17 @@ export function updateHeadwayState(
   }
 
   // Rebuild the trip carry from this poll's own rows: which trips are at a
-  // reference stop now, plus those still pending from before.
+  // candidate reference stop now, plus those still pending from before.
   const trips: Record<string, HeadwayTrip> = {};
   const seen = new Set<string>();
   for (const row of rows) {
     seen.add(row.trip_id);
     if (row.direction === null) continue;
-    const key = `${row.route_id}|${row.direction}`;
-    const ref = refStops[key];
-    if (ref === undefined || row.stop_id !== ref) continue;
-    // At the reference stop, heading to it or standing at it. Either way the
+    const cell = cellForStop[`${row.route_id}|${row.direction}`]?.[row.stop_id];
+    if (cell === undefined) continue;
+    // At a candidate stop, heading to it or standing at it. Either way the
     // departure is still ahead, so refresh the carry and wait for it.
-    trips[row.trip_id] = { cell: key, stop: ref, at: now };
+    trips[row.trip_id] = { cell, stop: row.stop_id, at: now };
   }
 
   // A trip absent from this poll has not departed anything yet — carry it
@@ -530,7 +660,7 @@ export function updateHeadwayState(
   for (const [tripId, carried] of Object.entries(base.trips)) {
     if (seen.has(tripId)) continue;
     if (now - carried.at > TRIP_GAP_SECONDS) continue;
-    if (refStops[carried.cell] !== carried.stop) continue;
+    if (cellStop[carried.cell] !== carried.stop) continue;
     trips[tripId] = carried;
   }
 
@@ -540,7 +670,8 @@ export function updateHeadwayState(
     observed_at: now,
     reference_at: reference.at,
     reference_trained_at: reference.trained_at,
-    reference_stops: { ...refStops },
+    reference_stops: { ...reference.stops },
+    reference_fallbacks: { ...fallbacks },
     cells,
     trips,
     gaps,
@@ -671,44 +802,57 @@ export interface HeadwayObservation {
 export const HEADWAY_SOURCE = 'gtfs_rt_vehicle_positions';
 
 /**
- * The publishable headway observations in the carried state, sorted by
- * (route, direction) so the surface is byte-stable across ticks that measure
- * the same thing.
+ * The publishable headway observations in the carried state, one per (route,
+ * direction), sorted by it so the surface is byte-stable across ticks that
+ * measure the same thing.
  *
- * A cell with no completed reading, or one older than
- * MAX_READING_AGE_SECONDS, is absent — never zero, never carried forward. The
- * caller is expected to have already aged out the document as a whole (its
- * `observed_at`), which is a different check: the doc's age says whether the
- * feed is being polled at all, a cell's says whether trains are actually
- * running past its stop.
+ * Each cell publishes from the HIGHEST-RANKED candidate stop that currently has
+ * a reading: the primary reference under normal service, and — when a planned
+ * reroute has taken the route off the primary and it has aged out — the
+ * best-ranked fallback still being served (candidateCells order). The reading
+ * is always labelled with its actual measurement stop (`stop_id`), so a
+ * consumer can see the point moved and never mistakes a fallback for the
+ * primary series. Never a fabricated value: if no candidate has a fresh
+ * reading — a genuine full suspension, a feed outage, or a cold cell — the
+ * (route, direction) is simply absent.
+ *
+ * A reading older than MAX_READING_AGE_SECONDS does not count. The caller is
+ * expected to have already aged out the document as a whole (its `observed_at`),
+ * which is a different check: the doc's age says whether the feed is being
+ * polled at all, a cell's says whether trains are actually running past it.
  */
 export function headwayObservations(
   doc: HeadwayStateDoc,
   now: number,
 ): HeadwayObservation[] {
   const out: HeadwayObservation[] = [];
-  for (const key of Object.keys(doc.cells).sort()) {
-    const cell = doc.cells[key]!;
-    const reading = cellHeadway(cell, doc.gaps);
-    if (reading === null) continue;
-    if (now - reading.at > MAX_READING_AGE_SECONDS) continue;
-    const sep = key.indexOf('|');
+  const { order } = candidateCells(doc.reference_stops, doc.reference_fallbacks);
+  for (const rd of Object.keys(order).sort()) {
+    const sep = rd.indexOf('|');
     if (sep <= 0) continue;
     // Cell keys are only ever built from TraceRow.direction, so this holds by
-    // construction; a carried key that says otherwise is corrupt state and is
-    // dropped rather than published as a direction no consumer can read.
-    const direction = key.slice(sep + 1);
+    // construction; a key that says otherwise is corrupt state and is dropped
+    // rather than published as a direction no consumer can read.
+    const direction = rd.slice(sep + 1);
     if (direction !== 'north' && direction !== 'south') continue;
-    out.push({
-      entity_ref: `subway_route:${key.slice(0, sep)}`,
-      kind: 'headway',
-      value: reading.value,
-      unit: 'seconds',
-      observed_at: reading.at,
-      source: HEADWAY_SOURCE,
-      direction,
-      stop_id: cell.stop_id,
-    });
+    for (const key of order[rd]!) {
+      const cell = doc.cells[key];
+      if (cell === undefined) continue;
+      const reading = cellHeadway(cell, doc.gaps);
+      if (reading === null) continue;
+      if (now - reading.at > MAX_READING_AGE_SECONDS) continue;
+      out.push({
+        entity_ref: `subway_route:${rd.slice(0, sep)}`,
+        kind: 'headway',
+        value: reading.value,
+        unit: 'seconds',
+        observed_at: reading.at,
+        source: HEADWAY_SOURCE,
+        direction,
+        stop_id: cell.stop_id,
+      });
+      break; // one reading per (route, direction): primary-preferred
+    }
   }
   return out;
 }

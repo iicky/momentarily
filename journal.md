@@ -8583,3 +8583,177 @@ carried over its CONCLUSION ("plain put is fine here") without re-deriving the
 PROPERTY that made it true. The comment I wrote even stated the property —
 "monotone per-cell timestamps" — and it was not a property my document had. An
 analogy is not an argument.
+
+## 2026-09-04 — offline headways converged onto the transition, and the live cell now survives a reroute instead of going dark
+
+origin: agent
+
+Two fixes on the headway surface, both structural, both pinned by tests; the
+numbers that would confirm them at scale are blocked on an R2 grant this thread
+does not have, so they are labelled by tier below.
+
+**Offline series keyed on the transition, not STOPPED_AT.** The offline
+headway series was built on `arrivals_from_trace`, which records an arrival
+only on the first STOPPED_AT sighting at a stop. A dwell shorter than the
+1-minute poll is never caught standing, so its passing was dropped — and a
+dropped passing does not lose a datum, it MERGES two real headways into one
+double-length reading, inflating both the AWT mean and the CV (the bunching
+measure) in the direction that looks like worse service. The live Worker
+already keys on the stop_id TRANSITION (departure), observed for every serving
+train (`worker/src/headway.detectPassings`), so the two surfaces measured
+different things.
+
+Added `training/trace.passings_from_trace` (+ `passings_and_catch_stats`),
+mirroring the live carry: a passing fires when a trip's reported stop_id moves
+off a stop, stamped at the departing sighting's own vehicle_ts. `Arrival` and
+`arrivals_from_trace` are UNTOUCHED — the dwell/traversal survival machinery
+still needs the STOPPED_AT arrival time — so only the headway path moved.
+`training/headway.reference_arrivals` (name kept for the downstream handoff
+seam; return shape unchanged, one time-ordered per-cell list keyed by
+(route, direction)) and `headway_events` now consume `Passing`, and
+`headway_eval._reconstruct_waits` folds `passings_from_trace`. The Worker's
+"one definition, not two" note is now true across the boundary.
+
+- FIXTURE-SUPPORTED: a middle train dwelling sub-poll is missed by
+  `arrivals_from_trace` (one merged gap x->y) and caught by
+  `passings_from_trace` (two gaps), with the merged gap equal to the sum of the
+  two — the double collapsing, pinned in `test_headway`. `CatchStats`
+  classifies caught / sub-poll-missed / stopped-then-moved on a synthetic run.
+- UNMEASURED at scale: the caught-fraction and headway-count deltas over the
+  real 2026-08-20 07:00-11:00 ET window. The crowding work measured the same
+  class independently at 92.71% caught (3,495 of 47,936 transitions missed),
+  and the harness `scripts/replay_headway_reconstruction.py` reproduces it plus
+  the AWT/CV deltas from the headway path directly — but it reads the R2 trace
+  archive, and no murk grant covers this thread, so it has NOT been run here. It
+  runs unchanged the moment a grant lands.
+
+**Live cell falls back to a served stop under a planned reroute.** The primary
+reference stop is the max-trips through-stop of the whole-week timetable, which
+sits in the busy core reroutes hit; when a reroute takes a route off it, the
+cell published nothing (measured live 2026-09-03: "No N service in Manhattan"
+darkened both N directions though 28 N trains ran; the R's Manhattan-referenced
+north went dark while its Brooklyn-referenced south stayed live). Abstaining is
+honest but the signal vanished exactly when a rider wants it.
+
+Chose the fallback remedy over a bare abstention-reason code because it is the
+only option that keeps the honest signal ALIVE. Each cell now carries ORDERED
+FALLBACK stops (`selectFallbackStops`): the best-ranked through-stop in each of
+the OTHER positional thirds of the line, at most one per third, so a
+single-segment reroute cannot darken the primary and every fallback at once.
+They pass the same through-stop gate, so terminals stay excluded. Each
+candidate keeps an INDEPENDENT ledger in its own cell keyed
+`route|direction|stop`, which is what preserves the commutative/idempotent
+merge the concurrency path depends on — the primary's cell key is unchanged, so
+the whole existing surface and its 8 concurrency regressions are untouched.
+`headwayObservations` publishes the highest-ranked candidate that currently has
+a reading, labelled with its actual `stop_id` (the schema's optional field
+exists for exactly this), so a fallback is never mistaken for the primary
+series and a full suspension still abstains.
+
+- FIXTURE-SUPPORTED: the N scenario (primary dark, publishes from a served
+  Queens fallback labelled with its stop_id), the R directional asymmetry (one
+  direction on its primary, the other on a Brooklyn fallback), primary-preferred
+  whenever it too has a reading, and full-suspension abstention — pinned in
+  `worker/test/headway.test.ts`. `selectFallbackStops` draws one spread fallback
+  per outer zone, ordered by rank, terminals excluded.
+- SCOPE: the offline reference selection stays primary-only. The live surface
+  is where the dark-cell was observed; the offline typical-actual baselines are
+  a separate, confirmed-normal-night concern, and a rider-facing fallback stop
+  must not contaminate a certified per-cell quantile. The Worker's PRIMARY pick
+  is unchanged, so offline/live primary parity holds.
+
+Verification: 52 Python tests (`test_trace`, `test_headway`, `test_headway_eval`)
+and 50 Worker headway tests green; scoped ruff + pyright clean; Worker typecheck
+clean apart from the pre-existing ambient Cloudflare types this worktree never
+generated. Not exercised: the two real-data runs above, both gated on R2 access.
+
+## 2026-09-04 — correction: "a single-segment reroute cannot darken the primary and every fallback" overclaims a heuristic as a guarantee
+
+origin: agent
+
+The entry above says the outer-thirds fallback placement means "a single-
+segment reroute cannot darken the primary and every fallback at once." That is
+an unproven universal and it is wrong to state as fact. Positional thirds are
+pattern-INDEX, not geography: a stop's third says nothing about which physical
+segment a reroute suspends, two candidates can fall in stops the same alert
+covers, and a reroute spanning more than one third can dark the whole cell.
+
+What is actually established: the mechanism recovers the two SHAPES pinned as
+fixtures — a core-primary-dark N with a served outer fallback, and the R's
+one-direction-dark asymmetry. Demote the claim to: spreading candidates across
+the pattern's thirds is a heuristic that RAISES the chance a fallback is on a
+still-served segment; it did, on the N and R fixtures; it is not proved to hold
+for an arbitrary reroute, and has not been measured against the real alert feed
+(that check, like the offline replay, is blocked on an R2 grant this thread
+lacks). The code comments carry the same overstatement and read as the same
+demoted heuristic.
+
+## 2026-09-04 — correction: offline/live passing "convergence" needed two rule fixes, and "100% of transitions keyed" overstated it
+
+origin: agent
+
+Review against the live `detectPassings` caught two real semantic gaps in the
+first cut of `passings_from_trace`, plus one wording overclaim. Fixed:
+
+1. STAMP CLAMP. The live worker's passingTime keeps the departing row's
+   vehicle_ts only when it is within FEED_GAP_SECONDS (240s) of the poll and
+   falls back to the poll otherwise — a frozen or running-ahead clock would
+   poison the gap. The offline stamp used `_row_time`, which trusts vehicle_ts
+   unconditionally, so a poisoned clock produced a different offline headway
+   than live. Added `_passing_time` with the same 240s clamp for the passing
+   path only; `_row_time` (arrival/traversal path) is unchanged. So the two now
+   agree on the departure TIME, not only the event.
+2. NULL DIRECTION. The live carry skips rows with `direction === null` (it
+   cannot place one at a directional reference cell); the offline walk did not,
+   so it could emit a directionless passing and inflate the CatchStats
+   denominator. Now skipped, matching live.
+
+Not a divergence, though it reads like one: both drop a pending departure after
+TRIP_GAP_SECONDS (600s) and neither emits the last stop of a run — so the
+earlier phrasing "100% of transitions keyed" was wrong. The honest statement is
+that the offline series keys on every OBSERVED departure under the same carry,
+TRIP_GAP, clock-clamp and direction rules as live. The two definitions now
+match on paper; real capture-rate and headway-timestamp parity over data is
+still UNMEASURED — the 2026-08-20 replay remains blocked on an R2 grant.
+Two tests pin the fixes (wild-clock clamp, directionless departure fires
+nothing); Python suite 54 green.
+
+## 2026-09-04 — MEASURED: the transition rule over the real 2026-08-20 window, and the "~7% doubles" was ~3.2% at the reference stops
+
+origin: agent
+
+Ran the replay over 2026-08-20 07:00-11:00 ET (240 one-minute trace objects)
+once the R2 grant landed. Numbers, all measured on real data:
+
+- CAUGHT-FRACTION, system-wide over all stop transitions: 44,437 / 47,931 =
+  92.71% caught, 3,494 missed (3,441 never-stopped sub-poll dwells + 53
+  stopped-then-moved). This reproduces the independent crowding-work measure
+  (92.71%, ~3,495 missed) essentially to the digit, now from the headway path.
+- REFERENCE-STOP HEADWAYS, 49 cells, old STOPPED_AT vs new transition:
+  count 1560 -> 1610 (+50 doubles collapsed); mean 419.2s -> 403.9s (-3.6%);
+  median 362 -> 360; per-cell bunching CV 0.479 -> 0.463 (-3.3%).
+
+Two things the data corrected in my own framing:
+
+1. The original estimate said "roughly 7% of the 129,531 headways ... are doubles." That
+   7% is the SYSTEM-WIDE transition-miss rate. At the REFERENCE STOPS the fix
+   actually measures on, only 50/1560 = 3.2% of headways were doubles — about
+   half — because the reference stops are the busiest trunk through-stops,
+   where dwell more often exceeds the 1-minute poll, so a train is caught
+   standing and the sub-poll miss is rarer. The headline number for THIS
+   surface is 3.2% on this window, not 7%.
+2. My first harness reported a POOLED CV across all cells, which rose
+   (0.666 -> 0.678) and looked like it contradicted the "doubles inflate CV"
+   claim. Pooled CV is dominated by between-cell mean differences, not bunching.
+   The right measure is the mean of each cell's OWN CV, which FELL 0.479 ->
+   0.463 when the doubles were split — so the claim holds; I had used the wrong
+   statistic. Both the mean (-3.6%) and the within-cell CV (-3.3%) moved down,
+   the predicted direction.
+
+So the fix does what it claimed, at a smaller magnitude than stated at the
+reference stops, and the direction on both mean and bunching is confirmed on
+real data. Parity with the live rule is now aligned on stamp clock-clamp,
+null-direction, TRIP_GAP and the (at, trip) tie-break; the one remaining
+offline structural difference is `_reconstruct_waits`' per-day state reset
+(memory-bounding, pre-existing, shared with the arrivals path), which the
+single-window harness above does not hit.

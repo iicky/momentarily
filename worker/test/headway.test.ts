@@ -30,6 +30,7 @@ import {
   mergePassings,
   referenceStopsStale,
   resolveReference,
+  selectFallbackStops,
   selectReferenceStops,
   updateHeadwayState,
 } from '../src/headway';
@@ -255,6 +256,7 @@ describe('reference refresh', () => {
       reference_at: NOW,
       reference_trained_at: 1,
       reference_stops: { '1|north': '121N' },
+      reference_fallbacks: {},
       cells: {},
       trips: {},
       gaps: [],
@@ -270,22 +272,38 @@ describe('reference refresh', () => {
       reference_at: NOW - 1,
       reference_trained_at: 7,
       reference_stops: { '1|north': '121N' },
+      reference_fallbacks: {},
       cells: {},
       trips: {},
       gaps: [],
     };
     // The observed-adjacency fallback publishes route_stops as {}.
     const kept = resolveReference(doc, {}, 9, NOW);
-    expect(kept).toEqual({ stops: { '1|north': '121N' }, at: NOW - 1, trained_at: 7 });
+    expect(kept).toEqual({
+      stops: { '1|north': '121N' },
+      fallbacks: {},
+      at: NOW - 1,
+      trained_at: 7,
+    });
     // Nothing read this poll: also keep.
     expect(resolveReference(doc, null, 9, NOW)).toEqual(kept);
     // Real patterns: adopt them and stamp the provenance.
     const fresh = resolveReference(doc, { '1|north': [{ stops: ['A', 'B', 'C'], n_trips: 4 }] }, 9, NOW);
-    expect(fresh).toEqual({ stops: { '1|north': 'B' }, at: NOW, trained_at: 9 });
+    expect(fresh).toEqual({
+      stops: { '1|north': 'B' },
+      fallbacks: {},
+      at: NOW,
+      trained_at: 9,
+    });
   });
 
   test('with nothing carried and nothing readable, the map is empty', () => {
-    expect(resolveReference(null, null, 0, NOW)).toEqual({ stops: {}, at: 0, trained_at: 0 });
+    expect(resolveReference(null, null, 0, NOW)).toEqual({
+      stops: {},
+      fallbacks: {},
+      at: 0,
+      trained_at: 0,
+    });
   });
 });
 
@@ -869,5 +887,128 @@ describe('concurrent writers (overlapping or retried crons)', () => {
   test('merging nothing returns the document untouched', () => {
     const winner = base();
     expect(mergePassings(winner, [])).toBe(winner);
+  });
+});
+
+// A six-stop line spanning three positional zones, shaped like N/R: an outer
+// "borough" at each end and the busy core in the middle. All stops carry the
+// same trips, so the tie-break toward the middle picks a core stop as primary
+// and the fallbacks are drawn from the outer thirds — the segments a core
+// reroute leaves running. B1N/Q2N are terminals and must never be picked.
+const LINE: RouteStops = {
+  'N|north': [{ stops: ['B1N', 'B2N', 'M1N', 'M2N', 'Q1N', 'Q2N'], n_trips: 10 }],
+};
+
+/** Two trains (`t1` then `t2`) passing `stop` and departing to the
+ * non-candidate `next`, so the cell gets a completed reading of 2*MIN. Trip ids
+ * are explicit so concatenated blocks stay chronological and collision-free. */
+function servedTwice(
+  route: string,
+  direction: 'north' | 'south',
+  stop: string,
+  next: string,
+  base: number,
+  t1: string,
+  t2: string,
+): [number, TraceRow[]][] {
+  return [
+    [base, [row(t1, stop, { route, direction })]],
+    [base + MIN, [row(t1, next, { route, direction })]],
+    [base + 2 * MIN, [row(t2, stop, { route, direction })]],
+    [base + 3 * MIN, [row(t2, next, { route, direction })]],
+  ];
+}
+
+function obs(doc: HeadwayStateDoc, entity: string, direction: string) {
+  return headwayObservations(doc, doc.observed_at).find(
+    (o) => o.entity_ref === entity && o.direction === direction,
+  );
+}
+
+describe('selectFallbackStops', () => {
+  test('draws one spread fallback per outer zone, ordered by rank, terminals out', () => {
+    expect(selectReferenceStops(LINE)['N|north']?.stop_id).toBe('M2N'); // core primary
+    // Q1N (late zone) outranks B2N (early zone) by the middle tie-break, so it
+    // is the preferred fallback; both terminals are excluded by the through-
+    // stop gate the primary passes.
+    expect(selectFallbackStops(LINE)['N|north']).toEqual(['Q1N', 'B2N']);
+  });
+
+  test('a cell with a single through-stop has no fallback', () => {
+    const oneThrough: RouteStops = {
+      'A|north': [{ stops: ['A', 'B', 'C'], n_trips: 4 }], // B is the only through-stop
+    };
+    expect(selectReferenceStops(oneThrough)['A|north']?.stop_id).toBe('B');
+    expect(selectFallbackStops(oneThrough)['A|north']).toBeUndefined();
+  });
+});
+
+describe('reroute survival: publish from a served fallback, honestly labelled', () => {
+  const N_REF: HeadwayReference = {
+    stops: { 'N|north': 'M2N' },
+    fallbacks: { 'N|north': ['Q1N', 'B2N'] },
+    at: NOW - 3600,
+    trained_at: 1_699_000_000,
+  };
+
+  test('normal service publishes the primary reference stop', () => {
+    const doc = replay(servedTwice('N', 'north', 'M2N', 'M2Nx', 0, 'a', 'b'), N_REF);
+    const o = obs(doc, 'subway_route:N', 'north');
+    expect(o?.stop_id).toBe('M2N');
+    expect(o?.value).toBe(2 * MIN);
+  });
+
+  test('N: primary dark in Manhattan, the cell falls back to a served Queens stop', () => {
+    // "No N service in Manhattan": no train ever passes the M2N primary, but
+    // the route is running — trains clear Q1N. The cell publishes from Q1N
+    // instead of going dark, and says so in stop_id.
+    const doc = replay(servedTwice('N', 'north', 'Q1N', 'Q1Nx', 0, 'a', 'b'), N_REF);
+    const o = obs(doc, 'subway_route:N', 'north');
+    expect(o?.stop_id).toBe('Q1N'); // the ACTUAL measurement stop, not M2N
+    expect(o?.value).toBe(2 * MIN);
+    expect(doc.cells['N|north']).toBeUndefined(); // primary saw nothing
+  });
+
+  test('the primary is preferred whenever it too has a reading', () => {
+    // Both primary and a fallback served this window: the higher-ranked primary
+    // wins, so a fallback never overrides a live primary series.
+    const doc = replay(
+      [
+        ...servedTwice('N', 'north', 'M2N', 'M2Nx', 0, 'm1', 'm2'),
+        ...servedTwice('N', 'north', 'Q1N', 'Q1Nx', 4 * MIN, 'q1', 'q2'),
+      ],
+      N_REF,
+    );
+    expect(obs(doc, 'subway_route:N', 'north')?.stop_id).toBe('M2N');
+  });
+
+  test('a full suspension still abstains — no candidate served, no observation', () => {
+    // Route N entirely suspended: the only trains in the feed are another
+    // route. No candidate stop is served, so the cell publishes nothing rather
+    // than fabricating a value.
+    const doc = replay([[0, [row('x', '121N', { route: '1' })]], [MIN, [row('x', '120N', { route: '1' })]]], N_REF);
+    expect(obs(doc, 'subway_route:N', 'north')).toBeUndefined();
+  });
+
+  test('R: same route, one direction on its primary and the other on a fallback', () => {
+    // "R rerouted via D/F in Manhattan": R|north's primary (M2N) is dark and it
+    // falls back to a served Brooklyn stop, while R|south's primary (M2S) is
+    // still served. One direction dark-then-recovered, one direction native —
+    // purely from where each reference sits.
+    const R_REF: HeadwayReference = {
+      stops: { 'R|north': 'M2N', 'R|south': 'M2S' },
+      fallbacks: { 'R|north': ['B2N'], 'R|south': ['B2S'] },
+      at: NOW - 3600,
+      trained_at: 1_699_000_000,
+    };
+    const doc = replay(
+      [
+        ...servedTwice('R', 'north', 'B2N', 'B2Nx', 0, 'rn1', 'rn2'), // north in Brooklyn
+        ...servedTwice('R', 'south', 'M2S', 'M2Sx', 4 * MIN, 'rs1', 'rs2'), // south primary
+      ],
+      R_REF,
+    );
+    expect(obs(doc, 'subway_route:R', 'north')?.stop_id).toBe('B2N'); // fallback
+    expect(obs(doc, 'subway_route:R', 'south')?.stop_id).toBe('M2S'); // primary
   });
 });

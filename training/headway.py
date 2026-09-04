@@ -76,7 +76,7 @@ from training.gtfs_static import (
     successors,
     through_stops,
 )
-from training.trace import Arrival
+from training.trace import Passing
 
 # --- reference-stop selection ---
 
@@ -160,7 +160,7 @@ def select_reference_stops(
 
 # --- observed headway reconstruction ---
 
-# Two arrivals of the same trip at the same reference stop closer than this are
+# Two passings of the same trip at the same reference stop closer than this are
 # one train re-reported by the feed, not two trains a zero headway apart.
 DUP_ARRIVAL_SECONDS = 120
 
@@ -174,7 +174,7 @@ FEED_GAP_SECONDS = 240
 class HeadwayEvent:
     """One observed gap between two successive trains at a reference stop.
 
-    `at` is the arrival that closed the gap; `headway_sec` is that arrival minus
+    `at` is the passing that closed the gap; `headway_sec` is that passing minus
     the previous train's. `feed_gap` marks a headway whose interval overlaps a
     trace coverage gap, so the wait statistics can exclude it: the long gap may
     be missing observation, not missing service.
@@ -202,29 +202,35 @@ def _coverage_gaps(covered_seconds: Sequence[int]) -> list[tuple[int, int]]:
 
 
 def reference_arrivals(
-    arrivals: Iterable[Arrival],
+    passings: Iterable[Passing],
     reference_stops: Mapping[tuple[str, str], ReferenceStop],
-) -> dict[tuple[str, str], list[Arrival]]:
-    """Group arrivals at each route/direction's reference stop, in time order.
+) -> dict[tuple[str, str], list[Passing]]:
+    """Group transition-keyed passings at each route/direction's reference stop,
+    in time order. (Name kept for the downstream handoff seam; the elements are
+    now Passing departures, not first-STOPPED_AT Arrivals — see below.)
 
-    Only arrivals whose (route_id, direction, stop_id) is that route/direction's
-    reference stop are kept, so this is already the per-cell arrival stream a
-    headway series is built from."""
+    Only passings whose (route_id, direction, stop_id) is that route/direction's
+    reference stop are kept, so this is already the per-cell departure stream a
+    headway series is built from. Keying on the departure (Passing) rather than
+    the first STOPPED_AT sighting (Arrival) is what makes this series measure the
+    same event as the live Worker and catch sub-poll dwells — see
+    training.trace.passings_from_trace. Return shape is unchanged: one time-
+    ordered per-cell list keyed by (route, direction)."""
     want = {
         (rs.route, rs.direction, rs.stop_id): key for key, rs in reference_stops.items()
     }
-    out: dict[tuple[str, str], list[Arrival]] = defaultdict(list)
-    for a in arrivals:
-        key = want.get((a.route_id, a.direction or "", a.stop_id))
+    out: dict[tuple[str, str], list[Passing]] = defaultdict(list)
+    for p in passings:
+        key = want.get((p.route_id, p.direction or "", p.stop_id))
         if key is not None:
-            out[key].append(a)
+            out[key].append(p)
     for series in out.values():
-        series.sort(key=lambda a: a.at)
+        series.sort(key=lambda p: (p.at, p.trip_id))  # (at, trip): the live tie-break
     return dict(out)
 
 
 def headway_events(
-    ref_arrivals: Mapping[tuple[str, str], list[Arrival]],
+    ref_passings: Mapping[tuple[str, str], list[Passing]],
     covered_seconds: Sequence[int],
 ) -> dict[tuple[str, str], list[HeadwayEvent]]:
     """Successive-train headways at each reference stop, with feed-gap flags.
@@ -236,10 +242,10 @@ def headway_events(
     gaps = _coverage_gaps(sorted(covered_seconds))
     gap_starts = [g[0] for g in gaps]
     out: dict[tuple[str, str], list[HeadwayEvent]] = {}
-    for key, arrivals in ref_arrivals.items():
+    for key, passings in ref_passings.items():
         events: list[HeadwayEvent] = []
-        prev: Arrival | None = None
-        for a in arrivals:
+        prev: Passing | None = None
+        for a in passings:
             if (
                 prev is not None
                 and a.trip_id == prev.trip_id

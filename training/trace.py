@@ -69,6 +69,43 @@ class Arrival:
 
 
 @dataclass(frozen=True)
+class Passing:
+    """A trip's DEPARTURE from a stop, detected by the trip's reported stop_id
+    moving off that stop rather than by a STOPPED_AT sighting.
+
+    This is the transition-keyed measurement the live Worker uses
+    (worker/src/headway.detectPassings and worker/src/crowding.ts): stop_id
+    names the stop a train is heading to or standing at, so the poll at which a
+    trip first reports a DIFFERENT stop is the poll by which it has served and
+    left the previous one. Unlike an Arrival — the first STOPPED_AT sighting —
+    this catches a train whose dwell was shorter than the 1-minute poll and so
+    was never caught standing at the stop at all. A missed STOPPED_AT loses no
+    datum for dwell/traversal work; for headways it MERGES two real gaps into
+    one double-length reading, which is what keying on the transition fixes.
+
+    `at` is stamped at the departing sighting — the first row reporting a stop
+    other than this one — preferring that row's own vehicle_ts when it is close
+    enough to the poll to be believable (via _passing_time), else the poll. This
+    is the same stamp, and the same wild-clock clamp, the live worker's
+    passingTime applies, so the two series agree on the departure TIME, not only
+    the event. Only rows carrying a direction are considered, matching the live
+    carry, which cannot place a directionless row at a reference cell.
+
+    `stop_seq` is the best sequence seen while the trip was at this stop, which
+    is None when it was only ever caught in transit toward it (stop_seq is
+    populated only on a STOPPED_AT sighting). Headways do not read it; it is
+    kept for parity with Arrival.
+    """
+
+    trip_id: str
+    route_id: str
+    direction: str | None
+    stop_id: str
+    stop_seq: int | None
+    at: int
+
+
+@dataclass(frozen=True)
 class Traversal:
     """One trip's movement from one arrival to the next.
 
@@ -130,6 +167,25 @@ def _row_time(row: dict[str, Any], fallback: int) -> int:
     second when the feed omitted one."""
     ts = row.get("vehicle_ts")
     return int(ts) if ts else fallback
+
+
+# A departing vehicle_ts this far from the poll is a frozen or running-ahead
+# clock; trusting it would poison this passing and the next, so it is clamped to
+# the poll. Matches the live worker's passingTime guard
+# (worker/src/headway.passingTime) and training/headway.FEED_GAP_SECONDS, both
+# 240 — the passing definition, not just the capture rate, is what converges.
+PASSING_CLOCK_TOLERANCE_SECONDS = 240
+
+
+def _passing_time(row: dict[str, Any], poll: int) -> int:
+    """The departing sighting's own vehicle_ts when believable, else the poll —
+    the same stamp the live worker's passingTime picks for a departure. Unlike
+    _row_time (used by the arrival/traversal path) this rejects a wild clock, so
+    the offline and live headway series agree on the stamp, not only the event."""
+    ts = row.get("vehicle_ts")
+    if ts and abs(int(ts) - poll) <= PASSING_CLOCK_TOLERANCE_SECONDS:
+        return int(ts)
+    return poll
 
 
 # A trip absent from the trace for longer than this is treated as finished, and
@@ -253,6 +309,168 @@ def arrivals_from_trace(bodies: list[dict[str, Any]]) -> list[Arrival]:
     out = [a for run in _runs_from_trace(bodies) for a in run.arrivals]
     out.sort(key=lambda a: a.at)
     return out
+
+
+@dataclass(frozen=True)
+class CatchStats:
+    """How the transition-keyed reconstruction relates to the old STOPPED_AT
+    rule, over one window. `caught` is the count of departures whose immediately
+    preceding sighting had the trip STOPPED_AT the departing stop — the ones the
+    old arrival-keyed series also saw. The two `missed_*` are what it recovers:
+    a sub-poll dwell never caught standing at all, and the rarer case of a trip
+    seen standing then moving-off the same stop before the next poll. This is
+    the honest denominator behind the "~7% of headways were doubles" claim —
+    every missed departure merged two real headways into one."""
+
+    n_transitions: int
+    caught: int
+    missed_never_stopped: int
+    missed_stopped_then_moved: int
+
+    @property
+    def missed(self) -> int:
+        return self.missed_never_stopped + self.missed_stopped_then_moved
+
+    @property
+    def caught_fraction(self) -> float:
+        return self.caught / self.n_transitions if self.n_transitions else 0.0
+
+
+class _PassState:
+    """Mutable per-trip accumulator for transition-keyed passings.
+
+    Tracks the stop a trip is currently reporting; a change to a different stop
+    is the departure from the previous one. Mirrors the live carry
+    (worker/src/headway.updateHeadwayState): the point of interest is where the
+    trip is now, and the passing fires the moment that moves. Alongside the
+    passings it tallies whether each departure would also have been caught by
+    the old STOPPED_AT rule — see CatchStats."""
+
+    def __init__(self) -> None:
+        self.stop: str | None = None
+        self.route = ""
+        self.direction: str | None = None
+        self.seq: int | None = None
+        self.last_poll = 0
+        self.last_stopped = False  # most recent sighting at self.stop
+        self.stopped_seen = False  # any sighting at self.stop was STOPPED_AT
+        self.passings: list[Passing] = []
+        self.caught = 0
+        self.missed_never_stopped = 0
+        self.missed_stopped_then_moved = 0
+
+    def observe(
+        self,
+        row: dict[str, Any],
+        stop_id: str,
+        stopped: bool,
+        at: int,
+        poll: int,
+    ) -> None:
+        # A long absence is a different train (TRIP_GAP_SECONDS, same reasoning
+        # as _runs_from_trace): the pending departure is dropped unfired, which
+        # is what the live carry does when a stale trip expires.
+        if self.stop is not None and poll - self.last_poll > TRIP_GAP_SECONDS:
+            self.stop = None
+        self.last_poll = poll
+
+        if self.stop is None:
+            self._enter(row, stop_id, stopped)
+            return
+        if stop_id != self.stop:
+            # Reporting a new stop: it served and left the previous one.
+            self.passings.append(
+                Passing(
+                    trip_id=str(row.get("trip_id") or ""),
+                    route_id=self.route,
+                    direction=self.direction,
+                    stop_id=self.stop,
+                    stop_seq=self.seq,
+                    at=at,
+                )
+            )
+            if self.last_stopped:
+                self.caught += 1
+            elif self.stopped_seen:
+                self.missed_stopped_then_moved += 1
+            else:
+                self.missed_never_stopped += 1
+            self._enter(row, stop_id, stopped)
+            return
+        # Still at the same stop; keep the sharper stop_seq if this poll has one.
+        self.last_stopped = stopped
+        if stopped:
+            self.stopped_seen = True
+            if self.seq is None:
+                seq = row.get("stop_seq")
+                self.seq = None if seq is None else int(cast(int, seq))
+
+    def _enter(self, row: dict[str, Any], stop_id: str, stopped: bool) -> None:
+        self.stop = stop_id
+        self.route = str(row.get("route_id") or "")
+        self.direction = cast(str | None, row.get("direction"))
+        seq = row.get("stop_seq") if stopped else None
+        self.seq = None if seq is None else int(cast(int, seq))
+        self.last_stopped = stopped
+        self.stopped_seen = stopped
+
+
+def passings_and_catch_stats(
+    bodies: list[dict[str, Any]],
+) -> tuple[list[Passing], CatchStats]:
+    """The transition-keyed passings plus the CatchStats that say how many of
+    them the old STOPPED_AT rule would have missed. One walk, so the fraction
+    and the series it produces are computed from the same data."""
+    open_trips: dict[str, _PassState] = {}
+    for body in sorted(bodies, key=lambda b: int(b.get("scheduled_at") or 0)):
+        poll = int(body.get("scheduled_at") or body.get("observed_at") or 0)
+        for raw in cast(list[Any], body.get("rows") or []):
+            if not isinstance(raw, dict):
+                continue
+            row = cast(dict[str, Any], raw)
+            trip_id = str(row.get("trip_id") or "")
+            stop_id = str(row.get("stop_id") or "")
+            if not trip_id or not stop_id:
+                continue
+            # A null-direction row cannot be placed at a directional reference
+            # cell, so the live carry skips it (worker/src/headway.detectPassings
+            # and updateHeadwayState both continue on row.direction === null);
+            # match that here rather than firing a directionless passing.
+            if row.get("direction") is None:
+                continue
+            state = open_trips.get(trip_id)
+            if state is None:
+                state = _PassState()
+                open_trips[trip_id] = state
+            state.observe(
+                row, stop_id, bool(row.get("stopped")), _passing_time(row, poll), poll
+            )
+    out = [p for state in open_trips.values() for p in state.passings]
+    # (at, then trip) — the live detectPassings tie-break, so two trains that
+    # clear a stop in the same second order identically offline and on the Worker.
+    out.sort(key=lambda p: (p.at, p.trip_id))
+    states = open_trips.values()
+    stats = CatchStats(
+        n_transitions=sum(len(s.passings) for s in states),
+        caught=sum(s.caught for s in states),
+        missed_never_stopped=sum(s.missed_never_stopped for s in states),
+        missed_stopped_then_moved=sum(s.missed_stopped_then_moved for s in states),
+    )
+    return out, stats
+
+
+def passings_from_trace(bodies: list[dict[str, Any]]) -> list[Passing]:
+    """Every (trip, stop) DEPARTURE in the window, in time order — the
+    transition-keyed measurement that converges the offline headway series with
+    the live Worker's (worker/src/headway.detectPassings).
+
+    A passing is emitted for every stop a trip serves EXCEPT the last one it was
+    seen at, whose departure was never observed — exactly like the live carry,
+    which holds a trip at its reference stop until it reports the next one. The
+    stop a train skips is never reported as its stop_id, so an express is not
+    credited with passing a stop it ran through. See Passing and
+    passings_and_catch_stats."""
+    return passings_and_catch_stats(bodies)[0]
 
 
 def traversals_from_trace(

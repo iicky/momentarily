@@ -92,6 +92,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         reference_at: 1_699_000_000,
         reference_trained_at: 1_699_000_000,
         reference_stops: { '1|north': '121N', '1|south': '122S' },
+        reference_fallbacks: {},
         cells: {
           '1|north': {
             stop_id: '121N',

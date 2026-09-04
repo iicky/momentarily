@@ -9,6 +9,7 @@ bucketing, a feed stall vs a service gap, and the independent-night gate.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from training.headway import (
@@ -24,7 +25,7 @@ from training.headway import (
     tick_aligned_waits,
     typical_actual_baseline,
 )
-from training.trace import Arrival
+from training.trace import Passing, arrivals_from_trace, passings_from_trace
 
 from .conftest import make_gtfs_zip
 
@@ -35,10 +36,10 @@ def _et_epoch(y: int, mo: int, d: int, h: int, mi: int = 0) -> int:
     return int(datetime(y, mo, d, h, mi, tzinfo=_ET).timestamp())
 
 
-def _arr(
+def _passing(
     stop: str, at: int, *, trip: str, route: str = "A", direction: str = "north"
-) -> Arrival:
-    return Arrival(
+) -> Passing:
+    return Passing(
         trip_id=trip,
         route_id=route,
         direction=direction,
@@ -134,9 +135,9 @@ def test_duplicate_trip_arrival_is_not_a_zero_headway():
     t0 = _et_epoch(2026, 8, 22, 12)
     arrs = {
         ("A", "north"): [
-            _arr("A03N", t0, trip="x"),
-            _arr("A03N", t0 + DUP_ARRIVAL_SECONDS - 10, trip="x"),  # re-report
-            _arr("A03N", t0 + 600, trip="y"),
+            _passing("A03N", t0, trip="x"),
+            _passing("A03N", t0 + DUP_ARRIVAL_SECONDS - 10, trip="x"),  # re-report
+            _passing("A03N", t0 + 600, trip="y"),
         ]
     }
     events = headway_events(arrs, _covered(t0 - 60, t0 + 700))
@@ -152,9 +153,9 @@ def test_feed_stall_flags_the_headway_across_it():
     )
     arrs = {
         ("A", "north"): [
-            _arr("A03N", t0, trip="x"),
-            _arr("A03N", t0 + 2400, trip="y"),  # spans the stall
-            _arr("A03N", t0 + 3000, trip="z"),
+            _passing("A03N", t0, trip="x"),
+            _passing("A03N", t0 + 2400, trip="y"),  # spans the stall
+            _passing("A03N", t0 + 3000, trip="z"),
         ]
     }
     events = headway_events(arrs, covered)
@@ -242,11 +243,70 @@ def test_reference_arrivals_keep_only_the_reference_stop():
     stops = select_reference_stops(_branching_zip())
     t0 = _et_epoch(2026, 8, 22, 12)
     arrs = [
-        _arr("A03N", t0, trip="a"),  # reference stop
-        _arr("A02N", t0 + 60, trip="a"),  # a branch stop, dropped
-        _arr("A03N", t0 + 600, trip="b"),
+        _passing("A03N", t0, trip="a"),  # reference stop
+        _passing("A02N", t0 + 60, trip="a"),  # a branch stop, dropped
+        _passing("A03N", t0 + 600, trip="b"),
     ]
     grouped = reference_arrivals(arrs, stops)
     kept = grouped[("A", "north")]
     assert all(a.stop_id == "A03N" for a in kept)
     assert len(kept) == 2
+
+
+# --- the double-headway collapse (the bug this reconstruction fixes) -------------
+
+
+def _hrow(
+    stop: str, *, trip: str, stopped: bool, seq: int | None = None
+) -> dict[str, Any]:
+    return {
+        "trip_id": trip,
+        "route_id": "A",
+        "direction": "north",
+        "stop_id": stop,
+        "stop_seq": seq if stopped else None,
+        "stopped": stopped,
+        "vehicle_ts": None,
+    }
+
+
+def _hbody(t0: int, minute: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    at = t0 + minute * 60
+    return {
+        "observed_at": at + 3,
+        "scheduled_at": at,
+        "fresh_feeds": ["ace"],
+        "rows": rows,
+    }
+
+
+def test_a_sub_poll_dwell_train_collapses_a_double_headway():
+    """End to end at reference stop A03N. Trains x and y are caught STOPPED_AT;
+    the middle train m dwells shorter than the poll and is only ever seen
+    approaching, never standing. The STOPPED_AT reconstruction misses m and so
+    reports ONE double-length gap x->y; the transition reconstruction catches m
+    and splits it into TWO real gaps — which is exactly the ~7% of headways the
+    old rule merged."""
+    t0 = _et_epoch(2026, 8, 22, 12)
+    bodies = [
+        _hbody(t0, 0, [_hrow("A03N", trip="x", stopped=True, seq=3)]),
+        _hbody(t0, 1, [_hrow("A04N", trip="x", stopped=False)]),
+        _hbody(t0, 2, [_hrow("A03N", trip="m", stopped=False)]),  # sub-poll dwell
+        _hbody(t0, 3, [_hrow("A04N", trip="m", stopped=False)]),
+        _hbody(t0, 7, [_hrow("A03N", trip="y", stopped=True, seq=3)]),
+        _hbody(t0, 8, [_hrow("A04N", trip="y", stopped=False)]),
+    ]
+    covered = _covered(t0 - 60, t0 + 700)
+
+    arrivals = [a for a in arrivals_from_trace(bodies) if a.stop_id == "A03N"]
+    passings = [p for p in passings_from_trace(bodies) if p.stop_id == "A03N"]
+    assert {a.trip_id for a in arrivals} == {"x", "y"}  # m never caught standing
+    assert {p.trip_id for p in passings} == {"x", "m", "y"}
+
+    # Same headway_events on each reconstruction: the merged double vs the split.
+    arr_series: dict[tuple[str, str], list[Passing]] = {("A", "north"): arrivals}  # type: ignore[dict-item]
+    arr_hw = headway_events(arr_series, covered)[("A", "north")]
+    pass_hw = headway_events({("A", "north"): passings}, covered)[("A", "north")]
+    assert len(arr_hw) == 1  # one double-length gap x->y
+    assert len(pass_hw) == 2  # split into x->m and m->y
+    assert arr_hw[0].headway_sec == pass_hw[0].headway_sec + pass_hw[1].headway_sec

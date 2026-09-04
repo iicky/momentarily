@@ -7803,3 +7803,110 @@ dishonest one. Rejected the cheap substitute of fitting the baseline from
 `train_trans` dwell spells in backtest: those are HMM regime spells, not
 severe-only truth episodes, so the ratio would be taken against a different
 population and would read as a real number while comparing two different things.
+## 2026-09-03 — the condition-probability gate is retired, and the normal-branch forecast fails on its own terms too
+
+origin: agent
+
+Two separate things were tangled in the "p_normal_in_H loses to persistence"
+result, and the disposition needs both stated, because only one of them is a
+metric artifact.
+
+The first is the gate. "Must beat persistence at every horizon" was the wrong
+bar. The published negatives (-0.45/-0.55/-0.43 on the deployed subset,
+-0.26/-0.41/-0.54 full-window) are prequential Brier skill against the model's
+own subsequently-published condition, on a truth that is ~99.8% no-event.
+Negative skill there is the expected value of the metric, not a finding: with
+no Brier headroom, estimation noise alone drives it below zero. Graduation now
+runs per incident episode — nowcast as classification against movement truth,
+recovery as CRPS/PIT against a duration-climatology baseline, onset latency and
+changepoint alignment reported rather than gated.
+
+The second is the forecast itself, and this part does not dissolve when the
+gate changes. The deciding stratum grades normal-now ticks against fixed
+severity-graded truth instead of the model's own label (n = 21,071):
+
+| Horizon | geom | km | km_ll | persistence |
+| --- | --- | --- | --- | --- |
+| 30 min | 0.877 | 0.886 | 0.912 | 0.0009 |
+| 60 min | 0.828 | 0.844 | — | 0.0017 |
+| 120 min | 0.749 | 0.774 | — | 0.0035 |
+
+Brier, lower is better. Three readings, in descending order of how much they
+are worth:
+
+- The persistence column is a measurement of the outcome, not of a model: it
+  says truth stays normal through the next 30 minutes on 99.91% of normal-now
+  ticks (99.83% at 60, 99.65% at 120).
+- Against an outcome that near-certain, 0.877 is 88% of the worst score
+  attainable on the stratum (always saying p_normal = 0 scores 0.9991) and
+  about 3.5x worse than a flat uninformative 0.5. That is a different animal
+  from the mild negative skill a high base rate produces mechanically. What it
+  does NOT do is identify the mean forecast: 0.877 constrains the projection's
+  mean p_normal only to roughly 0.064–0.123, and I did not pull per-tick
+  predictions to narrow it. "Confidently wrong" is earned; a specific mean is
+  not.
+- km-residual is worse than plain geometric at every horizon (+0.009, +0.016,
+  +0.025 Brier). Elapsed-conditioning, which is the whole mechanism the
+  alternative arm exists to test, does not help on this stratum.
+
+Re-baselining does not rescue this, and that is arithmetic rather than a new
+measurement: the stratum's per-route climatology of "normal at t+H" is ~0.999
+by construction, and a constant forecast at 0.999 against a 99.91% outcome
+scores ~0.0009 — where persistence already sits. Swapping the reference class
+moves the yardstick by nothing that matters at this magnitude.
+
+So the disposition is not "the metric was unfair, ship it". It is: the gate was
+mis-specified AND the normal-branch projection is independently broken, and the
+field stays shadow-only by decision rather than pending one. The live
+elapsed-dwell normal branch stays as a shadow surface — it is monotone in
+elapsed dwell, which is a correctness property, not a skill claim. Any retry is
+a different primitive (conditional residual survival, length-bias corrected,
+with abstention where elapsed time enters a sparse regime), cleared against its
+own stated gate.
+
+One loose end recorded honestly: the run that produced these numbers wrote to a
+scratch directory that no longer exists, and the review artifact directory is
+gitignored, so this table and the close records are now the durable copy. I did
+not re-run the backtest to regenerate a local artifact that would not survive
+either; the numbers are unambiguous enough that a re-run would buy provenance,
+not evidence. If provenance is wanted, the stratum is still emitted and a
+re-run is a single command against R2.
+
+Also reconciled, since the old gate was still being presented as current
+methodology in four places: README Method, the go/no-go template (S3 changepoint
+alignment now reported-not-gated with a reverse detection-recall line, S4
+demoted from "the headline" to supporting detail, S5 marks the condition
+probability settled), the backtest module docstring and its normal-now caption
+(the stratum is a drift re-measure now, not an open gate), and the models-page
+copy, which explained the negative skill correctly but left the reader to infer
+that the chart decided shipping. It does not.
+
+## 2026-09-03 — addendum: the gate copy above says "duration-climatology baseline", and that phrase is now underspecified
+
+origin: agent
+
+The entry above states the recovery gate as "CRPS/PIT against a
+duration-climatology baseline". Concurrent work on the baselines makes that
+phrase ambiguous in the direction that matters, so pinning it here rather than
+leaving the earlier wording to be read as current.
+
+There are two references, and only one is a gate:
+
+- CAUSAL: an empirical-CDF climatology fitted on a window BEFORE the graded
+  episodes. This is the gate. Positive skill against it is a real claim.
+- HINDSIGHT: the graded window's own duration CDF. Not clearable by an honest
+  forecast — a causally-fitted climatology loses to it by 0.1157 skill, so a
+  gate stated against it fails forecasts for being causal rather than for being
+  wrong. Reported for comparability with pre-2026-09 numbers; never decisive.
+
+README Method, the go/no-go template §1, and the models-page gate sentence now
+all carry the causal qualifier explicitly. The template also records that the
+review feed currently publishes the causal column as null — it is handed a
+single window of truth episodes with nothing earlier to fit on — so a null there
+reads "not established", not "fails". Wiring pre-window truth into that feed is
+a separate change and is not in this one.
+
+Nothing in the condition-probability disposition moves: that verdict rests on
+Brier against a fixed severity-graded truth on the normal-now stratum, where the
+climatology question is settled by arithmetic (a ~0.999 constant forecast scores
+~0.0009 either way), not by which window the reference was fitted on.

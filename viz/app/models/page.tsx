@@ -301,6 +301,10 @@ export default function ModelsPage() {
                 near-unbeatable baseline on Brier — a large negative is the metric,
                 not a broken model. The AUC chip (does the forecast rank the right
                 cases higher?) is the more informative read at this base rate.
+                Nothing on this chart decides whether a field ships: that call is
+                made per incident episode, against a typical-duration baseline built
+                from history before the episodes it grades, not per tick against
+                persistence.
               </p>
               <div className="charts-grid-3">
                 {rel.map((r) => (

@@ -1,8 +1,8 @@
 """Tier-1 decision-gate backtest: KM-residual (explicit-duration) p_normal vs geometric.
 
-Question this answers: is the geometric-dwell *forecast* what makes p_normal_in_H
-lose to persistence? We replay a held-out window through the existing forward
-filter once, then at every tick produce two forecasts of P(normal at t+H):
+Question this answered: is the geometric-dwell *forecast* the reason p_normal_in_H
+scores so badly on normal-condition ticks? We replay a held-out window through the
+existing forward filter once, then at every tick produce two forecasts of P(normal at t+H):
 
   geometric : project_forward() — the current production path (repeated matmul
               of the transition matrix; dwell is implicitly geometric).
@@ -23,6 +23,20 @@ from the same alert feed the model observes (it is NOT an external ground truth
 like trip-updates); it is independent of the *projection choice*, which is what a
 projection A/B needs. The geometric arm here is the control, not the production
 review number (which grades against the model's own published condition).
+
+SETTLED (normal_now stratum, truth v2, n=21,071 route-ticks): no. At H30 the geometric
+arm scores Brier 0.877 and the KM-residual arm 0.886 against 0.0009 for persistence,
+with the same shape at H60/H120 — the KM-residual normal branch is slightly WORSE than
+the control, so elapsed-conditioning is not the missing piece on this stratum. The
+persistence Brier pins the outcome: truth stays normal through the next 30 minutes on
+99.91% of normal-now ticks. A Brier of 0.877 against an outcome that near-certain does
+not identify the projection's mean p_normal (it bounds it to roughly 0.064-0.123), but
+it is 88% of the worst attainable score here and ~3.5x worse than a flat uninformative
+0.5, so the forecast is confidently wrong rather than merely unskilled. Re-baselining
+does not rescue it either: this stratum's per-route climatology of "normal at t+H" is
+~0.999 by construction, whose Brier is arithmetically ~0.0009 -- the same yardstick
+persistence sets. normal-condition p_normal is therefore shadow-only by decision; this
+stratum is now a drift re-measure, not an open gate.
 
 The temporal train/eval split is honored: params + dwell curves are fit on the
 TRAIN window only; replay + scoring happen on a later held-out window, with a
@@ -687,8 +701,9 @@ def _print_report(doc: dict[str, Any]) -> None:
         "disrupted_now",
     )
     _stratum_table(
-        "NORMAL-now ticks (persistence predicts stay-normal ~1.0; the km-residual "
-        "normal branch must beat it here to graduate normal-condition p_normal):",
+        "NORMAL-now ticks (persistence predicts stay-normal ~1.0; this stratum "
+        "settled normal-condition p_normal as shadow-only -- re-measured for drift, "
+        "not as an open graduation gate):",
         doc,
         "normal_now",
     )

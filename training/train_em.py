@@ -16,16 +16,23 @@ Run with:
 
 params.json records what it took to produce it — provenance.code_sha, the
 hyperparams block (resolved window + prior_strength + min_ticks + routes), and
-training_corpus.input_blake3. Against the immutable archive, re-running this
-tool at that code_sha with that hyperparams block reproduces the version.
+training_corpus.input_blake3 (a BLAKE3 fingerprint over the alert AND vehicle
+archive keys the fit read — INPUT_MANIFEST_VERSION 2). Against the immutable
+archive, re-running this tool at that code_sha with that hyperparams block
+reproduces the version. Each run also publishes a W3C PROV-JSON sidecar under
+state/prov/ (see training.prov) that states this same lineage — trainer run,
+its inputs, and the artifacts it generated — in a standard vocabulary; every
+published artifact carries a `prov_ref` pointing at it.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import sys
+import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -49,10 +56,12 @@ from training.dwell import (
     compute_dwell_quantiles_by_alert,
     compute_dwell_quantiles_by_cause,
 )
+from training.gtfs_archive import digest_of
 from training.gtfs_static import (
     RoutePattern,
     SegmentKey,
     dominant_successor,
+    fetch_gtfs_zip,
     load_topology,
     patterns_to_json,
     read_version,
@@ -88,6 +97,7 @@ from training.load_r2 import (
     fetch_vehicle_metrics,
     input_manifest_hash,
     list_alert_keys,
+    list_vehicle_keys,
     movement_observation_fields,
     presence_mask_from_predictions,
     schedule_rate_to_json,
@@ -97,6 +107,13 @@ from training.load_r2 import (
     throughput_to_json,
 )
 from training.pooled_dwell import MIN_VOTER_EVENTS, pooled_dwell_cells
+from training.prov import (
+    AgentFacts,
+    ArtifactFacts,
+    FeedFacts,
+    ManifestFacts,
+    build_trainer_run,
+)
 from training.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 from training.recovery_recalibration import (
@@ -119,6 +136,14 @@ PARAMS_KEY = "state/params.json"
 VERSIONED_PARAMS_PREFIX = "state/params/"
 SCHEMA_VERSION = "1"
 
+# The composition of training_corpus.input_blake3. v1 fingerprinted the alert-
+# version keys only; v2 folds the vehicle-archive keys in too, because the
+# vehicle archive now feeds both the serialized movement_baseline and the EM
+# normal-state advance prior, so a manifest over alerts alone under-describes the
+# inputs. Bumped here (rather than silently redefining the hash) so a consumer can
+# tell which key set a published input_blake3 covers.
+INPUT_MANIFEST_VERSION = 2
+
 # A route needs at least this many ticks of data to fit per-route — under that,
 # we fall back to the global prior.
 MIN_TICKS_PER_ROUTE = 288  # one day at the 5-min grid
@@ -132,7 +157,10 @@ class CorpusStats:
     end_tick: int
     n_observations: int  # real (alert-bearing) tick-observations, pre-quiet-fill
     n_input_versions: int = 0  # archived alert-version objects that fed the fit
-    input_blake3: str = ""  # BLAKE3 over those object keys — lineage fingerprint
+    n_vehicle_keys: int = 0  # archived vehicle-movement objects that fed the fit
+    # BLAKE3 over the alert + vehicle object keys — the lineage fingerprint. See
+    # INPUT_MANIFEST_VERSION for which key set a given hash covers.
+    input_blake3: str = ""
 
     @property
     def span_seconds(self) -> int:
@@ -268,10 +296,14 @@ def load_series_by_route(
     """
     client = make_client(cfg)
     # Hash the exact key set we fetch — the manifest fingerprint and the training
-    # input are then guaranteed to describe the same objects.
+    # input are then guaranteed to describe the same objects. The vehicle-archive
+    # keys join the alert keys (INPUT_MANIFEST_VERSION 2): those objects feed the
+    # movement_baseline and the advance prior, so a manifest over alerts alone
+    # would under-fingerprint the fit.
     keys = list_alert_keys(client, cfg.bucket, start, end)
+    vehicle_keys = list_vehicle_keys(client, cfg.bucket, start, end)
     bodies = fetch_objects(client, cfg.bucket, keys)
-    input_blake3 = input_manifest_hash(keys)
+    input_blake3 = input_manifest_hash([*keys, *vehicle_keys])
     # Mask the reconstruction against what the live Worker actually saw active, so an
     # alert that left the feed without a superseding version doesn't train as
     # still-active to its active_period end. Degrades to the raw reconstruction if
@@ -295,6 +327,7 @@ def load_series_by_route(
                 end_tick=0,
                 n_observations=0,
                 n_input_versions=len(keys),
+                n_vehicle_keys=len(vehicle_keys),
                 input_blake3=input_blake3,
             ),
             {},
@@ -307,6 +340,7 @@ def load_series_by_route(
         end_tick=max(ticks),
         n_observations=len(all_ticks),
         n_input_versions=len(keys),
+        n_vehicle_keys=len(vehicle_keys),
         input_blake3=input_blake3,
     )
 
@@ -777,6 +811,8 @@ def write_params(
     service_baseline: dict[str, Any] | None = None,
     schedule_rate: dict[str, Any] | None = None,
     trained_at: int | None = None,
+    feed: FeedFacts | None = None,
+    prov_ref: str | None = None,
 ) -> str:
     """Write the live params pointer plus an immutable versioned snapshot.
 
@@ -817,7 +853,14 @@ def write_params(
             "end_tick": corpus.end_tick,
             "n_routes_trained": n_routes_trained,
             "n_observations": corpus.n_observations,
+            # input_blake3 is a BLAKE3 fingerprint over the alert AND vehicle
+            # archive keys the fit read; input_manifest_version names which key
+            # set it covers (2 = alerts + vehicles, see INPUT_MANIFEST_VERSION).
+            # n_input_versions counts the alert keys, n_vehicle_keys the vehicle
+            # keys, so the hash's composition is auditable, not just its value.
             "n_input_versions": corpus.n_input_versions,
+            "n_vehicle_keys": corpus.n_vehicle_keys,
+            "input_manifest_version": INPUT_MANIFEST_VERSION,
             "input_blake3": corpus.input_blake3,
         },
         "routes": routes_doc,
@@ -852,6 +895,23 @@ def write_params(
     # both read it that way.
     if dwell_movement:
         doc["dwell_movement"] = dwell_movement
+    # Which GTFS static timetable this run was measured against: the feed's
+    # self-declared version AND a sha256 content digest computed over the exact
+    # fetched bytes. The version string alone cannot pin the snapshot (MTA
+    # republishes under the same name); the digest names it. Absent when the feed
+    # fetch failed — a missing input is never a fabricated one.
+    if feed is not None:
+        doc["gtfs_feed"] = {
+            "version": feed.version,
+            "sha256": feed.sha256,
+            "start": feed.start,
+            "end": feed.end,
+        }
+    # Pointer to this run's W3C PROV-JSON sidecar (state/prov/v<trained_at>.json),
+    # which states the full lineage in a standard vocabulary. The ad-hoc blocks
+    # above stay authoritative for existing consumers; this only adds a reference.
+    if prov_ref is not None:
+        doc["prov_ref"] = prov_ref
     body = json.dumps(doc).encode()
     versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
     for key in (PARAMS_KEY, versioned_key):
@@ -919,6 +979,7 @@ def write_segment_params(
     static_patterns: dict[tuple[str, str], list[RoutePattern]] | None,
     topology_source: str,
     through: frozenset[tuple[str, str, str]] | None,
+    prov_ref: str | None = None,
 ) -> int:
     """Write the segment baseline + adjacency as their OWN R2 object (not
     folded into params.json, which the Worker parses on the hot per-tick
@@ -1030,6 +1091,8 @@ def write_segment_params(
                 patterns_to_json(static_patterns) if static_patterns is not None else {}
             ),
         }
+        if prov_ref is not None:
+            doc["prov_ref"] = prov_ref
         body = json.dumps(doc).encode()
         versioned = f"{VERSIONED_SEGMENT_PREFIX}v{trained_at}.json"
         for key in (SEGMENT_PARAMS_KEY, versioned):
@@ -1067,6 +1130,7 @@ def write_service_baseline(
     generated_at: int,
     params_trained_at: int | None = None,
     quantiles: dict[str, Any] | None = None,
+    prov_ref: str | None = None,
 ) -> int:
     """Write the per-(route, schedule_bin) assigned_n baseline -- the supply
     axis's denominator -- as its OWN versioned R2 object, decoupled from
@@ -1092,6 +1156,8 @@ def write_service_baseline(
         doc["params_trained_at"] = params_trained_at
     if quantiles:
         doc["quantiles"] = quantiles
+    if prov_ref is not None:
+        doc["prov_ref"] = prov_ref
     body = json.dumps(doc).encode()
     versioned = f"{VERSIONED_SERVICE_PREFIX}v{generated_at}.json"
     for key in (SERVICE_BASELINE_KEY, versioned):
@@ -1113,6 +1179,8 @@ def write_scheduled_headway(
     client: S3Client,
     bucket: str,
     trained_at: int,
+    feed_zip_bytes: bytes | None = None,
+    prov_ref: str | None = None,
 ) -> int:
     """Write the scheduled-headway baseline as its OWN R2 object: median
     timetable time-between-trains at each route/direction's canonical reference
@@ -1130,7 +1198,15 @@ def write_scheduled_headway(
     never blocking the params publish. Live pointer + immutable versioned
     snapshot. Returns the cell count."""
     try:
-        zf = load_gtfs_zip()
+        # Reuse the run's already-fetched, already-digested feed bytes when the
+        # caller passes them (so the published cells derive from the exact bytes
+        # the PROV feed entity is named by); otherwise self-fetch, staying
+        # standalone and fail-soft for the backfill entrypoint.
+        zf = (
+            zipfile.ZipFile(io.BytesIO(feed_zip_bytes))
+            if feed_zip_bytes is not None
+            else load_gtfs_zip()
+        )
         try:
             reference_stops = select_reference_stops(zf)
             cells = scheduled_headway_baseline(zf, reference_stops)
@@ -1159,6 +1235,8 @@ def write_scheduled_headway(
             # absent cell is no scheduled service — never a fabricated 0.
             "cells": scheduled_headway_to_json(cells),
         }
+        if prov_ref is not None:
+            doc["prov_ref"] = prov_ref
         body = json.dumps(doc).encode()
         versioned = f"{VERSIONED_SCHEDULED_HEADWAY_PREFIX}v{trained_at}.json"
         for key in (SCHEDULED_HEADWAY_KEY, versioned):
@@ -1173,6 +1251,84 @@ def write_scheduled_headway(
     except Exception as exc:
         print(f"scheduled headway skipped ({exc})", file=sys.stderr)
         return 0
+
+
+PROV_KEY = "state/prov/latest.json"
+VERSIONED_PROV_PREFIX = "state/prov/"
+
+
+def fetch_gtfs_feed() -> tuple[bytes, FeedFacts] | None:
+    """Fetch the GTFS static feed once for the run's provenance.
+
+    Returns the fetched zip bytes plus the feed's identity: its self-declared
+    version AND a sha256 content digest computed over those exact bytes at fetch
+    time. The digest is what pins the snapshot — MTA republishes under the same
+    version name, so the version string alone cannot name which bytes were read.
+    Returns None when the feed is unavailable, so the run publishes no GTFS
+    provenance rather than an ungrounded claim; the bytes are handed to
+    write_scheduled_headway so its cells derive from the same snapshot the PROV
+    feed entity names."""
+    try:
+        data = fetch_gtfs_zip()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            version = read_version(zf)
+    except Exception as exc:
+        print(f"gtfs feed provenance unavailable ({exc})", file=sys.stderr)
+        return None
+    facts = FeedFacts(
+        version=version.version,
+        sha256=digest_of(data),
+        start=version.start.isoformat() if version.start else None,
+        end=version.end.isoformat() if version.end else None,
+    )
+    return data, facts
+
+
+def write_prov(
+    client: S3Client,
+    bucket: str,
+    *,
+    trained_at: int,
+    started_at: int,
+    corpus: CorpusStats,
+    artifacts: list[ArtifactFacts],
+    feed: FeedFacts | None = None,
+) -> str:
+    """Publish the run's W3C PROV-JSON sidecar: state/prov/latest.json (live
+    pointer) + state/prov/v<trained_at>.json (immutable snapshot). The document
+    is byte-stable for fixed inputs (training.prov.ProvDocument.to_json), and
+    every relation it carries is grounded in a recorded fact — the grounding rule
+    lives in training.prov, not here. Returns the versioned key, which is the
+    prov_ref the published artifacts point back at. Mirrors write_scheduled_headway's
+    versioned+alias, no-store publish."""
+    prov = code_provenance()
+    agent = AgentFacts(
+        code_sha=prov["code_sha"], dirty=prov["dirty"], producer=prov["producer"]
+    )
+    doc = build_trainer_run(
+        trained_at=trained_at,
+        started_at=started_at,
+        agent=agent,
+        manifest=ManifestFacts(
+            blake3=corpus.input_blake3,
+            n_alert_keys=corpus.n_input_versions,
+            n_vehicle_keys=corpus.n_vehicle_keys,
+            manifest_version=INPUT_MANIFEST_VERSION,
+        ),
+        artifacts=artifacts,
+        feed=feed,
+    )
+    body = doc.to_json().encode()
+    versioned = f"{VERSIONED_PROV_PREFIX}v{trained_at}.json"
+    for key in (PROV_KEY, versioned):
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+            CacheControl="no-store",
+        )
+    return versioned
 
 
 SEGMENT_DWELL_KEY = "state/segment_dwell.json"
@@ -1614,6 +1770,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         else end_date - timedelta(days=args.days - 1)
     )
     client = make_client(cfg)
+    # When this run began — the PROV activity's startedAtTime. Captured before the
+    # archive pulls and the fit so the run's [start, end] interval spans the work.
+    run_started_at = int(datetime.now(UTC).timestamp())
     # One static-timetable fetch for the whole run: it decides which stops the
     # advance baseline is fitted on, which set ships to the Worker, and the
     # published segment topology.
@@ -1926,6 +2085,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         "recovery_recalibration": recovery_recalib,
     }
     trained_at = int(datetime.now(UTC).timestamp())
+    # The versioned PROV sidecar key is deterministic from trained_at, so every
+    # artifact can carry a prov_ref pointing at it even though the sidecar is
+    # written last (after the artifact keys it references are known).
+    prov_ref = f"{VERSIONED_PROV_PREFIX}v{trained_at}.json"
+    # One GTFS feed fetch for the run's provenance: version + a content digest
+    # over the exact bytes. Those same bytes seed write_scheduled_headway so its
+    # cells derive from the snapshot the PROV feed entity names. None when the
+    # feed is unavailable — then no GTFS provenance, never an ungrounded one.
+    feed_fetch = fetch_gtfs_feed()
+    feed_bytes = feed_fetch[0] if feed_fetch is not None else None
+    feed_facts = feed_fetch[1] if feed_fetch is not None else None
     versioned_key = write_params(
         client,
         cfg.bucket,
@@ -1943,14 +2113,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         service_baseline=service_baseline,
         schedule_rate=schedule_rate,
         trained_at=trained_at,
+        feed=feed_facts,
+        prov_ref=prov_ref,
     )
-    write_service_baseline(
+    n_service_sidecar_cells = write_service_baseline(
         client,
         cfg.bucket,
         service_baseline_hourly,
         trained_at,
         params_trained_at=trained_at,
         quantiles=service_baseline_hourly_quantiles,
+        prov_ref=prov_ref,
     )
     n_segment_cells = write_segment_params(
         cfg,
@@ -1963,11 +2136,59 @@ def main(argv: Iterable[str] | None = None) -> int:
         static_patterns,
         topology_source,
         through,
+        prov_ref=prov_ref,
     )
     n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
         client, cfg.bucket, start_date, end_date, trained_at, through
     )
-    n_scheduled_headway_cells = write_scheduled_headway(client, cfg.bucket, trained_at)
+    n_scheduled_headway_cells = write_scheduled_headway(
+        client, cfg.bucket, trained_at, feed_zip_bytes=feed_bytes, prov_ref=prov_ref
+    )
+    # PROV-JSON sidecar: only artifacts actually published this run become
+    # entities (an entity is named by its immutable bucket key, a recorded fact),
+    # and a derivation edge is claimed only where the input it derives from is
+    # itself recorded — params/segment from the archive manifest, scheduled/segment
+    # topology from the GTFS feed. Fail-soft: a sidecar hiccup never blocks the
+    # params publish, exactly like the other state/ sidecars.
+    prov_artifacts: list[ArtifactFacts] = [
+        ArtifactFacts("params", versioned_key, derived_from_manifest=True),
+    ]
+    if n_service_sidecar_cells:
+        prov_artifacts.append(
+            ArtifactFacts(
+                "service_baseline",
+                f"{VERSIONED_SERVICE_PREFIX}v{trained_at}.json",
+            )
+        )
+    if n_segment_cells:
+        prov_artifacts.append(
+            ArtifactFacts(
+                "segment_params",
+                f"{VERSIONED_SEGMENT_PREFIX}v{trained_at}.json",
+                derived_from_feed=(topology_source == "gtfs_static"),
+                derived_from_manifest=True,
+            )
+        )
+    if n_scheduled_headway_cells:
+        prov_artifacts.append(
+            ArtifactFacts(
+                "scheduled_headway",
+                f"{VERSIONED_SCHEDULED_HEADWAY_PREFIX}v{trained_at}.json",
+                derived_from_feed=True,
+            )
+        )
+    try:
+        write_prov(
+            client,
+            cfg.bucket,
+            trained_at=trained_at,
+            started_at=run_started_at,
+            corpus=corpus,
+            artifacts=prov_artifacts,
+            feed=feed_facts,
+        )
+    except Exception as exc:
+        print(f"prov sidecar skipped ({exc})", file=sys.stderr)
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "

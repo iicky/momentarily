@@ -8979,3 +8979,59 @@ states (gapped / on-schedule / bunched / thin / off-reference / no-baseline) —
 each headline, tone class, per-bar strip colouring and degraded flag verified in
 the real browser. Tree left dirty for the conductor to land; no commit, no
 deploy.
+
+## 2026-09-05 — trainer runs now emit a W3C PROV-JSON sidecar per publish, with grounded used-edges and a vehicle-inclusive input manifest
+
+origin: agent
+
+Formalized the trainer's ad-hoc lineage as a W3C PROV document (PROV-JSON
+encoding). New training/prov.py is a small pure emitter: entities, activities,
+agents, and used / wasGeneratedBy / wasDerivedFrom / wasAssociatedWith relation
+maps, with prov:-prefixed record keys and a canonical byte-stable to_json()
+(sorted keys, no incidental whitespace). train_em publishes one document per run
+at state/prov/v<trained_at>.json plus a stable state/prov/latest.json alias
+(no-store, mirroring write_scheduled_headway), and each published artifact
+(params, scheduled_headway, segment_params, service sidecar) now carries a
+prov_ref pointing at it. The existing per-artifact provenance / feed_version /
+training_corpus blocks are untouched — the PROV doc is additive (epic constraint
+1), a sidecar not an inline (constraint 2).
+
+GROUNDING (epic constraint 3) is structural, not a convention: an entity cannot
+be registered without a non-empty recorded fact (digest / blake3 / bucket key),
+an activity without start+end timestamps, an agent without a code_sha; and a
+relation raises rather than emitting a dangling edge if either endpoint was
+never registered. So a run whose GTFS fetch fails carries no feed entity and no
+feed-derived edges — omission, never an ungrounded claim. Proven by a
+leakage-style unit test (ungrounded entity refused, dangling relation refused,
+feed=None omits the feed entity and every feed edge) alongside a byte-stability
+golden test.
+
+Discharged the provenance halves of three findings:
+  1. GTFS feed version AND a sha256 content digest computed over the fetched
+     bytes at fetch time are now recorded — in the PROV feed entity and in the
+     params doc's new gtfs_feed block. The digest is what pins the snapshot
+     (MTA republishes under the same version name). The ETag-caching half of
+     that finding is separate and out of scope. The same fetched bytes are
+     handed to write_scheduled_headway so its cells derive from the exact
+     snapshot the feed entity names.
+  2. Vehicle-archive keys are folded into training_corpus.input_blake3 via a new
+     load_r2.list_vehicle_keys, so the manifest now fingerprints the movement
+     inputs (movement_baseline + advance prior), not just alerts. This changes
+     input_blake3's meaning, so it is NOT redefined silently: a new
+     input_manifest_version marker (INPUT_MANIFEST_VERSION = 2) plus separate
+     n_input_versions / n_vehicle_keys counts ride in training_corpus, and the
+     field docstring + module docstring say what v2 covers.
+  3. The alert-archive manifest (already computed) is wired as the PROV input
+     manifest entity and as the params/segment wasDerivedFrom source.
+
+Verification. fixture-supported: 62 tests pass across test_prov.py (13, emitter
+byte-stability + PROV-JSON shape + leakage) and test_train_em.py (write_prov
+pointer+versioned round-trip, params gtfs_feed/prov_ref/manifest-version doc
+shape, and a fixture-path main() test proving main fetches the feed once, threads
+feed+prov_ref into the writers, and calls write_prov with the run start time and
+every published artifact — no live publish). ruff + pyright clean on the five
+changed files. measured-live: grant g01c7029a still covers this project;
+round-tripped a real PROV document through the production R2 bucket under a
+scratch key (put -> get byte-identical -> delete), exercising the exact
+put_object path write_prov uses without touching any real artifact or the latest
+alias. Tree left dirty for the conductor to land; no commit, no deploy.

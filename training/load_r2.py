@@ -100,6 +100,19 @@ def list_alert_keys(client: S3Client, bucket: str, start: date, end: date) -> li
     return keys
 
 
+def list_vehicle_keys(
+    client: S3Client, bucket: str, start: date, end: date
+) -> list[str]:
+    """Every vehicle-movement object key in the [start, end] window, in list
+    order. The vehicle archive feeds the serialized movement_baseline and the EM
+    normal-state advance prior, so its keys belong in the same input manifest the
+    alert keys fingerprint — see input_manifest_hash."""
+    keys: list[str] = []
+    for d in date_range(start, end):
+        keys.extend(list_keys(client, bucket, f"archive/vehicles/{d.isoformat()}/"))
+    return keys
+
+
 def fetch_objects(
     client: S3Client, bucket: str, keys: list[str]
 ) -> list[dict[str, Any]]:

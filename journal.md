@@ -9097,3 +9097,57 @@ round-tripped scratch v1/prov/ objects through the real R2 bucket (put -> head:
 CacheControl persisted exactly as 'public, max-age=31536000, immutable' and
 'no-store' -> delete), confirming the write path's cache headers survive on R2.
 No commit, no deploy — tree left dirty for the conductor to land.
+
+## 2026-09-05 — severity-graded regime confusion: the apparent under-call is mostly deliberate tier-1 filtering, robust across three windows
+origin: agent
+
+Settling the long-open question of whether a severity-graded MTA truth lets the
+regime confusion separate deliberate severity-filtering from genuine severe
+under-call. First an audit: the graded machinery is already on main, not
+missing. `mapping.severity_tier` (3 suspension / 2 Severe Delays / 1 ordinary
+Delays+reroutes / 0 planned+info+unknown), `CANONICAL_SEVERITY_FLOOR=2` /
+`TRUTH_VERSION=2`, `review.derive_graded_mta_state`, `review.mta_truth(obs,
+severity_floor)`, `load_truth_observations` fetched once with both truths
+derived from it, the `--severity-floor` CLI flag, the printed reclassified-tick
+count, and the `test_review.py` graded-state/floor tests all landed. The one
+structural change from the earlier uncommitted design: the canonical
+`confusion` matrix IS now the severe-only (floor 2) one and the breadth truth
+is kept as the labelled `confusion_breadth` sensitivity — the inverse of the
+old "broad confusion + add confusion_graded" plan. So there was nothing to
+rebuild.
+
+The like-for-like read, measured off three existing graded reviews (truth_version
+2, floor 2 vs the floor-1 breadth sensitivity on the SAME prediction population
+each window). Precision of the model's `normal` call — of every tick it called
+normal, the fraction truly normal — under breadth truth vs graded truth, with
+the residual genuine severe miss (graded pred-normal row's disrupted+suspended):
+
+| window        | pred-normal n | breadth-precision | graded-precision | genuine severe miss |
+| ------------- | ------------- | ----------------- | ---------------- | ------------------- |
+| 2026-07-09 5d | 32,198        | 19.6%             | 85.0%            | 4,841 (15.0%)       |
+| 2026-08-07 4d | 31,871        | 68.1%             | 97.4%            |   819 (2.6%)        |
+| 2026-09-04 4d | 31,747        | 78.6%             | 97.9%            |   668 (2.1%)        |
+
+The separation the graded truth was built for is real and stable: the bulk of
+what the breadth truth scored as under-call is the model correctly reading a
+tier-1 minor-alert tick as normal, not a missed severe event. On the two recent
+movement-primary windows the genuine severe under-call residual is ~2%; the
+older 07-09 window sits higher (15%) because that window's severe-truth density
+was far higher (breadth flagged 80% of pred-normal) and it predates the
+movement-primary emission. reclassified_ticks (breadth->graded normal) was
+13,713 / 16,688 / 33,752 respectively — the mass the breadth truth counted as
+disruption that is actually minor.
+
+The severe-DETECTION cells stay thin and weak — 2026-09-04 graded disrupted
+precision 59/780 = 7.6%, suspended 0/127 — but that is not window-limited and is
+not evidence of a bad detector: the movement-fed condition arm and the
+severe-ALERT truth are near-orthogonal by construction (prior family-level
+measurement: 0/173 severe overlap, supply<->flow ~0 mutual information; see the
+2026-09-04 memo). Firming those cells is the condition-graduation question (held
+NO-GO on 09-04 for independent reasons: thin incident count, negative causal
+recovery skill), not the truth-breadth-separation question settled here. A wider
+window would only firm the orthogonality-limited severe cells; the separation
+verdict already rests on ~32k pred-normal ticks per window across three windows.
+No R2 grant covers this thread (murk_get returns none), so no live rerun was
+run; none was needed. All numbers above are measured off committed-review
+`summary.json` artifacts; the machinery audit is code/fixture-supported.

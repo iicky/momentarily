@@ -551,6 +551,208 @@ def scheduled_swt(
     return out
 
 
+# --- scheduled headway baseline (published, for observed-vs-scheduled display) ---
+#
+# DISTINCT from the own-cell severity baseline above and from scheduled_swt.
+# This is the timetable's promised time-between-trains at each route/direction's
+# canonical reference stop, published so a consumer can render an observed
+# headway as a ratio/deviation ("~2x usual for this hour") WITHOUT a second
+# network fetch. It is a readability normaliser for the viz — a 6-minute gap is
+# ordinary at rush and dire at 2am — NOT the excess-wait severity reference,
+# which stays own-cell (see the module docstring): a schedule baseline false-
+# alarms ~45% of confirmed-normal ticks and must never gate severity.
+#
+# The static feed distinguishes three service classes (weekday / Saturday /
+# Sunday), not seven days, so the weekday timetable is broadcast identically to
+# Monday..Friday. Cells are keyed by hour-of-week 0..167 (day*24 + ET hour, with
+# Monday=0) so the Worker keys a live reading with a plain wall-clock arithmetic
+# and no bin function of its own.
+
+# Which hour-of-week days each static service class fills. Python weekday():
+# Monday=0 .. Sunday=6. Weekday service is the same timetable every Mon..Fri, so
+# it broadcasts to all five; Saturday and Sunday each own one day.
+CLASS_DAYS: dict[str, tuple[int, ...]] = {
+    "weekday": (0, 1, 2, 3, 4),
+    "saturday": (5,),
+    "sunday": (6,),
+}
+
+
+@dataclass(frozen=True)
+class ScheduledHeadwayCell:
+    """One (route, direction, hour-of-week) scheduled-headway reading.
+
+    `median_headway_s` is the median gap between consecutive scheduled trains
+    that DEPART the reference stop in this hour (departure-keyed, matching the
+    live surface's stop-transition keying). `n_trips` is how many trains depart
+    in the hour — a thin cell (n_trips small) is a wide-headway hour a consumer
+    should treat cautiously, not a measurement error."""
+
+    median_headway_s: int
+    n_trips: int
+
+
+def _representative_days(calendar: Calendar) -> dict[str, date]:
+    """One in-window service date per class whose calendar actually runs — the
+    anchor each class's schedule is read from a SINGLE day of, so the several
+    overlapping same-class NYCT calendars (`Saturday`, `Saturday-H-<range>`, ...)
+    that each redescribe one day's service on a different date range cannot pool
+    and count a day's trains two or three times. Weekday anchors on a Monday,
+    Saturday on a Saturday, Sunday on a Sunday."""
+    starts = [
+        date(int(w.start[:4]), int(w.start[4:6]), int(w.start[6:8]))
+        for w in calendar.weekly
+        if len(w.start) == 8
+    ]
+    d0 = max(starts) if starts else date.today()
+    want = {"weekday": (0, 4), "saturday": (5, 5), "sunday": (6, 6)}
+    out: dict[str, date] = {}
+    for cls, (lo, hi) in want.items():
+        for i in range(28):
+            d = d0 + timedelta(days=i)
+            if lo <= d.weekday() <= hi and calendar.active(d):
+                out[cls] = d
+                break
+    return out
+
+
+def scheduled_headway_baseline(
+    zf: zipfile.ZipFile,
+    reference_stops: Mapping[tuple[str, str], ReferenceStop],
+) -> dict[tuple[str, str, int], ScheduledHeadwayCell]:
+    """Median scheduled headway per (route, direction, hour-of-week 0..167) at
+    each route/direction's OWN canonical reference stop.
+
+    Departure-keyed, mirroring the live surface (worker/src/headway.ts keys a
+    passing on the departure from the reference stop). For each service class
+    (weekday / Saturday / Sunday) the scheduled departures at the reference stop
+    are read for exactly the service_ids active on ONE representative day of that
+    class (see _representative_days — avoids the overlapping-calendar double
+    count). Consecutive departures give the headways; each headway is attributed
+    to the hour-of-day of its EARLIER train, so a gap that straddles an hour
+    boundary is counted once, at the hour a rider who just missed a train is
+    standing in. Times at or past 24:00 wrap by hour-of-day (`% 24`), so genuine
+    after-midnight service lands in the small hours it runs in rather than being
+    dropped.
+
+    The weekday timetable is broadcast to Monday..Friday identically (the static
+    feed carries no per-weekday distinction); Saturday and Sunday are their own
+    days. A cell is emitted only where a median is defined (>= 1 headway); an
+    hour with no scheduled service, or a single isolated last-of-day train, is
+    absent from the result — never a fabricated 0.
+    """
+    ref_of = {(rs.route, rs.direction): rs.stop_id for rs in reference_stops.values()}
+    ref_stop_ids = set(ref_of.values())
+    calendar = read_calendar(zf)
+    rep_days = _representative_days(calendar)
+    # service_id -> the classes whose representative day it runs on. A sid shared
+    # across classes (rare in the NYCT feed) contributes to each, which is honest
+    # — the schedule genuinely operates on both days.
+    cls_of: dict[str, list[str]] = defaultdict(list)
+    for cls, day in rep_days.items():
+        for sid in calendar.active(day):
+            cls_of[sid].append(cls)
+
+    trip_cls: dict[str, tuple[str, list[str]]] = {}
+    with zf.open("trips.txt") as raw:
+        for row in csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8-sig")):
+            classes = cls_of.get(row["service_id"])
+            if classes:
+                trip_cls[row["trip_id"]] = (base_route(row["route_id"]), classes)
+
+    # (route, direction, class) -> scheduled departure seconds at the ref stop.
+    departures: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+    with zf.open("stop_times.txt") as raw:
+        reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+        header = next(reader)
+        trip_col = header.index("trip_id")
+        stop_col = header.index("stop_id")
+        dep_col = header.index("departure_time")
+        for row in reader:
+            stop = row[stop_col]
+            if stop not in ref_stop_ids:
+                continue
+            meta = trip_cls.get(row[trip_col])
+            if meta is None:
+                continue
+            route, classes = meta
+            direction = direction_of(stop, row[trip_col])
+            if direction is None:
+                continue
+            # Count only at this route/direction's OWN reference stop: a trunk
+            # stop sits in several routes' sequences and a through-running train
+            # would otherwise inflate a route it merely shares track with.
+            if ref_of.get((route, direction)) != stop:
+                continue
+            parts = row[dep_col].split(":")
+            if len(parts) != 3:
+                continue
+            try:
+                sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            except ValueError:
+                continue
+            for cls in classes:
+                departures[(route, direction, cls)].append(sec)
+
+    out: dict[tuple[str, str, int], ScheduledHeadwayCell] = {}
+    for (route, direction, cls), secs in departures.items():
+        secs.sort()
+        per_hour_gaps: dict[int, list[int]] = defaultdict(list)
+        per_hour_trips: dict[int, int] = defaultdict(int)
+        for s in secs:
+            per_hour_trips[(s // 3600) % 24] += 1
+        for a, b in pairwise(secs):
+            gap = b - a
+            if gap <= 0:  # duplicate scheduled time; not a real interval
+                continue
+            per_hour_gaps[(a // 3600) % 24].append(gap)
+        for hour, gaps in per_hour_gaps.items():
+            cell = ScheduledHeadwayCell(
+                median_headway_s=round(statistics.median(gaps)),
+                n_trips=per_hour_trips[hour],
+            )
+            for day in CLASS_DAYS[cls]:
+                out[(route, direction, day * 24 + hour)] = cell
+    return out
+
+
+# The static reference stop is fixed per (route, direction); at runtime the live
+# surface can fall back to a reroute stop (a core reroute leaves the canonical
+# stop unserved), so a ratio taken then compares a reading at one stop against a
+# baseline at another. The baseline cannot know that in advance — it keys on the
+# STATIC canonical stop. The note ships in the artifact so a consumer states the
+# limitation instead of papering over it.
+SCHEDULED_HEADWAY_NOTE = (
+    "Median scheduled headway (departure-keyed) at each route/direction's static "
+    "canonical reference stop, per hour-of-week (day*24 + ET hour, Monday=0). "
+    "Weekday service is broadcast identically to Mon-Fri; Saturday and Sunday are "
+    "read from their own representative day. A display normaliser for observed-vs-"
+    "scheduled headway, NOT the excess-wait severity baseline (that stays own-cell). "
+    "Limitations: (1) keys on the STATIC reference stop, so a runtime reroute-"
+    "fallback reading is compared against a different stop's baseline; (2) one "
+    "representative day per class, so a within-class holiday (calendar_dates "
+    "exception) is not reflected; (3) after-midnight service is attributed to its "
+    "own class's small hours, slightly misassigning the Fri->Sat and Sun->Mon "
+    "boundaries."
+)
+
+
+def scheduled_headway_to_json(
+    cells: Mapping[tuple[str, str, int], ScheduledHeadwayCell],
+) -> dict[str, dict[str, int]]:
+    """Serialize scheduled-headway cells for the state/ artifact: the flat key
+    'route|direction|hour_of_week' -> {median_headway_s, n_trips}. The consumer
+    rebuilds the key from a live tick as `${route}|${direction}|${dow*24+hour}`
+    in ET (Monday=0), so no bin function has to be kept in sync."""
+    return {
+        f"{route}|{direction}|{how}": {
+            "median_headway_s": cell.median_headway_s,
+            "n_trips": cell.n_trips,
+        }
+        for (route, direction, how), cell in sorted(cells.items())
+    }
+
+
 def load_gtfs_zip(path: str | None = None) -> zipfile.ZipFile:
     """Open a GTFS static zip from a local path (for a window-matched archived
     feed) or fetch the current one."""

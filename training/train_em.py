@@ -55,8 +55,16 @@ from training.gtfs_static import (
     dominant_successor,
     load_topology,
     patterns_to_json,
+    read_version,
     stops_to_json,
     through_stops,
+)
+from training.headway import (
+    SCHEDULED_HEADWAY_NOTE,
+    load_gtfs_zip,
+    scheduled_headway_baseline,
+    scheduled_headway_to_json,
+    select_reference_stops,
 )
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
@@ -1097,6 +1105,76 @@ def write_service_baseline(
     return len(hourly)
 
 
+SCHEDULED_HEADWAY_KEY = "state/scheduled_headway.json"
+VERSIONED_SCHEDULED_HEADWAY_PREFIX = "state/scheduled_headway/"
+
+
+def write_scheduled_headway(
+    client: S3Client,
+    bucket: str,
+    trained_at: int,
+) -> int:
+    """Write the scheduled-headway baseline as its OWN R2 object: median
+    timetable time-between-trains at each route/direction's canonical reference
+    stop, per hour-of-week 0..167 (see training.headway.scheduled_headway_baseline).
+
+    Published so a consumer can render an observed headway as a ratio/deviation
+    ("~2x the usual gap for this hour") with no second network fetch — it lands
+    in state/ beside the other weekly-fit artifacts the Worker already reads. A
+    readability normaliser for the viz, NOT the excess-wait severity baseline,
+    which stays own-cell (a schedule baseline false-alarms ~45% of normal ticks).
+
+    Self-contained and fail-soft, mirroring write_segment_dwell: one static-feed
+    fetch, parsed with the same trip-by-trip streaming the topology read uses; a
+    fetch or parse hiccup just skips the object and leaves the last good one,
+    never blocking the params publish. Live pointer + immutable versioned
+    snapshot. Returns the cell count."""
+    try:
+        zf = load_gtfs_zip()
+        try:
+            reference_stops = select_reference_stops(zf)
+            cells = scheduled_headway_baseline(zf, reference_stops)
+            version = read_version(zf)
+        finally:
+            zf.close()
+        if not cells:
+            print("scheduled headway skipped (no cells)", file=sys.stderr)
+            return 0
+        doc = {
+            "schema_version": SCHEMA_VERSION,
+            "trained_at": trained_at,
+            "provenance": code_provenance(),
+            # Which timetable these headways were read from: a scheduled number
+            # is meaningless without naming the feed version that produced it.
+            "feed_version": version.version,
+            "note": SCHEDULED_HEADWAY_NOTE,
+            # 'route|direction' -> the static canonical reference stop the cell
+            # is keyed on, so a consumer can see WHERE the baseline was measured
+            # and detect a runtime reroute-fallback mismatch.
+            "reference_stops": {
+                f"{rs.route}|{rs.direction}": rs.stop_id
+                for rs in reference_stops.values()
+            },
+            # 'route|direction|hour_of_week' -> {median_headway_s, n_trips}. An
+            # absent cell is no scheduled service — never a fabricated 0.
+            "cells": scheduled_headway_to_json(cells),
+        }
+        body = json.dumps(doc).encode()
+        versioned = f"{VERSIONED_SCHEDULED_HEADWAY_PREFIX}v{trained_at}.json"
+        for key in (SCHEDULED_HEADWAY_KEY, versioned):
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+                CacheControl="no-store",
+            )
+        return len(cells)
+    except Exception as exc:
+        print(f"scheduled headway skipped ({exc})", file=sys.stderr)
+        return 0
+
+
 SEGMENT_DWELL_KEY = "state/segment_dwell.json"
 VERSIONED_SEGMENT_DWELL_PREFIX = "state/segment_dwell/"
 
@@ -1889,6 +1967,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
         client, cfg.bucket, start_date, end_date, trained_at, through
     )
+    n_scheduled_headway_cells = write_scheduled_headway(client, cfg.bucket, trained_at)
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "
@@ -1907,7 +1986,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"segment_cells={n_segment_cells}, segment_dwell_cells={n_segment_dwell_cells} "
         f"[own={segment_dwell_stats.n_cells_own}, "
         f"route={segment_dwell_stats.n_cells_route}, "
-        f"system={segment_dwell_stats.n_cells_system}])"
+        f"system={segment_dwell_stats.n_cells_system}], "
+        f"scheduled_headway_cells={n_scheduled_headway_cells})"
     )
     return 0
 

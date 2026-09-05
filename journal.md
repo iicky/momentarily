@@ -8855,3 +8855,68 @@ the new reading appended — while a cell no train cleared held unchanged. The
 deployed ledger still caps at 6, so live windows show 5 entries today; the full
 12-entry behaviour is fixture-proven and takes effect once this ledger cap
 ships.
+
+## 2026-09-04 — a scheduled-headway baseline lands in state/, so an observed gap can read as a ratio; derived cells match published MTA reality
+
+origin: agent
+
+A parse extension of the static feed the topology read already streams, published
+as `state/scheduled_headway.json` beside the other weekly-fit artifacts. Median
+scheduled headway per (route, direction, hour-of-week 0..167) at each cell's
+STATIC canonical reference stop, `{median_headway_s, n_trips}` per cell — so a
+consumer can render an observed headway as a ratio/deviation ("~2x the usual gap
+for this hour") with no second network fetch. Departure-keyed, matching the live
+surface's stop-transition keying (worker/src/headway.detectPassings).
+
+**Distinct from the severity baseline, on purpose.** This is a readability
+normaliser for the viz, NOT the excess-wait reference — that stays own-cell
+(a schedule baseline false-alarms ~45% of confirmed-normal ticks; the module
+docstring's stance is untouched). The artifact says so in its own `note`.
+
+**Service-period reality, handled explicitly.** Three static service classes
+(weekday / Saturday / Sunday), each read from ONE representative in-window day of
+that class (avoids the overlapping-calendar double count the NYCT feed carries).
+The weekday timetable broadcasts identically to Mon-Fri; Saturday and Sunday own
+their day. After-midnight service (>= 24:00 service-day time) wraps by hour-of-day
+into the small hours it runs in, rather than being dropped. A cell with no
+scheduled service is ABSENT — never a fabricated 0. Sunday cells are absent when
+the feed carries no Sunday service_id.
+
+**Stated limitations (in the artifact provenance, not papered over).** (1) keys
+on the STATIC reference stop, so a runtime reroute-fallback reading is compared
+against a different stop's baseline; (2) one representative day per class, so a
+within-class holiday exception is not reflected; (3) after-midnight service is
+attributed to its own class's small hours, slightly misassigning the Fri->Sat
+and Sun->Mon boundaries.
+
+**Sanity check — derived (MEASURED, live static feed `20260826-X-long-term-
+supplement-trip-ids`, 50 reference stops, 7642 cells) vs published MTA reality
+(DOCUMENTED: MTA service standards + the 20-min overnight policy).** Median
+scheduled headway, north, `n` = trips in the hour:
+
+| rt | AM rush (h8) | midday (h12) | overnight (h2) | Sat (h12) | published peak |
+|----|-------------|-------------|----------------|-----------|----------------|
+|  7 | 2:30 (n=27) | 5:00 (n=12) | 20:00 (n=3)    | 6:00      | ~2-3 min (busiest line) |
+|  6 | 3:30 (n=16) | 4:00 (n=15) | 20:00 (n=3)    | 6:00      | ~3-4 min |
+|  L | 3:00 (n=21) | 5:00 (n=12) | 20:00 (n=3)    | 4:00      | ~3-4 min (CBTC) |
+|  1 | 4:30 (n=12) | 6:00 (n=11) | 20:00 (n=3)    | 6:00      | ~5 min |
+|  A | 4:00 (n=15) | 8:00 (n=8)  | 20:00 (n=6)    | 10:00     | ~4-5 min |
+|  Q | 7:00 (n=9)  | 8:00 (n=8)  | 20:00 (n=3)    | 8:00      | ~5-7 min |
+
+Every peak cell sits inside its published band; the systemwide 20-min overnight
+policy reproduces exactly at h2 across all lines; the A's earlier-morning (h3)
+10-min headway correctly distinguishes its fuller overnight service from the
+other lines' 20-min. This is the derived-vs-reality agreement the acceptance
+asked for, at the documented tier (the observed-headway archive median tier
+needs the R2 trace reconstruction and was not run here).
+
+Contract for the viz wave (do not rename without telling the conductor): key
+`state/scheduled_headway.json`, cell key `route|direction|hour_of_week` with
+hour_of_week = ET `weekday()*24 + hour` (Monday=0), value
+`{median_headway_s, n_trips}`. Six tests pin the median/trip-count, the Mon-Fri
+broadcast, the weekend-own-day + absent-Sunday honesty, the no-service omission,
+the after-midnight wrap, and the JSON key shape (tests/test_headway.py, 21/21
+pass). ruff + pyright clean on the three changed files. The publish mirrors
+write_segment_dwell exactly (live pointer + immutable `v<trained_at>` snapshot,
+fail-soft), wired into the trainer run after write_segment_dwell. Tree left
+dirty for the conductor to land.

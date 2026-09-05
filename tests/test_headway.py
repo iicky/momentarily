@@ -20,6 +20,8 @@ from training.headway import (
     headway_cv,
     headway_events,
     reference_arrivals,
+    scheduled_headway_baseline,
+    scheduled_headway_to_json,
     scheduled_swt,
     select_reference_stops,
     tick_aligned_waits,
@@ -310,3 +312,102 @@ def test_a_sub_poll_dwell_train_collapses_a_double_headway():
     assert len(arr_hw) == 1  # one double-length gap x->y
     assert len(pass_hw) == 2  # split into x->m and m->y
     assert arr_hw[0].headway_sec == pass_hw[0].headway_sec + pass_hw[1].headway_sec
+
+
+# --- scheduled-headway baseline (the published observed-vs-scheduled normaliser) ---
+
+
+def _sched_stop_times(trip: str, ref_dep: str) -> list[str]:
+    """Three rows for a 3-stop trip whose MIDDLE stop A02N (the only through-stop,
+    so the reference) departs at ref_dep. The flanking stops only exist so A02N
+    ranks as a through-stop; their times don't enter the baseline."""
+    h, m, s = (int(x) for x in ref_dep.split(":"))
+    base = h * 3600 + m * 60 + s
+
+    def hhmmss(sec: int) -> str:
+        return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
+
+    return [
+        f"{trip},A01N,{hhmmss(base - 120)},{hhmmss(base - 120)},1",
+        f"{trip},A02N,{ref_dep},{ref_dep},2",
+        f"{trip},A03N,{hhmmss(base + 120)},{hhmmss(base + 120)},3",
+    ]
+
+
+def _sched_zip():
+    # Weekday: four 8am departures at A02N (08:00, 08:03, 08:06, 08:12) -> gaps
+    # 180, 180, 360, all attributed to hour 8. Saturday: two departures 600s
+    # apart. No Sunday service_id, so Sunday cells must be absent.
+    trips: list[str] = []
+    stop_times: list[str] = []
+    wd = ["08:00:00", "08:03:00", "08:06:00", "08:12:00"]
+    for i, dep in enumerate(wd):
+        t = f"w{i}..N"
+        trips.append(f"A,{t},Weekday,Uptown,0,sh")
+        stop_times += _sched_stop_times(t, dep)
+    for i, dep in enumerate(["08:00:00", "08:10:00"]):
+        t = f"s{i}..N"
+        trips.append(f"A,{t},Saturday,Uptown,0,sh")
+        stop_times += _sched_stop_times(t, dep)
+    return make_gtfs_zip(trips, stop_times)
+
+
+def test_scheduled_headway_is_the_median_gap_with_a_trip_count():
+    zf = _sched_zip()
+    cells = scheduled_headway_baseline(zf, select_reference_stops(zf))
+    # Monday (day 0) hour 8: median(180, 180, 360) = 180, four departures.
+    cell = cells[("A", "north", 8)]
+    assert cell.median_headway_s == 180
+    assert cell.n_trips == 4
+
+
+def test_scheduled_headway_broadcasts_one_weekday_across_mon_to_fri():
+    zf = _sched_zip()
+    cells = scheduled_headway_baseline(zf, select_reference_stops(zf))
+    # hour-of-week 8, 32, 56, 80, 104 are Mon..Fri 08:00 — the static feed has
+    # one weekday timetable, so all five carry the identical cell.
+    monday = cells[("A", "north", 8)]
+    for day in range(5):
+        assert cells[("A", "north", day * 24 + 8)] == monday
+
+
+def test_scheduled_headway_weekend_is_its_own_day_and_sunday_is_absent():
+    zf = _sched_zip()
+    cells = scheduled_headway_baseline(zf, select_reference_stops(zf))
+    saturday = cells[("A", "north", 5 * 24 + 8)]  # day 5 = Saturday
+    assert saturday.median_headway_s == 600
+    assert saturday.n_trips == 2
+    # No Sunday service_id in the feed -> the Sunday cell is absent, never a 0.
+    assert ("A", "north", 6 * 24 + 8) not in cells
+
+
+def test_scheduled_headway_omits_hours_with_no_service():
+    zf = _sched_zip()
+    cells = scheduled_headway_baseline(zf, select_reference_stops(zf))
+    # Nothing runs at 15:00 on any day: the cell is absent, not a fabricated 0.
+    assert ("A", "north", 15) not in cells
+    assert ("A", "north", 5 * 24 + 15) not in cells
+
+
+def test_scheduled_headway_wraps_after_midnight_into_the_small_hours():
+    # A single weekday cluster past 24:00 (service-day time): 24:50, 25:00, 25:10
+    # -> wall-clock 00:50, 01:00, 01:10, gaps attributed to hours 0 and 1, not
+    # dropped as ">= 24:00" and not smeared onto the evening.
+    trips = [f"n{i}..N" for i in range(3)]
+    stop_times: list[str] = []
+    for t, dep in zip(trips, ["24:50:00", "25:00:00", "25:10:00"], strict=True):
+        stop_times += _sched_stop_times(t, dep)
+    trip_rows = [f"A,{t},Weekday,Uptown,0,sh" for t in trips]
+    zf = make_gtfs_zip(trip_rows, stop_times)
+    cells = scheduled_headway_baseline(zf, select_reference_stops(zf))
+    assert cells[("A", "north", 0)].median_headway_s == 600  # 24:50 -> 25:00
+    assert ("A", "north", 1) in cells  # 25:00 -> 25:10, hour 1
+    assert ("A", "north", 23) not in cells  # nothing smeared onto the evening
+
+
+def test_scheduled_headway_json_key_is_route_direction_hour_of_week():
+    zf = _sched_zip()
+    doc = scheduled_headway_to_json(
+        scheduled_headway_baseline(zf, select_reference_stops(zf))
+    )
+    assert doc["A|north|8"] == {"median_headway_s": 180, "n_trips": 4}

@@ -67,6 +67,7 @@ function trainedWithBaseline(
     serviceBaseline: {},
     serviceBaselineHourly: {},
     scheduleRate,
+    provRef: null,
   };
 }
 
@@ -491,6 +492,7 @@ describe('movementObservationFields', () => {
       serviceBaseline: {},
       serviceBaselineHourly: {},
       scheduleRate: {},
+      provRef: null,
     };
   }
 
@@ -616,6 +618,7 @@ describe('serviceObservationFields', () => {
       serviceBaseline,
       serviceBaselineHourly: {},
       scheduleRate: {},
+      provRef: null,
     };
   }
 

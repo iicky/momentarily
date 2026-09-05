@@ -1178,6 +1178,18 @@
           "default": "unknown",
           "title": "Producer",
           "type": "string"
+        },
+        "prov_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prov Ref"
         }
       },
       "title": "Provenance",

@@ -28,6 +28,22 @@ export function versionedParamsKey(trainedAt: number): string {
   return `${VERSIONED_PARAMS_PREFIX}v${trainedAt}.json`;
 }
 
+// The trainer mirrors each run's W3C PROV-JSON document publicly under this
+// prefix as v<trained_at>.json (training/train_em.py PUBLIC_PROV_PREFIX), served
+// off the Worker's own custom domain. Standard-vocabulary provenance is FOR
+// outside consumers, so the snapshot points at the public URL rather than the
+// private state/ key. Kept in lockstep with the trainer's layout.
+const PUBLIC_ORIGIN = 'https://feed.momentarily.nyc';
+export const PUBLIC_PROV_PREFIX = 'v1/prov/';
+
+/** The public URL of a params version's PROV document, mirroring the trainer's
+ * own layout. Pure string derivation — no read — so provenance carries it for
+ * free. Gated by the caller on the params doc actually having published a PROV
+ * document (TrainedParams.provRef), so this is never a fabricated pointer. */
+export function publicProvUrl(trainedAt: number): string {
+  return `${PUBLIC_ORIGIN}/${PUBLIC_PROV_PREFIX}v${trainedAt}.json`;
+}
+
 // Semantic bounds, not just finiteness: a malformed-but-finite trainer upload
 // (negative mass, a transition row that doesn't sum to 1, a probability > 1)
 // would otherwise pass shape validation and feed invalid numbers straight into
@@ -229,6 +245,13 @@ const TrainedParamsWrapperSchema = z.object({
   // the movement recovery arm only, not the whole params upload. Absent
   // entirely for params.json written before the movement recovery arm existed.
   dwell_movement: z.unknown().optional(),
+  // The private state/ key of this run's W3C PROV-JSON sidecar
+  // (state/prov/v<trained_at>.json), written by the trainer. Its PRESENCE is the
+  // grounded signal that a PROV document exists for these params: params trained
+  // before the emitter existed carry no prov_ref, and the snapshot then omits
+  // its own reference rather than fabricating one. The value is a state/ key, not
+  // the public URL — the Worker derives the public prov_ref from trained_at.
+  prov_ref: z.string().optional(),
 });
 
 // The three "kind of disruption" flags (delays/service_change/planned) all
@@ -297,6 +320,10 @@ export interface TrainedParams {
   // clock. Empty until the trainer publishes dwell_movement; the Worker falls
   // back to the alert-HMM dwell (`dwell` above) when a cell is absent.
   dwellMovement: DwellMovement;
+  // The state/ key of this run's PROV-JSON sidecar, or null for params trained
+  // before the trainer emitted one. Not read on the hot path; it is the grounded
+  // signal snapshot.ts uses to decide whether to carry a public prov_ref.
+  provRef: string | null;
 }
 
 /**
@@ -458,6 +485,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
     serviceBaselineHourly,
     scheduleRate,
     dwellMovement,
+    provRef: wrapper.data.prov_ref ?? null,
   };
 }
 

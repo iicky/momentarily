@@ -47,7 +47,7 @@ import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
 import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
 import type { DwellQuantiles, RidershipBaselineDoc, ServiceWeightBaselineDoc, TrainedParams } from './params';
-import { dwellForRouteState, movementDwellFor, paramsForRoute, versionedParamsKey } from './params';
+import { dwellForRouteState, movementDwellFor, paramsForRoute, publicProvUrl, versionedParamsKey } from './params';
 import { servicePercentile } from './movement_state';
 import type { EquipmentOut, StationStatus } from './stations';
 import type { StationOut } from './stations_static';
@@ -448,6 +448,19 @@ function paramsProvenance(trained: TrainedParams | null): ParamsProvenance {
   };
 }
 
+// The public URL of the PROV-JSON document for the params behind this snapshot,
+// or null when there is none to point at. Grounded, never fabricated: it is
+// derived only when the served params doc actually carries a prov_ref (proof the
+// trainer emitted a PROV document for this run). Null on bootstrap params
+// (trained === null: no params.json read at all) and on params trained before
+// the emitter existed (provRef === null). The value is built from trained_at,
+// which pins the same versioned document the params doc's own state/ prov_ref
+// names — the two are co-produced by one run.
+function provRefFor(trained: TrainedParams | null): string | null {
+  if (trained === null || trained.provRef === null) return null;
+  return publicProvUrl(trained.trained_at);
+}
+
 export function buildSnapshot(args: {
   generatedAt: number;
   alertsFreshness: number;
@@ -688,10 +701,17 @@ export function buildSnapshot(args: {
   );
   const compat = buildCompat(route_status, args.routeSnapshots);
 
+  // Omit prov_ref entirely (rather than emit null) when there is no PROV
+  // document to point at, matching the optional-field contract.
+  const provRef = provRefFor(args.trainedParams);
   return {
     schema_version: SCHEMA_VERSION,
     generated_at: args.generatedAt,
-    provenance: { ...codeProvenance(), params: paramsProvenance(args.trainedParams) },
+    provenance: {
+      ...codeProvenance(),
+      params: paramsProvenance(args.trainedParams),
+      ...(provRef !== null ? { prov_ref: provRef } : {}),
+    },
     attribution: ATTRIBUTION,
     supported_modes: ["subway"],
     freshness: {

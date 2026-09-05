@@ -9035,3 +9035,65 @@ round-tripped a real PROV document through the production R2 bucket under a
 scratch key (put -> get byte-identical -> delete), exercising the exact
 put_object path write_prov uses without touching any real artifact or the latest
 alias. Tree left dirty for the conductor to land; no commit, no deploy.
+
+## 2026-09-05 — the published snapshot now references its params' PROV document by public URL, and trainer runs mirror the PROV sidecar under the public v1/ prefix
+
+origin: agent
+
+Second slice of the PROV epic (after the trainer emitter landed). Two changes.
+
+1. Snapshot reference. Provenance gains an additive prov_ref field: the public
+   URL of the W3C PROV-JSON document for the params behind this snapshot's
+   inference (https://feed.momentarily.nyc/v1/prov/v<trained_at>.json). It is
+   present ONLY when grounded: parseTrainedParams now captures the params doc's
+   own prov_ref (the state/ key the trainer records when it emits a PROV doc)
+   as TrainedParams.provRef, and snapshot.ts derives the public URL from
+   trained_at ONLY when provRef is non-null. Params trained before the emitter
+   existed carry no prov_ref, so the snapshot omits the field entirely rather
+   than fabricating a pointer at a document that does not exist — absent, never
+   null. Bootstrap params (no params.json) and a params read/parse failure
+   (trainedParams === null) likewise carry no reference. The field is additive
+   on the shared Provenance base and attached by snapshot.ts alone, so
+   trains.json (no model) is unaffected. Schema surfaces kept in sync:
+   schema.py Provenance.prov_ref, the regenerated snapshot.schema.json, and the
+   worker buildinfo Provenance interface.
+
+2. Public mirror (conductor's position, adopted). write_prov now mirrors each
+   run's PROV document under the public v1/prov/ prefix — the only prefix
+   index.ts serves — alongside the private state/prov/ copies: v1/prov/v<trained_
+   at>.json is immutable (a run's lineage never changes once written) and caches
+   for a year (public, max-age=31536000, immutable); v1/prov/latest.json moves
+   every run and is no-store. Standard-vocabulary provenance is FOR outside
+   consumers, and the docs are tiny and immutable, so the snapshot points at the
+   public URL form and a consumer can walk to the lineage without knowing bucket
+   internals. The private state/ copies are unchanged (still no-store; never
+   served). The existing ad-hoc provenance blocks are untouched (epic
+   constraint 1).
+
+Pre-emitter behavior, measured-live: the current live params (trained_at
+1788229972) predate the emitter — its params.json carries no prov_ref field —
+so the derivation's absent-branch is the real production case today. Neither
+state/prov/ nor v1/prov/ has any object yet (0 keys each), so there is no
+params-with-provRef-but-no-mirror window in production: when this slice lands,
+the same trainer run writes the params prov_ref AND both mirror keys together.
+
+Publish tick as prov:Activity (epic-optional): NOT done, deliberately. Grounding
+it well needs a recorded fact per tick (the tick's start/end and the exact
+params/inputs it consumed) that the Worker does not persist today; forcing it
+would mean a new per-tick state write. Left as future work on the models-page
+slice rather than emitting an ungrounded activity (epic constraint 3).
+
+Verification. fixture-supported: touched Python green — test_train_em.py gains a
+test proving write_prov writes both public mirror keys byte-identical to the
+private copy with the immutable / no-store cache headers, plus the existing prov
+tests and the schema-parity regen test; ruff + pyright clean on the changed
+Python. Worker: 551 vitest tests pass, including three new snapshot derivation
+tests (public URL when provRef set / absent for pre-emitter params / absent for
+bootstrap) and two params-parse tests (provRef captured when present, null when
+absent); worker typecheck adds no new errors over the pre-existing baseline.
+measured-live (grant still covers this thread): read the production
+state/params.json and confirmed trained_at 1788229972 with no prov_ref; and
+round-tripped scratch v1/prov/ objects through the real R2 bucket (put -> head:
+CacheControl persisted exactly as 'public, max-age=31536000, immutable' and
+'no-store' -> delete), confirming the write path's cache headers survive on R2.
+No commit, no deploy — tree left dirty for the conductor to land.

@@ -566,6 +566,13 @@ class Provenance(BaseModel):
     # Identity of the trained params behind the inference. Present on the snapshot
     # (always, even on bootstrap); absent on trains.json, which carries no model.
     params: ParamsProvenance | None = None
+    # Public URL of the W3C PROV-JSON document for the params behind this
+    # snapshot's inference (v1/prov/v<trained_at>.json), so a consumer can walk
+    # from the snapshot to the trainer run's lineage in a standard vocabulary.
+    # ABSENT — never a fabricated pointer — when the served params carry no PROV
+    # document (params trained before the emitter existed): the Worker derives
+    # this only from a recorded fact, the params doc's own prov_ref.
+    prov_ref: str | None = None
 
 
 class SegmentRecovery(BaseModel):

@@ -173,6 +173,74 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     });
   });
 
+  test('provenance.prov_ref: public PROV url when the served params carry one', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: {
+        schema_version: '1',
+        trained_at: 1787787983,
+        routes: {},
+        dwell: {},
+        dwellByAlert: {},
+        movementBaseline: {},
+        throughStops: null,
+        serviceBaselineHourly: null,
+        // The params doc recorded its PROV sidecar's state/ key: a run that
+        // emitted a PROV document. The snapshot points at the public mirror URL.
+        provRef: 'state/prov/v1787787983.json',
+      } as unknown as Parameters<typeof buildSnapshot>[0]['trainedParams'],
+      tickSeconds: TICK_SECONDS,
+    });
+    check(snap);
+    expect(snap.provenance.prov_ref).toBe(
+      'https://feed.momentarily.nyc/v1/prov/v1787787983.json',
+    );
+  });
+
+  test('provenance.prov_ref: absent for params trained before the emitter existed', () => {
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: {
+        schema_version: '1',
+        // The current live params (1788229972) predate the PROV emitter, so
+        // parseTrainedParams yields provRef: null and no reference is fabricated.
+        trained_at: 1788229972,
+        routes: {},
+        dwell: {},
+        dwellByAlert: {},
+        movementBaseline: {},
+        throughStops: null,
+        serviceBaselineHourly: null,
+        provRef: null,
+      } as unknown as Parameters<typeof buildSnapshot>[0]['trainedParams'],
+      tickSeconds: TICK_SECONDS,
+    });
+    check(snap);
+    // Absent, never null — an unpublished PROV doc is a missing field.
+    expect('prov_ref' in snap.provenance).toBe(false);
+  });
+
+  test('provenance.prov_ref: absent when params failed to load (bootstrap)', () => {
+    // trainedParams === null covers both a first-deploy bootstrap and a
+    // read/parse failure of params.json: no params identity, so no PROV to walk.
+    const snap = buildSnapshot({
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+    });
+    check(snap);
+    expect('prov_ref' in snap.provenance).toBe(false);
+  });
+
   test('system.accessibility sums elevators/escalators across station_status', () => {
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,
@@ -405,6 +473,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       serviceBaseline: {},
       serviceBaselineHourly: {},
       scheduleRate: {},
+      provRef: null,
     };
     const snap = buildSnapshot({
       generatedAt: 1_700_000_000,

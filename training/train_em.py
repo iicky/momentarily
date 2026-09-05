@@ -1255,6 +1255,14 @@ def write_scheduled_headway(
 
 PROV_KEY = "state/prov/latest.json"
 VERSIONED_PROV_PREFIX = "state/prov/"
+# Public mirror of the PROV sidecars. Standard-vocabulary provenance is FOR
+# outside consumers, and the docs are tiny and immutable, so they are served
+# under the public v1/ prefix (the only prefix index.ts exposes) alongside the
+# private state/ copies. A snapshot's provenance.prov_ref points at the
+# versioned mirror's public URL, so a consumer can walk to the lineage without
+# knowing bucket internals.
+PUBLIC_PROV_KEY = "v1/prov/latest.json"
+PUBLIC_PROV_PREFIX = "v1/prov/"
 
 
 def fetch_gtfs_feed() -> tuple[bytes, FeedFacts] | None:
@@ -1294,13 +1302,15 @@ def write_prov(
     artifacts: list[ArtifactFacts],
     feed: FeedFacts | None = None,
 ) -> str:
-    """Publish the run's W3C PROV-JSON sidecar: state/prov/latest.json (live
-    pointer) + state/prov/v<trained_at>.json (immutable snapshot). The document
-    is byte-stable for fixed inputs (training.prov.ProvDocument.to_json), and
-    every relation it carries is grounded in a recorded fact — the grounding rule
-    lives in training.prov, not here. Returns the versioned key, which is the
-    prov_ref the published artifacts point back at. Mirrors write_scheduled_headway's
-    versioned+alias, no-store publish."""
+    """Publish the run's W3C PROV-JSON sidecar in two places: the private
+    state/prov/ copies (latest.json pointer + v<trained_at>.json snapshot) that
+    the other sidecars live beside, and a public mirror under v1/prov/ so
+    outside consumers can read the standard-vocabulary lineage. The document is
+    byte-stable for fixed inputs (training.prov.ProvDocument.to_json), and every
+    relation it carries is grounded in a recorded fact — the grounding rule
+    lives in training.prov, not here. Returns the private versioned key, which
+    is the prov_ref the published artifacts point back at; the snapshot's own
+    prov_ref is the public mirror's URL, derived Worker-side from trained_at."""
     prov = code_provenance()
     agent = AgentFacts(
         code_sha=prov["code_sha"], dirty=prov["dirty"], producer=prov["producer"]
@@ -1320,6 +1330,10 @@ def write_prov(
     )
     body = doc.to_json().encode()
     versioned = f"{VERSIONED_PROV_PREFIX}v{trained_at}.json"
+    # Private state/ copies. no-store on both: the live pointer moves every run,
+    # and the versioned key is never served publicly (index.ts gates reads to
+    # v1/), so its cache header is moot — the public mirror below carries the
+    # cacheable copy.
     for key in (PROV_KEY, versioned):
         client.put_object(
             Bucket=bucket,
@@ -1328,6 +1342,23 @@ def write_prov(
             ContentType="application/json",
             CacheControl="no-store",
         )
+    # Public mirror under v1/ (the only prefix index.ts serves). The versioned
+    # doc is immutable — a run's lineage never changes once written — so it may
+    # cache for a year; latest.json moves every run and stays no-store.
+    client.put_object(
+        Bucket=bucket,
+        Key=f"{PUBLIC_PROV_PREFIX}v{trained_at}.json",
+        Body=body,
+        ContentType="application/json",
+        CacheControl="public, max-age=31536000, immutable",
+    )
+    client.put_object(
+        Bucket=bucket,
+        Key=PUBLIC_PROV_KEY,
+        Body=body,
+        ContentType="application/json",
+        CacheControl="no-store",
+    )
     return versioned
 
 

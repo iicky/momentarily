@@ -38,6 +38,12 @@ export interface Provenance {
   // absent on trains.json. Optional so codeProvenance() stays the shared base
   // both artifacts build from.
   params?: ParamsProvenance | null;
+  // Public URL of the W3C PROV-JSON document for the params behind this
+  // snapshot's inference (v1/prov/v<trained_at>.json). Optional and attached by
+  // snapshot.ts alone: present only when the served params carry a prov_ref
+  // (proof the trainer published a PROV doc for them); absent for params
+  // trained before the emitter existed, and absent on trains.json.
+  prov_ref?: string;
 }
 
 export function codeProvenance(): Provenance {

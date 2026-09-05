@@ -412,3 +412,21 @@ describe('service_baseline delivery', () => {
     expect(Object.keys(result!.routes)).toEqual(['1']);
   });
 });
+
+describe('prov_ref capture', () => {
+  test('captures the state/ prov key when the params doc carries one', () => {
+    const result = parseTrainedParams({
+      ...wrapper({ '1': wellFormedRoute() }),
+      prov_ref: 'state/prov/v1700000000.json',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.provRef).toBe('state/prov/v1700000000.json');
+  });
+
+  test('absent prov_ref (params trained before the emitter) yields null', () => {
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute() }));
+    expect(result).not.toBeNull();
+    // Not an empty string — absent and null mean the same: no PROV document.
+    expect(result!.provRef).toBeNull();
+  });
+});

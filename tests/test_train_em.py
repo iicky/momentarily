@@ -34,6 +34,8 @@ from training.train_em import (
     MIN_DATA_DAYS,
     PARAMS_KEY,
     PROV_KEY,
+    PUBLIC_PROV_KEY,
+    PUBLIC_PROV_PREFIX,
     SCHEMA_VERSION,
     SERVICE_SIDECAR_WINDOW_DAYS,
     VERSIONED_PARAMS_PREFIX,
@@ -330,9 +332,21 @@ class _FakeS3:
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        # Per-key CacheControl as written, so a test can assert the cache policy
+        # the public objects carry, not just their bytes.
+        self.cache_control: dict[str, str | None] = {}
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: object) -> None:
+    def put_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        Body: bytes,
+        CacheControl: str | None = None,
+        **_: object,
+    ) -> None:
         self.objects[Key] = Body
+        self.cache_control[Key] = CacheControl
 
     def list_objects_v2(self, **_: object) -> dict[str, object]:
         # An empty prefix: R2 listings (e.g. the recovery-recalibration shadow
@@ -1907,6 +1921,36 @@ def test_write_prov_omits_feed_when_unavailable() -> None:
     )
     doc = json.loads(fake.objects[f"{VERSIONED_PROV_PREFIX}v7.json"])
     assert not [e for e in doc["entity"] if "gtfs/" in e]
+
+
+def test_write_prov_publishes_public_mirror_with_cache_headers() -> None:
+    """The PROV sidecar is mirrored under the public v1/ prefix alongside the
+    private state/ copies, byte-identical. The immutable versioned mirror caches
+    for a year; the moving latest.json pointer is no-store."""
+    fake = _FakeS3()
+    corpus = CorpusStats(
+        start_tick=100, end_tick=200, n_observations=8, input_blake3="c" * 64
+    )
+    write_prov(
+        cast("S3Client", fake),
+        "test-bucket",
+        trained_at=77,
+        started_at=100,
+        corpus=corpus,
+        artifacts=[ArtifactFacts("params", "state/params/v77.json")],
+        feed=None,
+    )
+    public_versioned = f"{PUBLIC_PROV_PREFIX}v77.json"
+    # Both public keys are written, byte-identical to the private versioned copy.
+    private_versioned = fake.objects[f"{VERSIONED_PROV_PREFIX}v77.json"]
+    assert fake.objects[public_versioned] == private_versioned
+    assert fake.objects[PUBLIC_PROV_KEY] == private_versioned
+    # Cache policy: immutable versioned mirror caches long; latest.json no-store.
+    assert fake.cache_control[public_versioned] == "public, max-age=31536000, immutable"
+    assert fake.cache_control[PUBLIC_PROV_KEY] == "no-store"
+    # Private state/ copies stay no-store (never served publicly).
+    assert fake.cache_control[PROV_KEY] == "no-store"
+    assert fake.cache_control[f"{VERSIONED_PROV_PREFIX}v77.json"] == "no-store"
 
 
 def test_write_params_records_gtfs_feed_manifest_version_and_prov_ref() -> None:

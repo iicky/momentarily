@@ -362,6 +362,7 @@ def test_trains_is_self_describing_like_snapshot() -> None:
         "dirty": None,
         "producer": "unknown",
         "params": None,
+        "prov_ref": None,
     }
     assert payload["positions"] == []
 

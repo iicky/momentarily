@@ -862,6 +862,22 @@
           "title": "Observed At",
           "type": "integer"
         },
+        "off_reference": {
+          "default": false,
+          "title": "Off Reference",
+          "type": "boolean"
+        },
+        "scheduled": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduledHeadway"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "source": {
           "title": "Source",
           "type": "string"
@@ -1391,6 +1407,25 @@
         "label"
       ],
       "title": "RouteStatus",
+      "type": "object"
+    },
+    "ScheduledHeadway": {
+      "description": "The timetable's median time-between-trains at a headway cell's canonical\nreference stop, for the hour-of-week the reading was taken in.\n\nAttached to a headway Observation so a consumer reads \"trains every 9 min,\nscheduled 6\" straight off the snapshot \u2014 no second fetch, no join against a\nseparate artifact. `median_headway_s` is the median scheduled gap between\nconsecutive departures; `n_trips` is how many trains the timetable departs\nin that hour, and a small `n_trips` marks a thin, wide-headway cell a\nconsumer should treat cautiously rather than compare hard against.\n\nDeparture-keyed at the STATIC canonical reference stop (see\ntraining/headway.scheduled_headway_baseline). A display normaliser only,\nNOT the excess-wait severity baseline (which stays own-cell): a timetable\nbaseline false-alarms ~45% of otherwise-normal service, so this is for\nreading the gap in plain terms, never for flagging one.",
+      "properties": {
+        "median_headway_s": {
+          "title": "Median Headway S",
+          "type": "integer"
+        },
+        "n_trips": {
+          "title": "N Trips",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "median_headway_s",
+        "n_trips"
+      ],
+      "title": "ScheduledHeadway",
       "type": "object"
     },
     "SegmentFlow": {

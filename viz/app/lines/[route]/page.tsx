@@ -17,6 +17,8 @@ import {
 } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 import { Gauge } from "../../Gauge";
+import { HeadwayRead } from "../../HeadwayRead";
+import { headwayFor } from "@/lib/headway";
 
 type Dir = "north" | "south";
 
@@ -131,6 +133,8 @@ function LineView() {
       </div>
 
       {snap && <RouteVerdict snap={snap} route={route} />}
+
+      {snap && <HeadwayRead obs={headwayFor(snap, route, dir)} />}
 
       {snap?.platform_crowding && (
         <div className="section-note crowd-note">

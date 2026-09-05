@@ -526,6 +526,9 @@ describe('scheduled: the observed-headway surface (state/headway.json)', () => {
         direction: 'north',
         stop_id: 'A02N',
         window: [{ value: 240, observed_at: BOUNDARY_AT + 300 }],
+        // No scheduled_headway.json seeded in this bucket: observed alone.
+        scheduled: null,
+        off_reference: false,
       },
     ]);
     expect(snapshot.freshness.vehicle_positions).toBe(BOUNDARY_AT + 300);

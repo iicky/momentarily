@@ -57,6 +57,7 @@ import type {
   SegmentDwellDoc,
   SegmentFlowDoc,
   SegmentParamsDoc,
+  ScheduledHeadwayDoc,
   StationFlowDoc,
   StationWaitDoc,
 } from './state';
@@ -527,6 +528,12 @@ export function buildSnapshot(args: {
    * scheduled stopping patterns to pick reference stops from, or when step
    * 0's read/update/write failed; `observations` is then empty. */
   headway?: HeadwayStateDoc | null;
+  /** The scheduled-headway baseline (state/scheduled_headway.json), read fresh
+   * on a daily cadence in index.ts — the timetable each observed headway is
+   * normalised against for the "every 9 min, scheduled 6" read. Null before the
+   * trainer's first publish or when the document fails validation; observations
+   * then carry observed headway alone, never a fabricated ratio. */
+  scheduledHeadway?: ScheduledHeadwayDoc | null;
   /** Epoch of the last poll on which a vehicle-position feed round-tripped,
    * for freshness.vehicle_positions. Null before the first one. */
   vehiclePositionsFreshness?: number | null;
@@ -558,7 +565,7 @@ export function buildSnapshot(args: {
   const observations =
     headwayDoc !== null &&
     args.generatedAt - headwayDoc.observed_at <= MAX_MOVEMENT_STATE_AGE_SEC
-      ? headwayObservations(headwayDoc, args.generatedAt)
+      ? headwayObservations(headwayDoc, args.generatedAt, args.scheduledHeadway ?? null)
       : [];
   const segmentFlowOut =
     segmentFlow != null && segmentFlowFresh

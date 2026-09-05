@@ -25,6 +25,8 @@ import {
   type SegmentReading,
 } from "@/lib/commutes";
 import type { Snapshot } from "@/lib/types";
+import { HeadwayRead } from "../HeadwayRead";
+import { headwayFor } from "@/lib/headway";
 
 const DIR_LABEL: Record<string, string> = { north: "Northbound", south: "Southbound" };
 
@@ -273,6 +275,9 @@ function CommuteStrip({
                 <span className="trip-dir">{DIR_LABEL[leg.direction] ?? leg.direction}</span>
                 <span className="trip-toward">to {nameOf(alight)}</span>
               </div>
+              {(leg.direction === "north" || leg.direction === "south") && (
+                <HeadwayRead obs={headwayFor(snap, leg.route, leg.direction)} />
+              )}
               <div className="trip-board">
                 <span className="trip-rail trip-rail-board">
                   <span className="trip-node board" />

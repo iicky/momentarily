@@ -8920,3 +8920,62 @@ pass). ruff + pyright clean on the three changed files. The publish mirrors
 write_segment_dwell exactly (live pointer + immutable `v<trained_at>` snapshot,
 fail-soft), wired into the trainer run after write_segment_dwell. Tree left
 dirty for the conductor to land.
+
+
+## 2026-09-05 — the route and commute views now read observed headway against the scheduled baseline: "trains every 9 min, scheduled 6"
+
+origin: agent
+
+The observed-vs-scheduled time-between-trains read now renders on the line page
+(under the route verdict, for the selected direction) and per leg on the saved-
+commutes page. Deliberately NOT a countdown clock — headway keeps the 1-minute
+collection cadence and is the differentiated read.
+
+**Plumbing decision (argued): the Worker embeds the baseline per observation at
+tick time; viz stays dumb.** The client only ever fetches the public snapshot,
+and `state/scheduled_headway.json` is not a public object — a viz-side join
+would mean either a second public artifact + second client fetch (against the
+"no second fetch" constraint) or committing a weekly-changing derived file as a
+static asset (staleness). Embedding is the only path that keeps the client to
+one fetch. It is cheap: the snapshot build already reads segment_params.json
+every tick, so `readScheduledHeadway` rides the same Promise.all — no new per-
+minute cost pattern. `headwayObservations` computes hour-of-week from the tick
+(ET `weekday()*24 + hour`, Monday=0 — new `hourOfWeek` in hmm.ts, DST-aware; it
+does NOT reuse schedule_bin, per the keying contract) and attaches the cell.
+
+**Honesty, per the four degraded cases.** The scheduled artifact carries its own
+`reference_stops` map, so the embed joins on the STATIC canonical stop: a
+reading whose `stop_id` differs is a reroute fallback — `off_reference` is set,
+`scheduled` withheld, and the read says "measured at a reroute stop", never a
+cross-stop comparison. No scheduled cell for the hour → `scheduled` null and the
+gap shows alone ("no scheduled baseline for this hour"), never a fabricated
+ratio. A thin cell (`n_trips <= 3`) still shows its median but flags "sparse
+timetable this hour". A window shorter than the hour is labelled "last N trains".
+The viz also tolerates the pre-deploy feed: an observation missing the new
+fields degrades to observed-only rather than crashing.
+
+**Contract extension, kept in sync.** Observation gains `scheduled:
+{median_headway_s, n_trips} | null` and `off_reference: bool` — schema.py +
+schema/snapshot.schema.json (regenerated) + worker HeadwayObservation TS +
+viz/lib/types.ts. Parity + schema-parity green.
+
+**PRODUCTION PREREQUISITE for the conductor.** The read is fixture-proven end to
+end but shows observed-only against production TODAY: the live snapshot carries
+47 headway observations with no `scheduled` (verified by fetching
+feed.momentarily.nyc), because (1) `state/scheduled_headway.json` has not been
+published — it ships with the trainer's next weekly-fit run — and (2) the Worker
+carrying the embed is not deployed. Both are the conductor's land+deploy: a
+trainer run to publish the baseline, then a Worker deploy. No fabricated data
+was wired to paper over this.
+
+**Verification.** fixture-supported: worker 546 tests pass (+5 headway
+scheduled/off-reference/thin/absent cases), worker typecheck clean; viz 251
+node --test pass (+9 new headway logic tests), viz typecheck + css-check clean;
+python test_schema 24 + test_parity green, ruff + pyright clean on the two
+changed python files. measured-live: fetched the real snapshot, confirmed the
+viz renders observed-only cleanly on today's fields-absent feed. Rendered-proof:
+drove the line page and commutes page against a fixture feed exercising all five
+states (gapped / on-schedule / bunched / thin / off-reference / no-baseline) —
+each headline, tone class, per-bar strip colouring and degraded flag verified in
+the real browser. Tree left dirty for the conductor to land; no commit, no
+deploy.

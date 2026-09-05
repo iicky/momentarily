@@ -498,6 +498,53 @@ export async function readServiceBaseline(
   }
 }
 
+// Median scheduled headway per (route, direction, hour-of-week 0..167) at each
+// route/direction's canonical reference stop — the timetable baseline a headway
+// reading is normalised against for the "every 9 min, scheduled 6" read. Its
+// OWN object, written weekly by the trainer beside the other fit artifacts
+// (training/train_em.write_scheduled_headway); a display normaliser, NOT the
+// excess-wait severity baseline (that stays own-cell).
+export const SCHEDULED_HEADWAY_KEY = "state/scheduled_headway.json";
+
+const ScheduledHeadwayDocSchema = z.object({
+  schema_version: z.literal("1"),
+  trained_at: z.number(),
+  // 'route|direction' -> the static canonical reference stop this cell's
+  // baseline was measured at. A runtime reading whose stop_id differs is a
+  // reroute fallback, and comparing it against this cell would be dishonest —
+  // the Worker withholds the scheduled value there and labels it off-reference.
+  reference_stops: z.record(z.string(), z.string()),
+  // 'route|direction|hour_of_week' -> {median_headway_s, n_trips}. A cell absent
+  // from the map is unscheduled service, never a fabricated 0.
+  cells: z.record(
+    z.string(),
+    z.object({
+      median_headway_s: z.number().int().nonnegative(),
+      n_trips: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type ScheduledHeadwayDoc = z.infer<typeof ScheduledHeadwayDocSchema>;
+
+/** Read the scheduled-headway baseline. Null when absent (the trainer has not
+ * published it yet) or corrupt — headway observations then publish observed
+ * alone, with no scheduled comparison, rather than a fabricated one. */
+export async function readScheduledHeadway(
+  bucket: R2Bucket,
+): Promise<ScheduledHeadwayDoc | null> {
+  const obj = await bucket.get(SCHEDULED_HEADWAY_KEY);
+  if (!obj) return null;
+  try {
+    return ScheduledHeadwayDocSchema.parse(await obj.json());
+  } catch (err) {
+    console.error(
+      "scheduled_headway.json corrupt; headway publishes observed alone:",
+      err,
+    );
+    return null;
+  }
+}
+
 // Decaying per-segment advance/matched accumulator, carried tick to tick so a
 // ~1-train-per-tick segment accrues enough to judge. Its own object, step 8b.
 export const SEGMENT_FLOW_KEY = "state/segment_flow.json";

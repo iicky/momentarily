@@ -337,6 +337,45 @@ export interface Trains {
   positions: TrainPosition[];
 }
 
+// One past reading in an Observation.window: the historical N-car chain, one
+// gap between successive trains per entry. Mirrors worker snapshot ObservationSample.
+export interface ObservationSample {
+  value: number;
+  observed_at: number;
+}
+
+// The timetable baseline a headway reading is read against — the scheduled
+// median time-between-trains and trip count at this cell's canonical reference
+// stop, for the tick's ET hour-of-week. Mirrors schema.py ScheduledHeadway.
+// A small n_trips marks a thin, wide-headway hour to treat cautiously.
+export interface ScheduledHeadway {
+  median_headway_s: number;
+  n_trips: number;
+}
+
+// A raw measurement peer to Alert — not fitted or graded. v1 carries observed
+// subway headway per (route, direction) at a canonical reference stop. Mirrors
+// worker/src/headway.ts HeadwayObservation / schema.py Observation.
+export interface Observation {
+  entity_ref: string; // "subway_route:1"
+  kind: string; // "headway" | ...
+  value: number;
+  unit: string; // "seconds" | ...
+  observed_at: number;
+  source: string;
+  direction: "north" | "south" | null;
+  stop_id: string | null;
+  // Last hour of this cell's headways, oldest-first; the newest entry restates
+  // value/observed_at. Null for a measurement with no series.
+  window: ObservationSample[] | null;
+  // The scheduled baseline for this cell/hour, or null when the timetable has
+  // no scheduled service here, the reading is off-reference, or the baseline is
+  // not yet published. Never a fabricated ratio.
+  scheduled: ScheduledHeadway | null;
+  // True when the reading came from a reroute fallback stop, not the canonical
+  // reference the scheduled baseline is keyed on — label it, do not compare.
+  off_reference: boolean;
+}
 export interface Snapshot {
   schema_version: string;
   generated_at: number;
@@ -355,6 +394,10 @@ export interface Snapshot {
   station_flow: StationFlow | null;
   segment_flow: SegmentFlow | null;
   platform_crowding: PlatformCrowding | null;
+  // Raw per-(route, direction) headway measurements at canonical reference
+  // stops — the observed-vs-scheduled time-between-trains read. Empty on a cold
+  // start or a vehicle-feed outage, never a zero.
+  observations: Observation[];
 }
 
 // --- Grading streams (Phase B) ---

@@ -109,6 +109,7 @@ import {
   readSegmentDwell,
   readSegmentFlow,
   readSegmentParams,
+  readScheduledHeadway,
   readServiceBaseline,
   readServiceMetric,
   readStationFlow,
@@ -129,6 +130,7 @@ import type {
   SegmentDwellDoc,
   SegmentFlowDoc,
   SegmentParamsDoc,
+  ScheduledHeadwayDoc,
   StationFlowDoc,
   StationWaitDoc,
 } from './state';
@@ -690,13 +692,20 @@ export default {
       // without segment_flow, never a failed tick.
       let segmentFlow: SegmentFlowDoc | null = null;
       let segmentParams: SegmentParamsDoc | null = null;
+      // Read fresh each tick beside segment_params, not tick-lagged — the
+      // timetable baseline only changes weekly, and the observations it
+      // normalises are built from this same tick's headway state. Null until
+      // the trainer's first publish; observations then carry observed headway
+      // alone rather than a fabricated ratio.
+      let scheduledHeadway: ScheduledHeadwayDoc | null = null;
       try {
-        [segmentFlow, segmentParams] = await Promise.all([
+        [segmentFlow, segmentParams, scheduledHeadway] = await Promise.all([
           readSegmentFlow(env.MOMENTARILY),
           readSegmentParams(env.MOMENTARILY),
+          readScheduledHeadway(env.MOMENTARILY),
         ]);
       } catch (err) {
-        console.error('segment_flow/segment_params read failed; publishing without them:', err);
+        console.error('segment_flow/segment_params/scheduled_headway read failed; publishing without them:', err);
       }
       // Per-segment dwell curves the segment recovery is conditioned on.
       // Trainer-published, not tick-lagged; null until it exists in R2 —
@@ -730,6 +739,7 @@ export default {
         ridershipBaseline,
         serviceWeightBaseline,
         headway: headwayDoc,
+        scheduledHeadway,
         // At least one vehicle-position feed round-tripped this poll, else
         // the last poll where one did (step 8b's own stamp). Null before the
         // first, so an absent observations surface can be told apart from a

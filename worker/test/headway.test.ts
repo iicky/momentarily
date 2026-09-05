@@ -38,8 +38,9 @@ import {
 } from '../src/headway';
 import type { HeadwayReference, RouteStops } from '../src/headway';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
-import type { HeadwayStateDoc } from '../src/state';
+import type { HeadwayStateDoc, ScheduledHeadwayDoc } from '../src/state';
 import type { TraceRow } from '../src/vehicles';
+import { hourOfWeek } from '../src/hmm';
 
 const NOW = 1_700_000_000;
 const MIN = 60;
@@ -601,6 +602,9 @@ describe('headwayObservations', () => {
         direction: 'north',
         stop_id: '121N',
         window: [{ value: 4 * MIN, observed_at: NOW + 5 * MIN }],
+        // No scheduled baseline supplied: the reading stands alone, on-reference.
+        scheduled: null,
+        off_reference: false,
       },
     ]);
   });
@@ -631,6 +635,72 @@ describe('headwayObservations', () => {
         ['subway_route:1', 'north'],
         ['subway_route:7', 'south'],
       ]);
+  });
+});
+
+describe('headwayObservations normalised against the scheduled baseline', () => {
+  // The single 1|north reading this doc publishes, at 121N, at NOW + 5*MIN.
+  const doc = replay([
+    [0, [row('T1', '121N')]],
+    [MIN, [row('T1', '122N', { vehicleTs: NOW + MIN })]],
+    [4 * MIN, [row('T2', '121N')]],
+    [5 * MIN, [row('T2', '122N', { vehicleTs: NOW + 5 * MIN })]],
+  ]);
+  const AT = NOW + 5 * MIN;
+  const HOW = hourOfWeek(AT)!;
+
+  function schedDoc(
+    cells: Record<string, { median_headway_s: number; n_trips: number }>,
+    referenceStops: Record<string, string> = { '1|north': '121N' },
+  ): ScheduledHeadwayDoc {
+    return {
+      schema_version: '1',
+      trained_at: NOW - 86400,
+      reference_stops: referenceStops,
+      cells,
+    };
+  }
+
+  test('attaches the timetable median for this hour-of-week when on-reference', () => {
+    const sched = schedDoc({ [`1|north|${HOW}`]: { median_headway_s: 360, n_trips: 10 } });
+    const o = headwayObservations(doc, AT, sched)[0]!;
+    expect(o.value).toBe(4 * MIN); // observed 240s
+    expect(o.scheduled).toEqual({ median_headway_s: 360, n_trips: 10 }); // scheduled 360s
+    expect(o.off_reference).toBe(false);
+  });
+
+  test('a thin cell still publishes its n_trips, for the consumer to distrust', () => {
+    const sched = schedDoc({ [`1|north|${HOW}`]: { median_headway_s: 1200, n_trips: 2 } });
+    const o = headwayObservations(doc, AT, sched)[0]!;
+    expect(o.scheduled).toEqual({ median_headway_s: 1200, n_trips: 2 });
+  });
+
+  test('no scheduled cell for this hour leaves scheduled null, on-reference', () => {
+    // A different hour-of-week is populated; this one is unscheduled service.
+    const sched = schedDoc({ [`1|north|${(HOW + 1) % 168}`]: { median_headway_s: 360, n_trips: 10 } });
+    const o = headwayObservations(doc, AT, sched)[0]!;
+    expect(o.scheduled).toBeNull();
+    expect(o.off_reference).toBe(false);
+  });
+
+  test('a reading off the canonical reference stop is marked, never compared', () => {
+    // The artifact's canonical stop for the cell is 999N; the reading is at
+    // 121N (a reroute fallback). Even with a populated cell, the baseline is
+    // withheld and the reading is labelled off-reference.
+    const sched = schedDoc(
+      { [`1|north|${HOW}`]: { median_headway_s: 360, n_trips: 10 } },
+      { '1|north': '999N' },
+    );
+    const o = headwayObservations(doc, AT, sched)[0]!;
+    expect(o.stop_id).toBe('121N');
+    expect(o.off_reference).toBe(true);
+    expect(o.scheduled).toBeNull();
+  });
+
+  test('a null baseline leaves every reading standing alone, on-reference', () => {
+    const o = headwayObservations(doc, AT, null)[0]!;
+    expect(o.scheduled).toBeNull();
+    expect(o.off_reference).toBe(false);
   });
 });
 
@@ -672,6 +742,9 @@ describe('the published observations surface', () => {
         direction: 'north',
         stop_id: '121N',
         window: [{ value: 4 * MIN, observed_at: NOW + 5 * MIN }],
+        // buildSnapshot got no scheduledHeadway: observed alone, on-reference.
+        scheduled: null,
+        off_reference: false,
       },
     ]);
     expect(snap.freshness.vehicle_positions).toBe(NOW + 5 * MIN);

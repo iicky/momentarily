@@ -65,6 +65,31 @@ export function schedule_bin(epochSeconds: number): string {
   return `${prefix}${String(hour).padStart(2, '0')}`;
 }
 
+// Monday=0..Sunday=6, matching Python's date.weekday(). The scheduled-headway
+// artifact keys on hour-of-week rather than schedule_bin because NYCT runs
+// distinct Saturday and Sunday timetables that `we` cannot separate.
+const NYC_DOW: Record<string, number> = {
+  Mon: 0,
+  Tue: 1,
+  Wed: 2,
+  Thu: 3,
+  Fri: 4,
+  Sat: 5,
+  Sun: 6,
+};
+
+// ET hour-of-week 0..167 (weekday*24 + hour, Monday=0) — the key the
+// scheduled-headway baseline is published under (training/headway.py). Computed
+// from the tick, DST-aware, NOT reused from schedule_bin: a deliberate superset
+// that keeps Saturday and Sunday service apart. Returns null only if the ICU
+// weekday name is unrecognised, which never happens for these formatters.
+export function hourOfWeek(epochSeconds: number): number | null {
+  const d = new Date(epochSeconds * 1000);
+  const dow = NYC_DOW[NYC_WEEKDAY_FMT.format(d)];
+  if (dow === undefined) return null;
+  return dow * 24 + nycHour(epochSeconds);
+}
+
 export interface Observation {
   alert_count: number;
   severity_sum: number;

@@ -96,8 +96,14 @@
  * served — still abstains rather than inventing a value.
  */
 
-import type { HeadwayCell, HeadwayStateDoc, HeadwayTrip } from './state';
+import type {
+  HeadwayCell,
+  HeadwayStateDoc,
+  HeadwayTrip,
+  ScheduledHeadwayDoc,
+} from './state';
 import type { TraceRow } from './vehicles';
+import { hourOfWeek } from './hmm';
 
 /**
  * The scheduled stopping patterns the through-stop rule reads, as
@@ -870,6 +876,15 @@ export interface HeadwaySample {
   observed_at: number;
 }
 
+/** The timetable baseline a reading is normalised against — the scheduled
+ * median headway and trip count at this cell's canonical reference stop for the
+ * tick's hour-of-week. Structurally schema.py's ScheduledHeadway and one cell
+ * of state/scheduled_headway.json. */
+export interface ScheduledHeadway {
+  median_headway_s: number;
+  n_trips: number;
+}
+
 /** One published headway measurement — structurally the snapshot's
  * ObservationOut (snapshot.ts), kept here so this module never imports back
  * from it. */
@@ -891,6 +906,17 @@ export interface HeadwayObservation {
   // is measured at `stop_id`, so a fallback series is labelled by the same
   // point the reading is. Always at least the one reading, never padded.
   window: HeadwaySample[];
+  // The timetable baseline this reading is read against: the scheduled median
+  // headway at this cell's canonical reference stop for the tick's ET
+  // hour-of-week (schema.py ScheduledHeadway). Attached at publish time so a
+  // consumer states "every 9 min, scheduled 6" with no second fetch. Null when
+  // the timetable has no scheduled service for this cell/hour, when the reading
+  // is off-reference, or before the trainer has published the baseline.
+  scheduled: ScheduledHeadway | null;
+  // True when this reading came from a reroute fallback stop, not the canonical
+  // reference the scheduled baseline is keyed on — `scheduled` is then withheld
+  // and a consumer labels the point moved rather than comparing the wrong cell.
+  off_reference: boolean;
 }
 
 /** Names the upstream this measurement came from, as Observation.source. The
@@ -921,11 +947,26 @@ export const HEADWAY_SOURCE = 'gtfs_rt_vehicle_positions';
  * Each observation also carries `window`: the last hour of that cell's
  * headways (cellWindow), so a consumer can render the historical chain from
  * this one document without reaching for any archive.
+ *
+ * When `scheduled` (state/scheduled_headway.json) is supplied, each observation
+ * is normalised against the timetable at publish time so a consumer reads
+ * "every 9 min, scheduled 6" with no second fetch. The baseline is keyed on the
+ * STATIC canonical reference stop, so a reroute-fallback reading (its stop_id
+ * differs from the artifact's reference stop for the cell) is marked
+ * `off_reference` with `scheduled` withheld — never silently compared against a
+ * point it was not measured at. A cell/hour the timetable does not schedule, or
+ * a baseline not yet published, leaves `scheduled` null and the reading stands
+ * alone.
  */
 export function headwayObservations(
   doc: HeadwayStateDoc,
   now: number,
+  scheduled: ScheduledHeadwayDoc | null = null,
 ): HeadwayObservation[] {
+  // Hour-of-week is a property of the tick, shared by every cell this poll —
+  // computed once. Null only if the ET weekday name is unreadable, in which
+  // case no cell can be keyed and every reading stands alone this tick.
+  const how = hourOfWeek(now);
   const out: HeadwayObservation[] = [];
   const { order } = candidateCells(doc.reference_stops, doc.reference_fallbacks);
   for (const rd of Object.keys(order).sort()) {
@@ -942,6 +983,16 @@ export function headwayObservations(
       const reading = cellHeadway(cell, doc.gaps);
       if (reading === null) continue;
       if (now - reading.at > MAX_READING_AGE_SECONDS) continue;
+      // Normalise against the timetable, keyed on the STATIC canonical stop the
+      // artifact carries per cell. A reading whose stop_id differs is a reroute
+      // fallback: withhold the baseline and mark it, never compare across stops.
+      const canonicalStop = scheduled?.reference_stops[rd];
+      const offReference =
+        canonicalStop !== undefined && canonicalStop !== cell.stop_id;
+      const scheduledCell =
+        scheduled !== null && !offReference && how !== null
+          ? scheduled.cells[`${rd}|${how}`] ?? null
+          : null;
       out.push({
         entity_ref: `subway_route:${rd.slice(0, sep)}`,
         kind: 'headway',
@@ -952,6 +1003,8 @@ export function headwayObservations(
         direction,
         stop_id: cell.stop_id,
         window: cellWindow(cell, doc.gaps, now),
+        scheduled: scheduledCell,
+        off_reference: offReference,
       });
       break; // one reading per (route, direction): primary-preferred
     }

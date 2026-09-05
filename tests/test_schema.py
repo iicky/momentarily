@@ -16,6 +16,7 @@ from momentarily.schema import (
     Observation,
     ObservationSample,
     RouteStatus,
+    ScheduledHeadway,
     SegmentFlow,
     SegmentRecovery,
     SegmentStatus,
@@ -106,6 +107,9 @@ def test_headway_observation_carries_its_measurement_point() -> None:
         "stop_id": "121N",
         # A bare reading with no history yet carries no window (None, not []).
         "window": None,
+        # No timetable baseline attached by hand: observed alone, on-reference.
+        "scheduled": None,
+        "off_reference": False,
     }
 
 
@@ -141,6 +145,47 @@ def test_headway_observation_carries_its_rolling_window() -> None:
         "value": payload["value"],
         "observed_at": payload["observed_at"],
     }
+
+
+def test_headway_observation_normalised_against_the_scheduled_baseline() -> None:
+    """The observed-vs-scheduled read the Worker embeds at tick time: the
+    timetable median for this cell's hour-of-week, so a consumer states "every 9
+    min, scheduled 6" straight off the snapshot with no second fetch."""
+    obs = Observation(
+        entity_ref="subway_route:1",
+        kind="headway",
+        value=540,
+        unit="seconds",
+        observed_at=1_700_000_300,
+        source="gtfs_rt_vehicle_positions",
+        direction="north",
+        stop_id="121N",
+        scheduled=ScheduledHeadway(median_headway_s=360, n_trips=10),
+    )
+    payload = json.loads(obs.model_dump_json())
+    assert payload["scheduled"] == {"median_headway_s": 360, "n_trips": 10}
+    assert payload["off_reference"] is False
+
+
+def test_off_reference_reading_withholds_the_scheduled_comparison() -> None:
+    """A reroute-fallback reading is taken at a different stop than the baseline
+    is keyed on, so `scheduled` stays None and `off_reference` is set — a
+    consumer labels the point moved rather than comparing the wrong cell."""
+    obs = Observation(
+        entity_ref="subway_route:1",
+        kind="headway",
+        value=540,
+        unit="seconds",
+        observed_at=1_700_000_300,
+        source="gtfs_rt_vehicle_positions",
+        direction="north",
+        stop_id="118N",  # a fallback stop, not the cell's canonical reference
+        scheduled=None,
+        off_reference=True,
+    )
+    payload = json.loads(obs.model_dump_json())
+    assert payload["scheduled"] is None
+    assert payload["off_reference"] is True
 
 
 def test_observation_direction_is_a_closed_vocabulary() -> None:

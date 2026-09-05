@@ -86,6 +86,30 @@ class ObservationSample(BaseModel):
     observed_at: int
 
 
+class ScheduledHeadway(BaseModel):
+    """The timetable's median time-between-trains at a headway cell's canonical
+    reference stop, for the hour-of-week the reading was taken in.
+
+    Attached to a headway Observation so a consumer reads "trains every 9 min,
+    scheduled 6" straight off the snapshot — no second fetch, no join against a
+    separate artifact. `median_headway_s` is the median scheduled gap between
+    consecutive departures; `n_trips` is how many trains the timetable departs
+    in that hour, and a small `n_trips` marks a thin, wide-headway cell a
+    consumer should treat cautiously rather than compare hard against.
+
+    Departure-keyed at the STATIC canonical reference stop (see
+    training/headway.scheduled_headway_baseline). A display normaliser only,
+    NOT the excess-wait severity baseline (which stays own-cell): a timetable
+    baseline false-alarms ~45% of otherwise-normal service, so this is for
+    reading the gap in plain terms, never for flagging one.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    median_headway_s: int
+    n_trips: int
+
+
 class Observation(BaseModel):
     """Continuous / instantaneous measurement of an entity.
 
@@ -131,6 +155,22 @@ class Observation(BaseModel):
     # None (not []) for a measurement that carries no series, matching the
     # optional-field precedent of direction/stop_id above.
     window: list[ObservationSample] | None = None
+    # The timetable baseline this reading is read against: the scheduled median
+    # headway at this cell's canonical reference stop, for the tick's ET
+    # hour-of-week. Attached at publish time so a consumer states "every 9 min,
+    # scheduled 6" with no second fetch. None when the timetable has no
+    # scheduled service for this cell/hour (an honest gap — never a fabricated
+    # ratio), or when the reading is off-reference (see below), or when the
+    # scheduled artifact has not been published yet.
+    scheduled: ScheduledHeadway | None = None
+    # True when this reading was taken at a reroute fallback stop, not the cell's
+    # canonical reference — a core reroute leaves the canonical stop unserved and
+    # the surface publishes the best fallback still running. The scheduled
+    # baseline is keyed on the canonical stop, so it does NOT apply here:
+    # `scheduled` is left None and a consumer labels the reading as measured at a
+    # different point rather than silently comparing it against the wrong cell.
+    # False for a normal on-reference reading and for any non-headway measurement.
+    off_reference: bool = False
 
 
 class DirectionLabels(BaseModel):

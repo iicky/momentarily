@@ -20,6 +20,8 @@ import diagram from '../../viz/public/diagram.json';
 import {
   DUP_ARRIVAL_SECONDS,
   FEED_GAP_SECONDS,
+  HEADWAY_WINDOW_SECONDS,
+  HEADWAY_WINDOW_SIZE,
   MAX_HEADWAY_SECONDS,
   MAX_READING_AGE_SECONDS,
   MIN_HEADWAY_SECONDS,
@@ -598,6 +600,7 @@ describe('headwayObservations', () => {
         source: 'gtfs_rt_vehicle_positions',
         direction: 'north',
         stop_id: '121N',
+        window: [{ value: 4 * MIN, observed_at: NOW + 5 * MIN }],
       },
     ]);
   });
@@ -668,6 +671,7 @@ describe('the published observations surface', () => {
         source: 'gtfs_rt_vehicle_positions',
         direction: 'north',
         stop_id: '121N',
+        window: [{ value: 4 * MIN, observed_at: NOW + 5 * MIN }],
       },
     ]);
     expect(snap.freshness.vehicle_positions).toBe(NOW + 5 * MIN);
@@ -731,6 +735,126 @@ describe('the published observations surface', () => {
       expect(v).toBeGreaterThanOrEqual(MIN_HEADWAY_SECONDS);
       expect(v).toBeLessThanOrEqual(MAX_HEADWAY_SECONDS);
     }
+  });
+});
+
+describe('the rolling headway window', () => {
+  // A run of `count` trains clearing 121N spaced `spacing` apart, folded one
+  // poll per minute so the feed never appears to go dark (a sparse replay would
+  // straddle FEED_GAP_SECONDS and refuse every interval). The departing
+  // vehicle stamps its own clock, so a passing lands on the departure minute
+  // and consecutive headways equal `spacing`.
+  function trainRun(count: number, spacing: number): [number, TraceRow[]][] {
+    const arrivals = Array.from({ length: count }, (_, i) => i * spacing);
+    const last = arrivals[count - 1]! + MIN;
+    const polls: [number, TraceRow[]][] = [];
+    for (let t = 0; t <= last; t += MIN) {
+      const rows: TraceRow[] = [];
+      for (let i = 0; i < count; i++) {
+        if (t === arrivals[i]) rows.push(row(`W${i}`, '121N'));
+        else if (t === arrivals[i]! + MIN) rows.push(row(`W${i}`, '122N', { vehicleTs: NOW + t }));
+      }
+      if (rows.length === 0) rows.push(row('FILL', '999N'));
+      polls.push([t, rows]);
+    }
+    return polls;
+  }
+
+  test('the newest entry restates the reading, and the window is oldest-first', () => {
+    const spacing = 3 * MIN;
+    const count = HEADWAY_WINDOW_SIZE + 4; // more trains than the cap holds
+    const doc = replay(trainRun(count, spacing));
+    const now = NOW + (count - 1) * spacing + MIN;
+    const [o] = headwayObservations(doc, now);
+    expect(o).toBeDefined();
+    // Hard cap: never more than N gaps however many trains ran.
+    expect(o!.window).toHaveLength(HEADWAY_WINDOW_SIZE);
+    // Every gap is the spacing, and the window is ascending by time.
+    expect(o!.window.map((s) => s.value)).toEqual(Array(HEADWAY_WINDOW_SIZE).fill(spacing));
+    const ats = o!.window.map((s) => s.observed_at);
+    expect([...ats].sort((a, b) => a - b)).toEqual(ats);
+    // The last car of the chain is exactly the published single reading.
+    expect(o!.window.at(-1)).toEqual({ value: o!.value, observed_at: o!.observed_at });
+  });
+
+  test('fewer than N readings yields a short window, never padding', () => {
+    // Three trains -> two gaps. The array is length two, not padded to N.
+    const doc = replay(trainRun(3, 4 * MIN));
+    const [o] = headwayObservations(doc, NOW + 2 * 4 * MIN + MIN);
+    expect(o!.window).toEqual([
+      { value: 4 * MIN, observed_at: NOW + 4 * MIN + MIN },
+      { value: 4 * MIN, observed_at: NOW + 8 * MIN + MIN },
+    ]);
+  });
+
+  test('bounds the window in time, not only in count', () => {
+    // Trains every ten minutes: a dozen span two hours, but the last-hour
+    // window holds only the gaps whose later train passed within the hour —
+    // the count budget still has room, so this is the time bound doing the
+    // trimming, not the cap.
+    const spacing = 10 * MIN;
+    const count = 12;
+    const doc = replay(trainRun(count, spacing));
+    const now = NOW + (count - 1) * spacing + MIN;
+    const [o] = headwayObservations(doc, now);
+    expect(o!.window.length).toBeLessThan(HEADWAY_WINDOW_SIZE); // time, not count, bounds it
+    const horizon = now - HEADWAY_WINDOW_SECONDS;
+    // Every surviving gap is inside the hour; the one just older is gone.
+    expect(o!.window.every((s) => s.observed_at >= horizon)).toBe(true);
+    expect(o!.window[0]!.observed_at - spacing).toBeLessThan(horizon);
+    expect(o!.window.map((s) => s.value)).toEqual(Array(o!.window.length).fill(spacing));
+  });
+
+  test('a feed-uncertain interval is a hole in the window, not a zero', () => {
+    // Four trains, but the Worker stops polling between the 2nd and 3rd long
+    // enough to flag a gap. The interval spanning the outage is dropped; the
+    // ones around it survive, so the array is shorter than the run of trains
+    // and each entry carries its own time — the hole is visible, not implied.
+    const g = FEED_GAP_SECONDS;
+    const doc = replay([
+      [0, [row('H0', '121N')]],
+      [MIN, [row('H0', '122N', { vehicleTs: NOW + MIN })]],
+      [4 * MIN, [row('H1', '121N')]],
+      [5 * MIN, [row('H1', '122N', { vehicleTs: NOW + 5 * MIN })]],
+      // outage: no poll for well over FEED_GAP_SECONDS
+      [5 * MIN + g + MIN, [row('H2', '121N')]],
+      [5 * MIN + g + 2 * MIN, [row('H2', '122N', { vehicleTs: NOW + 5 * MIN + g + 2 * MIN })]],
+      [5 * MIN + g + 5 * MIN, [row('H3', '121N')]],
+      [5 * MIN + g + 6 * MIN, [row('H3', '122N', { vehicleTs: NOW + 5 * MIN + g + 6 * MIN })]],
+    ]);
+    const now = NOW + 5 * MIN + g + 6 * MIN;
+    const [o] = headwayObservations(doc, now);
+    // H0->H1 and H2->H3 survive; H1->H2 straddled the outage and is omitted.
+    expect(o!.window).toEqual([
+      { value: 4 * MIN, observed_at: NOW + 5 * MIN },
+      { value: 4 * MIN, observed_at: NOW + 5 * MIN + g + 6 * MIN },
+    ]);
+    expect(o!.window.some((s) => s.observed_at === NOW + 5 * MIN + g + 2 * MIN)).toBe(false);
+  });
+
+  test('a fallback series carries the fallback stop, window and all', () => {
+    // The primary M2N is dark and the cell publishes from the served Q1N. The
+    // window is that one cell's history, so it is labelled by the same point
+    // the reading is — never a fallback value under a primary label.
+    const nRef: HeadwayReference = {
+      stops: { 'N|north': 'M2N' },
+      fallbacks: { 'N|north': ['Q1N', 'B2N'] },
+      at: NOW - 3600,
+      trained_at: 1_699_000_000,
+    };
+    const doc = replay(
+      [
+        [0, [row('a', 'Q1N', { route: 'N' })]],
+        [MIN, [row('a', 'Q1Nx', { route: 'N' })]],
+        [4 * MIN, [row('b', 'Q1N', { route: 'N' })]],
+        [5 * MIN, [row('b', 'Q1Nx', { route: 'N' })]],
+      ],
+      nRef,
+    );
+    const [o] = headwayObservations(doc, NOW + 5 * MIN);
+    expect(o!.stop_id).toBe('Q1N');
+    expect(o!.window.length).toBeGreaterThanOrEqual(1);
+    expect(o!.window.at(-1)).toEqual({ value: o!.value, observed_at: o!.observed_at });
   });
 });
 

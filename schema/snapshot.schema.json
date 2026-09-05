@@ -895,6 +895,21 @@
             }
           ],
           "title": "Value"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ObservationSample"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Window"
         }
       },
       "required": [
@@ -914,6 +929,32 @@
         "south"
       ],
       "type": "string"
+    },
+    "ObservationSample": {
+      "description": "One past reading in an Observation.window: a value and when it was taken.\n\nCompact on purpose \u2014 the window is a bounded series and repeating the\nparent's entity_ref/kind/unit/source/direction/stop_id on every entry would\nbloat the snapshot for nothing. Those are all fixed across the window, which\nis measured at one point; only value and observed_at move.",
+      "properties": {
+        "observed_at": {
+          "title": "Observed At",
+          "type": "integer"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value",
+        "observed_at"
+      ],
+      "title": "ObservationSample",
+      "type": "object"
     },
     "ParamsProvenance": {
       "description": "Identity of the trained params.json behind this snapshot's inference \u2014 the\none thing code_sha can't say, since the model version moves independently of\nthe deployed Worker. trained_at is the trainer's own version stamp; key is the\nimmutable versioned R2 object it maps to (state/params/v<trained_at>.json), so\na consumer can pin the exact params without a LIST. Both null means the Worker\nis on BOOTSTRAP params (no params.json published yet), not that identity was\nunavailable.",

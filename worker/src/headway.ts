@@ -206,11 +206,36 @@ export const REFERENCE_REFRESH_SECONDS = 86400;
 export const HEADWAY_WRITE_ATTEMPTS = 3;
 
 /**
- * How many recent passings a cell keeps. The reading needs two; the rest is
- * headroom so an out-of-order merge (mergePassings) still lands inside the
- * window rather than being pruned away before it can be used.
+ * How many headway readings the published rolling window carries per (route,
+ * direction) — the historical N-car chain, one car per train and one gap per
+ * headway. N=12 is one hour at the nominal 5-minute publish tick, and it is a
+ * HARD cap: the snapshot cannot bloat as routes and directions multiply, no
+ * matter how frequent the service. See cellWindow.
  */
-export const HEADWAY_LEDGER_SIZE = 6;
+export const HEADWAY_WINDOW_SIZE = 12;
+
+/**
+ * How far back the rolling window reaches, in seconds. A count cap alone is not
+ * enough — HEADWAY_WINDOW_SIZE readings off an infrequent route can span many
+ * hours, and "the last hour of the line" spanning six hours is a lie. So the
+ * window is bounded in TIME as well as count: an interval whose later train
+ * passed before now - this is dropped even when the count budget has room.
+ */
+export const HEADWAY_WINDOW_SECONDS = 3600;
+
+/**
+ * How many recent passings a cell keeps.
+ *
+ * The published rolling window (cellWindow) is DERIVED from this same ledger —
+ * successive distinct passings ARE the headway sequence — rather than kept as a
+ * second mutable document, so the ledger has to be long enough to reconstruct
+ * it. A full HEADWAY_WINDOW_SIZE window needs HEADWAY_WINDOW_SIZE + 1 distinct
+ * passings; the surplus over that is the same headroom the single reading
+ * always kept, so an out-of-order merge (mergePassings) or a trip-reassignment
+ * dup collapsed in the derivation still lands inside the window rather than
+ * being pruned away before it can be used.
+ */
+export const HEADWAY_LEDGER_SIZE = HEADWAY_WINDOW_SIZE + 4;
 
 // 'route|direction' — the key `route_stops`, state/headway.json's cells and the
 // offline toolkit all use — is built inline as `${route}|${direction}`.
@@ -741,42 +766,108 @@ function pruneGaps(
 
 /**
  * The cell's current reading: the interval between its two most recent
- * DISTINCT trains, or null when there is no publishable one.
- *
- * A pure function of the ledger and the document's gap windows, so it is
- * order-independent like the ledger itself.
- *
- * Entries closer together than MIN_HEADWAY_SECONDS are collapsed to the
- * earlier one before the pair is taken. Two trains of one route cannot clear a
- * platform that close, so the later entry is one train reported under a second
- * trip_id — NYCT reassigns ids mid-run, which the dup-window guard cannot see
- * because the ids differ. Collapsing keeps the true previous headway readable
- * instead of letting a phantom entry blank the cell.
- *
- * Refuses, in each case producing no reading rather than a zero or a guess:
- * fewer than two distinct trains (no interval yet); an interval overlapping a
- * window in which the Worker was not polling (missing observation, not missing
- * service); a value above the sanity bound.
+ * DISTINCT trains (distinctPassings), or null when there is no publishable one
+ * (intervalPublishable) — fewer than two distinct trains, a feed-uncertain
+ * interval, or a value above the sanity bound. A pure function of the ledger
+ * and the document's gap windows, so it is order-independent like the ledger
+ * itself, and it is exactly the newest entry of cellWindow.
  */
 function cellHeadway(
   cell: HeadwayCell,
   gaps: { from: number; until: number }[],
 ): { value: number; at: number } | null {
+  const distinct = distinctPassings(cell);
+  if (distinct.length < 2) return null;
+  const last = distinct[distinct.length - 1]!;
+  const prev = distinct[distinct.length - 2]!;
+  if (!intervalPublishable(prev.at, last.at, gaps)) return null;
+  return { value: last.at - prev.at, at: last.at };
+}
+
+/**
+ * The cell's passings collapsed to distinct trains, ascending by `at`.
+ *
+ * An entry closer than MIN_HEADWAY_SECONDS to its kept predecessor is folded
+ * away: two trains of one route cannot clear a platform that close, so the
+ * later entry is one train re-reported under a reassigned trip_id (NYCT
+ * reassigns ids mid-run, which the dup-window guard cannot see because the ids
+ * differ). Shared by the single reading (cellHeadway) and the rolling window
+ * (cellWindow) so both see the same trains.
+ */
+function distinctPassings(cell: HeadwayCell): { at: number; trip: string }[] {
   const distinct: { at: number; trip: string }[] = [];
   for (const entry of cell.passings) {
     const kept = distinct[distinct.length - 1];
     if (kept !== undefined && entry.at - kept.at < MIN_HEADWAY_SECONDS) continue;
     distinct.push(entry);
   }
-  if (distinct.length < 2) return null;
-  const last = distinct[distinct.length - 1]!;
-  const prev = distinct[distinct.length - 2]!;
-  const value = last.at - prev.at;
-  if (value > MAX_HEADWAY_SECONDS) return null;
+  return distinct;
+}
+
+/**
+ * Whether the interval between two distinct passings is a publishable headway:
+ * a statement about the INTERVAL, not the ledger, which is why it lives in the
+ * derivation rather than in insertPassing. Refuses a value above the sanity
+ * bound, and one overlapping a window in which the Worker was not polling
+ * (missing observation, not missing service) — in each case producing no
+ * reading rather than a zero or a guess.
+ */
+function intervalPublishable(
+  prevAt: number,
+  lastAt: number,
+  gaps: { from: number; until: number }[],
+): boolean {
+  if (lastAt - prevAt > MAX_HEADWAY_SECONDS) return false;
   for (const g of gaps) {
-    if (g.from < last.at && g.until > prev.at) return null; // interval is feed-uncertain
+    if (g.from < lastAt && g.until > prevAt) return false; // interval is feed-uncertain
   }
-  return { value, at: last.at };
+  return true;
+}
+
+/**
+ * The cell's rolling headway window: up to HEADWAY_WINDOW_SIZE most recent
+ * publishable intervals whose later train passed within HEADWAY_WINDOW_SECONDS
+ * of `now`, ascending by time. The historical N-car chain — one entry per gap
+ * between successive trains at this cell's one reference stop.
+ *
+ * Derived from the same ledger and gap windows as the single reading, so it is
+ * order-independent like the ledger itself, and its newest entry is exactly the
+ * value cellHeadway publishes. Bounded in BOTH count (HEADWAY_WINDOW_SIZE) and
+ * time (HEADWAY_WINDOW_SECONDS): a frequent route is capped by the count, an
+ * infrequent one by the horizon, so neither bloats the snapshot nor stretches
+ * "the last hour" over six.
+ *
+ * A feed-uncertain or over-bound interval is a HOLE: omitted, never zero-filled
+ * — so the array can be shorter than the run of trains and each entry carries
+ * its own observed_at, which makes a hole visible instead of implied by an even
+ * spacing that isn't there. Fewer than two distinct trains yields an empty
+ * window rather than a padded one.
+ */
+function cellWindow(
+  cell: HeadwayCell,
+  gaps: { from: number; until: number }[],
+  now: number,
+): HeadwaySample[] {
+  const distinct = distinctPassings(cell);
+  const horizon = now - HEADWAY_WINDOW_SECONDS;
+  const out: HeadwaySample[] = [];
+  for (let i = 1; i < distinct.length; i++) {
+    const prev = distinct[i - 1]!;
+    const last = distinct[i]!;
+    if (last.at < horizon) continue; // later train older than the window
+    if (!intervalPublishable(prev.at, last.at, gaps)) continue; // hole, not a zero
+    out.push({ value: last.at - prev.at, observed_at: last.at });
+  }
+  if (out.length > HEADWAY_WINDOW_SIZE) out.splice(0, out.length - HEADWAY_WINDOW_SIZE);
+  return out;
+}
+
+/** One reading in a HeadwayObservation.window: a past headway at the same cell,
+ * with the epoch its later train passed. Structurally the snapshot's
+ * ObservationSample (schema.py / snapshot.ts). */
+export interface HeadwaySample {
+  value: number;
+  observed_at: number;
 }
 
 /** One published headway measurement — structurally the snapshot's
@@ -794,6 +885,12 @@ export interface HeadwayObservation {
   // words (vehicles.ts directionOf). A third would be a schema change.
   direction: 'north' | 'south';
   stop_id: string;
+  // The last hour of this cell's headways, oldest-first and capped at
+  // HEADWAY_WINDOW_SIZE (cellWindow) — the historical N-car chain, one gap per
+  // entry. The newest entry restates `value`/`observed_at`; the whole window
+  // is measured at `stop_id`, so a fallback series is labelled by the same
+  // point the reading is. Always at least the one reading, never padded.
+  window: HeadwaySample[];
 }
 
 /** Names the upstream this measurement came from, as Observation.source. The
@@ -820,6 +917,10 @@ export const HEADWAY_SOURCE = 'gtfs_rt_vehicle_positions';
  * expected to have already aged out the document as a whole (its `observed_at`),
  * which is a different check: the doc's age says whether the feed is being
  * polled at all, a cell's says whether trains are actually running past it.
+ *
+ * Each observation also carries `window`: the last hour of that cell's
+ * headways (cellWindow), so a consumer can render the historical chain from
+ * this one document without reaching for any archive.
  */
 export function headwayObservations(
   doc: HeadwayStateDoc,
@@ -850,6 +951,7 @@ export function headwayObservations(
         source: HEADWAY_SOURCE,
         direction,
         stop_id: cell.stop_id,
+        window: cellWindow(cell, doc.gaps, now),
       });
       break; // one reading per (route, direction): primary-preferred
     }

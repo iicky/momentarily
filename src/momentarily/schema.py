@@ -71,6 +71,21 @@ class Alert(BaseModel):
     source: AlertSource
 
 
+class ObservationSample(BaseModel):
+    """One past reading in an Observation.window: a value and when it was taken.
+
+    Compact on purpose — the window is a bounded series and repeating the
+    parent's entity_ref/kind/unit/source/direction/stop_id on every entry would
+    bloat the snapshot for nothing. Those are all fixed across the window, which
+    is measured at one point; only value and observed_at move.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    value: float | int
+    observed_at: int
+
+
 class Observation(BaseModel):
     """Continuous / instantaneous measurement of an entity.
 
@@ -105,6 +120,17 @@ class Observation(BaseModel):
     # reaches the published JSON Schema as an enum.
     direction: ObservationDirection | None = None
     stop_id: str | None = None
+    # A bounded rolling window of this measurement's recent history, oldest
+    # first — the historical N-car chain, one entry per gap between successive
+    # trains. Populated for headway (worker/src/headway.ts cellWindow): the last
+    # hour of the cell's readings, hard-capped in count so the snapshot cannot
+    # bloat and bounded in time so it never stretches past the hour. The newest
+    # entry restates this Observation's value/observed_at, and the whole window
+    # shares its stop_id/direction, so a consumer renders the last hour of one
+    # route's headways from this single object — no archive, no unbounded array.
+    # None (not []) for a measurement that carries no series, matching the
+    # optional-field precedent of direction/stop_id above.
+    window: list[ObservationSample] | None = None
 
 
 class DirectionLabels(BaseModel):

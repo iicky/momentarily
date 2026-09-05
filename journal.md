@@ -8806,3 +8806,52 @@ detector). The movement false-alarm gate passes. No 'cannot/never' claim is made
 **Known residual (noted, not chased).** The retrain refreshed the service-baseline sidecar
 on another thin 13-day/2-weekend window, so the weekend-cell amplifier persists in supply
 ratios.
+
+## 2026-09-04 — the observed-headway surface now carries a bounded rolling window per (route, direction), derived from the existing passing ledger rather than a second state document
+
+origin: agent
+
+The historical N-car chain needs the last hour of a cell's headways from a
+single snapshot fetch — one car per train, one gap per headway. Rather than add
+a second mutable state document, the window is DERIVED from the same capped,
+sorted, commutative passing ledger the single reading already reads: successive
+distinct passings ARE the headway sequence, so the same order-independent
+ledger that survived the stale-overwrite defect feeds both. No new plain-put
+state, no new race surface.
+
+**Worker.** `cellWindow` walks the ledger's distinct passings (the same
+MIN_HEADWAY collapse `cellHeadway` uses, factored into a shared
+`distinctPassings`/`intervalPublishable` pair) into consecutive-pair headways,
+ascending by time. Bounded in BOTH count (HEADWAY_WINDOW_SIZE=12, a hard cap so
+the snapshot cannot bloat) and time (HEADWAY_WINDOW_SECONDS=3600, so a window of
+infrequent-route readings cannot stretch "the last hour" over six). A
+feed-uncertain or over-bound interval is a HOLE — omitted, never zero-filled —
+so each entry carries its own observed_at and the array can be shorter than the
+run of trains. The newest entry is exactly the published single reading.
+
+**Ledger cap argued up, not paralleled.** A full 12-gap window needs 13 distinct
+passings; the old HEADWAY_LEDGER_SIZE=6 held only 5 gaps. Raised to
+HEADWAY_WINDOW_SIZE + 4 = 16 — the +4 is the same out-of-order-merge/dup-collapse
+headroom the single reading always kept. This is the cap change the ledger
+shape invites, not a second document.
+
+**Contract.** Observation gains an optional `window: list[ObservationSample]`
+(value + observed_at), matching the optional direction/stop_id register: None
+for a measurement that carries no series, populated for headway. The whole
+window shares the Observation's stop_id/direction, so a reroute-fallback series
+is labelled by the same point the reading is. Pydantic + JSON Schema + the
+worker TS type stay in sync (schema regenerated; parity test green).
+
+**Verification.** Worker fixture tests (55, +5) cover cap, oldest-first order,
+newest==reading, short-array-not-padding, the time bound trimming with count
+budget to spare, a feed-gap hole, and a fallback-labelled window. Python schema
+tests assert the serialized chain and the None default. MEASURED-LIVE against
+real R2 (read-only, S3 grant; no deploy, no prod write): the actual
+`headwayObservations` run over the live `state/headway.json` produced 47
+windows, every one satisfying the cap / time-bound / ascending / newest-matches
+invariants. Across a 240s production interval 28 of 47 windows moved — e.g. 1
+north slid [427,117,244,899,121] -> [117,244,899,121,153], oldest aged out and
+the new reading appended — while a cell no train cleared held unchanged. The
+deployed ledger still caps at 6, so live windows show 5 entries today; the full
+12-entry behaviour is fixture-proven and takes effect once this ledger cap
+ships.

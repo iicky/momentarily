@@ -511,6 +511,7 @@ describe('scheduled: the observed-headway surface (state/headway.json)', () => {
         source: string;
         direction: string;
         stop_id: string;
+        window: { value: number; observed_at: number }[];
       }[];
       freshness: { vehicle_positions: number | null };
     };
@@ -524,6 +525,7 @@ describe('scheduled: the observed-headway surface (state/headway.json)', () => {
         source: 'gtfs_rt_vehicle_positions',
         direction: 'north',
         stop_id: 'A02N',
+        window: [{ value: 240, observed_at: BOUNDARY_AT + 300 }],
       },
     ]);
     expect(snapshot.freshness.vehicle_positions).toBe(BOUNDARY_AT + 300);

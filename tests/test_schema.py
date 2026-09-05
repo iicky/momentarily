@@ -14,6 +14,7 @@ from momentarily.schema import (
     Crossing,
     Inference,
     Observation,
+    ObservationSample,
     RouteStatus,
     SegmentFlow,
     SegmentRecovery,
@@ -70,6 +71,8 @@ def test_observation_round_trips() -> None:
     # A measurement whose entity_ref already locates it carries neither.
     assert payload["direction"] is None
     assert payload["stop_id"] is None
+    # No rolling window on a measurement that carries no series.
+    assert payload["window"] is None
 
 
 def test_headway_observation_carries_its_measurement_point() -> None:
@@ -101,6 +104,42 @@ def test_headway_observation_carries_its_measurement_point() -> None:
         "source": "gtfs_rt_vehicle_positions",
         "direction": "north",
         "stop_id": "121N",
+        # A bare reading with no history yet carries no window (None, not []).
+        "window": None,
+    }
+
+
+def test_headway_observation_carries_its_rolling_window() -> None:
+    """The historical N-car chain: the last hour of one cell's headways in the
+    single Observation, oldest first, each entry a gap between successive trains.
+
+    The newest window entry restates the Observation's value/observed_at, and
+    the whole series shares its stop_id/direction — so a consumer renders the
+    chain from this one object, with no archive and no unbounded array.
+    """
+    obs = Observation(
+        entity_ref="subway_route:1",
+        kind="headway",
+        value=240,
+        unit="seconds",
+        observed_at=1_700_000_300,
+        source="gtfs_rt_vehicle_positions",
+        direction="north",
+        stop_id="121N",
+        window=[
+            ObservationSample(value=300, observed_at=1_700_000_000),
+            ObservationSample(value=240, observed_at=1_700_000_300),
+        ],
+    )
+    payload = json.loads(obs.model_dump_json())
+    assert payload["window"] == [
+        {"value": 300, "observed_at": 1_700_000_000},
+        {"value": 240, "observed_at": 1_700_000_300},
+    ]
+    # The last car is exactly the published single reading.
+    assert payload["window"][-1] == {
+        "value": payload["value"],
+        "observed_at": payload["observed_at"],
     }
 
 

@@ -307,6 +307,14 @@ export interface Provenance {
   // params.json published yet). Present on the snapshot; absent on trains.json,
   // which carries no model, so it stays optional on this shared shape.
   params?: ParamsProvenance | null;
+  // Public URL of this snapshot's params PROV document (v1/prov/v<trained_at>.json),
+  // the standard-vocabulary lineage the models page reads to draw the derivation
+  // chain. Attached by the Worker (worker/src/snapshot.ts) ONLY when the served
+  // params carry a prov_ref — proof the trainer emitted a PROV doc for them — and
+  // omitted (never null) otherwise: absent for params trained before the emitter
+  // existed and on trains.json. Consumers must treat absence as "no document to
+  // point at" and never synthesize the key.
+  prov_ref?: string;
 }
 
 export interface ParamsProvenance {

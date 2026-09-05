@@ -1,0 +1,64 @@
+{
+  "prefix": {
+    "mmly": "https://momentarily.nyc/prov#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "entity": {
+    "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000": {
+      "prov:type": "mmly:InputManifest",
+      "mmly:manifestVersion": 2,
+      "mmly:nAlertKeys": 10,
+      "mmly:nVehicleKeys": 20,
+      "mmly:blake3": "7c00000000000000000000000000000000000000000000000000000000000000"
+    },
+    "mmly:state/params/v1788229972.json": {
+      "prov:type": "mmly:PublishedArtifact",
+      "mmly:name": "params",
+      "mmly:bucketKey": "state/params/v1788229972.json"
+    }
+  },
+  "activity": {
+    "mmly:run/1788229972": {
+      "prov:startedAtTime": {
+        "$": "2026-09-01T02:31:40+00:00",
+        "type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "$": "2026-09-01T02:32:52+00:00",
+        "type": "xsd:dateTime"
+      },
+      "prov:type": "mmly:TrainerRun"
+    }
+  },
+  "agent": {
+    "mmly:trainer/9f3c1ab7d240e5c8": {
+      "prov:type": "prov:SoftwareAgent",
+      "mmly:producer": "train_em",
+      "mmly:codeSha": "9f3c1ab7d240e5c8"
+    }
+  },
+  "used": {
+    "_:u1": {
+      "prov:activity": "mmly:run/1788229972",
+      "prov:entity": "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "wasGeneratedBy": {
+    "_:g1": {
+      "prov:entity": "mmly:state/params/v1788229972.json",
+      "prov:activity": "mmly:run/1788229972"
+    }
+  },
+  "wasAssociatedWith": {
+    "_:a1": {
+      "prov:activity": "mmly:run/1788229972",
+      "prov:agent": "mmly:trainer/9f3c1ab7d240e5c8"
+    }
+  },
+  "wasDerivedFrom": {
+    "_:d1": {
+      "prov:generatedEntity": "mmly:state/params/v1788229972.json",
+      "prov:usedEntity": "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

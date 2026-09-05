@@ -34,6 +34,7 @@ import {
 } from "./charts";
 import type { RegimeBands } from "@/lib/regime_band";
 import { ChartMetaProvider, ChartErrorBoundary } from "./ChartFrame";
+import Provenance from "./Provenance";
 import type { GradingResponse, HeatmapEntry } from "@/lib/types";
 import type { EpisodeSupport } from "@/lib/calibrationFeed";
 
@@ -510,6 +511,8 @@ export default function ModelsPage() {
         </ChartMetaProvider>
         </ChartErrorBoundary>
       )}
+
+      <Provenance />
     </div>
   );
 }

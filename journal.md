@@ -9151,3 +9151,53 @@ verdict already rests on ~32k pred-normal ticks per window across three windows.
 No R2 grant covers this thread (murk_get returns none), so no live rerun was
 run; none was needed. All numbers above are measured off committed-review
 `summary.json` artifacts; the machinery audit is code/fixture-supported.
+## 2026-09-05 — the models page draws the derivation chain from the PROV document, and it is invisible until a prov_ref exists
+
+origin: agent
+
+Third and final slice of the PROV epic. The models page now renders
+what-produced-this as a bottom-up derivation chain read from the trainer run's
+W3C PROV-JSON sidecar: GTFS static feed (version + sha256 digest + timetable
+window) and input manifest (blake3 + alert/vehicle key counts + manifest
+version) as prov:Entity inputs, the trainer run as a prov:Activity (trained
+date, start->end duration, and its prov:SoftwareAgent code sha + dirty flag +
+producer), the published artifacts as prov:Entity with their real
+wasDerivedFrom edges (feed / manifest), and the live snapshot appended as the
+terminal node. The params artifact the snapshot actually runs on is highlighted
+by matching snapshot.provenance.params.key against the artifact bucket key. The
+PROV edge labels (used / wasGeneratedBy / wasDerivedFrom) carry the vocabulary
+and are defined in the section caption, since a reviewer is not assumed to read
+PROV.
+
+The read path is exactly the one the snapshot-slice designed: viz/lib/prov.ts
+parses the document referenced by snapshot.provenance.prov_ref (the PUBLIC
+v1/prov/ URL), never a guessed key. The parser is pure and facts-only — it
+surfaces only the nodes the document carries, so a run whose GTFS fetch failed
+(no feed entity) draws no feed node rather than an "unknown feed" placeholder,
+and a missing dirty flag reads as null, not false. The component fetch splits
+the two failure modes the design named: a transport error / non-200 is
+`unavailable`, a body that is not JSON or is JSON the reader cannot anchor to a
+trainer-run activity is `malformed`; both render a labeled note and leave the
+rest of the page working.
+
+CRITICAL absent-branch behavior, measured-live: the production snapshot
+(feed.momentarily.nyc/v1/snapshot.json, worker code 15dc6f0) carries NO
+prov_ref key at all today — the live params predate the emitter and the Worker
+carrying the derivation is not deployed. With prov_ref absent the component
+returns null: no section renders AND no v1/prov/ fetch is attempted. So the
+production models page is byte-unchanged behavior-wise, verified live against
+the real feed (prov section absent, zero prov fetches).
+
+Verification. fixture-supported: the render was exercised in a real browser
+against the four states. Full chain — snapshot with prov_ref + the emitter-built
+prov_full.json fixture — draws every node with correct facts and the params
+"this model" tag. Both degraded documents (prov_ref present, doc 404s ->
+"unavailable"; prov_ref present, doc is JSON with empty maps -> "unreadable")
+render their labeled note. Absent prov_ref -> no section, no fetch. The two
+fixtures are NOT hand-written: scripts/gen_prov_fixtures.py emits them through
+training.prov.build_trainer_run, the same assembler the trainer runs, so the
+parser test (viz/tests/prov.test.ts) pins the reader against real producer
+bytes; regenerating them is a no-op diff. viz typecheck clean; node --test 257
+pass (6 new prov tests). scoped ruff + pyright clean on the one touched Python
+file (the fixture generator). No worker/ or training/ runtime code changed. No
+commit, no deploy — tree left dirty for the conductor to land.

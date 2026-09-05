@@ -1,0 +1,118 @@
+{
+  "prefix": {
+    "mmly": "https://momentarily.nyc/prov#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "entity": {
+    "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000": {
+      "prov:type": "mmly:InputManifest",
+      "mmly:manifestVersion": 2,
+      "mmly:nAlertKeys": 4032,
+      "mmly:nVehicleKeys": 4032,
+      "mmly:blake3": "7c00000000000000000000000000000000000000000000000000000000000000"
+    },
+    "mmly:gtfs/e3bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+      "prov:type": "mmly:GtfsStaticFeed",
+      "mmly:feedVersion": "20260807-H-rockaways-extension-removed",
+      "mmly:feedStartDate": "2026-08-07",
+      "mmly:feedEndDate": "2026-09-04",
+      "mmly:sha256": "e3bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "mmly:state/params/v1788229972.json": {
+      "prov:type": "mmly:PublishedArtifact",
+      "mmly:name": "params",
+      "mmly:bucketKey": "state/params/v1788229972.json"
+    },
+    "mmly:state/scheduled_headway/v1788229972.json": {
+      "prov:type": "mmly:PublishedArtifact",
+      "mmly:name": "scheduled_headway",
+      "mmly:bucketKey": "state/scheduled_headway/v1788229972.json"
+    },
+    "mmly:state/segment_params/v1788229972.json": {
+      "prov:type": "mmly:PublishedArtifact",
+      "mmly:name": "segment_params",
+      "mmly:bucketKey": "state/segment_params/v1788229972.json"
+    },
+    "mmly:state/service_baseline/v1788229972.json": {
+      "prov:type": "mmly:PublishedArtifact",
+      "mmly:name": "service_baseline",
+      "mmly:bucketKey": "state/service_baseline/v1788229972.json"
+    }
+  },
+  "activity": {
+    "mmly:run/1788229972": {
+      "prov:startedAtTime": {
+        "$": "2026-09-01T02:31:40+00:00",
+        "type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "$": "2026-09-01T02:32:52+00:00",
+        "type": "xsd:dateTime"
+      },
+      "prov:type": "mmly:TrainerRun"
+    }
+  },
+  "agent": {
+    "mmly:trainer/9f3c1ab7d240e5c8": {
+      "prov:type": "prov:SoftwareAgent",
+      "mmly:producer": "train_em",
+      "mmly:dirty": {
+        "$": true,
+        "type": "xsd:boolean"
+      },
+      "mmly:codeSha": "9f3c1ab7d240e5c8"
+    }
+  },
+  "used": {
+    "_:u1": {
+      "prov:activity": "mmly:run/1788229972",
+      "prov:entity": "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000"
+    },
+    "_:u2": {
+      "prov:activity": "mmly:run/1788229972",
+      "prov:entity": "mmly:gtfs/e3bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "wasGeneratedBy": {
+    "_:g1": {
+      "prov:entity": "mmly:state/params/v1788229972.json",
+      "prov:activity": "mmly:run/1788229972"
+    },
+    "_:g2": {
+      "prov:entity": "mmly:state/scheduled_headway/v1788229972.json",
+      "prov:activity": "mmly:run/1788229972"
+    },
+    "_:g3": {
+      "prov:entity": "mmly:state/segment_params/v1788229972.json",
+      "prov:activity": "mmly:run/1788229972"
+    },
+    "_:g4": {
+      "prov:entity": "mmly:state/service_baseline/v1788229972.json",
+      "prov:activity": "mmly:run/1788229972"
+    }
+  },
+  "wasAssociatedWith": {
+    "_:a1": {
+      "prov:activity": "mmly:run/1788229972",
+      "prov:agent": "mmly:trainer/9f3c1ab7d240e5c8"
+    }
+  },
+  "wasDerivedFrom": {
+    "_:d1": {
+      "prov:generatedEntity": "mmly:state/params/v1788229972.json",
+      "prov:usedEntity": "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000"
+    },
+    "_:d2": {
+      "prov:generatedEntity": "mmly:state/scheduled_headway/v1788229972.json",
+      "prov:usedEntity": "mmly:gtfs/e3bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "_:d3": {
+      "prov:generatedEntity": "mmly:state/segment_params/v1788229972.json",
+      "prov:usedEntity": "mmly:manifest/7c00000000000000000000000000000000000000000000000000000000000000"
+    },
+    "_:d4": {
+      "prov:generatedEntity": "mmly:state/segment_params/v1788229972.json",
+      "prov:usedEntity": "mmly:gtfs/e3bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}

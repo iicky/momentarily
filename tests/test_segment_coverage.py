@@ -6,6 +6,7 @@ Every R2 read lives behind `main`; everything here runs on synthetic calls.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 
 from training.load import TICK_SECONDS
 from training.load_r2 import Disruption
@@ -15,6 +16,7 @@ from training.segment_coverage import (
     _boot_rates,  # pyright: ignore[reportPrivateUsage]
     grade,
     normal_runs,
+    sweep_row,
 )
 
 T0 = 1_700_000_100
@@ -281,3 +283,90 @@ def test_published_surface_holds_a_verdict_the_classifier_stopped_making() -> No
     assert pub["n_ticks"] == 7
     assert pub["alarmed_ticks"] == 7
     assert pub["tick_rate"] == 1.0
+
+
+def test_sweep_row_reads_latency_and_false_alarms_off_the_published_surface() -> None:
+    """A rider waits on the debounced published surface, not the classifier's
+    momentary call, so the decay-sweep table sources onset latency and the
+    quiet-route false-alarm proxy from `published`. Reading `calls` would price a
+    window on opinions nobody was shown — the fix the first latency cut named."""
+    arm = {
+        "policy": {
+            "decay": 0.94,
+            "min_eff_matched": 3,
+            "throughput": True,
+            "window_minutes": 83.0,
+        },
+        "coverage": {
+            "share_of_baselined_cells_judged": 0.4228,
+            "judged_per_tick_median": 701,
+        },
+        "calls": {
+            "onset_latency": {
+                "n_offered": 9,
+                "n_alarming_at_onset": 0,
+                "n_episodes": 9,
+                "n_detected": 9,
+                "detection_rate": 1.0,
+                "median_latency_min": 0.0,
+                "p90_latency_min": 0.0,
+            },
+            "normal_run_false_alarms": {"tick_rate": 0.0},
+        },
+        "published": {
+            "onset_latency": {
+                "n_offered": 9,
+                "n_alarming_at_onset": 1,
+                "n_episodes": 8,
+                "n_detected": 5,
+                "detection_rate": 0.625,
+                "median_latency_min": 10.0,
+                "p90_latency_min": 35.0,
+            },
+            "normal_run_false_alarms": {"tick_rate": 0.064},
+        },
+    }
+    row = sweep_row("decay_0.94", arm)
+    assert row["onset"]["median_latency_min"] == 10.0  # published, not the 0.0 calls
+    assert row["onset"]["p90_latency_min"] == 35.0
+    assert row["onset"]["n_measurable"] == 8
+    assert row["onset"]["n_alarming_at_onset"] == 1
+    assert row["quiet_route_fa_tick_rate"] == 0.064
+    assert row["coverage_pct"] == 42.28
+    assert row["decay"] == 0.94
+    assert row["window_minutes"] == 83.0
+
+
+def test_sweep_row_projects_a_real_graded_arm() -> None:
+    """End to end off `grade`: the row carries the policy and coverage through
+    and sources its onset/false-alarm numbers from the published block, whatever
+    the debounce made of them."""
+    onset = _t(6)
+    calls = _calls(
+        {
+            _t(i): {"A|south|A09S": "disrupted" if i >= 7 else "normal"}
+            for i in range(12)
+        }
+    )
+    arm: dict[str, Any] = {
+        "policy": {
+            "decay": 0.9,
+            "min_eff_matched": 3,
+            "throughput": True,
+            "window_minutes": 50.0,
+        },
+    }
+    arm.update(grade(calls, [Disruption("A", onset, _t(11))], [], 1, bootstrap=50))
+    row = sweep_row("decay_0.9", arm)
+    assert row["decay"] == 0.9
+    assert row["window_minutes"] == 50.0
+    assert row["coverage_pct"] == 100.0  # one baselined cell, judged every tick
+    pub = arm["published"]
+    assert (
+        row["onset"]["median_latency_min"]
+        == (pub["onset_latency"]["median_latency_min"])
+    )
+    assert row["onset"]["n_detected"] == pub["onset_latency"]["n_detected"]
+    assert row["quiet_route_fa_tick_rate"] == (
+        pub["normal_run_false_alarms"].get("tick_rate")
+    )

@@ -9201,3 +9201,87 @@ bytes; regenerating them is a no-op diff. viz typecheck clean; node --test 257
 pass (6 new prov tests). scoped ruff + pyright clean on the one touched Python
 file (the fixture generator). No worker/ or training/ runtime code changed. No
 commit, no deploy — tree left dirty for the conductor to land.
+## 2026-09-05 — SEGMENT_DECAY priced on its own latency across the full frontier: 0.94 is the discrimination peak, coverage is void as a justification post-throughput, and the ceiling above 0.94 is closed
+
+origin: agent
+
+`training/segment_coverage.py` gains `--sweep-decay`: it replays the frontier
+decays 0.80/0.90/0.94/0.96/0.98 with the throughput branch ON and the shipped
+matched floor (3), so the only lever moving is the accumulator window, and emits
+onset latency (median/p90 on the debounced PUBLISHED surface — the fix the first
+latency cut asked for), coverage, and the quiet-route false-alarm proxy as one
+table. `sweep_row` and a route-scope truth block (`truth.scope`) are covered by
+two hermetic tests; 20/20 green, ruff + pyright clean on both touched files.
+
+Pre-registered window (frozen before any result was read): fit 2026-08-15..08-28
+/ score 2026-08-29..09-04, --end-date 2026-09-04 --days 21 --fit-days 14, seed 0,
+bootstrap 2000. Causal split. 4032 fit ticks, 2012 scored, 107 assigned_n
+episodes (median 8 ticks / 40 min), 226 normal runs, 13 routes.
+
+VALIDITY CROSS-CHECK. `decay_0.94` is byte-identical in config to the epic's
+`both` arm; on this later, disjoint window it reproduces `both`'s published
+numbers to three decimals (episode mean_share 0.341, normal 0.064, ratio 5.31 vs
+the epic's 0.341 / 0.064 / 5.30). The classifier is stable and the replica
+faithful, so the rest of the column is trustworthy.
+
+Table (published/debounced surface, mean_share = pooled disrupted-cell share per
+route-tick, the non-saturating statistic; ratio = episode share / normal share):
+
+| decay | window | cov%  | episode share       | normal share        | ratio | onset already-alarming | measurable | fresh detected | median | p90     |
+| ----- | ------ | ----- | ------------------- | ------------------- | ----- | ---------------------- | ---------- | -------------- | ------ | ------- |
+| 0.80  | 25min  | 100.0 | 0.560 [0.436,0.709] | 0.119 [0.087,0.157] | 4.72  | 34 / 107               | 73         | 9              | 10 min | 265 min |
+| 0.90  | 50min  | 100.0 | 0.398 [0.311,0.470] | 0.084 [0.070,0.101] | 4.75  | 45 / 107               | 62         | 15             | 20 min | 215 min |
+| 0.94  | 83min  | 100.0 | 0.341 [0.259,0.411] | 0.064 [0.056,0.074] | 5.31  | 56 / 107               | 51         | 8              | 22.5min| 290 min |
+| 0.96  | 125min | 100.0 | 0.249 [0.168,0.326] | 0.054 [0.046,0.064] | 4.58  | 53 / 107               | 54         | 8              | 17.5min| 245 min |
+| 0.98  | 250min | 100.0 | 0.152 [0.092,0.212] | 0.040 [0.032,0.051] | 3.77  | 62 / 107               | 45         | 9              | 15 min | 495 min |
+
+Episode/normal CIs are disjoint at every decay (all significant).
+
+1. COVERAGE IS VOID AS A DECAY JUSTIFICATION. Judged-cell coverage is flat at
+   100.0% (1651/1651 cells, 1651 judged every tick) for every decay, because the
+   throughput branch judges every cell regardless of the window. The epic's
+   original 0.80->0.94 move was justified ~42% on coverage (6.5% -> 42.3% on the
+   old no-throughput frontier); with throughput shipped that entire axis is gone,
+   and SEGMENT_DECAY is now purely a discrimination/latency knob. What the window
+   actually moves is the quiet->verdict mix (quiet cell-ticks 2.88M -> 0.69M as
+   decay 0.80 -> 0.98), not how many cells get an opinion.
+
+2. 0.94 IS THE DISCRIMINATION PEAK AND IS NOT DOMINATED. The ratio runs 4.72 /
+   4.75 / 5.31 / 4.58 / 3.77 — a clean peak at 0.94. No other decay beats 0.94 on
+   both powered axes: 0.90 carries a stronger episode signal (0.398 vs 0.341) but
+   also a higher false-alarm share (0.084 vs 0.064), and the two net to a tie on
+   the ratio (4.75 vs 5.31, overlapping CIs). Raising the gain and raising the
+   noise cancel; 0.94 sits at the best net.
+
+3. THE LATENCY READ DOES NOT OVERTURN 0.94, AND CANNOT — AS PRE-REGISTERED. The
+   median onset latency rests on 8-15 fresh detections per arm (episodes run 8
+   ticks median, shorter than every window >=50min), so 10 vs 20 vs 22.5min
+   cannot rank 0.90/0.94/0.96 — the same under-power the epic hit reproduces. The
+   direction disfavors high decay (0.94 is the slowest median) but the number is
+   not rankable. The well-powered latency-adjacent count, already-alarming-at-
+   onset over all 107 episodes, rises 34 -> 45 -> 56 through 0.94: wider windows
+   are more often already firing when a real onset lands (more smear), though on
+   the debounced surface some of that is the surface correctly holding disrupted
+   across clustered back-to-back episodes, which is why the epic's metric excludes
+   it rather than scoring it.
+
+4. THE CEILING ABOVE 0.94 IS CLOSED WITH NUMBERS. 0.98 — the mechanical selection
+   rule's own pick on the recall proxy — is measured-bad on every axis this slice
+   adds: worst discrimination (3.77), worst p90 latency tail (495 min, a
+   quarter-day smear), and most contaminated onset (62/107 episodes already
+   alarming). 0.96 is already below 0.94 on discrimination (4.58). The prior
+   concern that a 250-min window "describes a smear rather than an event" is now
+   measured,
+   not reasoned. No decay above 0.94 is defensible on any measured axis.
+
+SETTLED OUTCOME: keep SEGMENT_DECAY = 0.94, on corrected grounds. It is retained
+as the discrimination optimum (ratio 5.31, undominated), NOT for coverage (void
+with throughput) and NOT because it is fast (it is the slowest median, an honest
+cost). The direct latency read the retune lacked now exists as a permanent
+instrument (`--sweep-decay`), it declines to move the knob off 0.94, and it
+permanently closes the door on the higher decays the old proxy favoured. No
+worker/constant change; the harness + table are the deliverable. This is
+orthogonal to the pending 5min->1min judging migration; once that lands, re-run
+`--sweep-decay` on the
+1-min clock, where shorter windows and richer episodes may finally give the
+latency medians the power to rank 0.90 against 0.94 — the arm this window cannot.

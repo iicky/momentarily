@@ -33,6 +33,17 @@ counts hide: six consecutive 7-day windows with indistinguishable tick counts
 evidence behind a flat advertised n. A tick-level CI here would be a ~2000x
 overstatement of the sample.
 
+DECAY SWEEP
+
+`--sweep-decay` reprices SEGMENT_DECAY on its own terms. The 0.94 retune was
+chosen on a route-level recall proxy the epic itself called weak by construction;
+this mode replays the frontier decays (0.80/0.90/0.94/0.96/0.98) with the shipped
+matched floor and the throughput branch ON, and emits an onset-latency (median /
+p90 on the debounced published surface) + coverage + quiet-route false-alarm
+table, so the knob is settled on a table and not a knob-feel. Truth stays
+route-scoped and the report says so (`truth.scope`) — see that note for why no
+segment-scope onset truth is graded.
+
 CAUSALITY
 
 `--fit-days` of the window fit the baseline and the rates; the remainder is
@@ -40,6 +51,8 @@ scored. Nothing in the scored span contributes to the model scoring it.
 
 Run:
   murk exec -- uv run python -m training.segment_coverage --days 21 --fit-days 14
+  murk exec -- uv run python -m training.segment_coverage --days 21 --fit-days 14 \
+      --sweep-decay
 """
 
 from __future__ import annotations
@@ -101,6 +114,15 @@ MIN_NORMAL_RUN_TICKS = 6
 NARROW_DECAY = 0.8
 NARROW_FLOOR = 5
 NARROW = Policy(decay=NARROW_DECAY, min_eff_matched=NARROW_FLOOR)
+
+# The SEGMENT_DECAY frontier this decay sweep prices, status quo (0.94) included.
+# Every arm replays with the SHIPPED matched floor and the throughput branch ON —
+# the surface a rider actually sees — so the only thing moving across the sweep is
+# the accumulator window. Effective windows are 1/(1-decay) ticks x TICK_SECONDS:
+# 0.80->25min, 0.90->50min, 0.94->83min, 0.96->125min, 0.98->250min. 0.90 and
+# 0.96 bracket the shipped value; 0.98 is the mechanical rule's own pick, priced
+# here on latency rather than on the route-level recall proxy that chose it.
+SWEEP_DECAYS = (0.80, 0.90, 0.94, 0.96, 0.98)
 
 
 @dataclass(frozen=True)
@@ -466,6 +488,45 @@ def grade(
     }
 
 
+def sweep_row(name: str, arm: Mapping[str, Any]) -> dict[str, Any]:
+    """One row of the decay sweep: the tradeoff SEGMENT_DECAY buys, projected off
+    a single graded arm so the knob is a table and not a knob-feel.
+
+    Latency and the quiet-route false-alarm proxy are read off the PUBLISHED
+    (debounced) surface, not the raw per-tick calls. That is the fix the first
+    latency cut called for (journal 2026-08-24): the debounced regime is what the
+    snapshot actually flips on, so first-crossing on it is what a rider's wait
+    measures. Coverage is a property of the calls, so it comes off `coverage`.
+
+    Every number here grades the segment surface against ROUTE onsets — the
+    coarser read this slice's truth-scope block documents. The row carries no
+    per-segment latency because no independent segment-scope onset truth exists to
+    grade against (see main's `truth.scope_note`)."""
+    cov = arm["coverage"]
+    lat = arm["published"]["onset_latency"]
+    fa = arm["published"]["normal_run_false_alarms"]
+    pol = arm["policy"]
+    return {
+        "arm": name,
+        "decay": pol["decay"],
+        "min_eff_matched": pol["min_eff_matched"],
+        "throughput": pol["throughput"],
+        "window_minutes": pol["window_minutes"],
+        "coverage_pct": round(100 * cov["share_of_baselined_cells_judged"], 2),
+        "judged_per_tick_median": cov["judged_per_tick_median"],
+        "onset": {
+            "n_offered": lat["n_offered"],
+            "n_alarming_at_onset": lat["n_alarming_at_onset"],
+            "n_measurable": lat["n_episodes"],
+            "n_detected": lat["n_detected"],
+            "detection_rate": lat["detection_rate"],
+            "median_latency_min": lat["median_latency_min"],
+            "p90_latency_min": lat["p90_latency_min"],
+        },
+        "quiet_route_fa_tick_rate": fa.get("tick_rate"),
+    }
+
+
 def _stop_filter(through: frozenset[tuple[str, str, str]] | None) -> StopFilter | None:
     """The same through-stop restriction write_segment_params applies, so the
     graded fit describes the stop set the Worker would actually be handed."""
@@ -528,6 +589,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP_N)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--sweep-decay",
+        action="store_true",
+        help="price SEGMENT_DECAY directly: replay the frontier decays "
+        "(throughput on, shipped floor) and emit an onset-latency/coverage/"
+        "false-alarm table instead of the 2x2 bakeoff",
+    )
+    parser.add_argument(
+        "--decays",
+        type=float,
+        nargs="+",
+        default=list(SWEEP_DECAYS),
+        help="decays to sweep when --sweep-decay is set",
+    )
     args = parser.parse_args(argv)
 
     today = datetime.now(UTC).date()
@@ -599,17 +674,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     n_baselined = len(params["cells"])
     bare = without_throughput(params)
-    # The two axes the epic can buy coverage on, crossed. `window` spends onset
-    # latency for coverage (a longer accumulator window means a verdict can be
-    # stale by up to that window); `throughput` spends nothing but needs the
-    # trainer's per-bin rates. The crossed arm is here because nothing about
-    # either says they compose, and the report should say whether they do.
-    arms: dict[str, tuple[dict[str, Any], Policy]] = {
-        "status_quo": (bare, NARROW),
-        "window": (bare, SHIPPED),
-        "throughput": (params, NARROW),
-        "both": (params, SHIPPED),
-    }
+    if args.sweep_decay:
+        # Price SEGMENT_DECAY directly. Throughput ON and the shipped matched
+        # floor for every arm, so the only lever moving is the accumulator window
+        # — this is the read the route-level recall proxy could not give the knob.
+        arms = {
+            f"decay_{d:g}": (params, Policy(decay=d)) for d in sorted(set(args.decays))
+        }
+    else:
+        # The two axes the epic can buy coverage on, crossed. `window` spends
+        # onset latency for coverage (a longer accumulator window means a verdict
+        # can be stale by up to that window); `throughput` spends nothing but
+        # needs the trainer's per-bin rates. The crossed arm is here because
+        # nothing about either says they compose, and the report should say
+        # whether they do.
+        arms = {
+            "status_quo": (bare, NARROW),
+            "window": (bare, SHIPPED),
+            "throughput": (params, NARROW),
+            "both": (params, SHIPPED),
+        }
     report: dict[str, Any] = {
         "window": {
             "fit_start": start.isoformat(),
@@ -626,6 +710,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "n_episodes": len(disruptions),
             "n_normal_runs": len(runs),
             "n_routes_with_episodes": len({d.route for d in disruptions}),
+            "scope": "route",
+            "scope_note": (
+                "assigned_n degradation is ROUTE-scoped; the per-cell segment "
+                "surface is lifted to a per-route disrupted-share before grading, "
+                "so every latency/detection/false-alarm number here grades the "
+                "segment surface against ROUTE onsets — a deliberately coarser "
+                "read. No segment-scope onset truth is graded: the only "
+                "segment-granularity signal in the archive is the vehicle-position "
+                "stream this classifier already reads, so a movement-derived "
+                "per-segment onset truth would grade the classifier against a "
+                "relabelling of its own input (circular). Scopes are never mixed."
+            ),
             # The two populations are not the same length, which is why the
             # exposure-matched tick rate is the comparable number and the
             # unit rate is not.
@@ -660,6 +756,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             bootstrap=args.bootstrap,
             seed=args.seed,
         )
+    if args.sweep_decay:
+        report["table"] = [
+            sweep_row(name, report["arms"][name])
+            for name in sorted(
+                report["arms"], key=lambda n: report["arms"][n]["policy"]["decay"]
+            )
+        ]
     print(json.dumps(report, indent=2))
     return 0
 

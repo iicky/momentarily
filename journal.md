@@ -9285,3 +9285,28 @@ orthogonal to the pending 5min->1min judging migration; once that lands, re-run
 `--sweep-decay` on the
 1-min clock, where shorter windows and richer episodes may finally give the
 latency medians the power to rank 0.90 against 0.94 — the arm this window cannot.
+
+## 2026-09-06 — viz npm ci was never a lockfile problem: the vault bindings moved npm scopes and the old scope's binaries were published restricted
+
+origin: agent
+
+The standing "regenerate package-lock so CI can use npm ci" item was
+unfixable as stated, and the first diagnosis ("platform binaries unpublished,
+404 at every version") was wrong in an instructive way: every 404 was observed
+through a broken npm token (`npm whoami` → 401), and npm returns identical
+404s for "does not exist" and "exists but restricted". The truth, three probes
+deeper: the `@iicky/murk-secrets` platform subpackages for 0.10.1 were
+published five days before the publish workflow gained `--access public`
+(access fix 2026-08-03; v0.10.1 tagged 2026-07-29), so they exist as
+restricted packages — and the bindings then moved to the
+`@interrupted/murk-secrets` scope, whose 0.11.0 is fully public including
+darwin-arm64.
+
+Fix: viz migrated `@iicky/murk-secrets@^0.6.2` → `@interrupted/murk-secrets@^0.11.0`
+(dep, import, next.config serverExternalPackages, README, .env.local.example),
+lock regenerated. Verified: the native binding now loads (`load`/`hasIdentity`
+exported; the "Cannot find native binding" throw is gone), `npm ci` passes in a
+clean directory (74 packages), typecheck clean, 257 viz tests green. Side
+effect worth naming: the README-documented dormant `fromVault()` path is now
+genuinely activatable — env vars still take precedence, so behavior only
+changes for a keyed shell with no `R2_*` env.

@@ -10,7 +10,7 @@
 // Two ways to surface them, tried in order:
 //   1. process.env — set when launched via `murk exec -- next dev` (default), or
 //      from .env.local / CI.
-//   2. The @iicky/murk-secrets bindings reading ../.murk directly, for a plain
+//   2. The @interrupted/murk-secrets bindings reading ../.murk directly, for a plain
 //      `next dev` after `source .env` (needs MURK_KEY/MURK_KEY_FILE in the env).
 
 import path from "node:path";
@@ -45,7 +45,7 @@ async function fromVault(): Promise<R2Creds | null> {
   try {
     // Dynamic so a missing native binding degrades gracefully instead of
     // crashing the route — and so Next never bundles the .node.
-    const murk = await import("@iicky/murk-secrets");
+    const murk = await import("@interrupted/murk-secrets");
     const vaultPath =
       process.env.MURK_VAULT ?? path.resolve(process.cwd(), "..", ".murk");
     const vault = murk.load(vaultPath); // reads MURK_KEY / MURK_KEY_FILE

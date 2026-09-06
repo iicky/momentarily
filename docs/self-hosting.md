@@ -24,7 +24,7 @@ Budget ~15 minutes.
 ## A note on secrets: this repo uses `murk`, you don't have to
 
 Every `deploy`/`dev` script in `worker/`, `trainer/`, and `viz/` wraps `wrangler`
-in [`murk exec`](https://www.npmjs.com/package/@iicky/murk-secrets) — the
+in [`murk exec`](https://www.npmjs.com/package/@interrupted/murk-secrets) — the
 author's encrypted vault that injects `CLOUDFLARE_ACCOUNT_ID` and the `R2_*`
 credentials. **You don't need murk.** Either set those as environment variables
 in your shell before running `wrangler` directly, or use `wrangler secret put`

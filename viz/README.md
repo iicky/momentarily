@@ -105,10 +105,10 @@ key, and a stale one fails with "not a recipient" rather than anything about
 keys. Unset it and retry.
 
 Credential resolution order (`lib/r2.ts`): `process.env.R2_*` (murk exec / CI /
-`.env.local`) → the [`@iicky/murk-secrets`](https://www.npmjs.com/package/@iicky/murk-secrets)
-bindings reading `../.murk` in-process. The bindings path activates once that
-package ships a prebuilt native binary for your platform; until then the
-`murk exec` path covers it.
+`.env.local`) → the [`@interrupted/murk-secrets`](https://www.npmjs.com/package/@interrupted/murk-secrets)
+bindings reading `../.murk` in-process. The bindings ship prebuilt native
+binaries (0.11.0+), so the vault path works out of the box wherever
+`MURK_KEY`/`MURK_KEY_FILE` resolves; env vars always take precedence.
 
 Status needs no credentials. To run it alone without murk: `npm run dev:plain`.
 

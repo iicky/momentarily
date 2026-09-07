@@ -6,7 +6,7 @@ A normalized snapshot of NYC MTA service status, alerts, and elevator/escalator 
 
 The [homeassistant-mta-subway](https://github.com/iicky/homeassistant-mta-subway) integration is the canonical consumer; the snapshot URL is public so anyone (other HA users, custom dashboards, transit hackers) can use it.
 
-**Not affiliated with the MTA.** Built from official feeds at `api.mta.info` per the MTA developer agreement.
+**Not affiliated with the MTA.** Built from the official MTA developer gateway at `api-endpoint.mta.info` per the MTA developer agreement.
 
 ## Snapshot URL
 
@@ -36,15 +36,20 @@ left un-rewritten rather than published as a false empty read.
 
 ## What's in the snapshot
 
-- **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata
+- **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata. The atomic unit; everything else is derived from these.
 - **`observations`** — raw measurements, peer to `alerts`. Populated with the observed subway headway per (route, direction): the seconds between the last two trains to serve that pair's canonical reference stop, measured off the GTFS-RT vehicle feed. Each entry carries the `stop_id` it was measured at and the `direction`. A measurement, not an inference — no baseline, no model, no grade. Absent for a pair that hasn't seen two trains, whose reading is stale, or whose interval spanned a feed gap; empty on a cold start or a vehicle-feed outage, never a fabricated zero. Travel times, ETAs and tolls are still unwired.
 - **`routes`** — static per-route metadata (id, color, name)
-- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, optional HMM-inferred `condition` + `recovery_minutes`
+- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, optional HMM-inferred `condition` + `recovery_minutes`, and the trip-updates supply axis (`service_condition`, `service_ratio`, `service_percentile`)
 - **`stations`**, **`station_status`** — per-station metadata + derived view (alerts affecting the stop, ADA status, equipment outage counts)
+- **`station_flow`** — per-station movement verdicts derived from the vehicle feed, one tick (~5 min) lagged
+- **`segment_flow`** — per-segment movement verdicts, one tick (~5 min) lagged, keyed by the `route|direction|from_stop` cell id. Carries every judged cell, normal and disrupted alike, so a key absent from it was never judged this tick — never a healthy read by omission.
+- **`platform_crowding`** — estimated riders waiting on each directional platform: the platform's share of its complex's usual entry rate for the hour, times how long since a train cleared it. An estimate on a stated assumption (see the surface's `method`), not a head count.
 - **`equipment`** — elevator/escalator outage state
 - **`bridges`**, **`tunnels`** — infrastructure scaffolds; populated when a travel-time data source is wired
 - **`system`** — top-of-dashboard rollup; one human-readable `overall_label`
-- **`compat.subwaynow_routes`** — legacy view matching homeassistant-mta-subway's pre-Momentarily `Route` shape, derived from canonical surfaces. Existing HA installs swap `API_URL` and read this view with zero code changes.
+- **`compat`** — legacy surfaces derived from the canonical types above. `compat.subwaynow_routes` matches homeassistant-mta-subway's pre-Momentarily `Route` shape, so existing HA installs swap `API_URL` and read it with zero code changes.
+
+Every snapshot also carries its envelope: **`generated_at`** (epoch seconds the snapshot was built), **`schema_version`** (the contract's path version, `1`), **`attribution`** (the MTA credit string), **`supported_modes`** (the transit modes this instance publishes), **`freshness`** (when each upstream source was last successfully fetched), and **`provenance`** (the git `code_sha`, `dirty` flag, and producer that built it — see the provenance discussion below).
 
 Full schema in [`src/momentarily/schema.py`](src/momentarily/schema.py).
 

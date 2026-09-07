@@ -10,7 +10,7 @@ This is local-only. Nothing is published; nothing leaves your machine.
 
 That's it. The JSON feeds the collector polls are publicly accessible without authentication.
 
-> An MTA API key will be needed later when we add protobuf trip-updates (real-time arrival ETAs), but not for v1 of the collector. See `.env.example` for the placeholder.
+> No MTA API key is needed — the whole developer gateway, including the protobuf trip-update and vehicle-position feeds for arrival ETAs, serves keyless (verified HTTP 200 without a key). See `.env.example`.
 
 ## Quickstart (Colima)
 

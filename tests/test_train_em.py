@@ -1090,7 +1090,9 @@ def test_main_passes_movement_baseline_through_to_write_params(
     monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
-    exit_code = main(["--start", "2026-06-01", "--end", "2026-06-14"])
+    exit_code = main(
+        ["--start", "2026-06-01", "--end", "2026-06-14", "--skip-plausibility"]
+    )
 
     assert exit_code == 0
     assert captured_kwargs["movement_baseline"] == sentinel_baseline
@@ -1182,6 +1184,7 @@ def test_main_threads_service_baselines_to_their_writers(
         params_trained_at: int | None = None,
         quantiles: dict[str, Any] | None = None,
         prov_ref: str | None = None,
+        pending: list[Any] | None = None,
     ) -> int:
         captured_service["hourly"] = hourly
         captured_service["quantiles"] = quantiles
@@ -1205,7 +1208,14 @@ def test_main_threads_service_baselines_to_their_writers(
     )
 
     exit_code = main(
-        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+        [
+            "--start",
+            "2026-06-01",
+            "--end",
+            "2026-06-14",
+            "--allow-empty-baseline",
+            "--skip-plausibility",
+        ]
     )
 
     assert exit_code == 0
@@ -1308,7 +1318,14 @@ def test_main_passes_advance_priors_through_to_train(
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
     exit_code = main(
-        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+        [
+            "--start",
+            "2026-06-01",
+            "--end",
+            "2026-06-14",
+            "--allow-empty-baseline",
+            "--skip-plausibility",
+        ]
     )
 
     assert exit_code == 0
@@ -1379,7 +1396,16 @@ def test_main_refuses_empty_movement_baseline(
     assert main(["--start", "2026-06-01", "--end", "2026-06-14"]) == 1
     assert published == []
     assert (
-        main(["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"])
+        main(
+            [
+                "--start",
+                "2026-06-01",
+                "--end",
+                "2026-06-14",
+                "--allow-empty-baseline",
+                "--skip-plausibility",
+            ]
+        )
         == 0
     )
     assert published == ["wrote"]
@@ -1460,7 +1486,14 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
     exit_code = main(
-        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+        [
+            "--start",
+            "2026-06-01",
+            "--end",
+            "2026-06-14",
+            "--allow-empty-baseline",
+            "--skip-plausibility",
+        ]
     )
     assert exit_code == 0
     by_cause = captured["dwell_quantiles_by_cause"]
@@ -1837,7 +1870,14 @@ def test_main_passes_movement_dwell_through_to_write_params(
     monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
 
     exit_code = main(
-        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+        [
+            "--start",
+            "2026-06-01",
+            "--end",
+            "2026-06-14",
+            "--allow-empty-baseline",
+            "--skip-plausibility",
+        ]
     )
     assert exit_code == 0
     dwell_movement = captured["dwell_movement"]
@@ -2099,7 +2139,14 @@ def test_main_publishes_prov_sidecar_and_threads_prov_ref(
     monkeypatch.setattr("training.train_em.write_prov", _fake_write_prov)
 
     exit_code = main(
-        ["--start", "2026-06-01", "--end", "2026-06-14", "--allow-empty-baseline"]
+        [
+            "--start",
+            "2026-06-01",
+            "--end",
+            "2026-06-14",
+            "--allow-empty-baseline",
+            "--skip-plausibility",
+        ]
     )
     assert exit_code == 0
 

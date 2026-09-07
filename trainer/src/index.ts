@@ -22,9 +22,13 @@ export class TrainerContainer extends Container {
 }
 
 export default {
-  // Weekly cron (Sun 05:00 UTC) starts the trainer container. R2 credentials
-  // are forwarded from Worker secrets into the container's environment, where
-  // training/r2_client.py reads them ahead of the (absent) murk vault.
+  // Weekly cron (Sun 05:00 UTC) that would start the trainer container —
+  // CURRENTLY PAUSED: wrangler.toml sets `crons = []`, so Cloudflare never fires
+  // this handler and the trainer is run by hand (`murk exec -- uv run python -m
+  // training.train_em`). The handler stays wired so restoring `crons` is the
+  // only change needed to resume. R2 credentials are forwarded from Worker
+  // secrets into the container's environment, where training/r2_client.py reads
+  // them ahead of the (absent) murk vault.
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const container = getContainer(env.TRAINER, "weekly");
     await container.start({

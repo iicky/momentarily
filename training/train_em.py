@@ -36,7 +36,9 @@ import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from botocore.exceptions import ClientError
 
 from momentarily.hmm import (
     STATES,
@@ -115,7 +117,12 @@ from training.prov import (
     build_trainer_run,
 )
 from training.provenance import code_provenance
-from training.r2_client import R2Config, load_config, make_client
+from training.r2_client import (
+    R2Config,
+    get_object_bytes,
+    load_config,
+    make_client,
+)
 from training.recovery_recalibration import (
     fit_published_recovery_gamma,
     recalibrate_dwell_cells,
@@ -789,9 +796,55 @@ def _params_to_json(params: HMMParams) -> dict[str, Any]:
     return body
 
 
-def write_params(
+@dataclass(frozen=True)
+class _DeferredPointer:
+    """A live-pointer write held back until the whole run is durable.
+
+    The publish is transactional (see main): every immutable v<trained_at>
+    snapshot and the PROV doc are written first, then the live pointers are
+    flipped last. Each held-back pointer carries its own bytes and cache header
+    so the flush is a plain replay."""
+
+    key: str
+    body: bytes
+    cache_control: str
+
+
+def _publish(
     client: S3Client,
     bucket: str,
+    live_key: str,
+    versioned_key: str,
+    body: bytes,
+    cache_control: str,
+    pending: list[_DeferredPointer] | None,
+) -> None:
+    """Write the immutable versioned snapshot now. Write the live pointer now
+    too (`pending` is None — the standalone/backfill path), or defer it into
+    `pending` so a transactional caller can flip it only once every artifact and
+    the PROV doc are durable. The versioned key is immutable and never read by
+    the Worker (which reads only the live pointer), so writing it eagerly is
+    always safe; deferring the pointer is what keeps the flip atomic per run."""
+    client.put_object(
+        Bucket=bucket,
+        Key=versioned_key,
+        Body=body,
+        ContentType="application/json",
+        CacheControl=cache_control,
+    )
+    if pending is None:
+        client.put_object(
+            Bucket=bucket,
+            Key=live_key,
+            Body=body,
+            ContentType="application/json",
+            CacheControl=cache_control,
+        )
+    else:
+        pending.append(_DeferredPointer(live_key, body, cache_control))
+
+
+def build_params_doc(
     per_route: dict[str, HMMParams],
     *,
     corpus: CorpusStats,
@@ -813,12 +866,13 @@ def write_params(
     trained_at: int | None = None,
     feed: FeedFacts | None = None,
     prov_ref: str | None = None,
-) -> str:
-    """Write the live params pointer plus an immutable versioned snapshot.
+) -> dict[str, Any]:
+    """Assemble the params.json document the Worker reads.
 
-    The Worker reads state/params.json; the state/params/v<epoch>.json copies
-    give us a per-run rollback trail. Returns the versioned key.
-    """
+    Pure: no I/O, so main can build it once to run the plausibility gate against
+    the currently-live blob before anything is written, and write_params rebuilds
+    the identical doc to publish. `trained_at` is resolved here so the caller can
+    key the versioned snapshot off the same value the doc carries."""
     trained_at = trained_at or int(datetime.now(UTC).timestamp())
     routes_doc = {r: _params_to_json(p) for r, p in per_route.items()}
     if dwell_quantiles:
@@ -912,16 +966,70 @@ def write_params(
     # above stay authoritative for existing consumers; this only adds a reference.
     if prov_ref is not None:
         doc["prov_ref"] = prov_ref
+    return doc
+
+
+def write_params(
+    client: S3Client,
+    bucket: str,
+    per_route: dict[str, HMMParams],
+    *,
+    corpus: CorpusStats,
+    n_routes_trained: int,
+    dwell_quantiles: dict[str, dict[str, DwellQuantiles]] | None = None,
+    dwell_quantiles_by_alert: (
+        dict[str, dict[str, dict[str, DwellQuantiles]]] | None
+    ) = None,
+    dwell_quantiles_by_cause: (
+        dict[str, dict[str, dict[str, DwellQuantiles]]] | None
+    ) = None,
+    dwell_movement: dict[str, dict[str, DwellQuantiles]] | None = None,
+    hyperparams: dict[str, Any] | None = None,
+    input_profile: dict[str, Any] | None = None,
+    movement_baseline: dict[str, Any] | None = None,
+    movement_through_stops: dict[str, dict[str, list[str]]] | None = None,
+    service_baseline: dict[str, Any] | None = None,
+    schedule_rate: dict[str, Any] | None = None,
+    trained_at: int | None = None,
+    feed: FeedFacts | None = None,
+    prov_ref: str | None = None,
+    pending: list[_DeferredPointer] | None = None,
+) -> str:
+    """Write the live params pointer plus an immutable versioned snapshot.
+
+    The Worker reads state/params.json; the state/params/v<epoch>.json copies
+    give us a per-run rollback trail. Returns the versioned key. `pending`, when
+    given, defers the state/params.json pointer flip for a transactional caller
+    (see main) so params.json never lands before its sidecars."""
+    doc = build_params_doc(
+        per_route,
+        corpus=corpus,
+        n_routes_trained=n_routes_trained,
+        dwell_quantiles=dwell_quantiles,
+        dwell_quantiles_by_alert=dwell_quantiles_by_alert,
+        dwell_quantiles_by_cause=dwell_quantiles_by_cause,
+        dwell_movement=dwell_movement,
+        hyperparams=hyperparams,
+        input_profile=input_profile,
+        movement_baseline=movement_baseline,
+        movement_through_stops=movement_through_stops,
+        service_baseline=service_baseline,
+        schedule_rate=schedule_rate,
+        trained_at=trained_at,
+        feed=feed,
+        prov_ref=prov_ref,
+    )
     body = json.dumps(doc).encode()
-    versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{trained_at}.json"
-    for key in (PARAMS_KEY, versioned_key):
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/json",
-            CacheControl="public, max-age=300, s-maxage=900",
-        )
+    versioned_key = f"{VERSIONED_PARAMS_PREFIX}v{doc['trained_at']}.json"
+    _publish(
+        client,
+        bucket,
+        PARAMS_KEY,
+        versioned_key,
+        body,
+        "public, max-age=300, s-maxage=900",
+        pending,
+    )
     return versioned_key
 
 
@@ -980,6 +1088,7 @@ def write_segment_params(
     topology_source: str,
     through: frozenset[tuple[str, str, str]] | None,
     prov_ref: str | None = None,
+    pending: list[_DeferredPointer] | None = None,
 ) -> int:
     """Write the segment baseline + adjacency as their OWN R2 object (not
     folded into params.json, which the Worker parses on the hot per-tick
@@ -1095,14 +1204,9 @@ def write_segment_params(
             doc["prov_ref"] = prov_ref
         body = json.dumps(doc).encode()
         versioned = f"{VERSIONED_SEGMENT_PREFIX}v{trained_at}.json"
-        for key in (SEGMENT_PARAMS_KEY, versioned):
-            client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=body,
-                ContentType="application/json",
-                CacheControl="no-store",
-            )
+        _publish(
+            client, bucket, SEGMENT_PARAMS_KEY, versioned, body, "no-store", pending
+        )
         return len(cells)
     except Exception as exc:
         print(f"segment params skipped ({exc})", file=sys.stderr)
@@ -1131,6 +1235,7 @@ def write_service_baseline(
     params_trained_at: int | None = None,
     quantiles: dict[str, Any] | None = None,
     prov_ref: str | None = None,
+    pending: list[_DeferredPointer] | None = None,
 ) -> int:
     """Write the per-(route, schedule_bin) assigned_n baseline -- the supply
     axis's denominator -- as its OWN versioned R2 object, decoupled from
@@ -1160,14 +1265,7 @@ def write_service_baseline(
         doc["prov_ref"] = prov_ref
     body = json.dumps(doc).encode()
     versioned = f"{VERSIONED_SERVICE_PREFIX}v{generated_at}.json"
-    for key in (SERVICE_BASELINE_KEY, versioned):
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/json",
-            CacheControl="no-store",
-        )
+    _publish(client, bucket, SERVICE_BASELINE_KEY, versioned, body, "no-store", pending)
     return len(hourly)
 
 
@@ -1181,6 +1279,7 @@ def write_scheduled_headway(
     trained_at: int,
     feed_zip_bytes: bytes | None = None,
     prov_ref: str | None = None,
+    pending: list[_DeferredPointer] | None = None,
 ) -> int:
     """Write the scheduled-headway baseline as its OWN R2 object: median
     timetable time-between-trains at each route/direction's canonical reference
@@ -1239,14 +1338,9 @@ def write_scheduled_headway(
             doc["prov_ref"] = prov_ref
         body = json.dumps(doc).encode()
         versioned = f"{VERSIONED_SCHEDULED_HEADWAY_PREFIX}v{trained_at}.json"
-        for key in (SCHEDULED_HEADWAY_KEY, versioned):
-            client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=body,
-                ContentType="application/json",
-                CacheControl="no-store",
-            )
+        _publish(
+            client, bucket, SCHEDULED_HEADWAY_KEY, versioned, body, "no-store", pending
+        )
         return len(cells)
     except Exception as exc:
         print(f"scheduled headway skipped ({exc})", file=sys.stderr)
@@ -1263,6 +1357,17 @@ VERSIONED_PROV_PREFIX = "state/prov/"
 # knowing bucket internals.
 PUBLIC_PROV_KEY = "v1/prov/latest.json"
 PUBLIC_PROV_PREFIX = "v1/prov/"
+# RETENTION: the PROV sidecars are kept forever. training.prune never sweeps the
+# state/prov/ or v1/prov/ prefixes (its rules cover only the dated archive
+# prefixes and state/params/v* at PARAMS_RETENTION_DAYS), and prune-nightly.yml
+# carries the matching keep-forever note. One tiny (~KB) immutable doc per weekly
+# run is negligible next to any dated archive prefix; the public v1/prov mirror is
+# advertised immutable (max-age 1y) and is the target of every published
+# snapshot's prov_ref, so pruning it would strand lineage references; and
+# provenance is an audit record whose value is permanence. A prov doc names
+# artifacts by immutable key as a recorded fact, so it deliberately outlives the
+# state/params/v* snapshot it describes (pruned at 180d) — a historical record,
+# not a live pointer. If this policy changes, update prune-nightly.yml's note too.
 
 
 def fetch_gtfs_feed() -> tuple[bytes, FeedFacts] | None:
@@ -1301,6 +1406,7 @@ def write_prov(
     corpus: CorpusStats,
     artifacts: list[ArtifactFacts],
     feed: FeedFacts | None = None,
+    pending: list[_DeferredPointer] | None = None,
 ) -> str:
     """Publish the run's W3C PROV-JSON sidecar in two places: the private
     state/prov/ copies (latest.json pointer + v<trained_at>.json snapshot) that
@@ -1330,35 +1436,48 @@ def write_prov(
     )
     body = doc.to_json().encode()
     versioned = f"{VERSIONED_PROV_PREFIX}v{trained_at}.json"
-    # Private state/ copies. no-store on both: the live pointer moves every run,
-    # and the versioned key is never served publicly (index.ts gates reads to
-    # v1/), so its cache header is moot — the public mirror below carries the
-    # cacheable copy.
-    for key in (PROV_KEY, versioned):
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/json",
-            CacheControl="no-store",
-        )
-    # Public mirror under v1/ (the only prefix index.ts serves). The versioned
-    # doc is immutable — a run's lineage never changes once written — so it may
-    # cache for a year; latest.json moves every run and stays no-store.
+    public_versioned = f"{PUBLIC_PROV_PREFIX}v{trained_at}.json"
+    # Immutable versioned snapshots FIRST: the prov_ref every published artifact
+    # carries points at `versioned`, so the lineage doc must be durable before any
+    # live pointer names this run. The public versioned mirror is immutable and
+    # may cache for a year; the private copy is never served publicly (index.ts
+    # gates reads to v1/), so its cache header is moot and stays no-store.
     client.put_object(
         Bucket=bucket,
-        Key=f"{PUBLIC_PROV_PREFIX}v{trained_at}.json",
-        Body=body,
-        ContentType="application/json",
-        CacheControl="public, max-age=31536000, immutable",
-    )
-    client.put_object(
-        Bucket=bucket,
-        Key=PUBLIC_PROV_KEY,
+        Key=versioned,
         Body=body,
         ContentType="application/json",
         CacheControl="no-store",
     )
+    client.put_object(
+        Bucket=bucket,
+        Key=public_versioned,
+        Body=body,
+        ContentType="application/json",
+        CacheControl="public, max-age=31536000, immutable",
+    )
+    # The latest.json pointers move every run and stay no-store. They flip with
+    # the other live pointers in the transactional caller's phase-2 flush (or now,
+    # standalone), so a failed versioned write above aborts before any pointer
+    # advertises this run.
+    if pending is None:
+        client.put_object(
+            Bucket=bucket,
+            Key=PROV_KEY,
+            Body=body,
+            ContentType="application/json",
+            CacheControl="no-store",
+        )
+        client.put_object(
+            Bucket=bucket,
+            Key=PUBLIC_PROV_KEY,
+            Body=body,
+            ContentType="application/json",
+            CacheControl="no-store",
+        )
+    else:
+        pending.append(_DeferredPointer(PROV_KEY, body, "no-store"))
+        pending.append(_DeferredPointer(PUBLIC_PROV_KEY, body, "no-store"))
     return versioned
 
 
@@ -1373,6 +1492,7 @@ def write_segment_dwell(
     end_date: date,
     trained_at: int,
     through: frozenset[tuple[str, str, str]] | None,
+    pending: list[_DeferredPointer] | None = None,
 ) -> tuple[int, SegmentDwellStats]:
     """Write the per-segment dwell curves as their OWN R2 object (not folded
     into segment_params.json), hierarchically pooled leaf -> route -> system
@@ -1422,14 +1542,9 @@ def write_segment_dwell(
         }
         body = json.dumps(doc).encode()
         versioned = f"{VERSIONED_SEGMENT_DWELL_PREFIX}v{trained_at}.json"
-        for key in (SEGMENT_DWELL_KEY, versioned):
-            client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=body,
-                ContentType="application/json",
-                CacheControl="no-store",
-            )
+        _publish(
+            client, bucket, SEGMENT_DWELL_KEY, versioned, body, "no-store", pending
+        )
         return len(cells), stats
     except Exception as exc:
         print(f"segment dwell skipped ({exc})", file=sys.stderr)
@@ -1701,6 +1816,186 @@ def _movement_dwell(
         return {}, empty_stats
 
 
+# --- publish plausibility gate -------------------------------------------
+#
+# The structural gates elsewhere in main (severity floor, empty movement
+# baseline, MIN_DATA_DAYS span) all admit a degenerate-but-non-empty fit: a
+# collapsed transition matrix, dwell quantiles pinned at 0, a non-finite
+# service_mu. This gate compares the run's params doc against the currently-live
+# one and refuses the pointer flip when a value bound is violated or an aggregate
+# jumps out of band, so a bad fit leaves the last good params.json in place
+# instead of shipping. Skipped with --skip-plausibility for a first publish /
+# bootstrap, where there is no live blob to gate against.
+
+# A self-loop this high makes a state absorbing: the chain never leaves it, so
+# the transition structure has collapsed to a single regime. Real fits are capped
+# well below this by _cap_self_loops (MAX_SELF_LOOP peaks at 0.975), so only a
+# degenerate blob trips it.
+COLLAPSE_SELF_LOOP = 0.999
+# Per-route total-variation shift of the stationary regime mix vs the live blob.
+# Half the mass moving to different states is a different model, not a refit.
+MAX_STATIONARY_TV = 0.5
+# Tolerated jump in the fraction of routes that inherited the global prior
+# (n_routes - n_routes_trained). A surge means the window went thin and most
+# routes degenerated to the prior — refuse rather than ship a mostly-prior blob.
+MAX_FALLBACK_INCREASE = 0.25
+
+
+def _emission_dicts(route_doc: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every emission subdoc a route carries: the unconditioned set plus any
+    per-tod-bin sets, so a value bound covers whichever the Worker will read."""
+    out: list[dict[str, Any]] = []
+    em = route_doc.get("emissions")
+    if isinstance(em, dict):
+        out.append(cast("dict[str, Any]", em))
+    by_bin = route_doc.get("emissions_by_bin")
+    if isinstance(by_bin, list):
+        for e in cast("list[Any]", by_bin):
+            if isinstance(e, dict):
+                out.append(cast("dict[str, Any]", e))
+    return out
+
+
+def _stationary(transition: list[list[float]]) -> list[float] | None:
+    """Stationary distribution of a row-stochastic matrix by power iteration, or
+    None when the rows do not form a usable distribution."""
+    n = len(transition)
+    if n == 0 or any(len(row) != n for row in transition):
+        return None
+    pi = [1.0 / n] * n
+    for _ in range(256):
+        nxt = [0.0] * n
+        for i, row in enumerate(transition):
+            for j, p in enumerate(row):
+                nxt[j] += pi[i] * p
+        total = sum(nxt)
+        if total <= 0 or not math.isfinite(total):
+            return None
+        nxt = [x / total for x in nxt]
+        if max(abs(nxt[k] - pi[k]) for k in range(n)) < 1e-9:
+            return nxt
+        pi = nxt
+    return pi
+
+
+def _tv(a: list[float], b: list[float]) -> float:
+    """Total-variation distance between two same-length distributions."""
+    return 0.5 * sum(abs(x - y) for x, y in zip(a, b, strict=True))
+
+
+def _dwell_pinned_zero(dwell: dict[str, Any]) -> bool:
+    """True when every state's dwell quantiles are pinned at 0 (q25/median/q75 all
+    zero) — a degenerate empirical fit with no spread, not a recovery curve."""
+    entries: list[dict[str, Any]] = [
+        cast("dict[str, Any]", v) for v in dwell.values() if isinstance(v, dict)
+    ]
+    if not entries:
+        return False
+    return all(
+        (
+            int(e.get("q25_sec", 0)),
+            int(e.get("median_sec", 0)),
+            int(e.get("q75_sec", 0)),
+        )
+        == (0, 0, 0)
+        for e in entries
+    )
+
+
+def _fallback_fraction(doc: dict[str, Any]) -> float | None:
+    """Fraction of routes that inherited the global prior instead of their own
+    fit, or None when the doc does not record enough to say."""
+    routes = cast("dict[str, Any]", doc.get("routes") or {})
+    n = len(routes)
+    if n == 0:
+        return None
+    corpus = cast("dict[str, Any]", doc.get("training_corpus") or {})
+    trained = corpus.get("n_routes_trained")
+    if trained is None:
+        return None
+    return max(0, n - int(trained)) / n
+
+
+def implausible_params(new: dict[str, Any], live: dict[str, Any]) -> str | None:
+    """A named reason to refuse `new` in favour of the currently-live `live`, or
+    None when `new` is plausible.
+
+    Two families of check. Value bounds catch a degenerate fit on its own terms —
+    a non-finite emission, an absorbing transition matrix, dwell quantiles pinned
+    at 0 — regardless of what was serving. Diff-vs-live checks catch a fit that is
+    individually well-formed but lurches away from the running model: a stationary
+    regime mix that half-moves, or a surge of routes collapsing to the global
+    prior. The reason names the check and the offending route so an operator sees
+    WHY the publish was refused, not just that it was."""
+    new_routes = cast("dict[str, dict[str, Any]]", new.get("routes") or {})
+    live_routes = cast("dict[str, dict[str, Any]]", live.get("routes") or {})
+
+    for route, rp in new_routes.items():
+        for em in _emission_dicts(rp):
+            for field in (
+                "poisson_lambda",
+                "gamma_alpha",
+                "gamma_beta",
+                "advance_rate",
+            ):
+                values = cast("list[float]", em.get(field) or [])
+                if any(not math.isfinite(float(v)) for v in values):
+                    return f"non_finite:{route}:{field}"
+        transition = cast("list[list[float]]", rp.get("transition") or [])
+        if any(not math.isfinite(float(v)) for row in transition for v in row):
+            return f"non_finite:{route}:transition"
+        diag = [
+            transition[i][i] for i in range(len(transition)) if i < len(transition[i])
+        ]
+        if diag and max(diag) >= COLLAPSE_SELF_LOOP:
+            return f"collapsed_transition:{route}"
+        dwell = rp.get("dwell_quantiles")
+        if isinstance(dwell, dict) and dwell:
+            if _dwell_pinned_zero(cast("dict[str, Any]", dwell)):
+                return f"degenerate_dwell:{route}"
+
+    for route, rp in new_routes.items():
+        live_rp = live_routes.get(route)
+        if live_rp is None:
+            continue
+        new_pi = _stationary(cast("list[list[float]]", rp.get("transition") or []))
+        live_pi = _stationary(
+            cast("list[list[float]]", live_rp.get("transition") or [])
+        )
+        if (
+            new_pi is not None
+            and live_pi is not None
+            and len(new_pi) == len(live_pi)
+            and _tv(new_pi, live_pi) > MAX_STATIONARY_TV
+        ):
+            return f"stationary_shift:{route}"
+
+    new_fb = _fallback_fraction(new)
+    live_fb = _fallback_fraction(live)
+    if (
+        new_fb is not None
+        and live_fb is not None
+        and new_fb - live_fb > MAX_FALLBACK_INCREASE
+    ):
+        return "prior_fallback_surge"
+    return None
+
+
+def _load_live_params(client: S3Client, bucket: str) -> dict[str, Any] | None:
+    """The currently-live params.json for the plausibility gate to compare
+    against, or None when there is none yet (first publish / bootstrap). A blob
+    that is present but unreadable raises — a corrupt live pointer is not a silent
+    skip."""
+    try:
+        body = get_object_bytes(client, bucket, PARAMS_KEY)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"NoSuchKey", "404"}:
+            return None
+        raise
+    return cast("dict[str, Any]", json.loads(body))
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-route EM trainer")
     parser.add_argument(
@@ -1773,6 +2068,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"{CANONICAL_SEVERITY_FLOOR} episode durations, then exit without "
         "writing. Pair with --severity-floor to compare the severe-only build "
         "against the serving build on one window.",
+    )
+    parser.add_argument(
+        "--skip-plausibility",
+        action="store_true",
+        help="skip the plausibility gate that refuses a new params blob when it "
+        "collapses or lurches away from the currently-live one. Needed for a "
+        "first publish / bootstrap, where there is no live blob to compare "
+        "against; otherwise the gate is a safety net and should stay on.",
     )
     args = parser.parse_args(argv)
     if args.severity_floor != LEGACY_SEVERITY_FLOOR and not (
@@ -2117,8 +2420,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     }
     trained_at = int(datetime.now(UTC).timestamp())
     # The versioned PROV sidecar key is deterministic from trained_at, so every
-    # artifact can carry a prov_ref pointing at it even though the sidecar is
-    # written last (after the artifact keys it references are known).
+    # artifact can carry a prov_ref pointing at it even though the sidecar's live
+    # pointer flips last (after the artifact keys it references are durable).
     prov_ref = f"{VERSIONED_PROV_PREFIX}v{trained_at}.json"
     # One GTFS feed fetch for the run's provenance: version + a content digest
     # over the exact bytes. Those same bytes seed write_scheduled_headway so its
@@ -2127,6 +2430,58 @@ def main(argv: Iterable[str] | None = None) -> int:
     feed_fetch = fetch_gtfs_feed()
     feed_bytes = feed_fetch[0] if feed_fetch is not None else None
     feed_facts = feed_fetch[1] if feed_fetch is not None else None
+
+    # Assemble the params doc up front so the plausibility gate can inspect it
+    # against the currently-live blob before anything is written. build_params_doc
+    # is pure; write_params below rebuilds the identical doc to publish.
+    params_doc = build_params_doc(
+        per_route,
+        corpus=corpus,
+        n_routes_trained=n_routes_trained,
+        dwell_quantiles=dwell_q,
+        dwell_quantiles_by_alert=dwell_q_by_alert,
+        dwell_quantiles_by_cause=dwell_q_by_cause,
+        dwell_movement=dwell_movement,
+        hyperparams=hyperparams,
+        input_profile=input_profile,
+        movement_baseline=movement_baseline,
+        movement_through_stops=(None if through is None else stops_to_json(through)),
+        service_baseline=service_baseline,
+        schedule_rate=schedule_rate,
+        trained_at=trained_at,
+        feed=feed_facts,
+        prov_ref=prov_ref,
+    )
+    if args.skip_plausibility:
+        print("plausibility gate skipped (--skip-plausibility)", file=sys.stderr)
+    else:
+        live_doc = _load_live_params(client, cfg.bucket)
+        if live_doc is None:
+            print(
+                "no live params.json to gate against — publishing without the "
+                "plausibility gate (first publish / bootstrap)",
+                file=sys.stderr,
+            )
+        else:
+            reason = implausible_params(params_doc, live_doc)
+            if reason is not None:
+                print(
+                    f"refusing to publish: new params implausible vs live "
+                    f"({reason}); re-run with --skip-plausibility to force "
+                    "(bootstrap only)",
+                    file=sys.stderr,
+                )
+                return 1
+
+    # Transactional publish. Every immutable v<trained_at> snapshot (and the PROV
+    # doc) is written first; the live pointers flip only after, state/params.json
+    # last of all. So a reader snapshotting R2 mid-publish never sees params.json
+    # newer than its sidecars, and a PROV write failure aborts before any pointer
+    # moves — no live artifact is ever left pointing at a lineage doc that was
+    # never written. `params_pending` is flushed after `pending` so state/
+    # params.json is strictly the final pointer to flip.
+    pending: list[_DeferredPointer] = []
+    params_pending: list[_DeferredPointer] = []
     versioned_key = write_params(
         client,
         cfg.bucket,
@@ -2146,6 +2501,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         trained_at=trained_at,
         feed=feed_facts,
         prov_ref=prov_ref,
+        pending=params_pending,
     )
     n_service_sidecar_cells = write_service_baseline(
         client,
@@ -2155,6 +2511,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         params_trained_at=trained_at,
         quantiles=service_baseline_hourly_quantiles,
         prov_ref=prov_ref,
+        pending=pending,
     )
     n_segment_cells = write_segment_params(
         cfg,
@@ -2168,19 +2525,24 @@ def main(argv: Iterable[str] | None = None) -> int:
         topology_source,
         through,
         prov_ref=prov_ref,
+        pending=pending,
     )
     n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
-        client, cfg.bucket, start_date, end_date, trained_at, through
+        client, cfg.bucket, start_date, end_date, trained_at, through, pending=pending
     )
     n_scheduled_headway_cells = write_scheduled_headway(
-        client, cfg.bucket, trained_at, feed_zip_bytes=feed_bytes, prov_ref=prov_ref
+        client,
+        cfg.bucket,
+        trained_at,
+        feed_zip_bytes=feed_bytes,
+        prov_ref=prov_ref,
+        pending=pending,
     )
     # PROV-JSON sidecar: only artifacts actually published this run become
     # entities (an entity is named by its immutable bucket key, a recorded fact),
     # and a derivation edge is claimed only where the input it derives from is
     # itself recorded — params/segment from the archive manifest, scheduled/segment
-    # topology from the GTFS feed. Fail-soft: a sidecar hiccup never blocks the
-    # params publish, exactly like the other state/ sidecars.
+    # topology from the GTFS feed.
     prov_artifacts: list[ArtifactFacts] = [
         ArtifactFacts("params", versioned_key, derived_from_manifest=True),
     ]
@@ -2208,6 +2570,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 derived_from_feed=True,
             )
         )
+    # PROV is NOT fail-soft here: its versioned doc is the lineage every artifact's
+    # prov_ref points at, so if it cannot be made durable we abort before flipping
+    # a single live pointer, leaving the previous consistent run serving.
     try:
         write_prov(
             client,
@@ -2217,9 +2582,25 @@ def main(argv: Iterable[str] | None = None) -> int:
             corpus=corpus,
             artifacts=prov_artifacts,
             feed=feed_facts,
+            pending=pending,
         )
     except Exception as exc:
-        print(f"prov sidecar skipped ({exc})", file=sys.stderr)
+        print(
+            f"prov write failed ({exc}) — aborting the pointer flip; the previous "
+            "run stays live and no artifact points at a missing lineage doc",
+            file=sys.stderr,
+        )
+        return 1
+
+    # PROV durable — flip the live pointers, state/params.json last of all.
+    for ptr in (*pending, *params_pending):
+        client.put_object(
+            Bucket=cfg.bucket,
+            Key=ptr.key,
+            Body=ptr.body,
+            ContentType="application/json",
+            CacheControl=ptr.cache_control,
+        )
     print(
         f"published {PARAMS_KEY} + {versioned_key}: "
         f"{n_routes_trained}/{len(per_route)} routes fitted "

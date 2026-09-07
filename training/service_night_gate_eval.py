@@ -266,7 +266,7 @@ def _night_series(
     return out
 
 
-def false_alarm_rate(
+def night_false_alarm_rate(
     series: Mapping[tuple[str, int], int],
     quantiles: Mapping[tuple[str, str], ServiceQuantiles],
     cells: Iterable[tuple[str, str]],
@@ -487,10 +487,10 @@ def run_split(
     quantiles = compute_service_quantiles(fit_series, bin_fn=schedule_bin, min_nights=1)
     part = partition_by_gate(fit_series, quantiles, min_nights=min_nights)
 
-    fa_pass = false_alarm_rate(
+    fa_pass = night_false_alarm_rate(
         score_series, quantiles, part.night_pass, labels, n_boot=n_boot, seed=seed
     )
-    fa_tick = false_alarm_rate(
+    fa_tick = night_false_alarm_rate(
         score_series, quantiles, part.tick_only, labels, n_boot=n_boot, seed=seed
     )
     trade = abstention_tradeoff(score_series, quantiles, part.tick_only, labels)
@@ -575,10 +575,10 @@ def run_paired(
         1 for c in shared if len(short_counts.get(c, set())) < min_nights
     )
 
-    fa_long = false_alarm_rate(
+    fa_long = night_false_alarm_rate(
         score_series, q_long, shared, labels, n_boot=n_boot, seed=seed
     )
-    fa_short = false_alarm_rate(
+    fa_short = night_false_alarm_rate(
         score_series, q_short, shared, labels, n_boot=n_boot, seed=seed
     )
     return {

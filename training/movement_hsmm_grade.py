@@ -334,7 +334,7 @@ def bootstrap_detection_delta(
 # --- the graded surfaces ----------------------------------------------------
 
 
-def false_alarm_rate(
+def tick_false_alarm_rate(
     state_at: Mapping[int, Mapping[str, str]],
     runs: Sequence[tuple[str, int, int]],
     alarm_states: frozenset[str],
@@ -719,7 +719,7 @@ def grade(
     surfaces["raw_calls"] = graded(inputs.eval_calls)
 
     fa = {
-        name: false_alarm_rate(
+        name: tick_false_alarm_rate(
             at, inputs.normal_runs, alarm_states, bootstrap=bootstrap, seed=seed
         )
         for name, at in surfaces.items()

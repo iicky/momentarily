@@ -65,8 +65,8 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["collector", "."]
-addopts = "-ra -q --cov=momentarily --cov-report=term"
+addopts = "-ra -q --cov=momentarily --cov=training --cov-report=term"
 
 [tool.coverage.run]
-source = ["src/momentarily"]
+source = ["src/momentarily", "training"]
 omit = ["tests/*"]

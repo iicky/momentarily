@@ -13,9 +13,9 @@ from training.load import TickObservation
 from training.load_r2 import ServiceQuantiles, compute_service_quantiles
 from training.service_night_gate_eval import (
     abstention_tradeoff,
-    false_alarm_rate,
     is_weekend_late_tick,
     night_counts_by_cell,
+    night_false_alarm_rate,
     night_labels,
     partition_by_gate,
     service_night_ticks,
@@ -180,7 +180,7 @@ def test_false_alarm_rate_scores_high_score_nights_above_a_thin_fit_p90():
         for i in range(12):
             score[("2", base + i * 300)] = 24
     labels = {("2", _et_date_of(day)): "normal" for day in (29, 30)}
-    rate = false_alarm_rate(score, quant, [("2", "we23")], labels, n_boot=200)
+    rate = night_false_alarm_rate(score, quant, [("2", "we23")], labels, n_boot=200)
     assert rate.rate == 1.0  # every score tick clears the thin fit p90
     assert rate.n_units == 2  # two (route, night) clusters
 
@@ -199,7 +199,7 @@ def test_false_alarm_rate_clusters_hourly_cells_of_one_night_into_one_unit():
         ("2", "we22"): ServiceQuantiles(p10=6.0, p90=16.0),
     }
     labels = {("2", date(2026, 8, 29)): "normal"}
-    rate = false_alarm_rate(
+    rate = night_false_alarm_rate(
         score, quant, [("2", "we22"), ("2", "we23")], labels, n_boot=200
     )
     assert rate.n_units == 1  # one route-night, both hours aggregated

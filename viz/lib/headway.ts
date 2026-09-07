@@ -84,7 +84,9 @@ export interface HeadwayRead {
  * only the classification the copy is drawn from, so it can be unit-tested and
  * shared by the route and commute surfaces. */
 export function readHeadway(obs: Observation): HeadwayRead {
-  const observedSeconds = obs.value;
+  // A headway observation carries numeric seconds; the schema's string form is
+  // for other observation kinds. Coerce so a stray string still yields a number.
+  const observedSeconds = typeof obs.value === "number" ? obs.value : Number(obs.value);
   const window = (obs.window ?? []).map((s) => s.value);
   if (obs.off_reference) {
     return { observedSeconds, observedAt: obs.observed_at, window, scheduled: null, observedOnly: "off_reference" };

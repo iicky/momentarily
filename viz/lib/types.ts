@@ -264,7 +264,9 @@ export interface Alert {
   sort_order: number;
   active_period: Array<{ start?: number; end?: number }>;
   header_text: { translation: Array<{ text: string; language: string }> } | null;
-  informed_entities: Array<{ route_id: string; direction_id?: number }>;
+  // route_id is nullable in the schema: an alert can inform an entity by agency
+  // or stop with no route. Consumers must handle the null.
+  informed_entities: Array<{ route_id: string | null; direction_id?: number }>;
 }
 
 // --- Train position surface ---
@@ -367,7 +369,9 @@ export interface ScheduledHeadway {
 export interface Observation {
   entity_ref: string; // "subway_route:1"
   kind: string; // "headway" | ...
-  value: number;
+  // number|string in the schema: a headway carries numeric seconds, but other
+  // observation kinds may publish a categorical string value.
+  value: number | string;
   unit: string; // "seconds" | ...
   observed_at: number;
   source: string;

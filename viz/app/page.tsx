@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import Nav from "./Nav";
 import {
   fetchSnapshot,
+  SnapshotShapeError,
   conditionRank,
   routeColor,
   routeLabel,
@@ -33,6 +34,7 @@ const POLL_MS = 60_000;
 export default function StatusPage() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [degraded, setDegraded] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<number>(0);
   const [sel, setSel] = useState<string | null>(null);
 
@@ -44,9 +46,15 @@ export default function StatusPage() {
         if (!alive) return;
         setSnap(s);
         setErr(null);
+        setDegraded(false);
         setFetchedAt(Math.floor(Date.now() / 1000));
       } catch (e) {
-        if (alive) setErr((e as Error).message);
+        if (!alive) return;
+        // A degraded feed (parsed, but missing required fields) is kept distinct
+        // from a transport/HTTP failure: hold the last-good snapshot and label it
+        // rather than blanking the page or trusting the partial body.
+        if (e instanceof SnapshotShapeError) setDegraded(true);
+        else setErr(e instanceof Error ? e.message : String(e));
       }
     };
     load();
@@ -90,6 +98,14 @@ export default function StatusPage() {
       </div>
 
       {err && <div className="error">Failed to load feed: {err}</div>}
+      {degraded && (
+        <div className="prov-degraded" role="note">
+          Degraded feed — the published snapshot is missing required fields and was
+          not trusted.{" "}
+          {snap ? "Showing the last good data." : "No data to show yet."} Retrying
+          every 60s.
+        </div>
+      )}
 
       {snap && (
         <>

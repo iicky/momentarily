@@ -22,6 +22,7 @@
 import { useEffect, useState } from "react";
 import { useSnapshot } from "../useData";
 import { fetchProvChain, type ProvChain, type ProvChainState } from "@/lib/prov";
+import { isAllowedProvRef } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 
 function shortHash(hash: string): string {
@@ -221,9 +222,13 @@ export default function Provenance() {
       <h3 className="grp">What produced this</h3>
       <p className="grp-note">
         The lineage behind the snapshot on this page, read from the trainer run&apos;s{" "}
-        <a href={provRef} target="_blank" rel="noreferrer">
-          W3C PROV document
-        </a>
+        {isAllowedProvRef(provRef) ? (
+          <a href={provRef} target="_blank" rel="noreferrer">
+            W3C PROV document
+          </a>
+        ) : (
+          <span>W3C PROV document</span>
+        )}
         . It reads bottom-up as cause to effect. The edge labels are PROV terms:{" "}
         <em>used</em> is an input a step read, <em>wasGeneratedBy</em> a thing a step
         produced, and <em>wasDerivedFrom</em> which input an artifact was built from.

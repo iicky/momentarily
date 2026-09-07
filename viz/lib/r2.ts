@@ -85,6 +85,10 @@ async function client(): Promise<S3Client> {
     region: "auto",
     endpoint: `https://${c.accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey },
+    // Bound each request so a stalled R2 read can't wedge a force-dynamic route
+    // handler; the caller (the grading/movement routes) already surfaces the
+    // rejection as an error response.
+    requestHandler: { connectionTimeout: 5_000, requestTimeout: 20_000 },
   });
   return _client;
 }

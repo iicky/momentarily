@@ -5,10 +5,67 @@ import type { PlatformCrowding, RouteStatus, Snapshot, Trains } from "./types";
 export const FEED_BASE =
   process.env.NEXT_PUBLIC_FEED_BASE ?? "https://feed.momentarily.nyc";
 
-export async function fetchSnapshot(): Promise<Snapshot> {
-  const res = await fetch(`${FEED_BASE}/v1/snapshot.json`, { cache: "no-store" });
+// Every network read is bounded so a hung request cannot wedge a render loop or
+// let 60s polls stack pending loads. AbortSignal.timeout rejects the fetch,
+// which each caller already maps onto its unavailable/error path.
+export const SNAPSHOT_TIMEOUT_MS = 10_000;
+const TRAINS_TIMEOUT_MS = 15_000;
+
+// The top-level fields every render path dereferences without a guard. The
+// published schema requires only generated_at, so a schema-valid partial feed
+// (a Worker mid-deploy, a truncated object) would otherwise reach the cards as
+// `undefined` and crash the render. Checked on ingest so a malformed body is
+// refused before it is trusted as a Snapshot, and the caller can hold last-good
+// data behind a degraded banner instead.
+export function isSnapshotShape(x: unknown): x is Snapshot {
+  if (typeof x !== "object" || x === null) return false;
+  const s = x as Record<string, unknown>;
+  return (
+    typeof s.generated_at === "number" &&
+    typeof s.provenance === "object" && s.provenance !== null &&
+    typeof s.system === "object" && s.system !== null &&
+    typeof s.route_status === "object" && s.route_status !== null &&
+    typeof s.station_status === "object" && s.station_status !== null &&
+    typeof s.stations === "object" && s.stations !== null
+  );
+}
+
+// Thrown by fetchSnapshot when the body parsed but is missing required
+// top-level fields. Distinct from a transport/HTTP error so a caller can tell
+// "the feed is degraded" (keep last-good, label it) from "the fetch failed".
+export class SnapshotShapeError extends Error {
+  constructor() {
+    super("snapshot missing required fields");
+    this.name = "SnapshotShapeError";
+  }
+}
+
+export async function fetchSnapshot(timeoutMs = SNAPSHOT_TIMEOUT_MS): Promise<Snapshot> {
+  const res = await fetch(`${FEED_BASE}/v1/snapshot.json`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!res.ok) throw new Error(`snapshot fetch failed: ${res.status}`);
-  return res.json();
+  const body: unknown = await res.json();
+  if (!isSnapshotShape(body)) throw new SnapshotShapeError();
+  return body;
+}
+
+// A prov_ref is snapshot-supplied, then fetched and rendered as a link, so it
+// is trusted only when it is an https URL on the feed's own host under the
+// public v1/prov/ prefix. A foreign host, a downgraded scheme, or a path
+// outside the prefix is refused before any fetch or href, so a tampered
+// snapshot cannot point the browser at an attacker's URL.
+export function isAllowedProvRef(ref: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(ref);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false;
+  if (u.host !== new URL(FEED_BASE).host) return false;
+  return u.pathname.startsWith("/v1/prov/");
 }
 
 /** The train position surface, published beside the snapshot rather than in it.
@@ -32,7 +89,10 @@ export type TrainsFeed =
 
 export async function fetchTrains(): Promise<TrainsFeed> {
   try {
-    const res = await fetch(`${FEED_BASE}/v1/trains.json`, { cache: "no-store" });
+    const res = await fetch(`${FEED_BASE}/v1/trains.json`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(TRAINS_TIMEOUT_MS),
+    });
     if (res.status === 404) {
       return { state: "unavailable", reason: "not published at this feed yet" };
     }

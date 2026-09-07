@@ -15,6 +15,15 @@
 // which the caller renders as "provenance unavailable" without touching the
 // rest of the page.
 
+import { isAllowedProvRef } from "./feed.ts";
+
+// A run's PROV document is a small JSON sidecar (a handful of KB). The body is
+// capped so a mispointed or hostile ref cannot stream an unbounded response
+// into the browser; past the cap it reads as unavailable, the same degraded
+// path a transport failure takes.
+const MAX_PROV_BYTES = 1_000_000;
+const PROV_TIMEOUT_MS = 10_000;
+
 export interface ProvRun {
   // The model version stamp, read off the run activity's id (mmly:run/<n>) —
   // the same integer a params key and the snapshot's params.trained_at carry.
@@ -242,11 +251,32 @@ export type ProvChainState =
 // document is immutable and long-cached upstream, so the browser's own cache
 // policy is correct.
 export async function fetchProvChain(url: string): Promise<ProvChainState> {
+  if (!isAllowedProvRef(url)) {
+    return { state: "unavailable", reason: "refused: not an allowed provenance URL" };
+  }
   let body: string;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(PROV_TIMEOUT_MS) });
     if (!res.ok) return { state: "unavailable", reason: `document returned ${res.status}` };
-    body = await res.text();
+    // Read the stream and stop the moment it crosses the cap, so a server that
+    // omits or lies about content-length still can't stream an unbounded body
+    // into memory. res.text() would buffer the whole thing before we could look.
+    const reader = res.body?.getReader();
+    if (!reader) return { state: "unavailable", reason: "empty response" };
+    const decoder = new TextDecoder();
+    body = "";
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_PROV_BYTES) {
+        await reader.cancel();
+        return { state: "unavailable", reason: "document too large" };
+      }
+      body += decoder.decode(value, { stream: true });
+    }
+    body += decoder.decode();
   } catch (e) {
     return { state: "unavailable", reason: `not reachable (${(e as Error).message})` };
   }

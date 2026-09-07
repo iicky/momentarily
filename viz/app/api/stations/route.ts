@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
 // Public, no key needed; cached in-module so we hit it at most once a day.
 const SOURCE = "https://data.ny.gov/resource/39hk-dx4f.json?$limit=1000";
 const TTL_MS = 24 * 60 * 60 * 1000;
+const SOURCE_TIMEOUT_MS = 15_000;
 
 interface Row {
   gtfs_stop_id?: string;
@@ -36,7 +37,10 @@ const BOROUGH_NAMES: Record<string, string> = {
 let cache: { at: number; data: Record<string, StationCoord> } | null = null;
 
 async function load(): Promise<Record<string, StationCoord>> {
-  const res = await fetch(SOURCE, { cache: "no-store" });
+  const res = await fetch(SOURCE, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`stations feed ${res.status}`);
   const rows = (await res.json()) as Row[];
   const out: Record<string, StationCoord> = {};

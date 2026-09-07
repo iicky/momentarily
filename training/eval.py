@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from momentarily.mapping import TRUTH_VERSION
 from training.drift import unmapped_alert_type_drift
+from training.eval_common import snap_tick
 from training.provenance import code_provenance
 from training.r2_client import R2Config, get_object_bytes, load_config, make_client
 
@@ -493,10 +494,6 @@ def movement_coverage_alarm(coverage: dict[str, Any]) -> str | None:
 
 
 # --- Calibration math ---
-
-
-def snap_tick(ts: int) -> int:
-    return ((ts + TICK_SECONDS // 2) // TICK_SECONDS) * TICK_SECONDS
 
 
 @dataclass

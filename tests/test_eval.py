@@ -79,10 +79,14 @@ def _pred(
     )
 
 
-def test_snap_tick_rounds_to_nearest_5min():
-    assert snap_tick(1_700_000_000) == 1_700_000_100  # nearest 5-min slot
-    assert snap_tick(1_700_000_100) == 1_700_000_100
-    assert snap_tick(1_700_000_299) == 1_700_000_400
+def test_snap_tick_floors_to_5min_grid():
+    # eval.py re-exports the single eval_common.snap_tick, which FLOORS to the
+    # 5-min grid every archive body and truth map is keyed on. It used to round
+    # to nearest, mis-keying a publish >150s past a boundary against floored
+    # truth.
+    assert snap_tick(1_700_000_000) == 1_699_999_800  # floored, not rounded up
+    assert snap_tick(1_700_000_100) == 1_700_000_100  # already grid-aligned
+    assert snap_tick(1_700_000_299) == 1_700_000_100  # floored within the tick
 
 
 def test_calibrate_perfect_predictions():

@@ -9310,3 +9310,34 @@ clean directory (74 packages), typecheck clean, 257 viz tests green. Side
 effect worth naming: the README-documented dormant `fromVault()` path is now
 genuinely activatable — env vars still take precedence, so behavior only
 changes for a keyed shell with no `R2_*` env.
+
+## 2026-09-06 — unifying snap_tick on the floor grid changed zero scorecard test numbers because every fixture is self-consistent; the divergence only bit production truth
+
+origin: agent
+
+eval.py and review.py rounded observed_at to the NEAREST 5-min tick while
+eval_common/load_r2/viz FLOOR. Migrated eval.py and review.py to import the one
+eval_common.snap_tick (floor) and deleted their local defs. Measured the blast
+radius across tests/test_review.py, tests/test_eval*.py, tests/test_episodes.py,
+tests/test_movement_dwell_grade.py under both semantics:
+
+- Round vs floor differ by exactly one full tick (300s) only when observed_at is
+  150-299s past a boundary — 150 of 300 offsets, i.e. 50% of the grid.
+- Published scorecard numbers that changed: ZERO. Not one calibration/confusion/
+  changepoint/episode expected value moved. Reason: within a module preds AND
+  truth are keyed by the same snap_tick, so a whole-population shift cancels; and
+  the review fixtures use a grid-aligned T0 (1_700_000_100) where floor==round.
+  The eval fixtures use ts0=1_700_000_000 (offset 200 → round pushes +300), yet
+  numbers still held because both sides snap identically.
+- The only test that changed value: test_eval.py's snap_tick unit test, which
+  hard-coded the rounding outputs (1_700_000_000 → 1_700_000_100). Updated to the
+  floor contract (→ 1_699_999_800).
+
+The lesson: the bug is invisible to the suite because fixtures snap both sides
+with one function. It only bites in production, where review/eval keyed preds by
+rounding but truth arrives already floored from load_r2 — a publish >150s past a
+boundary lands on the next tick and gets graded against a floored truth cell it
+never matches (silent default to "normal"). Also retired
+test_movement_dwell_grade.py's divergence-documenting test (it pinned
+eval.snap_tick != load_r2._snap_tick, the exact split now removed) and replaced
+it with a positive grid-agreement check.

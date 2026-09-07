@@ -22,7 +22,6 @@ import pytest
 from training.dwell import DwellQuantiles
 from training.episodes import Episode
 from training.eval import TICK_SECONDS
-from training.eval import snap_tick as _round_snap_tick
 from training.eval_common import snap_tick
 from training.load_r2 import (
     _snap_tick as _prod_snap_tick,  # pyright: ignore[reportPrivateUsage]
@@ -403,25 +402,14 @@ def test_unaligned_publish_times_still_produce_episodes():
     assert eps[0].duration_sec == 3 * TICK_SECONDS
 
 
-def test_episode_grid_matches_the_production_truth_grid_not_the_rounding_snap():
-    """Which snap_tick this harness uses is load-bearing, and the repo has two.
-
-    training/eval.py:486 and training/review.py:125 ROUND to the nearest tick;
-    training/eval_common.py:120 and training/load_r2.py:57 FLOOR. The grid that
-    matters here is the one PRODUCTION TRUTH is keyed on, and that is the floor
-    one: every production truth map snaps with load_r2._snap_tick, whose own
-    docstring (load_r2.py:200-202) says it uses "the reconstruction's floor grid
-    so the keys line up".
-
-    So flooring is correct and rounding would be the bug: a publish 210s past a
-    boundary would land on the NEXT tick and shift episode membership away from
-    the population production grades. The rounding snap DOES appear in
-    episodes.extract_episodes, but only on window_start/window_end, which this
-    module passes pre-aligned — where rounding and flooring agree exactly.
-
-    Pinned because a reviewer comparing the two definitions in isolation will
-    reasonably conclude the harness should adopt the production scorecard's
-    rounding, and that change would silently move every number.
+def test_episode_grid_matches_the_production_truth_grid():
+    """This harness must grade on the grid PRODUCTION TRUTH is keyed on: the
+    floor grid. Every production truth map snaps with load_r2._snap_tick, whose
+    docstring says it uses "the reconstruction's floor grid so the keys line
+    up", and this module snaps with the single eval_common.snap_tick. Pinned so
+    the two grids can never drift: a publish 210s past a boundary must land on
+    the SAME tick both places, or episode membership would shift away from the
+    population production grades.
     """
     boundary = 1_787_875_200
     assert boundary % TICK_SECONDS == 0
@@ -431,17 +419,11 @@ def test_episode_grid_matches_the_production_truth_grid_not_the_rounding_snap():
         snap_tick(boundary + off) == _prod_snap_tick(boundary + off)
         for off in range(TICK_SECONDS)
     )
-    # And the rounding variant genuinely differs — so this is a real choice,
-    # not two spellings of one thing.
-    assert any(
-        _round_snap_tick(boundary + off) != _prod_snap_tick(boundary + off)
-        for off in range(TICK_SECONDS)
-    )
-    # On the pre-aligned bounds this module actually passes, they agree.
+    # On the pre-aligned bounds this module actually passes, both are identity.
     start, end = aligned_window(date(2026, 8, 25), date(2026, 9, 3))
     for bound in (start, end):
         assert bound % TICK_SECONDS == 0
-        assert _round_snap_tick(bound) == snap_tick(bound) == bound
+        assert snap_tick(bound) == bound
 
 
 def test_grading_no_variants_is_refused_not_a_typeerror():

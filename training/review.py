@@ -63,6 +63,7 @@ from training.eval import (
     published_arm,
     recovery_as_dict,
 )
+from training.eval_common import snap_tick
 from training.load import TickObservation
 from training.load_r2 import (
     Disruption,
@@ -120,10 +121,6 @@ def derive_graded_mta_state(alert_types: tuple[str, ...], *, floor: int) -> str:
     if any(t >= floor for t in tiers):
         return "disrupted"
     return "normal"
-
-
-def snap_tick(ts: int) -> int:
-    return ((ts + TICK_SECONDS // 2) // TICK_SECONDS) * TICK_SECONDS
 
 
 def load_truth_observations(

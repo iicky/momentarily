@@ -41,10 +41,28 @@ vi.mock('../src/fetch', async (importOriginal) => {
   };
 });
 
+// Toggle to force the real buildSnapshot to throw for one test, exercising the
+// fail-soft wrap (a build throw must degrade to "no fresh publish" without
+// skipping the downstream last_seen/E&E/transitions steps). Off by default so
+// every other test runs the genuine assembler.
+const snapshotState = vi.hoisted(() => ({ buildThrows: false }));
+
+vi.mock('../src/snapshot', async (importOriginal) => {
+  const actual = await importOriginal<typeof SnapshotModule>();
+  return {
+    ...actual,
+    buildSnapshot: (args: Parameters<typeof SnapshotModule.buildSnapshot>[0]) => {
+      if (snapshotState.buildThrows) throw new Error('mock buildSnapshot failure');
+      return actual.buildSnapshot(args);
+    },
+  };
+});
+
 import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS } from '../src/fetch';
 import { tod_bin } from '../src/hmm';
 import worker, { tickMinute } from '../src/index';
 import type { Env } from '../src/index';
+import type * as SnapshotModule from '../src/snapshot';
 
 // --- tiny protobuf encoder (test-only; mirrors gtfsrt.test.ts's fixtures) ---
 // VehiclePosition: trip(1, message), current_stop_sequence(3, varint),
@@ -177,6 +195,7 @@ beforeEach(() => {
   fetchState.protobufCalls = [];
   fetchState.protobufFailUrls.clear();
   fetchState.jsonFailUrls.clear();
+  snapshotState.buildThrows = false;
 });
 
 describe('tickMinute', () => {
@@ -953,5 +972,105 @@ describe('step 7: the movement channel inputs land on the prediction stream', ()
     expect(rowA).toBeDefined();
     expect(rowA!.matched_n).toBeNull();
     expect(rowA!.advanced_n).toBeNull();
+  });
+});
+
+describe('freshness.params_stale: schema_version deploy skew', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  async function runBoundary(env: Env): Promise<void> {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
+
+  test('a bumped-version params.json still publishes on bootstrap, flagged params_stale', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    // JSON-shape-compatible but a version the Worker can't read.
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({ schema_version: '2', trained_at: 1, routes: {} }),
+    );
+
+    await runBoundary(env);
+
+    // The tick still published — the mismatch degrades the model, not the feed.
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { params_stale: boolean };
+      provenance: { params: { trained_at: number | null } };
+    };
+    expect(store.has('v1/snapshot.json')).toBe(true);
+    // Flagged stale, and running on bootstrap: no trained_at behind the model.
+    expect(snapshot.freshness.params_stale).toBe(true);
+    expect(snapshot.provenance.params.trained_at).toBeNull();
+  });
+
+  test('a readable params.json publishes with params_stale false', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    await bucket.put(
+      'state/params.json',
+      JSON.stringify({ schema_version: '1', trained_at: 42, routes: {} }),
+    );
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { params_stale: boolean };
+      provenance: { params: { trained_at: number | null } };
+    };
+    expect(snapshot.freshness.params_stale).toBe(false);
+    expect(snapshot.provenance.params.trained_at).toBe(42);
+  });
+});
+
+describe('fail-soft: a buildSnapshot throw degrades the step, not the tick', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  test('the snapshot is not published, but downstream last_seen/trip-updates still commit', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    snapshotState.buildThrows = true;
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+      err.mockRestore();
+    }
+
+    // The assembly threw, so no fresh snapshot was published this tick — the CDN
+    // keeps serving the last-good one.
+    expect(store.has('v1/snapshot.json')).toBe(false);
+    // But the tick did NOT die: the alpha CAS (step 5), the trip-updates archive
+    // (step 8b) and the last_seen CAS (step 9) — all independent of the snapshot
+    // object — still committed. Before the wrap, the throw skipped every one.
+    expect(store.has('state/alpha.json')).toBe(true);
+    expect(store.has('state/last_seen.json')).toBe(true);
+    expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(1);
   });
 });

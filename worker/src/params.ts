@@ -14,6 +14,12 @@ import { N_TOD_BINS, schedule_bin } from './hmm';
 
 const PARAMS_KEY = 'state/params.json';
 
+// The one schema_version the Worker knows how to read. Gated with z.literal
+// below exactly like every rolling-state document (state.ts) so a trainer
+// deploy that bumps the params format but stays JSON-shape-compatible is
+// rejected during deploy skew instead of being silently consumed.
+export const PARAMS_SCHEMA_VERSION = '1';
+
 // The trainer writes state/params.json (the live pointer the Worker reads) plus
 // an immutable per-run snapshot under this prefix as v<trained_at>.json — see
 // training/train_em.py write_params (VERSIONED_PARAMS_PREFIX). Kept in lockstep
@@ -218,7 +224,7 @@ const DwellMovementSchema = z.record(z.string(), z.record(z.string(), DwellQuant
 export type DwellMovement = z.infer<typeof DwellMovementSchema>;
 
 const TrainedParamsWrapperSchema = z.object({
-  schema_version: z.string(),
+  schema_version: z.literal(PARAMS_SCHEMA_VERSION),
   trained_at: z.number().finite(),
   // Validate each route separately (below) so one bad route doesn't drop the
   // whole upload — the others should still apply.
@@ -347,6 +353,18 @@ function toHMMParams(p: z.infer<typeof HMMParamsSchema>): HMMParams {
 }
 
 /**
+ * True when `data` is an object carrying a schema_version the Worker does not
+ * know how to read — the deploy-skew case the z.literal gate above rejects.
+ * Distinct from an absent or otherwise-malformed document: the shape is fine,
+ * only the version is wrong, which is what earns the visible params_stale flag.
+ */
+export function isParamsSchemaMismatch(data: unknown): boolean {
+  if (typeof data !== 'object' || data === null) return false;
+  const version = (data as Record<string, unknown>).schema_version;
+  return typeof version === 'string' && version !== PARAMS_SCHEMA_VERSION;
+}
+
+/**
  * Validate the trained-params document. A failed wrapper (wrong top-level
  * shape) returns null and the Worker falls back to bootstrap for every route.
  * A failed *route* is dropped from the returned map and that single route
@@ -356,7 +374,13 @@ function toHMMParams(p: z.infer<typeof HMMParamsSchema>): HMMParams {
 export function parseTrainedParams(data: unknown): TrainedParams | null {
   const wrapper = TrainedParamsWrapperSchema.safeParse(data);
   if (!wrapper.success) {
-    console.error('params.json wrapper invalid; using bootstrap:', wrapper.error.issues);
+    if (isParamsSchemaMismatch(data)) {
+      console.error(
+        `params.json schema_version mismatch (expected ${PARAMS_SCHEMA_VERSION}); using bootstrap`,
+      );
+    } else {
+      console.error('params.json wrapper invalid; using bootstrap:', wrapper.error.issues);
+    }
     return null;
   }
   const routes: Record<string, HMMParams> = {};
@@ -489,18 +513,31 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
   };
 }
 
+/** The outcome of a params load: the parsed params (null on absent/malformed/
+ * version-mismatch, so the Worker runs on bootstrap), plus whether the document
+ * was present but carried an unreadable schema_version — the deploy-skew signal
+ * the snapshot surfaces as freshness.params_stale. */
+export interface ParamsLoad {
+  params: TrainedParams | null;
+  schemaMismatch: boolean;
+}
+
 /**
- * Load trained params from R2. Returns null if not yet present (first deploy
- * before Python EM has written anything) or if the document is malformed.
+ * Load trained params from R2. `params` is null if not yet present (first deploy
+ * before Python EM has written anything) or if the document is malformed;
+ * `schemaMismatch` is true only when a present document's schema_version is one
+ * the Worker cannot read — a bumped params format consumed during deploy skew.
  */
-export async function loadParams(bucket: R2Bucket): Promise<TrainedParams | null> {
+export async function loadParams(bucket: R2Bucket): Promise<ParamsLoad> {
   const obj = await bucket.get(PARAMS_KEY);
-  if (!obj) return null;
+  if (!obj) return { params: null, schemaMismatch: false };
   try {
-    return parseTrainedParams(await obj.json());
+    const raw = await obj.json();
+    const params = parseTrainedParams(raw);
+    return { params, schemaMismatch: params === null && isParamsSchemaMismatch(raw) };
   } catch (err) {
     console.error('params.json parse failed; using bootstrap:', err);
-    return null;
+    return { params: null, schemaMismatch: false };
   }
 }
 

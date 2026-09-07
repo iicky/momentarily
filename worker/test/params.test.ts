@@ -10,6 +10,8 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   parseTrainedParams,
+  loadParams,
+  isParamsSchemaMismatch,
   paramsForRoute,
   dwellForRouteState,
   advanceBaselineFor,
@@ -428,5 +430,58 @@ describe('prov_ref capture', () => {
     expect(result).not.toBeNull();
     // Not an empty string — absent and null mean the same: no PROV document.
     expect(result!.provRef).toBeNull();
+  });
+});
+
+describe('schema_version gate', () => {
+  test('a well-formed doc on the expected version parses', () => {
+    const result = parseTrainedParams(wrapper({ '1': wellFormedRoute() }));
+    expect(result).not.toBeNull();
+    expect(result!.schema_version).toBe('1');
+  });
+
+  test('a JSON-shape-compatible doc on a bumped version is rejected outright', () => {
+    // The deploy-skew case: the routes still validate, only schema_version
+    // differs — the whole doc is dropped so the Worker runs on bootstrap.
+    const bumped = { ...wrapper({ '1': wellFormedRoute() }), schema_version: '2' };
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = parseTrainedParams(bumped);
+    err.mockRestore();
+    expect(result).toBeNull();
+  });
+
+  test('isParamsSchemaMismatch flags a bumped version and nothing else', () => {
+    expect(isParamsSchemaMismatch({ schema_version: '2' })).toBe(true);
+    expect(isParamsSchemaMismatch({ schema_version: '1' })).toBe(false);
+    expect(isParamsSchemaMismatch({})).toBe(false); // absent version, not a bump
+    expect(isParamsSchemaMismatch(null)).toBe(false);
+  });
+
+  test('loadParams surfaces schemaMismatch, params null, on a bumped-version doc', async () => {
+    const doc = { ...wrapper({ '1': wellFormedRoute() }), schema_version: '2' };
+    const bucket = {
+      get: async () => ({ json: async () => doc }),
+    } as unknown as R2Bucket;
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const load = await loadParams(bucket);
+    err.mockRestore();
+    expect(load.params).toBeNull();
+    expect(load.schemaMismatch).toBe(true);
+  });
+
+  test('loadParams: a healthy doc parses with no mismatch flag', async () => {
+    const bucket = {
+      get: async () => ({ json: async () => wrapper({ '1': wellFormedRoute() }) }),
+    } as unknown as R2Bucket;
+    const load = await loadParams(bucket);
+    expect(load.params).not.toBeNull();
+    expect(load.schemaMismatch).toBe(false);
+  });
+
+  test('loadParams: an absent params.json is not a mismatch', async () => {
+    const bucket = { get: async () => null } as unknown as R2Bucket;
+    const load = await loadParams(bucket);
+    expect(load.params).toBeNull();
+    expect(load.schemaMismatch).toBe(false);
   });
 });

@@ -99,6 +99,7 @@ import {
   publishSnapshot,
   publishTrains,
 } from './snapshot';
+import type { Snapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import {
@@ -443,7 +444,7 @@ export default {
     const [
       lastSeenRead,
       alphaRead,
-      trainedParams,
+      paramsLoad,
       prevMovementMetric,
       prevServiceMetric,
       ridershipBaseline,
@@ -459,6 +460,7 @@ export default {
     ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
+    const trainedParams = paramsLoad.params;
     step('1-read-state');
 
     // --- Step 2: fetch alerts feed ---
@@ -716,49 +718,64 @@ export default {
       } catch (err) {
         console.error('segment_dwell read failed; publishing without segment recovery:', err);
       }
-      const snapshot = buildSnapshot({
-        generatedAt: observedAt,
-        alertsFreshness: alertsFeedFresh,
-        routeSnapshots,
-        rolls: newAlphaState.routes,
-        trainedParams,
-        tickSeconds: TICK_SECONDS,
-        stationStatuses: lastSeen.station_statuses,
-        eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,
-        alerts:
-          alertsPayload !== null ? buildAlertList(alertsPayload, observedAt) : [],
-        equipment: lastSeen.equipment,
-        stations: stationsCache?.stations ?? {},
-        stationsStaticFreshness: stationsCache?.fetched_at ?? null,
-        movementStates,
-        stationFlow,
-        segmentFlow,
-        segmentParams,
-        segmentDwell,
-        stationWait: stationWaitDoc,
-        ridershipBaseline,
-        serviceWeightBaseline,
-        headway: headwayDoc,
-        scheduledHeadway,
-        // At least one vehicle-position feed round-tripped this poll, else
-        // the last poll where one did (step 8b's own stamp). Null before the
-        // first, so an absent observations surface can be told apart from a
-        // feed that is simply not being polled.
-        vehiclePositionsFreshness:
-          vehicleFreshFeeds.length > 0
-            ? observedAt
-            : lastSeen.vehicles_at > 0
-              ? lastSeen.vehicles_at
-              : null,
-      });
-      step('6a-build-snapshot');
+      // buildSnapshot runs AFTER the alpha CAS committed at step 5, so a single
+      // assembly throw here must degrade to "no fresh publish this tick", not
+      // fail the whole tick and skip every step below (predictions, transitions,
+      // E&E, last_seen). Same fail-soft posture as the publish call right after.
+      let snapshot: Snapshot | null = null;
       try {
-        await publishSnapshot(env.MOMENTARILY, snapshot);
-        console.log(
-          `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
-        );
+        snapshot = buildSnapshot({
+          generatedAt: observedAt,
+          alertsFreshness: alertsFeedFresh,
+          routeSnapshots,
+          rolls: newAlphaState.routes,
+          trainedParams,
+          // Present-but-unreadable params.json (bumped schema_version): the tick
+          // publishes on bootstrap params, and this flag surfaces the skew as
+          // freshness.params_stale so a consumer can see the model is stale.
+          paramsSchemaMismatch: paramsLoad.schemaMismatch,
+          tickSeconds: TICK_SECONDS,
+          stationStatuses: lastSeen.station_statuses,
+          eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,
+          alerts:
+            alertsPayload !== null ? buildAlertList(alertsPayload, observedAt) : [],
+          equipment: lastSeen.equipment,
+          stations: stationsCache?.stations ?? {},
+          stationsStaticFreshness: stationsCache?.fetched_at ?? null,
+          movementStates,
+          stationFlow,
+          segmentFlow,
+          segmentParams,
+          segmentDwell,
+          stationWait: stationWaitDoc,
+          ridershipBaseline,
+          serviceWeightBaseline,
+          headway: headwayDoc,
+          scheduledHeadway,
+          // At least one vehicle-position feed round-tripped this poll, else
+          // the last poll where one did (step 8b's own stamp). Null before the
+          // first, so an absent observations surface can be told apart from a
+          // feed that is simply not being polled.
+          vehiclePositionsFreshness:
+            vehicleFreshFeeds.length > 0
+              ? observedAt
+              : lastSeen.vehicles_at > 0
+                ? lastSeen.vehicles_at
+                : null,
+        });
       } catch (err) {
-        console.error('snapshot publish failed:', err);
+        console.error('snapshot build failed; tick continues without a fresh publish:', err);
+      }
+      step('6a-build-snapshot');
+      if (snapshot !== null) {
+        try {
+          await publishSnapshot(env.MOMENTARILY, snapshot);
+          console.log(
+            `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
+          );
+        } catch (err) {
+          console.error('snapshot publish failed:', err);
+        }
       }
       step('6b-publish-snapshot');
 
@@ -811,46 +828,52 @@ export default {
       step('6c-publish-trains');
 
       // --- Step 7: grading streams ---
+      // Predictions are derived from the assembled snapshot's route_status, so
+      // they degrade with it: if buildSnapshot threw above, there is nothing to
+      // grade this tick. Transitions/E&E/last_seen below do NOT depend on the
+      // snapshot object and still run — that is the point of catching the throw.
       const predictions: PredictionRecord[] = [];
-      for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
-        const inf = rs.inference;
-        if (!inf) continue;
-        const mv = movementCounts.get(routeId);
-        predictions.push({
-          ts: observedAt,
-          route: routeId,
-          condition: inf.condition,
-          regime_entered_at: inf.regime_entered_at,
-          p_normal: inf.p_normal,
-          p_disrupted: inf.p_disrupted,
-          p_suspended: inf.p_suspended,
-          p_normal_in_30min: inf.p_normal_in_30min,
-          p_normal_in_60min: inf.p_normal_in_60min,
-          p_normal_in_120min: inf.p_normal_in_120min,
-          recovery_minutes: inf.recovery_minutes,
-          recovery_minutes_low: inf.recovery_minutes_low,
-          recovery_minutes_high: inf.recovery_minutes_high,
-          recovery_indeterminate: inf.recovery_indeterminate,
-          recovery_source: inf.recovery_source,
-          resumes_at: inf.resumes_at,
-          primary_alert_type: rs.primary_alert_type,
-          params_version: paramsVersion,
-          published_condition: rs.condition,
-          condition_source: rs.condition_source,
-          // From the same one-tick-lagged doc the snapshot published the
-          // condition from, so the row describes the regime consumers saw.
-          movement_regime_entered_at: movementStates?.regimes[routeId]?.entered_at ?? 0,
-          // Null when the movement channel did not fire this tick — there is no
-          // count to attribute, and a number here would imply the binomial
-          // contributed when it contributed 0.
-          matched_n: mv?.matched_n ?? null,
-          advanced_n: mv?.advanced_n ?? null,
-        });
-      }
-      try {
-        await writePredictions(env.MOMENTARILY, observedAt, predictions);
-      } catch (err) {
-        console.error('predictions write failed:', err);
+      if (snapshot !== null) {
+        for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
+          const inf = rs.inference;
+          if (!inf) continue;
+          const mv = movementCounts.get(routeId);
+          predictions.push({
+            ts: observedAt,
+            route: routeId,
+            condition: inf.condition,
+            regime_entered_at: inf.regime_entered_at,
+            p_normal: inf.p_normal,
+            p_disrupted: inf.p_disrupted,
+            p_suspended: inf.p_suspended,
+            p_normal_in_30min: inf.p_normal_in_30min,
+            p_normal_in_60min: inf.p_normal_in_60min,
+            p_normal_in_120min: inf.p_normal_in_120min,
+            recovery_minutes: inf.recovery_minutes,
+            recovery_minutes_low: inf.recovery_minutes_low,
+            recovery_minutes_high: inf.recovery_minutes_high,
+            recovery_indeterminate: inf.recovery_indeterminate,
+            recovery_source: inf.recovery_source,
+            resumes_at: inf.resumes_at,
+            primary_alert_type: rs.primary_alert_type,
+            params_version: paramsVersion,
+            published_condition: rs.condition,
+            condition_source: rs.condition_source,
+            // From the same one-tick-lagged doc the snapshot published the
+            // condition from, so the row describes the regime consumers saw.
+            movement_regime_entered_at: movementStates?.regimes[routeId]?.entered_at ?? 0,
+            // Null when the movement channel did not fire this tick — there is no
+            // count to attribute, and a number here would imply the binomial
+            // contributed when it contributed 0.
+            matched_n: mv?.matched_n ?? null,
+            advanced_n: mv?.advanced_n ?? null,
+          });
+        }
+        try {
+          await writePredictions(env.MOMENTARILY, observedAt, predictions);
+        } catch (err) {
+          console.error('predictions write failed:', err);
+        }
       }
 
       const transitions = detectTransitions(

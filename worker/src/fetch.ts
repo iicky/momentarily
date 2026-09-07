@@ -63,6 +63,60 @@ export async function fetchJson(url: string): Promise<unknown> {
   return response.json();
 }
 
+// Protobuf length-delimited wire type — the one FeedMessage.entity uses.
+const WIRE_LEN = 2;
+
+/**
+ * True when the buffer carries at least one top-level GTFS-RT FeedEntity
+ * (FeedMessage field 2). A minimal wire scan — read each top-level tag, skip
+ * non-entity fields by wire type — enough to tell a real feed from a truncated
+ * or garbage 200 that decodes to nothing, without materializing any entity.
+ * Kept local so the fetch floor owns its own check rather than reaching into
+ * the decoder's internals.
+ */
+function hasFeedEntity(buf: Uint8Array): boolean {
+  let p = 0;
+  const varint = (): number => {
+    let result = 0;
+    let shift = 0;
+    let b: number;
+    do {
+      b = buf[p++] ?? 0;
+      result += (b & 0x7f) * 2 ** shift;
+      shift += 7;
+    } while (b & 0x80 && p < buf.length);
+    return result;
+  };
+  while (p < buf.length) {
+    const tag = varint();
+    const field = Math.floor(tag / 8);
+    const wire = tag & 7;
+    if (field === 2 && wire === WIRE_LEN) return true;
+    switch (wire) {
+      case 0: // varint
+        varint();
+        break;
+      case 1: // 64-bit
+        p += 8;
+        break;
+      case WIRE_LEN: {
+        // Read the length FIRST: `p += varint()` would sum the stale pre-read p
+        // with the length and land a varint-byte short (see gtfsrt.ts's skip).
+        const n = varint();
+        p += n;
+        break;
+      }
+      case 5: // 32-bit
+        p += 4;
+        break;
+      default:
+        // Unknown wire type — bail rather than desync and misread.
+        p = buf.length;
+    }
+  }
+  return false;
+}
+
 /**
  * Fetch a binary (protobuf) feed as raw bytes, no edge caching — same fresh-pull
  * policy as fetchJson.
@@ -75,5 +129,15 @@ export async function fetchProtobuf(url: string): Promise<Uint8Array> {
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`);
   }
-  return new Uint8Array(await response.arrayBuffer());
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  // A 200 is necessary but not sufficient. The gateway occasionally serves a
+  // truncated or empty body that the tolerant GTFS-RT reader decodes to zero
+  // entities WITHOUT throwing — which would otherwise be recorded as a fresh
+  // feed of partial/garbage rows in vehicleFreshFeeds. Require at least one
+  // FeedEntity so an obviously-empty decode is treated as a failed feed (a
+  // gap the caller's Promise.allSettled skips), not confident garbage.
+  if (!hasFeedEntity(bytes)) {
+    throw new Error(`empty GTFS-RT feed (zero entities) from ${url}`);
+  }
+  return bytes;
 }

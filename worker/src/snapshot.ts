@@ -222,6 +222,13 @@ interface Freshness {
   // an absent observation caused by a feed outage from one caused by a
   // service gap.
   vehicle_positions: number | null;
+  // True when this tick ran on bootstrap params because the published
+  // params.json carried a schema_version the Worker cannot read (a trainer
+  // deploy that bumped the params format during deploy skew). The inference is
+  // still published, but off the untrained bootstrap — a consumer reads this
+  // to tell a fully-trained snapshot from one degraded by version skew. False
+  // in every healthy tick and whenever params.json is simply absent.
+  params_stale: boolean;
 }
 
 interface Accessibility {
@@ -399,7 +406,7 @@ interface PlatformCrowdingOut {
   abstained: Record<string, number>;
 }
 
-interface Snapshot {
+export interface Snapshot {
   schema_version: string;
   generated_at: number;
   provenance: Provenance;
@@ -467,6 +474,10 @@ export function buildSnapshot(args: {
   routeSnapshots: Map<string, RouteSnapshot>;
   rolls: Record<string, RouteRoll>;
   trainedParams: TrainedParams | null;
+  /** True when a present params.json carried a schema_version the Worker can't
+   * read (deploy skew): the tick runs on bootstrap params and this raises
+   * freshness.params_stale so consumers can see the model is stale. */
+  paramsSchemaMismatch?: boolean;
   tickSeconds: number;
   /** Cached station_status, refreshed on hourly E&E fetches. Empty when
    * E&E hasn't been parsed yet (e.g. before the first hourly tick after
@@ -724,6 +735,7 @@ export function buildSnapshot(args: {
       ene: args.eneFreshness ?? null,
       stations_static: args.stationsStaticFreshness ?? null,
       vehicle_positions: args.vehiclePositionsFreshness ?? null,
+      params_stale: args.paramsSchemaMismatch ?? false,
     },
     alerts: args.alerts ?? [],
     observations,

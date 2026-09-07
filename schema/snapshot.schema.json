@@ -564,6 +564,11 @@
           "default": null,
           "title": "Mnr Alerts"
         },
+        "params_stale": {
+          "default": false,
+          "title": "Params Stale",
+          "type": "boolean"
+        },
         "path_alerts": {
           "anyOf": [
             {

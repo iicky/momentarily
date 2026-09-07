@@ -488,6 +488,13 @@ class Freshness(BaseModel):
     # and the crowding surface — published so a consumer can tell an absent
     # observation caused by a feed outage from one caused by a service gap.
     vehicle_positions: int | None = None
+    # True when the Worker ran this tick on bootstrap params because the
+    # published params.json carried a schema_version it cannot read — a trainer
+    # deploy that bumped the params format during deploy skew. The inference is
+    # still published, but off the untrained bootstrap; a consumer reads this to
+    # tell a fully-trained snapshot from one degraded by version skew. False in
+    # every healthy tick and whenever params.json is simply absent.
+    params_stale: bool = False
 
 
 class CompatRouteSummary(BaseModel):

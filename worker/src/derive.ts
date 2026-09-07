@@ -251,12 +251,11 @@ function buildRouteSnapshot(
   todBinValue: number,
 ): RouteSnapshot {
   const primary = pickPrimary(alerts);
-  // Planned/scheduled work (lmm:planned_work:*, incl. reroutes/stops-skipped and
-  // reduced/special/no-scheduled/extra service) drops out of the HMM disruption
-  // observation so the filter reads quiet; real-time alerts and any other id are
-  // counted. Planned work isn't a disruption to recover from. Mirrors
-  // training/load.py + load_r2.py (is_planned_work_id).
-  const counted = alerts.filter((a) => !isPlannedWorkId(a.alert_id));
+  // Planned work drops out of the HMM disruption observation; real-time and
+  // 'other' alerts count. This reads from the single three-way decision in
+  // alertNamespace / countsAsDisruption below (Mirrors training/load.py +
+  // load_r2.py is_planned_work_id).
+  const counted = alerts.filter((a) => countsAsDisruption(alertNamespace(a.alert_id)));
   const types = counted.map((a) => a.alert_type);
 
   const observation: Observation = {
@@ -296,23 +295,57 @@ function buildRouteSnapshot(
     primary_alert_type: primary?.alert_type ?? null,
     coarse_label: primary ? coarseStatus(primary.alert_type) : NO_ALERTS_FALLBACK,
     by_direction: splitByDirection(alerts),
-    has_realtime_alert: alerts.some((a) => isRealtimeId(a.alert_id)),
+    // Real-time namespace only (gates the schedule-recovery arm, which requires
+    // !has_realtime_alert); 'other' is counted but deliberately excluded here.
+    has_realtime_alert: alerts.some((a) => alertNamespace(a.alert_id) === 'realtime'),
     is_not_scheduled: alerts.some((a) => a.alert_type.includes('No Scheduled Service')),
     scheduled_resume_at: scheduledResumeAt(alerts, observedAt),
   };
 }
 
-// Entity-id namespaces discriminate the two alert kinds more robustly than the
-// alert_type string: lmm:alert:* are real-time disruptions (end is a rolling
-// display TTL, never a resume time); lmm:planned_work:* carry a bounded
-// active_period.end that IS the resume time — and cover Reduced/Extra/No
-// Scheduled/Special Schedule, which lack the "Planned -" type prefix.
-function isRealtimeId(alertId: string): boolean {
-  return alertId.startsWith('lmm:alert:');
+// Every alert id falls into exactly one namespace. The partition is defined
+// once here so alert_count and has_realtime_alert are derived from the same
+// classification and cannot drift into the accidental non-complementarity that
+// snapshot.ts's composition guard exists to catch:
+//   - 'planned'  lmm:planned_work:* — bounded active_period.end IS the resume
+//                time; also covers Reduced/Extra/No Scheduled/Special Schedule,
+//                which lack the "Planned -" type prefix. Not a disruption to
+//                recover from, so it drops out of the HMM observation.
+//   - 'realtime' lmm:alert:* — a live disruption whose end is a rolling display
+//                TTL, never a resume time.
+//   - 'other'    an id in neither MTA namespace (e.g. lmm:situation:*). A real
+//                third category, classified by a deliberate branch below — NOT
+//                the residue of negating the planned check.
+type AlertNamespace = 'planned' | 'realtime' | 'other';
+
+function alertNamespace(alertId: string): AlertNamespace {
+  if (alertId.startsWith('lmm:planned_work:')) return 'planned';
+  if (alertId.startsWith('lmm:alert:')) return 'realtime';
+  return 'other';
 }
 
-function isPlannedWorkId(alertId: string): boolean {
-  return alertId.startsWith('lmm:planned_work:');
+// Whether a namespace counts toward the HMM disruption observation
+// (alert_count / severity_sum).
+function countsAsDisruption(ns: AlertNamespace): boolean {
+  switch (ns) {
+    case 'planned':
+      // Bounded resume window; the line is coming back on a schedule.
+      return false;
+    case 'realtime':
+      return true;
+    case 'other':
+      // Deliberate: an unknown-namespace alert carries no bounded resume
+      // window, so it is a live disruption we must not silence — counting it is
+      // the safe read. But we cannot assume the real-time TTL semantics of
+      // lmm:alert:*, so it does NOT set has_realtime_alert (the 'realtime'-only
+      // check on has_realtime_alert above). That intentionally leaves the
+      // schedule-recovery arm reachable for a route carrying both an 'other'
+      // alert and a planned window; the resulting cross-arm collision (a
+      // determinate overdue zero under a live-disruption read) is handled by
+      // snapshot.ts's composition guard, which keys off the answer an arm
+      // produced rather than assuming these predicates complement.
+      return true;
+  }
 }
 
 /**
@@ -325,7 +358,7 @@ function isPlannedWorkId(alertId: string): boolean {
 function scheduledResumeAt(alerts: RouteEntityRef[], now: number): number | null {
   let resume: number | null = null;
   for (const a of alerts) {
-    if (!isPlannedWorkId(a.alert_id)) continue;
+    if (alertNamespace(a.alert_id) !== 'planned') continue;
     for (const p of a.active_period) {
       const end = p.end;
       if (end === undefined) continue;

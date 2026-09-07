@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local-only dashboard for inspecting the Momentarily MTA feed + HMM model. Not part of the publish path.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "murk exec -- next dev",
     "dev:plain": "next dev",

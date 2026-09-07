@@ -11,9 +11,19 @@ on:
     - cron: '*/15 * * * *'  # best-effort; GHA may delay under load
   workflow_dispatch:
 
+# Read-only by default; the failure-alert step below is granted issues: write
+# per-job so a dead feed surfaces as a tracking issue, not just a silent email.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Needs issues: write to open/comment the tracking issue on failure. No
+    # checkout, so contents access is irrelevant; kept read for clarity.
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 3
     steps:
       - name: Check generated_at lag
@@ -22,7 +32,7 @@ jobs:
           # Cache-bust past the CDN (s-maxage=300) so we measure the origin.
           url="https://feed.momentarily.nyc/v1/snapshot.json?cb=$(date +%s)"
           curl -fsS --max-time 30 -o /tmp/snapshot.json "$url"
-          generated_at=$(grep -o '"generated_at":[0-9]*' /tmp/snapshot.json | head -1 | cut -d: -f2)
+          generated_at=$(jq -r '.generated_at // empty' /tmp/snapshot.json)
           if [ -z "$generated_at" ]; then
             echo "::error::could not parse generated_at from snapshot"
             exit 1
@@ -34,4 +44,24 @@ jobs:
           if [ "$lag" -gt 900 ]; then
             echo "::error::snapshot is ${lag}s stale (threshold 900s)"
             exit 1
+          fi
+      # A red run only emails the workflow file's last committer, which is easy
+      # to miss; a tracking issue is visible to everyone and de-duplicates across
+      # repeated failures. No checkout here, so gh needs GH_REPO explicitly.
+      - name: Open or update the tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Snapshot staleness check is failing"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="\`${{ github.workflow }}\` failed at $(date -u +%FT%TZ). Run: $RUN_URL"
+          number=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
           fi

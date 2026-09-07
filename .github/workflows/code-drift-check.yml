@@ -19,12 +19,20 @@ on:
     - cron: '17 * * * *'  # best-effort; GHA may delay under load
   workflow_dispatch:
 
+# Read-only by default; the failure-alert step is granted issues: write per-job.
+permissions:
+  contents: read
+
 jobs:
   drift:
     runs-on: ubuntu-latest
+    # issues: write for the failure tracking issue; contents: read for checkout.
+    permissions:
+      contents: read
+      issues: write
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full history: the live sha can be many commits back, and the age of
           # the oldest undeployed commit is what decides whether this fails.
@@ -108,3 +116,22 @@ jobs:
             exit 1
           fi
           echo "within grace window; a deploy is presumably still in flight"
+      # A red run only emails the workflow file's last committer; a tracking
+      # issue is visible to everyone and de-duplicates across repeated failures.
+      - name: Open or update the tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Code drift check is failing"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="\`${{ github.workflow }}\` failed at $(date -u +%FT%TZ). Run: $RUN_URL"
+          number=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
+          fi

@@ -1,0 +1,9 @@
+# Keep the SHA-pinned actions in .github/workflows/ current. Pinning to a commit
+# freezes the version, so Dependabot is what surfaces upstream releases (with the
+# updated SHA + version comment) as reviewable PRs instead of silent drift.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

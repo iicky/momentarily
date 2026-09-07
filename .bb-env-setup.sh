@@ -32,4 +32,12 @@ if command -v uv >/dev/null 2>&1; then
     uv sync || warn "uv sync failed — run it by hand before using 'uv run'"
 fi
 
+# Point git at the tracked hooks (adversarial review, tracker-leak guard, and
+# the scoped lint/typecheck gate). Idempotent; .githooks/pre-commit chains on to
+# any tool-managed hook when one is present. Without this a fresh clone commits
+# with no gate at all.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+    git config core.hooksPath .githooks || warn "could not set core.hooksPath — pre-commit gate inactive"
+fi
+
 exit 0

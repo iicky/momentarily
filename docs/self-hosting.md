@@ -107,3 +107,9 @@ of `feed.momentarily.nyc`. The schema is identical and path-versioned (`/v1/`).
 See the `dev` scripts in each subproject. They use `murk`; without it, set the
 env vars yourself and run `wrangler dev` / `uv run …` directly. The Python
 package's tests need no credentials (`uv run pytest`).
+
+If you plan to commit changes back, enable the tracked pre-commit gate once per
+clone with `git config core.hooksPath .githooks` (bb worktrees get this from
+`.bb-env-setup.sh` automatically). It runs the adversarial review, the
+tracker-leak guard, and scoped lint/typecheck, and chains on to any tool-managed
+hook when one is present.

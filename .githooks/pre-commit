@@ -33,6 +33,17 @@ set -uo pipefail
 root=$(git rev-parse --show-toplevel) || exit 1
 cd "$root" || exit 1
 
+# Beads integration. core.hooksPath now points here (.githooks), so this tracked
+# hook is the entry point; the beads-managed .beads/hooks/pre-commit is chained
+# from here rather than the other way round, and it is absent on a fresh clone.
+# When present it runs `bd hooks run pre-commit` and (v1.0.3) chains back to this
+# script — the guard below makes that re-entry fall straight through to the gates
+# instead of recursing, so bd runs once and the gates below run exactly once.
+if [ -z "${MOMENTARILY_PRECOMMIT_CHAINED:-}" ] && [ -x "$root/.beads/hooks/pre-commit" ]; then
+  export MOMENTARILY_PRECOMMIT_CHAINED=1
+  exec "$root/.beads/hooks/pre-commit" "$@"
+fi
+
 # --- gate 1: adversarial review -----------------------------------------------
 "$root/.githooks/review.sh" || exit $?
 

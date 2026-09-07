@@ -1950,9 +1950,12 @@ def implausible_params(new: dict[str, Any], live: dict[str, Any]) -> str | None:
         if diag and max(diag) >= COLLAPSE_SELF_LOOP:
             return f"collapsed_transition:{route}"
         dwell = rp.get("dwell_quantiles")
-        if isinstance(dwell, dict) and dwell:
-            if _dwell_pinned_zero(cast("dict[str, Any]", dwell)):
-                return f"degenerate_dwell:{route}"
+        if (
+            isinstance(dwell, dict)
+            and dwell
+            and _dwell_pinned_zero(cast("dict[str, Any]", dwell))
+        ):
+            return f"degenerate_dwell:{route}"
 
     for route, rp in new_routes.items():
         live_rp = live_routes.get(route)

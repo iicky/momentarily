@@ -897,41 +897,6 @@ def test_service_quantiles_to_json_nests_route_bin_and_stringifies_keys():
     assert all(isinstance(k, str) for k in doc["A"])
 
 
-# --- classify_direction: three-way significance-gated call ---
-#
-# Case math (baseline p0 as given; prior_strength=8, disrupted_ratio=0.5, alpha=0.05):
-#   case1 p0=0.125 advanced=0 matched=8:  post=0.0625==0.5*p0 (<=); tail=0.875**8~=0.3436>alpha
-#         -> None. THE FIX: a short shuttle's degenerate baseline no longer misfires
-#         disrupted on an ordinary zero-advance tick.
-#   case2 p0=0.125 advanced=0 matched=25: post~=0.0303<=0.0625; tail=0.875**25~=0.0356<=alpha
-#         -> disrupted. The same degenerate baseline still fires once there's enough evidence.
-#   case3 p0=0.55  advanced=0 matched=17: post=0.176<=0.275; tail=0.45**17~=1.2e-6<=alpha
-#         -> disrupted (a healthy trunk frozen solid).
-#   case4 p0=0.55  advanced=8 matched=17: post=0.496>0.275 -> normal (posterior clears the
-#         cutoff outright, no significance test needed).
-#
-# This exact (advanced, stalled, p0) -> expected-label table is reused verbatim in
-# viz's classifyDirection tests (viz/tests/movement.test.ts) and the worker's
-# deriveMovementState tests (worker/test/movement_state.test.ts) as a cross-mirror
-# parity spot-check: the same inputs must resolve to the same label everywhere.
-@pytest.mark.parametrize(
-    ("advanced", "stalled", "p0", "expected"),
-    [
-        pytest.param(0, 8, 0.125, None, id="case1_shuttle_false_positive_now_abstains"),
-        pytest.param(
-            0, 25, 0.125, "disrupted", id="case2_sustained_shuttle_freeze_still_fires"
-        ),
-        pytest.param(0, 17, 0.55, "disrupted", id="case3_trunk_freeze_still_fires"),
-        pytest.param(8, 9, 0.55, "normal", id="case4_normal_above_ratio"),
-    ],
-)
-def test_classify_direction_three_way_cases(
-    advanced: int, stalled: int, p0: float, expected: str | None
-) -> None:
-    baseline = AdvanceBaseline(p0=p0, n=50, alpha=50 * p0, beta=50 * (1 - p0))
-    assert classify_direction(advanced, stalled, baseline) == expected
-
-
 def test_classify_direction_below_min_matched_is_none():
     # Below MIN_MATCHED_TRIPS=3: the matched-floor guard short-circuits before the
     # posterior/significance path is ever evaluated, unchanged by the three-way rewrite.

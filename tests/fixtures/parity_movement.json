@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "label": "case1_shuttle_false_positive_now_abstains",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 8,
+        "p0": 0.125
+      },
+      "expected": null
+    },
+    {
+      "label": "case2_sustained_shuttle_freeze_still_fires",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 25,
+        "p0": 0.125
+      },
+      "expected": "disrupted"
+    },
+    {
+      "label": "case3_trunk_freeze_still_fires",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 17,
+        "p0": 0.55
+      },
+      "expected": "disrupted"
+    },
+    {
+      "label": "case4_normal_above_ratio",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 8,
+        "stalled": 9,
+        "p0": 0.55
+      },
+      "expected": "normal"
+    },
+    {
+      "label": "edge_n_zero_no_matched_trips",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 0,
+        "p0": 0.9
+      },
+      "expected": null
+    },
+    {
+      "label": "edge_below_min_matched",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 1,
+        "stalled": 1,
+        "p0": 0.9
+      },
+      "expected": null
+    },
+    {
+      "label": "edge_prior_only_stall_stays_normal",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 3,
+        "p0": 0.9
+      },
+      "expected": "normal"
+    },
+    {
+      "label": "edge_shuttle_normal_debiased",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 1,
+        "stalled": 9,
+        "p0": 0.1
+      },
+      "expected": "normal"
+    },
+    {
+      "label": "edge_degenerate_baseline_abstains",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 10,
+        "p0": 0.001
+      },
+      "expected": null
+    },
+    {
+      "label": "edge_no_baseline_cell",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 8,
+        "stalled": 1,
+        "p0": null
+      },
+      "expected": null
+    }
+  ]
+}

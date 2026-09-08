@@ -1,10 +1,15 @@
 name: Snapshot staleness check
 
 # External watchdog on the public feed: fails (and notifies via GitHub's
-# workflow-failure email) when snapshot.json's generated_at falls too far
-# behind. Catches dead crons, CPU-limit outages, and R2 publish failures —
-# the Worker can't report its own death. Public repo, so the cron costs
-# nothing.
+# workflow-failure email) when snapshot.json goes stale. Checks the tick
+# clock (generated_at lag) AND the per-feed/model freshness sub-fields —
+# vehicle_positions, ene, params_stale and provenance.params.trained_at —
+# because generated_at is stamped every tick the alpha CAS wins and
+# buildSnapshot doesn't throw, independent of whether any vehicle feed
+# decoded, ENE is current, or params are live (worker/src/index.ts,
+# snapshot.ts). Catches dead crons, CPU-limit outages, R2 publish failures,
+# frozen feeds, and version-skewed params — the Worker can't report its own
+# death. Public repo, so the cron costs nothing.
 
 on:
   schedule:
@@ -26,7 +31,7 @@ jobs:
       issues: write
     timeout-minutes: 3
     steps:
-      - name: Check generated_at lag
+      - name: Check generated_at lag and freshness sub-fields
         run: |
           set -euo pipefail
           # Cache-bust past the CDN (s-maxage=300) so we measure the origin.
@@ -42,7 +47,60 @@ jobs:
           echo "generated_at=$generated_at now=$now lag=${lag}s"
           # Cron runs every 5 min; 3 missed ticks = something is wrong.
           if [ "$lag" -gt 900 ]; then
-            echo "::error::snapshot is ${lag}s stale (threshold 900s)"
+            echo "::error::generated_at: snapshot is ${lag}s stale (threshold 900s)"
+            exit 1
+          fi
+          # Freshness sub-field ages are measured against generated_at, the
+          # snapshot's own tick epoch, not wall-clock now: these timestamps are
+          # internal to the snapshot, so comparing them to generated_at isolates
+          # feed/model staleness from any GHA cron delay (the lag check above
+          # already covers the tick clock).
+          params_stale=$(jq -r '.freshness.params_stale' /tmp/snapshot.json)
+          if [ "$params_stale" != "false" ]; then
+            echo "::error::freshness.params_stale is ${params_stale} (expected false): params.json carried an unreadable schema_version, snapshot is running on bootstrap params"
+            exit 1
+          fi
+          vp=$(jq -r '.freshness.vehicle_positions // empty' /tmp/snapshot.json)
+          if [ -z "$vp" ]; then
+            echo "::error::freshness.vehicle_positions is null: no GTFS-RT vehicle-position feed has ever round-tripped"
+            exit 1
+          fi
+          vp_age=$(( generated_at - vp ))
+          echo "vehicle_positions age=${vp_age}s ene age=$(( generated_at - $(jq -r '.freshness.ene // 0' /tmp/snapshot.json) ))s"
+          # 1800s = worker/src/snapshot.ts MAX_MOVEMENT_STATE_AGE_SEC: past this
+          # the movement surface ages out and falls back to the alert/HMM
+          # condition, so a vehicle_positions age above it means the trains
+          # surface is running blind.
+          if [ "$vp_age" -gt 1800 ]; then
+            echo "::error::freshness.vehicle_positions is ${vp_age}s behind generated_at (threshold 1800s = MAX_MOVEMENT_STATE_AGE_SEC)"
+            exit 1
+          fi
+          ene=$(jq -r '.freshness.ene // empty' /tmp/snapshot.json)
+          if [ -z "$ene" ]; then
+            echo "::error::freshness.ene is null: no E&E snapshot has been recorded"
+            exit 1
+          fi
+          ene_age=$(( generated_at - ene ))
+          # 7200s = 2x worker/src/index.ts ENE_INTERVAL_SECONDS (hourly E&E
+          # fetch). Looser than vehicle_positions because E&E is polled once an
+          # hour: one missed hourly fetch is normal jitter, two is the alarm.
+          if [ "$ene_age" -gt 7200 ]; then
+            echo "::error::freshness.ene is ${ene_age}s behind generated_at (threshold 7200s = 2x ENE_INTERVAL_SECONDS)"
+            exit 1
+          fi
+          trained_at=$(jq -r '.provenance.params.trained_at // empty' /tmp/snapshot.json)
+          if [ -z "$trained_at" ]; then
+            echo "::error::provenance.params.trained_at missing from snapshot"
+            exit 1
+          fi
+          trained_age_days=$(( (generated_at - trained_at) / 86400 ))
+          echo "trained_at age=${trained_age_days}d"
+          # 45 days is the paused-cron reality: trainer/wrangler.toml has
+          # crons=[], so params only move on a deliberate manual retrain and a
+          # normal weekly bound would false-alarm. Tighten this toward the
+          # weekly cadence when the cron is un-paused.
+          if [ "$trained_age_days" -gt 45 ]; then
+            echo "::error::provenance.params.trained_at is ${trained_age_days}d old (threshold 45d; the paused-cron reality, tighten when un-paused)"
             exit 1
           fi
       # A red run only emails the workflow file's last committer, which is easy

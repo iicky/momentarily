@@ -1074,3 +1074,282 @@ describe('fail-soft: a buildSnapshot throw degrades the step, not the tick', () 
     expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(1);
   });
 });
+
+describe('freshness.alerts_parse_degraded: alerts-schema drift abstention', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  // Seed last tick's movement regime so route A would otherwise publish a
+  // movement-derived 'normal' condition. The whole point of the fix is that a
+  // degraded alerts payload abstains OVER this read rather than let it stand.
+  function seedMovementNormalA(store: Map<string, StoredObject>): void {
+    store.set('state/movement_state.json', {
+      body: JSON.stringify({
+        observed_at: BOUNDARY_AT - 300,
+        regimes: {
+          A: {
+            state: 'normal',
+            entered_at: BOUNDARY_AT - 3600,
+            last_seen_at: BOUNDARY_AT - 300,
+            pending: null,
+            pending_since: 0,
+            pending_run: 0,
+          },
+        },
+      }),
+      etag: 'seed-movement',
+    });
+  }
+
+  async function runBoundary(env: Env): Promise<void> {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
+
+  test('entities in an unrecognised shape: routes abstain to unknown and the flag is set', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    // A non-empty entity array whose members carry no alert object with a
+    // header_text or the mercury alert_type — nothing recognizable as an MTA
+    // alert. The soft-parse drift the floor exists to catch.
+    fetchState.jsonByUrl.set(FEEDS.alerts, {
+      entity: [
+        { id: 'x1', alert: { informed_entity: [{ route_id: 'A' }] } },
+        { id: 'x2', alert: { some_new_shape: { renamed: 'Delays' } } },
+      ],
+    });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      alerts: unknown[];
+      route_status: Record<string, { condition: string; condition_source: string }>;
+    };
+    expect(store.has('v1/snapshot.json')).toBe(true);
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(true);
+    // Nothing recognizable, so no alert surfaced — the empty list that used to
+    // read as "calm system".
+    expect(snapshot.alerts).toEqual([]);
+    // Every route abstains, INCLUDING route A whose seeded movement regime was
+    // 'normal': the degraded tick supersedes it rather than assert good service.
+    const a = snapshot.route_status['A']!;
+    expect(a.condition).toBe('unknown');
+    expect(a.condition_source).toBe('unknown');
+    for (const rs of Object.values(snapshot.route_status)) {
+      expect(rs.condition).toBe('unknown');
+    }
+  });
+
+  test('header-only entities with no selectors trip the floor: routes abstain to unknown', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    // Regression for the codex fixture: a payload of bare header_text entities
+    // with no mercury alert_type and no informed_entity selectors. Nothing is a
+    // readable MTA alert, so the floor must degrade rather than let route A fall
+    // back to its seeded movement 'normal'.
+    fetchState.jsonByUrl.set(FEEDS.alerts, {
+      entity: [
+        { id: 'x1', alert: { header_text: { translation: [{ text: 'Delays' }] } } },
+        { id: 'x2', alert: { header_text: { translation: [{ text: 'Suspended' }] } } },
+      ],
+    });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      route_status: Record<string, { condition: string }>;
+    };
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(true);
+    expect(snapshot.route_status['A']!.condition).toBe('unknown');
+  });
+
+  test('a feed of only station-scoped notices is NOT degraded: flag false, movement condition stands', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    // A valid feed carrying only out-of-scope alerts: an elevator notice names a
+    // stop, not a subway route, so it derives no route snapshot. It is a
+    // recognizable MTA alert, so the floor must NOT trip — this is a normal
+    // quiet system, not schema drift.
+    fetchState.jsonByUrl.set(FEEDS.alerts, {
+      entity: [
+        {
+          id: 'lmm:alert:elev1',
+          alert: {
+            active_period: [{ start: BOUNDARY_AT - 600 }],
+            informed_entity: [{ agency_id: 'MTASBWY', stop_id: 'A24' }],
+            header_text: { translation: [{ text: 'Elevator out at station', language: 'en' }] },
+            'transit_realtime.mercury_alert': { alert_type: 'Elevator' },
+          },
+        },
+      ],
+    });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      route_status: Record<string, { condition: string }>;
+    };
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(false);
+    // Route A keeps its seeded movement 'normal' — no false abstention.
+    expect(snapshot.route_status['A']!.condition).toBe('normal');
+  });
+
+  test('a valid feed of only inactive alerts is NOT degraded: flag false, movement condition stands', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    // A well-formed alert whose active_period ended an hour ago: it parses fine
+    // but deriveRouteSnapshots drops it by active window. This is a valid quiet
+    // feed (planned work published ahead / an alert just cleared), NOT drift —
+    // the floor keys off parse success, so it must not trip.
+    fetchState.jsonByUrl.set(FEEDS.alerts, {
+      entity: [
+        {
+          id: 'lmm:alert:1',
+          alert: {
+            active_period: [{ start: BOUNDARY_AT - 7200, end: BOUNDARY_AT - 3600 }],
+            informed_entity: [
+              {
+                route_id: 'A',
+                'transit_realtime.mercury_entity_selector': {
+                  sort_order: 'MTASBWY:A:30',
+                },
+              },
+            ],
+            header_text: { translation: [{ text: 'Delays on A', language: 'en' }] },
+            'transit_realtime.mercury_alert': { alert_type: 'Delays' },
+          },
+        },
+      ],
+    });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      route_status: Record<string, { condition: string }>;
+    };
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(false);
+    // Route A keeps its seeded movement 'normal' — no false abstention.
+    expect(snapshot.route_status['A']!.condition).toBe('normal');
+  });
+
+  test('a well-formed payload with parseable entities is unchanged: flag false, movement condition stands', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    // Entities present AND recognizable (recognizable > 0): the floor (entities >
+    // 0 && recognizable === 0) must not trip — a healthy feed with an active alert.
+    fetchState.jsonByUrl.set(FEEDS.alerts, {
+      entity: [
+        {
+          id: 'lmm:alert:1',
+          alert: {
+            active_period: [{ start: BOUNDARY_AT - 600 }],
+            informed_entity: [
+              {
+                route_id: 'A',
+                'transit_realtime.mercury_entity_selector': {
+                  sort_order: 'MTASBWY:A:30',
+                },
+              },
+            ],
+            header_text: { translation: [{ text: 'Delays on A', language: 'en' }] },
+            'transit_realtime.mercury_alert': { alert_type: 'Delays' },
+          },
+        },
+      ],
+    });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      alerts: Array<{ id: string }>;
+      route_status: Record<string, { condition: string; condition_source: string }>;
+    };
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(false);
+    // The alert parsed through to the published list.
+    expect(snapshot.alerts.map((x) => x.id)).toContain('lmm:alert:1');
+    // Route A keeps its movement-derived condition — the abstention override is
+    // scoped strictly to the degraded tick.
+    const a = snapshot.route_status['A']!;
+    expect(a.condition).toBe('normal');
+    expect(a.condition_source).toBe('movement');
+  });
+
+  test('mixed recognizable and garbage: NOT degraded, movement condition stands', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    // One real active route alert beside an unrecognizable garbage entity: the
+    // payload plainly still carries MTA alerts (recognizable > 0), so the floor
+    // must not trip. The real alert flows through; route A keeps movement normal.
+    fetchState.jsonByUrl.set(FEEDS.alerts, {
+      entity: [
+        {
+          id: 'lmm:alert:1',
+          alert: {
+            active_period: [{ start: BOUNDARY_AT - 600 }],
+            informed_entity: [
+              {
+                route_id: 'A',
+                'transit_realtime.mercury_entity_selector': {
+                  sort_order: 'MTASBWY:A:30',
+                },
+              },
+            ],
+            header_text: { translation: [{ text: 'Delays on A', language: 'en' }] },
+            'transit_realtime.mercury_alert': { alert_type: 'Delays' },
+          },
+        },
+        { id: 'garbage', alert: { some_new_shape: {} } },
+      ],
+    });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      alerts: Array<{ id: string }>;
+      route_status: Record<string, { condition: string }>;
+    };
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(false);
+    expect(snapshot.alerts.map((x) => x.id)).toContain('lmm:alert:1');
+    expect(snapshot.route_status['A']!.condition).toBe('normal');
+  });
+
+  test('a genuinely empty feed is a real quiet system, not degraded', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedMovementNormalA(store);
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+
+    await runBoundary(env);
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: { alerts_parse_degraded: boolean };
+      route_status: Record<string, { condition: string }>;
+    };
+    expect(snapshot.freshness.alerts_parse_degraded).toBe(false);
+    // No entities to parse is honest quiet: route A still reads its movement
+    // 'normal', never abstained.
+    expect(snapshot.route_status['A']!.condition).toBe('normal');
+  });
+});

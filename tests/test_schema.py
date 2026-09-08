@@ -214,6 +214,15 @@ def test_snapshot_observations_default_empty() -> None:
     assert snap.freshness.vehicle_positions is None
 
 
+def test_freshness_degradation_flags_default_false() -> None:
+    """A healthy snapshot asserts neither degradation flag — the model is
+    trained and the alerts payload parsed. Both flip true only on the specific
+    failure they name (version skew, alerts-schema drift)."""
+    snap = Snapshot(generated_at=0)
+    assert snap.freshness.params_stale is False
+    assert snap.freshness.alerts_parse_degraded is False
+
+
 def test_bridge_with_crossings() -> None:
     bridge = Bridge(
         id="verrazano",

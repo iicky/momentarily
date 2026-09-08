@@ -34,7 +34,7 @@ import {
 } from './archive';
 import { updateStationWait } from './crowding';
 import type { RouteSnapshot } from './derive';
-import { SUBWAY_ROUTES, buildAlertList, deriveRouteSnapshots, quietObservation } from './derive';
+import { SUBWAY_ROUTES, buildAlertList, classifyAlertsPayload, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
 import {
   FEEDS,
@@ -551,6 +551,35 @@ export default {
     if (alertsPayload !== null) {
       routeSnapshots = deriveRouteSnapshots(alertsPayload, observedAt);
     }
+    // System-wide sanity floor. A soft-parse drift — an MTA alerts-schema change
+    // that structurally breaks the alert shape without throwing — would otherwise
+    // let every route fall through to quietObs (good service) and buildAlertList
+    // yield [], asserting a calm system during a real disruption with generated_at
+    // fresh. Trip when the fetch round-tripped and the payload carried entities
+    // but NOT ONE is structurally recognizable as an MTA alert (id + an alert
+    // object with a header_text or the mercury alert_type) — nothing in the
+    // payload looks like an MTA alert at all.
+    //
+    // Keyed on structural recognizability, NOT on how many routes derived: a
+    // valid GTFS-RT feed routinely carries only station-scoped notices (an
+    // elevator/escalator alert names a stop, not a subway route) or only planned
+    // work whose active_period is future/expired. Those are recognizable alerts
+    // that simply produce no active subway route, so the feed reads quiet — never
+    // a false system-wide degradation. Also DISTINCT from a genuinely empty feed
+    // (no entities = a real quiet system), which leaves the normal path untouched.
+    let alertsParseDegraded = false;
+    if (alertsPayload !== null) {
+      const health = classifyAlertsPayload(alertsPayload);
+      const recognizable = health.recognizedInScope + health.recognizedOutOfScope;
+      alertsParseDegraded = health.entities > 0 && recognizable === 0;
+      if (alertsParseDegraded) {
+        console.error(
+          `alerts payload carried ${health.entities} entities but none were ` +
+            'recognizable MTA alerts; abstaining every route and flagging ' +
+            'freshness.alerts_parse_degraded',
+        );
+      }
+    }
     step('4a-derive');
 
     // Routes to run inference for: union of (observed this tick, previously
@@ -565,8 +594,13 @@ export default {
       ...knownRouteIds,
       ...(alertsPayload !== null ? SUBWAY_ROUTES : []),
     ]);
+    // On a parse-degraded tick every route falls here (routeSnapshots is empty),
+    // so quietObs is forced null — routes take the feed-gap path (obs=null →
+    // published condition 'unknown') instead of asserting good service.
     const quietObs: Observation | null =
-      alertsPayload !== null ? quietObservation(observedAt) : null;
+      alertsPayload !== null && !alertsParseDegraded
+        ? quietObservation(observedAt)
+        : null;
     // The trip counts the binomial movement channel was actually evaluated at
     // this tick, for the grading stream. The posterior saturates (journal
     // 2026-08-23) and this is the only channel whose log-likelihood scales with
@@ -735,6 +769,10 @@ export default {
           // publishes on bootstrap params, and this flag surfaces the skew as
           // freshness.params_stale so a consumer can see the model is stale.
           paramsSchemaMismatch: paramsLoad.schemaMismatch,
+          // Entities present but none parsed (alerts-schema drift): routes were
+          // abstained above via the forced-null quietObs; this raises
+          // freshness.alerts_parse_degraded so a consumer can see why.
+          alertsParseDegraded,
           tickSeconds: TICK_SECONDS,
           stationStatuses: lastSeen.station_statuses,
           eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,

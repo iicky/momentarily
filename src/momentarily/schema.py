@@ -495,6 +495,15 @@ class Freshness(BaseModel):
     # tell a fully-trained snapshot from one degraded by version skew. False in
     # every healthy tick and whenever params.json is simply absent.
     params_stale: bool = False
+    # True when the alerts fetch round-tripped and the payload carried entities,
+    # but not one was structurally recognizable as an MTA alert (an id plus an
+    # alert object carrying a header_text or the mercury alert_type) — an MTA
+    # alerts-schema drift that would otherwise let every route fall through to
+    # good service and assert a calm system during a real disruption. The tick
+    # abstains: routes publish condition unknown instead of normal. False on a
+    # genuinely empty feed (no entities) and on a valid feed carrying only
+    # out-of-scope notices (e.g. station elevator alerts) or inactive alerts.
+    alerts_parse_degraded: bool = False
 
 
 class CompatRouteSummary(BaseModel):

@@ -229,6 +229,15 @@ interface Freshness {
   // to tell a fully-trained snapshot from one degraded by version skew. False
   // in every healthy tick and whenever params.json is simply absent.
   params_stale: boolean;
+  // True when the alerts fetch round-tripped and the payload carried entities,
+  // but not one was structurally recognizable as an MTA alert (an id plus an
+  // alert object carrying a header_text or the mercury alert_type) — an MTA
+  // alerts-schema drift that would otherwise let every route fall through to
+  // good service and assert a calm system during a real disruption. The tick
+  // abstains: routes publish condition unknown instead of normal. False on a
+  // genuinely empty feed (no entities) and on a valid feed carrying only
+  // out-of-scope notices (e.g. station elevator alerts) or inactive alerts.
+  alerts_parse_degraded: boolean;
 }
 
 interface Accessibility {
@@ -478,6 +487,10 @@ export function buildSnapshot(args: {
    * read (deploy skew): the tick runs on bootstrap params and this raises
    * freshness.params_stale so consumers can see the model is stale. */
   paramsSchemaMismatch?: boolean;
+  /** True when the alerts payload carried entities but not one was structurally
+   * recognizable as an MTA alert (MTA alerts-schema drift): the tick abstains
+   * rather than assert good service, raising freshness.alerts_parse_degraded. */
+  alertsParseDegraded?: boolean;
   tickSeconds: number;
   /** Cached station_status, refreshed on hourly E&E fetches. Empty when
    * E&E hasn't been parsed yet (e.g. before the first hourly tick after
@@ -658,6 +671,7 @@ export function buildSnapshot(args: {
           snap?.observation.alert_count ?? 0,
           schedule,
           movementRegime,
+          args.alertsParseDegraded ?? false,
         )
       : null;
 
@@ -673,7 +687,11 @@ export function buildSnapshot(args: {
       condition,
       source: condition_source,
       entered_at: condition_entered_at,
-    } = resolvePublishedCondition(schedule, movementRegime);
+    } = resolvePublishedCondition(
+      schedule,
+      movementRegime,
+      args.alertsParseDegraded ?? false,
+    );
     const serviceRatio = movementStates?.service_ratios?.[routeId] ?? null;
     const serviceLowRatio =
       movementStates?.service_quantile_ratios?.[routeId]?.low ?? null;
@@ -736,6 +754,7 @@ export function buildSnapshot(args: {
       stations_static: args.stationsStaticFreshness ?? null,
       vehicle_positions: args.vehiclePositionsFreshness ?? null,
       params_stale: args.paramsSchemaMismatch ?? false,
+      alerts_parse_degraded: args.alertsParseDegraded ?? false,
     },
     alerts: args.alerts ?? [],
     observations,
@@ -960,7 +979,19 @@ type ConditionSource = "schedule" | "movement" | "unknown";
 function resolvePublishedCondition(
   schedule: ScheduleFacts,
   movementRegime: MovementRegime | null,
+  alertsParseDegraded: boolean,
 ): { condition: string; source: ConditionSource; entered_at: number | null } {
+  // The alerts payload carried entities but none were recognizable MTA alerts
+  // (alerts-schema drift): the alerts channel that drives labels, categories and
+  // the not_scheduled arm is untrustworthy this tick, so no route may assert a
+  // condition off it. We
+  // abstain uniformly to 'unknown' rather than let a route read normal — the one
+  // failure that actively misleads riders. Deliberately supersedes even a
+  // movement read: a tick that mixes abstained and asserted routes under a
+  // degraded flag is harder to reason about than a uniform honest abstention,
+  // and the movement channel republishes its regime the moment the feed recovers.
+  if (alertsParseDegraded)
+    return { condition: "unknown", source: "unknown", entered_at: null };
   if (schedule.isNotScheduled)
     return { condition: "not_scheduled", source: "schedule", entered_at: null };
   if (movementRegime !== null) {
@@ -999,6 +1030,7 @@ function buildInference(
   disruptiveAlertCount: number,
   schedule: ScheduleFacts,
   movementRegime: MovementRegime | null,
+  alertsParseDegraded: boolean,
 ): Inference {
   const probs = roll.filter.probabilities;
   const params = paramsForRoute(trained, routeId);
@@ -1047,6 +1079,7 @@ function buildInference(
   const publishedCondition = resolvePublishedCondition(
     schedule,
     movementRegime,
+    alertsParseDegraded,
   ).condition;
 
   // Whether "when is it back" is even a question for this route. Published

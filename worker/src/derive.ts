@@ -170,6 +170,117 @@ export function deriveRouteSnapshots(
   return out;
 }
 
+/**
+ * Classify every entity in the alerts payload into one of three per-entity
+ * classes, for the system-wide sanity floor in index.ts step 4a:
+ *
+ *   - recognizedInScope    a structurally recognizable MTA alert that names a
+ *                          canonical subway route in its informed_entity.
+ *   - recognizedOutOfScope a structurally recognizable MTA alert that names NO
+ *                          subway route — a station-scoped elevator/escalator
+ *                          notice, an agency-wide notice, a non-subway alert.
+ *   - unrecognizable       nothing that looks like an MTA alert at all.
+ *
+ * "Structurally recognizable" is an id plus an alert object carrying a
+ * header_text OR the mercury alert_type — the fields the MTA schema always
+ * carries — regardless of whether the alert is active or names a route.
+ *
+ * The gate degrades only when entities > 0 and recognizedInScope +
+ * recognizedOutOfScope === 0 — the payload carried content but nothing in it
+ * looks like an MTA alert at all, the structural schema break the flag exists to
+ * catch. A feed of only out-of-scope notices, or only planned work whose
+ * active_period is future/expired, is recognizable and reads as a quiet system,
+ * never drift; only a genuinely unreadable payload abstains.
+ */
+export function classifyAlertsPayload(alertsPayload: unknown): {
+  entities: number;
+  recognizedInScope: number;
+  recognizedOutOfScope: number;
+  unrecognizable: number;
+} {
+  const entities = extractEntities(alertsPayload);
+  let recognizedInScope = 0;
+  let recognizedOutOfScope = 0;
+  let unrecognizable = 0;
+  for (const entity of entities) {
+    if (!isRecognizableAlert(entity)) {
+      unrecognizable += 1;
+    } else if (namesSubwayRoute(entity)) {
+      recognizedInScope += 1;
+    } else {
+      recognizedOutOfScope += 1;
+    }
+  }
+  return { entities: entities.length, recognizedInScope, recognizedOutOfScope, unrecognizable };
+}
+
+/**
+ * Whether an entity is structurally an MTA GTFS-RT alert, regardless of route
+ * scope. Two arms, each looser than parseAlertEntity (which also demands a subway
+ * route and an active window) so a route-less station notice still reads as an
+ * alert:
+ *   - the mercury alert_type is present — the alert-semantic marker the MTA
+ *     schema always carries; sufficient on its own (a station elevator notice
+ *     has it), so a genuine out-of-scope notice is never mistaken for drift.
+ *   - OR a header_text AND a validated informed_entity selector list (an array
+ *     with a route_id or stop_id). The selector requirement is what stops a bare
+ *     header_text with no alert body and no selectors — a drift that stripped the
+ *     alert down to nothing readable — from being blessed as a healthy alert and
+ *     suppressing the degraded flag.
+ * namesSubwayRoute then splits recognizable entities into in-scope / out-of-scope.
+ */
+function isRecognizableAlert(entity: unknown): boolean {
+  if (!entity || typeof entity !== 'object') return false;
+  const id = (entity as { id?: unknown }).id;
+  if (typeof id !== 'string') return false;
+  const inner = (entity as { alert?: unknown }).alert;
+  if (!inner || typeof inner !== 'object') return false;
+  const mercury = (inner as { 'transit_realtime.mercury_alert'?: unknown })[
+    'transit_realtime.mercury_alert'
+  ];
+  if (
+    !!mercury &&
+    typeof mercury === 'object' &&
+    typeof (mercury as { alert_type?: unknown }).alert_type === 'string'
+  ) {
+    return true;
+  }
+  const header = (inner as { header_text?: unknown }).header_text;
+  return !!header && typeof header === 'object' && hasSelectorList(inner);
+}
+
+/** Whether an alert object carries a validated informed_entity selector list —
+ * a non-empty array with at least one entry naming a route_id or a stop_id. A
+ * header_text alone, with no selectors, is not enough to call an entity an
+ * alert. */
+function hasSelectorList(inner: object): boolean {
+  const list = (inner as { informed_entity?: unknown }).informed_entity;
+  if (!Array.isArray(list)) return false;
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const routeId = (e as { route_id?: unknown }).route_id;
+    const stopId = (e as { stop_id?: unknown }).stop_id;
+    if (typeof routeId === 'string' || typeof stopId === 'string') return true;
+  }
+  return false;
+}
+
+/** Whether a recognizable alert names at least one canonical subway route in its
+ * informed_entity — the in-scope vs out-of-scope split. A station notice selects
+ * a stop_id, never a route_id, so it reads out of scope. */
+function namesSubwayRoute(entity: unknown): boolean {
+  const inner = (entity as { alert?: unknown }).alert;
+  if (!inner || typeof inner !== 'object') return false;
+  const list = (inner as { informed_entity?: unknown }).informed_entity;
+  if (!Array.isArray(list)) return false;
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const routeId = (e as { route_id?: unknown }).route_id;
+    if (typeof routeId === 'string' && SUBWAY_ROUTES.includes(routeId)) return true;
+  }
+  return false;
+}
+
 /** A full Alert object for the snapshot's top-level `alerts` array — the atomic
  * unit consumers resolve the IDs in route_status/station_status against. */
 export interface AlertOut {

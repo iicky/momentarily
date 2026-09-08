@@ -504,6 +504,11 @@
     "Freshness": {
       "description": "When each upstream source was last successfully fetched (epoch seconds).",
       "properties": {
+        "alerts_parse_degraded": {
+          "default": false,
+          "title": "Alerts Parse Degraded",
+          "type": "boolean"
+        },
         "bus_alerts": {
           "anyOf": [
             {

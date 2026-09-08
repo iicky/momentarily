@@ -68,19 +68,20 @@ def test_exact_boundary_is_kept() -> None:
     assert expired["v1/predictions/"] == []
 
 
-def test_trace_prefix_uses_its_own_narrower_window() -> None:
-    # archive/trace/ retains 30d, well short of the other dated prefixes'
-    # 90d, because at ~125 MB/day it is two orders of magnitude bigger. A
-    # 40d-old object only expires here if the prefix's own 30d window is in
-    # effect — it would still be within any of the 90d windows.
+def test_trace_prefix_uses_its_own_wider_window() -> None:
+    # archive/trace/ retains 120d, wider than the other dated prefixes' 90d,
+    # because size stopped being the constraint and the window is the ceiling
+    # on how much stop-level history a model can be evaluated on. A 100d-old
+    # object is kept here even though it would expire under any 90d window;
+    # only past 120d does it expire.
     client = _FakeClient(
         [
-            "archive/trace/2026-05-02/1000.json",  # 40d old → expired at 30d
-            "archive/trace/2026-06-06/2000.json",  # 5d old → kept
+            "archive/trace/2026-02-01/1000.json",  # 130d old → expired at 120d
+            "archive/trace/2026-03-03/2000.json",  # 100d old → kept (past 90d)
         ]
     )
     expired = collect_expired(client, "b", NOW)  # type: ignore[arg-type]
-    assert expired["archive/trace/"] == ["archive/trace/2026-05-02/1000.json"]
+    assert expired["archive/trace/"] == ["archive/trace/2026-02-01/1000.json"]
 
 
 def test_long_window_archives_are_policed() -> None:

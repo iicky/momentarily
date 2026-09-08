@@ -30,6 +30,7 @@ from training.load_r2 import (
 from training.prov import ArtifactFacts, FeedFacts
 from training.r2_client import R2Config
 from training.train_em import (
+    DWELL_WINDOW_DAYS,
     MAX_SELF_LOOP,
     MIN_DATA_DAYS,
     PARAMS_KEY,
@@ -1501,6 +1502,139 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     causes = by_cause["R1"]["disrupted"]
     assert len(causes) == 1
     assert next(iter(causes.values()))["n"] == 6
+
+
+def _disrupted_tr(
+    dwell_sec: int, ts: int, alert_type: str = "Delays"
+) -> TransitionRecord:
+    return TransitionRecord(
+        ts=ts,
+        route="R1",
+        prev_state="disrupted",
+        new_state="normal",
+        regime_entered_at=ts - dwell_sec,
+        exited_at=ts,
+        dwell_sec=dwell_sec,
+        alert_type_at_entry=alert_type,
+    )
+
+
+def test_main_fits_dwell_quantiles_and_by_cause_on_the_wider_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dwell_quantiles and dwell_quantiles_by_cause are fitted over
+    DWELL_WINDOW_DAYS of regime_transitions, wider than the 14d
+    transition/emission window the alert corpus is loaded over. The wider window
+    is what un-pins recover_by_120 on a thin short-tailed cell: it captures a
+    long severe incident the 14d window misses. dwell_quantiles_by_alert (the
+    Worker's serve-time lookup) and the pooled `normal` cells are NOT part of the
+    recover-by grade and stay on the narrow window; the alert corpus
+    (input_blake3's manifest) stays narrow too."""
+    cfg = _r2_config()
+    fake_client = cast("S3Client", _FakeS3())
+    series = {"R1": _quiet(10)}
+    corpus = CorpusStats(
+        start_tick=0, end_tick=MIN_DATA_DAYS * 86_400 + 1, n_observations=10
+    )
+    # 6 short (5-min) disrupted regimes fall in the 14d window; two 6-hour severe
+    # incidents only appear once the window widens to DWELL_WINDOW_DAYS. On the
+    # narrow window every dwell is under 120min so recover_by_120 pins at 1.0.
+    narrow = [_disrupted_tr(300, ts=1_000_000 + 10_000 * i) for i in range(6)]
+    wide = narrow + [_disrupted_tr(21_600, ts=500_000 + 5_000 * i) for i in range(2)]
+    dwell_start = date(2026, 6, 14) - timedelta(days=DWELL_WINDOW_DAYS - 1)
+    series_windows: list[tuple[date, date]] = []
+    transition_windows: list[tuple[date, date]] = []
+    prediction_windows: list[tuple[date, date]] = []
+    captured: dict[str, Any] = {}
+
+    def _fake_load_config() -> R2Config:
+        return cfg
+
+    def _fake_make_client(config: R2Config | None = None) -> S3Client:
+        return fake_client
+
+    def _fake_load_series_by_route(
+        cfg_arg: R2Config, start: date, end: date, **_: object
+    ) -> tuple[dict[str, list[Observation]], CorpusStats, dict[str, Any]]:
+        series_windows.append((start, end))
+        return series, corpus, {}
+
+    def _fake_load_transitions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[TransitionRecord]:
+        transition_windows.append((start_date, end_date))
+        # The dwell read reaches back to dwell_start and so sees the long
+        # incidents; every other (narrower) read sees only the short regimes.
+        return wide if start_date <= dwell_start else narrow
+
+    def _fake_load_predictions(
+        client: S3Client, bucket: str, start_date: date, end_date: date
+    ) -> list[PredictionRecord]:
+        prediction_windows.append((start_date, end_date))
+        return []
+
+    def _fake_movement_baseline(
+        cfg_arg: R2Config,
+        client: S3Client,
+        start_date: date,
+        end_date: date,
+        through: frozenset[tuple[str, str, str]] | None,
+    ) -> MovementInputs:
+        return MovementInputs({}, 0, {}, set(), {})
+
+    def _fake_write_params(*args: Any, **kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "state/params/v1.json"
+
+    monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
+    monkeypatch.setattr(
+        "training.train_em._static_topology",
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+    )
+    monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
+    monkeypatch.setattr(
+        "training.train_em.load_series_by_route", _fake_load_series_by_route
+    )
+    monkeypatch.setattr("training.eval.load_transitions", _fake_load_transitions)
+    monkeypatch.setattr("training.eval.load_predictions", _fake_load_predictions)
+    monkeypatch.setattr("training.train_em._movement_baseline", _fake_movement_baseline)
+    monkeypatch.setattr("training.train_em.write_params", _fake_write_params)
+
+    exit_code = main(
+        [
+            "--days",
+            "14",
+            "--end",
+            "2026-06-14",
+            "--allow-empty-baseline",
+            "--skip-plausibility",
+        ]
+    )
+    assert exit_code == 0
+    # Alert/vehicle corpus (fingerprinted by input_blake3): the 14d window.
+    assert series_windows == [(date(2026, 6, 1), date(2026, 6, 14))]
+    assert captured["hyperparams"]["window_start"] == "2026-06-01"
+    # The dwell read spans at least DWELL_WINDOW_DAYS and ends on --end.
+    assert (dwell_start, date(2026, 6, 14)) in transition_windows
+    assert (dwell_start, date(2026, 6, 14)) in prediction_windows
+    assert (date(2026, 6, 14) - dwell_start).days + 1 >= DWELL_WINDOW_DAYS
+    assert captured["hyperparams"]["dwell_window_start"] == dwell_start.isoformat()
+    # dwell_quantiles + by_cause saw the long incidents (wide window): the cell
+    # reaches past 120min so recover_by_120 comes off 1.0.
+    disrupted = captured["dwell_quantiles"]["R1"]["disrupted"]
+    assert disrupted["curve_sec"][-1] == 21_600
+    assert disrupted["recover_by_120"] < 1.0
+    cause_cell = next(
+        iter(captured["dwell_quantiles_by_cause"]["R1"]["disrupted"].values())
+    )
+    assert cause_cell["curve_sec"][-1] == 21_600
+    assert cause_cell["recover_by_120"] < 1.0
+    # by_alert stayed on the narrow window: only the short regimes, still pinned.
+    alert_cell = next(
+        iter(captured["dwell_quantiles_by_alert"]["R1"]["disrupted"].values())
+    )
+    assert alert_cell["curve_sec"][-1] == 300
+    assert alert_cell["recover_by_120"] == 1.0
 
 
 def _movement_tr(

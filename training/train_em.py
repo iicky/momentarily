@@ -54,6 +54,7 @@ from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, LEGACY_SEVERITY_FLOOR
 from training.drift import build_input_profile
 from training.dwell import (
     DwellQuantiles,
+    OpenRegimes,
     compute_dwell_quantiles,
     compute_dwell_quantiles_by_alert,
     compute_dwell_quantiles_by_cause,
@@ -1226,6 +1227,22 @@ VERSIONED_SERVICE_PREFIX = "state/service_baseline/"
 # the same sidecar.
 SERVICE_SIDECAR_WINDOW_DAYS = 35
 
+# Trailing window for fitting the empirical dwell quantiles (dwell_quantiles,
+# dwell_quantiles_by_alert, dwell_quantiles_by_cause and the pooled `normal`
+# cells), deliberately wider than the 14d transition/emission window. The HMM
+# transition/emission fit stays on --days because its self-loops describe the
+# CURRENT regime persistence; the dwell curves are graded on recover-by-H and
+# need the rare long severe incidents to be represented, which a 14d window is
+# too short to hold — thin (n=5-15), short-tailed disrupted cells with
+# curve_max well under 120min pin recover_by_120 at 1.0 near-permanently,
+# regardless of shape. Mirrors SERVICE_SIDECAR_WINDOW_DAYS's 35d = 5 weekends
+# so severe weekend incidents land in the fit, and stays inside archive
+# retention. This only widens the regime_transitions/predictions read, which is
+# NOT part of training_corpus.input_blake3 (INPUT_MANIFEST_VERSION covers the
+# alert + vehicle archive keys only), so no manifest bump is needed; the
+# resolved dwell window is recorded in hyperparams instead.
+DWELL_WINDOW_DAYS = SERVICE_SIDECAR_WINDOW_DAYS
+
 
 def write_service_baseline(
     client: S3Client,
@@ -2280,27 +2297,37 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
         return 0
 
-    # Empirical dwell quantiles from the regime_transitions stream over the
-    # same window. Cells below MIN_SAMPLES_FOR_EMPIRICAL fall back to the
-    # geometric dwell in the Worker — no-op if the stream is empty.
+    # Empirical dwell quantiles from the regime_transitions stream. Cells below
+    # MIN_SAMPLES_FOR_EMPIRICAL fall back to the geometric dwell in the Worker —
+    # no-op if the stream is empty.
     #
-    # `normal` is the exception: its cells come from the partially-pooled
-    # estimator instead, for every route and with no min-samples gate. A route
-    # only completes a normal regime by leaving normal, so that gate admits the
-    # flappiest routes and drops the steadiest ones onto a memoryless geometric
-    # projection. See training/pooled_dwell.py.
+    # Two windows are read here. compute_dwell_quantiles (the per-(route,state)
+    # aggregate) and compute_dwell_quantiles_by_cause (the cause-category cells
+    # the episode-recovery grader scores) are fitted over DWELL_WINDOW_DAYS, wider
+    # than the 14d transition/emission window, so the rare long severe incidents
+    # are represented and recover-by-H stops pinning at 1.0 on thin short-tailed
+    # cells. Everything else stays on the transition/emission window:
+    # compute_dwell_quantiles_by_alert (the Worker's serve-time (route, state,
+    # alert_type) lookup) and the pooled `normal` cells are NOT part of the
+    # recover-by grade, so they keep the 14d corpus rather than silently widening.
+    #
+    # `normal` is the exception to the min-samples gate: its cells come from the
+    # partially-pooled estimator instead, for every route and with no floor. A
+    # route only completes a normal regime by leaving normal, so that gate admits
+    # the flappiest routes and drops the steadiest ones onto a memoryless
+    # geometric projection. See training/pooled_dwell.py.
     from training.eval import (
         load_predictions,
         load_transitions,
         open_regimes_from_predictions,
     )
 
-    transitions = load_transitions(client, cfg.bucket, start_date, end_date)
     # Censoring boundary for still-open regimes: "now", clamped to the
     # requested window so a backdated --end doesn't fabricate giant censored
     # durations from regimes that actually ended after the window.
     _, end_epoch = _aligned_window(start_date, end_date)
     window_end = min(int(datetime.now(UTC).timestamp()), end_epoch)
+
     # Still-open regimes come from the prediction stream, not from the last
     # transition record. A route with no transitions in the window has no
     # transition to read a regime off, so inferring from transitions alone drops
@@ -2309,24 +2336,44 @@ def main(argv: Iterable[str] | None = None) -> int:
     # None when the prediction stream is unavailable, which falls the censoring
     # back to transition inference: degraded and blind to the quiet routes, but
     # better than dropping every censored observation on the floor.
-    open_regimes = (
-        open_regimes_from_predictions(
-            load_predictions(client, cfg.bucket, start_date, end_date),
-            window_end=window_end,
+    def _open_regimes(win_start: date) -> OpenRegimes | None:
+        return (
+            open_regimes_from_predictions(
+                load_predictions(client, cfg.bucket, win_start, end_date),
+                window_end=window_end,
+            )
+            or None
         )
-        or None
-    )
+
+    transitions = load_transitions(client, cfg.bucket, start_date, end_date)
+    open_regimes = _open_regimes(start_date)
+
+    # Trailing dwell window: at least DWELL_WINDOW_DAYS, but honour an explicit
+    # --start that already reaches further back. Only the regime_transitions and
+    # prediction reads for the aggregate/by-cause fits widen; the alert/vehicle
+    # corpus (which input_blake3 fingerprints) is untouched, so the manifest hash
+    # still covers exactly the 14d transition/emission window.
+    dwell_start_date = min(start_date, end_date - timedelta(days=DWELL_WINDOW_DAYS - 1))
+    if dwell_start_date < start_date:
+        dwell_transitions = load_transitions(
+            client, cfg.bucket, dwell_start_date, end_date
+        )
+        dwell_open_regimes = _open_regimes(dwell_start_date)
+    else:
+        dwell_transitions = transitions
+        dwell_open_regimes = open_regimes
+
     dwell_q = compute_dwell_quantiles(
-        transitions,
+        dwell_transitions,
         window_end=window_end,
         tail_fn=loglogistic_tail,
-        open_regimes=open_regimes,
+        open_regimes=dwell_open_regimes,
     )
     dwell_q_by_alert = compute_dwell_quantiles_by_alert(
         transitions, tail_fn=loglogistic_tail
     )
     dwell_q_by_cause = compute_dwell_quantiles_by_cause(
-        transitions, tail_fn=loglogistic_tail
+        dwell_transitions, tail_fn=loglogistic_tail
     )
     dwell_q_normal = pooled_dwell_cells(
         transitions,
@@ -2416,6 +2463,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     hyperparams = {
         "window_start": start_date.isoformat(),
         "window_end": end_date.isoformat(),
+        # The empirical dwell quantiles are fitted on a wider trailing window
+        # than the transition/emission fit above (see DWELL_WINDOW_DAYS); record
+        # its resolved start so the dwell curves reproduce even though the
+        # regime_transitions read is outside the input_blake3 manifest.
+        "dwell_window_start": dwell_start_date.isoformat(),
         "prior_strength": args.prior_strength,
         "min_ticks": args.min_ticks,
         "routes": sorted(args.routes.split(",")) if args.routes else None,

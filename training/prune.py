@@ -32,13 +32,16 @@ if TYPE_CHECKING:
 DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     ("archive/alerts/", 90),
     ("archive/ene/", 90),
-    # One object/minute, ~85 KB each: ~125 MB/day, ~45.6 GB/year unbounded —
-    # two orders of magnitude more per day than the other prefixes here, so
-    # it does not get their 90-day window. training/traversal.py's baseline
-    # is the only reader and wants a few weeks of history, not a year; 30d
-    # covers that with headroom while keeping steady-state size in the
-    # single-digit GB.
-    ("archive/trace/", 30),
+    # One object/minute, ~85 KB each: ~89.9 MB/day (measured 2026-09-02). The
+    # per-minute per-train census that stop-level timing, observed headways and
+    # traversals are all reconstructed from, so its window is the hard ceiling
+    # on how much stop-level history any model can ever be evaluated on. The
+    # old 30d cap reasoned from size, but at R2 Standard list ($0.015/GB-month)
+    # size no longer decides: 120d is ~10.8 GB (~$0.16/mo), against 2.7 GB at
+    # 30d and 32.8 GB (~$0.49/mo) at a full year. 120d keeps
+    # >=8 weekend nights per (route,direction,hour) cell so the own-cell wait
+    # baseline stops abstaining on weekend cells as a data-window artifact.
+    ("archive/trace/", 120),
     # The DERIVED traversals, kept far longer than the raw trace they come from
     # because they are ~56x smaller (1.5 MB/day gzipped against 81 MB/day,
     # measured 2026-08-15) and are what every downstream measure actually reads.

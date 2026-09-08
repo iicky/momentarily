@@ -9341,3 +9341,47 @@ never matches (silent default to "normal"). Also retired
 test_movement_dwell_grade.py's divergence-documenting test (it pinned
 eval.snap_tick != load_r2._snap_tick, the exact split now removed) and replaced
 it with a positive grid-agreement check.
+
+---
+
+## 2026-09-07 — dwell curves now fit on a 35d window; the recover-by-120 un-pin is only measurable synthetically offline
+
+origin: agent
+
+The 14d HMM window is too short to hold the rare long severe incidents that set
+a disrupted cell's tail: thin (n=5-15) short-tailed cells have curve_max well
+under 120min, so recover_by_120 pins at 1.0 whatever the CDF shape does
+(the shipped gamma warp preserves the p=1 endpoint = max observed dwell, so it
+cannot move the pin). Fix: fit dwell_quantiles and dwell_quantiles_by_cause
+(the two the episode-recovery grader scores) on DWELL_WINDOW_DAYS = 35d of
+regime_transitions, while transition/emission and the serve-time
+dwell_quantiles_by_alert / pooled-normal fits stay on the 14d window. The
+wider read touches only the regime_transitions/predictions streams, which are
+NOT part of training_corpus.input_blake3 (INPUT_MANIFEST_VERSION covers alert +
+vehicle keys only), so no manifest bump; the resolved dwell start is recorded
+in hyperparams.dwell_window_start instead.
+
+Offline magnitude: no fixture carries 35d of live transitions, so the real
+held-out re-grade is not reachable here. The mechanism is measured
+synthetically in test_train_em.py: a disrupted cell of six 300s regimes has
+recover_by_120 = 1.0 and curve_max = 300s on the 14d window; add two 21_600s
+(6h) severe incidents that only the 35d window reaches and the SAME cell moves
+to recover_by_120 = 0.75 (6/8) with curve_max = 21_600s, while the
+narrow-window by_alert cell stays pinned at 1.0 / 300s. That proves the pin is
+a window-length artifact, not a property of the cell. The real recover-by-120
+re-grade on the live 35d archive is the remaining step and is unmeasurable
+offline.
+
+---
+
+## 2026-09-07 — correction: the synthetic dwell-window result only demonstrates the mechanism
+
+origin: agent
+
+Revises the entry directly above. It said the synthetic fixture "proves the pin
+is a window-length artifact, not a property of the cell." That overclaims: the
+1.0 -> 0.75 move (six 300s regimes, then two added 21_600s incidents that only
+the 35d window reaches) shows only that recover_by_120 CAN be pinned purely by a
+short window. A synthetic fixture cannot establish that any live cell's pin has
+that cause. Establishing it needs the held-out recover-by-120 re-grade on the
+live 35d archive, which is unmeasurable offline and remains the next step.

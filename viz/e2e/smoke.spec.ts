@@ -74,3 +74,25 @@ test("nav wraps without clipping at 390px", async ({ page }) => {
   expect(fits.within, "last nav item overflows the nav box").toBe(true);
   expect(fits.h, `last nav item is only ${fits.h}px tall`).toBeGreaterThanOrEqual(40);
 });
+
+// The 2026-09-07 review's front-door findings, asserted against the mocked feed
+// (0 lines disrupted, 26 lines with advisories, train-position freshness live):
+// the banner leads with the disrupted count, alert volume is demoted, no HMM
+// jargon reaches the page, and the freshness strip carries the train dot.
+test("front door reads in rider language", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop only");
+  await installFeedMock(page);
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.locator(".grid").first()).toBeVisible();
+
+  await expect(page.locator(".banner-lead .label")).toHaveText(
+    "No lines disrupted or suspended",
+  );
+  await expect(page.locator(".banner-advisories")).toContainText(
+    "26 lines have advisories",
+  );
+  // No model jargon on the front door — "HMM" stays scoped to /models.
+  await expect(page.locator("body")).not.toContainText("HMM");
+  // The freshness strip gained the train-position dot bound to vehicle_positions.
+  await expect(page.locator(".freshness")).toContainText("Train positions");
+});

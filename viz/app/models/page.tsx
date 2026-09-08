@@ -477,37 +477,6 @@ export default function ModelsPage() {
             trainedAt={data.paramsTrainedAt}
             selfLoopCap={data.paramsSelfLoopCap}
           />
-
-          <h3 className="grp">The supply axis</h3>
-          <p className="grp-note">
-            Everything above grades the flow/condition model. Supply is the second,
-            now load-bearing axis — it catches service collapses (missing trains)
-            that the flow signal is structurally blind to. Its derivation and
-            scorecard are reserved here; the numbers land with the next review
-            regeneration so they come from the fresh scorecard rather than a stale
-            one.
-          </p>
-          <div className="chart-reserved" role="note">
-            <div className="chart-reserved-tag">panel reserved · lands next review</div>
-            <div className="chart-reserved-title">
-              Supply: assigned trains vs. the line&apos;s own baseline
-            </div>
-            <p>
-              The derivation this panel will show, end to end:{" "}
-              <code>assigned_n</code> → the median for that{" "}
-              <code>(route, schedule_bin)</code> cell → their ratio →{" "}
-              <strong>degrade</strong> under 0.5× / <strong>recover</strong> over
-              0.8×, with a 2-tick debounce so a single thin scan doesn&apos;t flip the
-              state.
-            </p>
-            <p>
-              And the honesty rule that makes it trustworthy: a cell with too few
-              nights of history <strong>abstains</strong> — it reads &ldquo;no
-              reading&rdquo; rather than guessing — so a thin weekend cell can&apos;t
-              manufacture a supply collapse. The monitored thresholds and per-line
-              support counts render once the regenerated review supplies them.
-            </p>
-          </div>
         </ChartMetaProvider>
         </ChartErrorBoundary>
       )}

@@ -3,7 +3,8 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Momentarily",
-  description: "Live NYC MTA service status + HMM inference.",
+  description:
+    "Live NYC subway status, inferred from how trains are actually moving.",
   icons: {
     icon: [
       { url: "/brand/favicon.svg", type: "image/svg+xml" },
@@ -14,7 +15,8 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "Momentarily",
-    description: "Live NYC MTA service status + HMM inference.",
+    description:
+      "Live NYC subway status, inferred from how trains are actually moving.",
     images: [{ url: "/brand/og.png", width: 1200, height: 630 }],
   },
 };

@@ -85,7 +85,7 @@ export default function StatusPage() {
         <Nav />
       </div>
       <div className="sub">
-        Live NYC MTA service status + HMM inference ·{" "}
+        Live NYC subway status, inferred from how trains are actually moving ·{" "}
         {snap ? (
           <>
             snapshot {fmtAgo(snap.generated_at, fetchedAt)} · refreshes every 60s
@@ -163,12 +163,25 @@ function ModelTag({ snap }: { snap: Snapshot }) {
 
 function SystemBanner({ snap }: { snap: Snapshot }) {
   const s = snap.system;
+  // lines_disrupted_count is disrupted OR suspended (worker snapshot.ts), so the
+  // headline names both rather than only "disrupted".
+  const stopped = s.lines_disrupted_count;
+  const advisories = s.by_mode.subway?.routes_with_alerts.length ?? 0;
   return (
     <div className="banner">
-      <div className="label">{s.overall_label}</div>
-      <div className="stat">
-        <span className="k">Lines disrupted</span>
-        <span className="v">{s.lines_disrupted_count}</span>
+      <div className="banner-lead">
+        <div className="label">
+          {stopped === 0
+            ? "No lines disrupted or suspended"
+            : `${stopped} ${
+                stopped === 1 ? "line" : "lines"
+              } disrupted or suspended`}
+        </div>
+        <div className="banner-advisories">
+          {advisories === 0
+            ? "No lines have advisories."
+            : `${advisories} ${advisories === 1 ? "line has" : "lines have"} advisories.`}
+        </div>
       </div>
       <div className="stat">
         <span className="k">Most degraded</span>
@@ -190,8 +203,15 @@ function SystemBanner({ snap }: { snap: Snapshot }) {
   );
 }
 
-const FRESH_FIELDS: [keyof Snapshot["freshness"], string][] = [
+// The three timestamp fields that carry an age on the strip. Named explicitly
+// (not every keyof Freshness) so the boolean flags — params_stale,
+// alerts_parse_degraded — stay off the strip and out of the age arithmetic.
+const FRESH_FIELDS: [
+  "subway_alerts" | "vehicle_positions" | "ene",
+  string,
+][] = [
   ["subway_alerts", "Subway alerts"],
+  ["vehicle_positions", "Train positions"],
   ["ene", "Elevators/escalators"],
 ];
 
@@ -267,7 +287,7 @@ function sourceTag(r: RouteStatus): string {
     case "unknown":
       return "no live signal";
     default:
-      return "model · HMM";
+      return "model prediction";
   }
 }
 
@@ -468,7 +488,22 @@ function RouteCard({
   const band = supplyBand(r);
   const runningHigh = isRunningHigh(r);
   return (
-    <div className={`card${selected ? " sel" : ""}`} onClick={onClick}>
+    <div
+      className={`card${selected ? " sel" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-expanded={selected}
+      aria-label={`${routeLabel(snap, r.route_id)} — ${conditionLabel(
+        r.condition,
+      )}. Open details.`}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+    >
       <div className="card-head">
         <span
           className="bullet"
@@ -556,7 +591,9 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
           </div>
         ) : (
           <div className="kv">
-            <span className="k">P(stays normal in 30m)</span>
+            <span className="k" title="P(stays normal in 30m)">
+              chance it keeps running normally for 30 min
+            </span>
             <span className="v">{fmtProb(inf.p_normal_in_30min)}</span>
           </div>
         )}
@@ -623,12 +660,14 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
       <div className="kv">
         <span className="k">Median</span>
         <span className="v">{fmtMinutes(inf.recovery_minutes)}</span>
-        <span className="k">IQR (25–75%)</span>
+        <span className="k" title="IQR (25–75%)">likely range</span>
         <span className="v">
           {fmtMinutes(inf.recovery_minutes_low)} –{" "}
           {fmtMinutes(inf.recovery_minutes_high)}
         </span>
-        <span className="k">P(normal in 30m)</span>
+        <span className="k" title="P(normal in 30m)">
+          chance it is back to normal within 30 min
+        </span>
         {inf.p_normal_in_30min == null ? (
           <span
             className="v muted"
@@ -639,7 +678,9 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
         ) : (
           <span className="v">{fmtProb(inf.p_normal_in_30min)}</span>
         )}
-        <span className="k">P(normal in 60m)</span>
+        <span className="k" title="P(normal in 60m)">
+          chance it is back to normal within 60 min
+        </span>
         {inf.p_normal_in_60min == null ? (
           <span
             className="v muted"
@@ -650,7 +691,9 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
         ) : (
           <span className="v">{fmtProb(inf.p_normal_in_60min)}</span>
         )}
-        <span className="k">P(normal in 120m)</span>
+        <span className="k" title="P(normal in 120m)">
+          chance it is back to normal within 2 hr
+        </span>
         {inf.p_normal_in_120min == null ? (
           <span
             className="v muted"
@@ -688,6 +731,15 @@ function RouteDrawer({
   onClose: () => void;
 }) {
   const inf = r.inference;
+  // Escape closes the drawer, the standard dismissal for an overlay panel. Bound
+  // on the document so it fires no matter where focus sits after opening.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const band = supplyBand(r);
   const { northbound, southbound } = r.by_direction;
   const primaryAlert = r.primary_alert_type ?? "—";
@@ -848,18 +900,20 @@ function RouteDrawer({
             <span className="ps" style={{ width: `${inf.p_suspended * 100}%` }} />
           </div>
           <div className="kv">
-            <span className="k">P(normal)</span>
+            <span className="k" title="P(normal)">chance normal now</span>
             <span className="v">{fmtProb(inf.p_normal)}</span>
-            <span className="k">P(disrupted)</span>
+            <span className="k" title="P(disrupted)">chance disrupted now</span>
             <span className="v">{fmtProb(inf.p_disrupted)}</span>
-            <span className="k">P(suspended)</span>
+            <span className="k" title="P(suspended)">chance suspended now</span>
             <span className="v">{fmtProb(inf.p_suspended)}</span>
             {/* This clock belongs to the model above: it restarts whenever the
                 model's top state changes, which is often. The badge runs on the
                 movement arm's own clock, so the label has to say whose age this
                 is — swapping in the movement clock would leave this section
                 timing a regime it does not show. */}
-            <span className="k">Model regime age</span>
+            <span className="k" title="Model regime age">
+              how long this reading has held
+            </span>
             <span className="v">
               {fmtMinutes(inf.regime_age_seconds / 60)}
             </span>

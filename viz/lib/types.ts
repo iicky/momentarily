@@ -96,6 +96,12 @@ export interface Freshness {
   ferry_alerts: number | null;
   ene: number | null;
   stations_static: number | null;
+  // Fields the schema defines with a default and no `required` entry, so they
+  // are optional on the wire. vehicle_positions is a timestamp; the two booleans
+  // are flags (alerts parse ran degraded; live params are stale vs the trained set).
+  vehicle_positions?: number | null;
+  alerts_parse_degraded?: boolean;
+  params_stale?: boolean;
 }
 
 export interface SystemStatus {

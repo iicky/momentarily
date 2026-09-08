@@ -42,7 +42,7 @@ jobs:
       # attempt; the check ignores it when its payload run_id matches this run (a
       # same-run re-run restore). No checkout needed (this job has none).
       - name: Restore previous vehicle_feeds staleness observation
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/vehicle_feeds_stale.json
           key: vehicle-feeds-stale-${{ github.run_id }}-${{ github.run_attempt }}

@@ -115,7 +115,11 @@ export function stateColor(state: string): string {
 function quantile(sorted: number[], q: number): number {
   if (!sorted.length) return 0;
   const i = Math.min(sorted.length - 1, Math.floor(q * sorted.length));
-  return sorted[i];
+  const v = sorted[i];
+  if (v === undefined) {
+    throw new Error(`quantile: index ${i} out of range (len ${sorted.length})`);
+  }
+  return v;
 }
 
 // Quantile of an unsorted array (sorts a copy). Returns NaN on empty input so
@@ -124,7 +128,11 @@ function quant(xs: number[], q: number): number {
   if (!xs.length) return NaN;
   const s = [...xs].sort((a, b) => a - b);
   const i = Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))));
-  return s[i];
+  const v = s[i];
+  if (v === undefined) {
+    throw new Error(`quant: index ${i} out of range (len ${s.length})`);
+  }
+  return v;
 }
 
 interface Bin {
@@ -153,7 +161,11 @@ function binBy(
   for (const p of points) {
     const v = value(p);
     if (v < 0 || v > domainMax) continue;
-    bins[Math.min(nBins - 1, Math.floor(v / w))].pts.push(p);
+    const bin = bins[Math.min(nBins - 1, Math.floor(v / w))];
+    if (bin === undefined) {
+      throw new Error(`binBy: bin index out of range for value ${v}`);
+    }
+    bin.pts.push(p);
   }
   return bins;
 }
@@ -298,7 +310,7 @@ function ArmScore({ arm }: { arm: ReliabilityArm }) {
         )}
         {arm.unknownShare != null && arm.unknownShare > 0 && (
           <Chip
-            tone={arm.unknownShare > 0.1 ? "warn" : undefined}
+            {...(arm.unknownShare > 0.1 ? { tone: "warn" as const } : {})}
             title="ticks this arm had no reading for; dropped rather than scored as calm, so the graded n is a slice of the window"
           >
             {arm.unknownShare > 0.1 ? "⚠ " : ""}
@@ -380,7 +392,7 @@ export function RecoveryScatter({
         unit: "per-forecast",
         n: result.n,
         excluded: result.excludedSchedule,
-        note: capped ? "scatter downsampled" : undefined,
+        ...(capped ? { note: "scatter downsampled" } : {}),
       }}
       legend={[
         { color: "var(--normal)", label: "inside IQR", shape: "dot" },
@@ -857,11 +869,17 @@ function stepArea(
   let d = "";
   for (let i = 0; i < run.length; i++) {
     const b = run[i];
+    if (b === undefined) {
+      throw new Error(`stepArea: bucket ${i} out of range (len ${run.length})`);
+    }
     const y = svgPx(sy(hi(b)));
     d += `${i === 0 ? "M" : "L"}${svgPx(sx(b.t))},${y}L${svgPx(sx(b.t + bucketSec))},${y}`;
   }
   for (let i = run.length - 1; i >= 0; i--) {
     const b = run[i];
+    if (b === undefined) {
+      throw new Error(`stepArea: bucket ${i} out of range (len ${run.length})`);
+    }
     const y = svgPx(sy(lo(b)));
     d += `L${svgPx(sx(b.t + bucketSec))},${y}L${svgPx(sx(b.t))},${y}`;
   }
@@ -880,13 +898,20 @@ function bucketAt(
   let found = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (buckets[mid].t <= t) {
+    const bm = buckets[mid];
+    if (bm === undefined) {
+      throw new Error(`bucketAt: index ${mid} out of range (len ${buckets.length})`);
+    }
+    if (bm.t <= t) {
       found = mid;
       lo = mid + 1;
     } else hi = mid - 1;
   }
   if (found < 0) return null;
   const b = buckets[found];
+  if (b === undefined) {
+    throw new Error(`bucketAt: found index ${found} out of range (len ${buckets.length})`);
+  }
   return t < b.t + bucketSec ? b : null;
 }
 
@@ -1068,7 +1093,11 @@ function histogram(values: number[], lo: number, hi: number, bins: number): numb
   const span = hi - lo || 1;
   for (const v of values) {
     const idx = Math.min(bins - 1, Math.max(0, Math.floor(((v - lo) / span) * bins)));
-    counts[idx] += 1;
+    const c = counts[idx];
+    if (c === undefined) {
+      throw new Error(`histogram: bin ${idx} out of range (bins ${bins})`);
+    }
+    counts[idx] = c + 1;
   }
   return counts;
 }
@@ -1478,13 +1507,19 @@ export function DriftPanel({
           meta={{
             source: "alert_count vs training profile",
             unit: "per (line × time-of-day) cell",
-            n: e.cells_scored,
-            note: e.cells_skipped_thin
-              ? `${e.cells_skipped_thin} thin skipped`
-              : undefined,
-            extra: trainedStr ? (
-              <span className="chart-chip chart-chip-muted">trained {trainedStr}</span>
-            ) : undefined,
+            ...(e.cells_scored !== undefined ? { n: e.cells_scored } : {}),
+            ...(e.cells_skipped_thin
+              ? { note: `${e.cells_skipped_thin} thin skipped` }
+              : {}),
+            ...(trainedStr
+              ? {
+                  extra: (
+                    <span className="chart-chip chart-chip-muted">
+                      trained {trainedStr}
+                    </span>
+                  ),
+                }
+              : {}),
           }}
         >
           {!e.available ? (
@@ -1587,11 +1622,16 @@ export function TransitionHeatmaps({
   for (const e of entries)
     for (let r = 0; r < k; r++)
       for (let c = 0; c < k; c++)
-        if (r !== c)
+        if (r !== c) {
+          const bcell = baseline[r]?.[c];
+          if (bcell === undefined) {
+            throw new Error(`transition heatmap: baseline cell [${r}][${c}] missing`);
+          }
           maxAbsDelta = Math.max(
             maxAbsDelta,
-            Math.abs((e.transition[r]?.[c] ?? 0) - baseline[r][c]),
+            Math.abs((e.transition[r]?.[c] ?? 0) - bcell),
           );
+        }
   maxAbsDelta = maxAbsDelta || 1;
 
   const cell = 42;
@@ -1615,7 +1655,11 @@ export function TransitionHeatmaps({
       {Array.from({ length: k }, (_, r) =>
         Array.from({ length: k }, (_, c) => {
           const v = transition[r]?.[c] ?? 0;
-          const b = baseline[r][c];
+          const bcell = baseline[r]?.[c];
+          if (bcell === undefined) {
+            throw new Error(`transition heatmap: baseline cell [${r}][${c}] missing`);
+          }
+          const b = bcell;
           const d = v - b;
           const diag = r === c;
           // Diagonal sitting on its training ceiling: not a learned rate. The
@@ -1626,7 +1670,11 @@ export function TransitionHeatmaps({
           let fill = "var(--panel-2)";
           let op = 1;
           if (mode === "baseline") {
-            fill = stateColor(states[c]);
+            const stC = states[c];
+            if (stC === undefined) {
+              throw new Error(`transition heatmap: state ${c} missing`);
+            }
+            fill = stateColor(stC);
             op = 0.1 + 0.8 * v;
           } else if (!diag) {
             // Off-diagonal only: diverging vs the system average.
@@ -1750,9 +1798,11 @@ export function TransitionHeatmaps({
         source: "trained params",
         n: entries.length,
         unit: "per-line transition matrix",
-        note: trainedAt
-          ? `trained ${new Date(trainedAt * 1000).toLocaleDateString()}`
-          : undefined,
+        ...(trainedAt
+          ? {
+              note: `trained ${new Date(trainedAt * 1000).toLocaleDateString()}`,
+            }
+          : {}),
       }}
     >
       <div className="small-multiples">
@@ -1868,7 +1918,13 @@ export function MovementConfusion({ result }: { result: MovementConfusionResult 
         ))}
         {matrix.map((row, r) =>
           row.map((v, c) => {
-            const frac = rowTotals[r] ? v / rowTotals[r] : 0;
+            const rt = rowTotals[r];
+            const stR = states[r];
+            const stC = states[c];
+            if (rt === undefined || stR === undefined || stC === undefined) {
+              throw new Error(`movement heatmap: row/state ${r},${c} missing`);
+            }
+            const frac = rt ? v / rt : 0;
             return (
               <g
                 key={`${r}-${c}`}
@@ -1877,13 +1933,13 @@ export function MovementConfusion({ result }: { result: MovementConfusionResult 
                     e,
                     <>
                       <strong>{(frac * 100).toFixed(0)}%</strong> of{" "}
-                      <span style={{ color: stateColor(states[r]) }}>{states[r]}</span>{" "}
+                      <span style={{ color: stateColor(stR) }}>{stR}</span>{" "}
                       ticks read{" "}
-                      <span style={{ color: stateColor(states[c]) }}>{states[c]}</span>{" "}
+                      <span style={{ color: stateColor(stC) }}>{stC}</span>{" "}
                       on movement
                       <br />
                       <span className="muted">
-                        {v.toLocaleString()} of {rowTotals[r].toLocaleString()} ticks ·{" "}
+                        {v.toLocaleString()} of {rt.toLocaleString()} ticks ·{" "}
                         {r === c ? "agree" : "disagree"}
                       </span>
                     </>,
@@ -1897,7 +1953,7 @@ export function MovementConfusion({ result }: { result: MovementConfusionResult 
                   width={cell - 3}
                   height={cell - 3}
                   rx={5}
-                  fill={stateColor(states[c])}
+                  fill={stateColor(stC)}
                   fillOpacity={0.08 + 0.85 * frac}
                   stroke={r === c ? "var(--text)" : "var(--border)"}
                   strokeOpacity={r === c ? 0.4 : 0.6}
@@ -2148,6 +2204,15 @@ export function RecoveryDistCurve({ result }: { result: RecoveryDistResult }) {
   const { ref, show, hide, overlay } = useTooltip();
   const [hi, setHi] = useState<number | null>(null);
   const { grid, predictedCurve, empiricalCurve } = result;
+  if (
+    grid.length < 2 ||
+    empiricalCurve.length !== grid.length ||
+    predictedCurve.length !== grid.length
+  ) {
+    throw new Error(
+      `recovery curve: misaligned series (grid ${grid.length}, empirical ${empiricalCurve.length}, predicted ${predictedCurve.length})`,
+    );
+  }
   const tMax = grid[grid.length - 1] || 240;
 
   const W = 580;
@@ -2161,7 +2226,16 @@ export function RecoveryDistCurve({ result }: { result: RecoveryDistResult }) {
   const x = (t: number) => padL + (t / tMax) * plotW;
   const y = (f: number) => padT + (1 - f) * plotH;
   const path = (ys: number[]) =>
-    ys.map((f, i) => `${i === 0 ? "M" : "L"}${x(grid[i]).toFixed(1)} ${y(f).toFixed(1)}`).join(" ");
+    ys
+      .map((f, i) => {
+        const t = grid[i];
+        if (t === undefined) {
+          throw new Error(`recovery curve: grid missing index ${i}`);
+        }
+        return `${i === 0 ? "M" : "L"}${x(t).toFixed(1)} ${y(f).toFixed(1)}`;
+      })
+      .join(" ");
+  const hiT = hi != null ? grid[hi] : undefined;
 
   return (
     <ChartFrame
@@ -2193,8 +2267,8 @@ export function RecoveryDistCurve({ result }: { result: RecoveryDistResult }) {
         <AxisTicks axis="x" scale={x} ticks={[0, 30, 60, 120, 180, 240].filter((t) => t <= tMax)} at={H - padB + 16} />
         <AxisTitle x={padL + plotW / 2} y={H - 6}>minutes since now</AxisTitle>
         {/* hover guide */}
-        {hi != null && (
-          <line x1={x(grid[hi])} x2={x(grid[hi])} y1={padT} y2={padT + plotH} stroke="var(--text)" strokeOpacity={0.25} />
+        {hiT !== undefined && (
+          <line x1={x(hiT)} x2={x(hiT)} y1={padT} y2={padT + plotH} stroke="var(--text)" strokeOpacity={0.25} />
         )}
         {/* curves */}
         <path d={path(empiricalCurve)} fill="none" stroke={CURVE_OBS} strokeWidth={2} />
@@ -2210,19 +2284,33 @@ export function RecoveryDistCurve({ result }: { result: RecoveryDistResult }) {
             const box = (e.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
             const px = ((e.clientX - box.left) / box.width) * W;
             const t = ((px - padL) / plotW) * tMax;
-            const idx = Math.min(grid.length - 1, Math.max(0, Math.round(t / (grid[1] - grid[0]))));
+            const g0 = grid[0];
+            const g1 = grid[1];
+            if (g0 === undefined || g1 === undefined) {
+              throw new Error("recovery curve: grid has fewer than two points");
+            }
+            const idx = Math.min(
+              grid.length - 1,
+              Math.max(0, Math.round(t / (g1 - g0))),
+            );
+            const gIdx = grid[idx];
+            const eObs = empiricalCurve[idx];
+            const ePred = predictedCurve[idx];
+            if (gIdx === undefined || eObs === undefined || ePred === undefined) {
+              throw new Error(`recovery curve: series missing index ${idx}`);
+            }
             setHi(idx);
             show(
               e,
               <>
-                <strong>within {grid[idx]} min</strong>
+                <strong>within {gIdx} min</strong>
                 <br />
                 <span style={{ color: CURVE_OBS }}>
-                  {(empiricalCurve[idx] * 100).toFixed(0)}% really had recovered
+                  {(eObs * 100).toFixed(0)}% really had recovered
                 </span>
                 <br />
                 <span style={{ color: CURVE_PRED }}>
-                  model expected {(predictedCurve[idx] * 100).toFixed(0)}%
+                  model expected {(ePred * 100).toFixed(0)}%
                 </span>
               </>,
             );

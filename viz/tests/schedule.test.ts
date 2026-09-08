@@ -30,7 +30,9 @@ test("resumeChurn flags a pushed window and reports its magnitude", () => {
   assert.equal(r.pulled, 0);
   assert.equal(r.pushedPct, 1);
   assert.deepEqual(r.pushMagnitudesMin, [30]);
-  assert.equal(r.byAlertType[0].alertType, "Planned - Part Suspended");
+  const [firstAlertType] = r.byAlertType;
+  if (firstAlertType === undefined) throw new Error("expected at least one alert type bucket");
+  assert.equal(firstAlertType.alertType, "Planned - Part Suspended");
 });
 
 test("resumeChurn calls an unchanged window stable", () => {
@@ -140,7 +142,9 @@ test("adherence joins announced resume to actual return, deduped per resume", ()
   );
   assert.equal(res.n, 1);
   // actual normal at 5000, announced 4800 → +200s ≈ +3.3m overran, within tol.
-  assert.ok(Math.abs(res.points[0].errorMin - 200 / 60) < 1e-9);
+  const [point] = res.points;
+  if (point === undefined) throw new Error("expected at least one adherence point");
+  assert.ok(Math.abs(point.errorMin - 200 / 60) < 1e-9);
   assert.equal(res.onTimePct, 1);
   assert.equal(res.overrunPct, 0);
 });

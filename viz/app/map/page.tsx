@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Nav from "../Nav";
+import { bulletTextColor } from "../ui";
 import { fetchSnapshot, fetchTrains, fmtAgo } from "@/lib/feed";
 import type { TrainsFeed } from "@/lib/feed";
 import { edgePath, fetchDiagram } from "@/lib/diagram";
@@ -140,10 +141,14 @@ export default function MapPage() {
     };
   }, [overlayId]);
 
-  const active: Overlay = useMemo(
-    () => OVERLAYS.find((o) => o.id === overlayId) ?? OVERLAYS[0],
-    [overlayId],
-  );
+  const active: Overlay = useMemo(() => {
+    const found = OVERLAYS.find((o) => o.id === overlayId) ?? OVERLAYS[0];
+    if (!found) {
+      // OVERLAYS is a fixed, non-empty registry — unreachable in practice.
+      throw new Error("OVERLAYS registry is empty");
+    }
+    return found;
+  }, [overlayId]);
 
   // The lines the diagram actually draws an edge for — the filter's roster.
   const allRoutes = useMemo(
@@ -374,6 +379,9 @@ export default function MapPage() {
                         ? {
                             background:
                               diagram.routes[route]?.color ?? "var(--unknown)",
+                            color: bulletTextColor(
+                              diagram.routes[route]?.color ?? "var(--unknown)",
+                            ),
                           }
                         : undefined
                     }
@@ -686,7 +694,7 @@ function EdgeDetail({
       <div className="card-head">
         <span
           className="bullet"
-          style={{ background: diagram.routes[edge.route]?.color ?? "#6e6e73" }}
+          style={{ background: diagram.routes[edge.route]?.color ?? "#6e6e73", color: bulletTextColor(diagram.routes[edge.route]?.color ?? "#6e6e73") }}
         >
           {edge.route}
         </span>

@@ -4,24 +4,27 @@ import type { Result } from "axe-core";
 import { installFeedMock } from "./mock";
 
 // Grounds the 2026-09-07 review's keyboard/focus findings with a real axe scan
-// on the Status page and on the same page with the line drawer open. Baseline
-// only: serious/critical counts are printed and recorded, not gated on yet.
-function summarize(label: string, violations: Result[]): number {
+// on the Status page (closed and with the line drawer open) and on /about. The
+// contrast baseline (nzm1.24) is now fixed, so this gates: any serious/critical
+// violation fails the run rather than being printed and ignored.
+function gate(label: string, violations: Result[]): void {
   const hits = violations.filter(
     (v) => v.impact === "serious" || v.impact === "critical",
   );
   const lines = hits.map(
-    (v) => `  [${v.impact}] ${v.id} (${v.nodes.length}) — ${v.help}`,
+    (v) =>
+      `  [${v.impact}] ${v.id} (${v.nodes.length}) — ${v.help}\n` +
+      v.nodes.map((n) => `      ${n.target.join(" ")}`).join("\n"),
   );
   console.log(
     `axe ${label}: ${hits.length} serious/critical violation(s)` +
       (lines.length ? `\n${lines.join("\n")}` : ""),
   );
-  return hits.length;
+  expect(hits, `axe ${label}: serious/critical violations\n${lines.join("\n")}`).toEqual([]);
 }
 
-// One run is enough for a static a11y baseline; the desktop viewport carries it.
-test("axe baseline + keyboard: status page and open drawer", async ({
+// One run is enough for a static a11y gate; the desktop viewport carries it.
+test("axe gate + keyboard: status page, open drawer, and /about", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop only");
@@ -29,8 +32,7 @@ test("axe baseline + keyboard: status page and open drawer", async ({
   await page.goto("/", { waitUntil: "networkidle" });
   await expect(page.locator(".grid").first()).toBeVisible();
 
-  const initial = await new AxeBuilder({ page }).analyze();
-  const initialCount = summarize("/", initial.violations);
+  gate("/", (await new AxeBuilder({ page }).analyze()).violations);
 
   // Keyboard path the review flagged: Tab must reach the first status card, Enter
   // opens the drawer, Escape closes it. Tab from the header controls until focus
@@ -50,14 +52,13 @@ test("axe baseline + keyboard: status page and open drawer", async ({
   await expect(page.locator("aside.drawer")).toBeVisible();
 
   // axe with the drawer open, reached by keyboard — the state the review cared about.
-  const drawer = await new AxeBuilder({ page }).analyze();
-  const drawerCount = summarize("/ (drawer open)", drawer.violations);
+  gate("/ (drawer open)", (await new AxeBuilder({ page }).analyze()).violations);
 
   await page.keyboard.press("Escape");
   await expect(page.locator("aside.drawer")).toHaveCount(0);
 
-  // Baseline, not a gate: assert the scan produced a countable result so a
-  // silent axe failure can't pass as "zero violations".
-  expect(Number.isInteger(initialCount)).toBe(true);
-  expect(Number.isInteger(drawerCount)).toBe(true);
+  // Tokens are global, so /about (no route bullets, all body/muted text) is the
+  // second surface the review named; gate it too.
+  await page.goto("/about", { waitUntil: "networkidle" });
+  gate("/about", (await new AxeBuilder({ page }).analyze()).violations);
 });

@@ -67,9 +67,16 @@ export interface JourneyOptions {
 }
 
 /** The directional stop a leg boards at / alights at. */
-export const boardStop = (leg: JourneyLeg): string => leg.segments[0].from;
-export const alightStop = (leg: JourneyLeg): string =>
-  leg.segments[leg.segments.length - 1].to;
+export const boardStop = (leg: JourneyLeg): string => {
+  const first = leg.segments[0];
+  if (first === undefined) throw new Error("JourneyLeg.segments is empty");
+  return first.from;
+};
+export const alightStop = (leg: JourneyLeg): string => {
+  const last = leg.segments[leg.segments.length - 1];
+  if (last === undefined) throw new Error("JourneyLeg.segments is empty");
+  return last.to;
+};
 
 /** Every pairwise segment key traversed across the whole journey, in order. */
 export const journeyHopKeys = (journey: Journey): string[] =>
@@ -178,17 +185,21 @@ function reachFrom(
     const stops = pat.stops;
     let bi = -1;
     for (let i = 0; i < stops.length; i++) {
-      if (boardSet.has(undirected(stops[i]))) {
+      const stop = stops[i];
+      if (stop !== undefined && boardSet.has(undirected(stop))) {
         bi = i;
         break;
       }
     }
     if (bi < 0) continue;
-    const boardKey = keyOf(stops[bi]);
+    const boardingStop = stops[bi];
+    if (boardingStop === undefined) continue; // bi is a valid index into stops
+    const boardKey = keyOf(boardingStop);
     const segs: JourneySegment[] = [];
     for (let i = bi + 1; i < stops.length; i++) {
       const from = stops[i - 1];
       const to = stops[i];
+      if (from === undefined || to === undefined) break; // both indices are within range
       const key = `${route}|${direction}|${from}`;
       if (!succ.get(key)?.has(to)) break; // unbacked pair → ride ends here
       segs.push({ route, direction, from, to, key });
@@ -200,11 +211,11 @@ function reachFrom(
   return out;
 }
 
-const makeLeg = (segments: JourneySegment[]): JourneyLeg => ({
-  route: segments[0].route,
-  direction: segments[0].direction,
-  segments,
-});
+const makeLeg = (segments: JourneySegment[]): JourneyLeg => {
+  const first = segments[0];
+  if (first === undefined) throw new Error("makeLeg requires at least one segment");
+  return { route: first.route, direction: first.direction, segments };
+};
 
 // Dedup + ordering key: the route sequence alone, directions excluded. One
 // canonical journey is emitted per sequence of routes — the first the
@@ -256,7 +267,7 @@ export function enumerateJourneys(
     let m = reachCache.get(cacheKey);
     if (!m) {
       const { route, direction } = parseLine(line);
-      m = reachFrom(route, direction, routeStops[line], stopsOf(complexKey), keyOf, succ);
+      m = reachFrom(route, direction, routeStops[line] ?? [], stopsOf(complexKey), keyOf, succ);
       reachCache.set(cacheKey, m);
     }
     return m;

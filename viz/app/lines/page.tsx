@@ -49,6 +49,11 @@ export default function LinesPage() {
     flagged.sort((a, b) => {
       const ra = snap.route_status[a];
       const rb = snap.route_status[b];
+      if (!ra || !rb) {
+        // Every id in `flagged` was pushed only after confirming its
+        // route_status exists, so this is unreachable in practice.
+        throw new Error(`missing route_status for flagged route ${!ra ? a : b}`);
+      }
       const d = conditionRank(rb.condition) - conditionRank(ra.condition);
       if (d !== 0) return d;
       return a.localeCompare(b, undefined, { numeric: true });
@@ -65,9 +70,12 @@ export default function LinesPage() {
         <>
           {flagged.length > 0 && (
             <div className="triage">
-              {flagged.map((r) => (
-                <TriageRow key={r} snap={snap} route={r} r={snap.route_status[r]} />
-              ))}
+              {flagged.map((r) => {
+                const rs = snap.route_status[r];
+                // Same invariant as the sort above: rs is always present here.
+                if (!rs) return null;
+                return <TriageRow key={r} snap={snap} route={r} r={rs} />;
+              })}
             </div>
           )}
           <div className="line-grid">

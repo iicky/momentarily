@@ -20,7 +20,11 @@ async function pool<T>(items: (() => Promise<T>)[], limit: number): Promise<T[]>
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (i < items.length) {
       const idx = i++;
-      out[idx] = await items[idx]();
+      const item = items[idx];
+      if (item === undefined) {
+        throw new Error(`pool: missing task at index ${idx} of ${items.length}`);
+      }
+      out[idx] = await item();
     }
   });
   await Promise.all(workers);

@@ -19,21 +19,32 @@
  */
 export function dwellCdf(curveSec: number[], x: number): number {
   const k = curveSec.length;
+  const last = curveSec[k - 1];
+  const first = curveSec[0];
+  if (last === undefined || first === undefined) {
+    throw new Error("dwellCdf: curveSec must be non-empty");
+  }
   // Upper bound first so a degenerate flat curve (all samples equal) reads
   // as "outlived" at x == that value, not as P=0.
-  if (x >= curveSec[k - 1]) return 1.0;
-  if (x < curveSec[0]) return 0.0;
+  if (x >= last) return 1.0;
+  if (x < first) return 0.0;
   // Largest index at or below x; scanning past equal knots lands on the top
   // of a flat run.
   let j = 0;
   for (let i = 0; i < k; i++) {
-    if (curveSec[i] <= x) j = i;
+    const v = curveSec[i];
+    if (v === undefined) throw new Error("dwellCdf: curveSec index out of bounds");
+    if (v <= x) j = i;
     else break;
   }
   if (j >= k - 1) return 1.0;
-  if (curveSec[j] === x) return j / (k - 1);
-  const span = curveSec[j + 1] - curveSec[j];
-  const frac = span === 0 ? 0.0 : (x - curveSec[j]) / span;
+  const atJ = curveSec[j];
+  if (atJ === undefined) throw new Error("dwellCdf: curveSec index out of bounds");
+  if (atJ === x) return j / (k - 1);
+  const next = curveSec[j + 1];
+  if (next === undefined) throw new Error("dwellCdf: curveSec index out of bounds");
+  const span = next - atJ;
+  const frac = span === 0 ? 0.0 : (x - atJ) / span;
   return (j + frac) / (k - 1);
 }
 
@@ -119,7 +130,7 @@ function atomParams(
   const { p: atomP, sec: atomSec } = atom;
   if (!(atomP > 0.0 && atomP < 1.0) || atomSec <= 0.0) return null;
   const [shape, scale] = tailLl;
-  if (shape <= 0.0 || scale <= 0.0) return null;
+  if (shape === undefined || scale === undefined || shape <= 0.0 || scale <= 0.0) return null;
   return { shape, scale, atomP, atomSec };
 }
 
@@ -168,8 +179,13 @@ export function pLeaveBy(
     const sFut = loglogisticSurvival(elapsedSec + horizonSec, shape, scale);
     return Math.max(0.0, Math.min(1.0, 1.0 - sFut / sNow));
   }
-  const seg = curveSec[k - 1] - curveSec[k - 2];
-  const lam = seg > 0 ? 1.0 / (k - 1) / seg : 1.0 / Math.max(1, curveSec[k - 1]);
+  const last = curveSec[k - 1];
+  const secondLast = curveSec[k - 2];
+  if (last === undefined || secondLast === undefined) {
+    throw new Error("pLeaveBy: curveSec index out of bounds");
+  }
+  const seg = last - secondLast;
+  const lam = seg > 0 ? 1.0 / (k - 1) / seg : 1.0 / Math.max(1, last);
   return 1.0 - Math.exp(-Math.max(lam, 1e-12) * horizonSec);
 }
 

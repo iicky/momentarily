@@ -265,8 +265,12 @@ function CommuteStrip({
   return (
     <div className="trip-strip commute-strip">
       {commute.legs.map((leg, li) => {
-        const board = leg.segments[0].from;
-        const alight = leg.segments[leg.segments.length - 1].to;
+        const firstSeg = leg.segments[0];
+        const lastSeg = leg.segments[leg.segments.length - 1];
+        // A saved leg with zero segments carries nothing to render or link to.
+        if (!firstSeg || !lastSeg) return null;
+        const board = firstSeg.from;
+        const alight = lastSeg.to;
         return (
           <div key={li}>
             <div className="trip-leg">

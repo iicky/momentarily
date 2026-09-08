@@ -22,11 +22,15 @@ const seg = (route: string, direction: string, from: string, to: string): Commut
   key: `${route}|${direction}|${from}`,
 });
 
-const leg = (segments: CommuteSegment[]): CommuteLeg => ({
-  route: segments[0].route,
-  direction: segments[0].direction,
-  segments,
-});
+const leg = (segments: CommuteSegment[]): CommuteLeg => {
+  const first = segments[0];
+  if (first === undefined) throw new Error("leg requires at least one segment");
+  return {
+    route: first.route,
+    direction: first.direction,
+    segments,
+  };
+};
 
 const commute = (legs: CommuteLeg[], name = "to work"): Commute => ({
   id: "c1",
@@ -48,7 +52,9 @@ function snapshot(opts: {
     // successor of `a1` is `a2` and of `1N` is `2N` — matching how `seg` builds
     // commutes. Non-sequential stops pass `to` explicitly, as do the
     // wrong-successor / attribution-less (null) cases.
-    const from = key.split("|")[2];
+    const parts = key.split("|");
+    const from = parts[2];
+    if (from === undefined) throw new Error(`cell key must have 3 parts, got ${key}`);
     const derived = from.replace(/(\d+)([NS]?)$/, (_, n, s) => `${Number(n) + 1}${s}`);
     segments[key] = {
       to: v.to === undefined ? derived : v.to,
@@ -125,7 +131,9 @@ test("rollup: normal outranks quiet; unknown cells are counted, never healthy", 
   assert.equal(st.judged, 2);
   assert.equal(st.unknownCount, 1);
   // The unjudged cell reads null — not "normal" by omission.
-  assert.equal(st.readings[2].status, null);
+  const reading2 = st.readings[2];
+  assert.ok(reading2, "expected a third reading");
+  assert.equal(reading2.status, null);
 });
 
 test("rollup: only-quiet reads quiet; nothing judged reads unknown", () => {
@@ -156,8 +164,10 @@ test("disagreement: alert up but trains moving is flagged alert-only, direction-
 
   const sb = commuteStatus(snap, commute([leg([seg("A", "south", "9S", "8S")])]));
   assert.equal(sb.disagreements.length, 1);
-  assert.equal(sb.readings[0].disagreement, "alert-only");
-  assert.equal(sb.readings[0].alert, "Delays");
+  const sbReading0 = sb.readings[0];
+  assert.ok(sbReading0, "expected a reading");
+  assert.equal(sbReading0.disagreement, "alert-only");
+  assert.equal(sbReading0.alert, "Delays");
 });
 
 test("disagreement: movement disrupted with no advisory is flagged movement-only", () => {
@@ -166,7 +176,9 @@ test("disagreement: movement disrupted with no advisory is flagged movement-only
     alerts: { A: {} }, // route present, no alert either direction
   });
   const st = commuteStatus(snap, commute([leg([seg("A", "north", "1N", "2N")])]));
-  assert.equal(st.readings[0].disagreement, "movement-only");
+  const stReading0 = st.readings[0];
+  assert.ok(stReading0, "expected a reading");
+  assert.equal(stReading0.disagreement, "movement-only");
   assert.equal(st.disagreements.length, 1);
 });
 
@@ -176,8 +188,10 @@ test("disagreement: 'No Scheduled Service' is benign — surfaced but never cont
     alerts: { A: { northbound: "No Scheduled Service" } },
   });
   const st = commuteStatus(snap, commute([leg([seg("A", "north", "1N", "2N")])]));
-  assert.equal(st.readings[0].alert, "No Scheduled Service"); // still shown
-  assert.equal(st.readings[0].disagreement, null); // but not a disagreement
+  const stReading0 = st.readings[0];
+  assert.ok(stReading0, "expected a reading");
+  assert.equal(stReading0.alert, "No Scheduled Service"); // still shown
+  assert.equal(stReading0.disagreement, null); // but not a disagreement
 });
 
 // --- Persistence -----------------------------------------------------------
@@ -215,8 +229,14 @@ test("persistence: commutes round-trip through localStorage", () => {
   addCommute(c);
   const loaded = loadCommutes();
   assert.equal(loaded.length, 1);
-  assert.equal(loaded[0].name, "home");
-  assert.equal(loaded[0].legs[0].segments[0].key, "A|north|1N");
+  const loaded0 = loaded[0];
+  assert.ok(loaded0, "expected a loaded commute");
+  assert.equal(loaded0.name, "home");
+  const loadedLeg0 = loaded0.legs[0];
+  assert.ok(loadedLeg0, "expected a leg");
+  const loadedSeg0 = loadedLeg0.segments[0];
+  assert.ok(loadedSeg0, "expected a segment");
+  assert.equal(loadedSeg0.key, "A|north|1N");
 });
 
 test("persistence: a corrupt or wrong-shaped blob loads as empty, never throws", () => {
@@ -240,7 +260,9 @@ test("persistCommutes replaces the whole store", () => {
   persistCommutes([commute([leg([seg("B", "south", "5S", "6S")])], "two")]);
   const loaded = loadCommutes();
   assert.equal(loaded.length, 1);
-  assert.equal(loaded[0].name, "two");
+  const loaded0 = loaded[0];
+  assert.ok(loaded0, "expected a loaded commute");
+  assert.equal(loaded0.name, "two");
 });
 
 // --- Attribution: `to` is load-bearing at branches ---------------------------
@@ -251,8 +273,10 @@ test("a disrupted reading about a different successor reads as unknown, not disr
     cells: { "A|north|a1": { status: "disrupted", recovery_minutes: 30, to: "a9" } },
   });
   const s = commuteStatus(snap, c);
-  assert.equal(s.readings[0].status, null);
-  assert.equal(s.readings[0].recoveryMinutes, null);
+  const sReading0 = s.readings[0];
+  assert.ok(sReading0, "expected a reading");
+  assert.equal(sReading0.status, null);
+  assert.equal(sReading0.recoveryMinutes, null);
 });
 
 test("a reading that cannot name its successor abstains instead of attributing", () => {
@@ -261,5 +285,7 @@ test("a reading that cannot name its successor abstains instead of attributing",
     cells: { "A|north|a1": { status: "disrupted", to: null } },
   });
   const s = commuteStatus(snap, c);
-  assert.equal(s.readings[0].status, null);
+  const sReading0 = s.readings[0];
+  assert.ok(sReading0, "expected a reading");
+  assert.equal(sReading0.status, null);
 });

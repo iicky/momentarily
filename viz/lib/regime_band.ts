@@ -52,13 +52,15 @@ export interface RegimeBands {
 // land on round times. The grid is aligned to epoch multiples of the chosen
 // width, which keeps buckets stable across reloads and across window changes.
 const BUCKET_STEPS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
+const MIN_BUCKET_SEC = BUCKET_STEPS[0] ?? 60;
+const MAX_BUCKET_SEC = BUCKET_STEPS[BUCKET_STEPS.length - 1] ?? 21600;
 const TARGET_BUCKETS = 240;
 const DEFAULT_LIMIT = 14;
 
 /** Narrowest step that keeps the grid under `target` buckets. */
 export function chooseBucketSec(spanSec: number, target = TARGET_BUCKETS): number {
   for (const step of BUCKET_STEPS) if (spanSec / step <= target) return step;
-  return BUCKET_STEPS[BUCKET_STEPS.length - 1];
+  return MAX_BUCKET_SEC;
 }
 
 interface Acc {
@@ -71,7 +73,7 @@ interface Acc {
 const EMPTY: RegimeBands = {
   t0: 0,
   t1: 0,
-  bucketSec: BUCKET_STEPS[0],
+  bucketSec: MIN_BUCKET_SEC,
   series: [],
   truncated: 0,
 };

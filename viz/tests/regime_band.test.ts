@@ -51,12 +51,15 @@ test("buckets average the probabilities of every tick that lands in them", () =>
 
   assert.equal(bands.bucketSec, 60);
   const s = bands.series[0];
+  if (s === undefined) throw new Error("expected series[0]");
   assert.equal(s.route, "L");
-  assert.equal(s.buckets[0].t, 960);
-  assert.equal(s.buckets[0].n, 2);
-  assert.equal(s.buckets[0].pNormal, 0.5);
-  assert.equal(s.buckets[0].pDisrupted, 0.5);
-  assert.equal(s.buckets[0].pSuspended, 0);
+  const bucket = s.buckets[0];
+  if (bucket === undefined) throw new Error("expected buckets[0]");
+  assert.equal(bucket.t, 960);
+  assert.equal(bucket.n, 2);
+  assert.equal(bucket.pNormal, 0.5);
+  assert.equal(bucket.pDisrupted, 0.5);
+  assert.equal(bucket.pSuspended, 0);
   assert.equal(s.n, 3);
 });
 
@@ -65,7 +68,10 @@ test("every bucket sums to 1 even when the source tick does not", () => {
   const bands = regimeBands([
     pred({ ts: 0, p_normal: 0.49, p_disrupted: 0.49, p_suspended: 0 }),
   ]);
-  const b = bands.series[0].buckets[0];
+  const s = bands.series[0];
+  if (s === undefined) throw new Error("expected series[0]");
+  const b = s.buckets[0];
+  if (b === undefined) throw new Error("expected buckets[0]");
   assert.ok(Math.abs(b.pNormal + b.pDisrupted + b.pSuspended - 1) < 1e-12);
   assert.ok(Math.abs(b.pNormal - 0.5) < 1e-12);
 });
@@ -76,7 +82,10 @@ test("degenerate ticks are dropped rather than poisoning a bucket", () => {
     pred({ ts: 10, p_normal: Number.NaN, p_disrupted: 1, p_suspended: 0 }),
     pred({ ts: 20, p_normal: 0, p_disrupted: 1, p_suspended: 0 }),
   ]);
-  const b = bands.series[0].buckets[0];
+  const s = bands.series[0];
+  if (s === undefined) throw new Error("expected series[0]");
+  const b = s.buckets[0];
+  if (b === undefined) throw new Error("expected buckets[0]");
   assert.equal(b.n, 1);
   assert.equal(b.pDisrupted, 1);
 });
@@ -89,12 +98,18 @@ test("a hole in the archive leaves a gap, not an interpolated bucket", () => {
     records.push(pred({ ts: 70 * MIN + i * MIN, p_normal: 0, p_suspended: 1 }));
 
   const bands = regimeBands(records);
-  const ts = bands.series[0].buckets.map((b) => b.t);
+  const s0 = bands.series[0];
+  if (s0 === undefined) throw new Error("expected series[0]");
+  const ts = s0.buckets.map((b) => b.t);
   // Contiguous buckets would number (t1-t0)/bucketSec; only observed ones exist.
   assert.equal(ts.length, 20);
   assert.equal((bands.t1 - bands.t0) / bands.bucketSec, 80);
   // The gap is a genuine discontinuity in the emitted grid.
-  const steps = ts.slice(1).map((t, i) => t - ts[i]);
+  const steps = ts.slice(1).map((t, i) => {
+    const prev = ts[i];
+    if (prev === undefined) throw new Error("expected previous tick");
+    return t - prev;
+  });
   assert.equal(steps.filter((d) => d !== bands.bucketSec).length, 1);
   // Last bucket of the first run is minute 9, first of the second is minute 70.
   assert.equal(Math.max(...steps), 61 * MIN);
@@ -109,7 +124,9 @@ test("bucketRuns splits the fill at archive gaps so none is drawn across them", 
     records.push(pred({ ts: 70 * MIN + i * MIN, p_normal: 0, p_suspended: 1 }));
 
   const bands = regimeBands(records);
-  const runs = bucketRuns(bands.series[0].buckets, bands.bucketSec);
+  const s = bands.series[0];
+  if (s === undefined) throw new Error("expected series[0]");
+  const runs = bucketRuns(s.buckets, bands.bucketSec);
   assert.equal(runs.length, 2);
   assert.deepEqual(
     runs.map((r) => r.length),
@@ -117,21 +134,31 @@ test("bucketRuns splits the fill at archive gaps so none is drawn across them", 
   );
   // Each run is internally contiguous — that's what lets it be one shape.
   for (const run of runs)
-    for (let i = 1; i < run.length; i++)
-      assert.equal(run[i].t - run[i - 1].t, bands.bucketSec);
+    for (let i = 1; i < run.length; i++) {
+      const cur = run[i];
+      const prev = run[i - 1];
+      if (cur === undefined || prev === undefined) {
+        throw new Error("expected contiguous buckets");
+      }
+      assert.equal(cur.t - prev.t, bands.bucketSec);
+    }
   // No bucket is lost to the split.
   assert.equal(
     runs.reduce((a, r) => a + r.length, 0),
-    bands.series[0].buckets.length,
+    s.buckets.length,
   );
 });
 
 test("bucketRuns keeps contiguous buckets as a single shape", () => {
   const records = Array.from({ length: 12 }, (_, i) => pred({ ts: i * MIN }));
   const bands = regimeBands(records);
-  const runs = bucketRuns(bands.series[0].buckets, bands.bucketSec);
+  const s = bands.series[0];
+  if (s === undefined) throw new Error("expected series[0]");
+  const runs = bucketRuns(s.buckets, bands.bucketSec);
   assert.equal(runs.length, 1);
-  assert.equal(runs[0].length, 12);
+  const run0 = runs[0];
+  if (run0 === undefined) throw new Error("expected runs[0]");
+  assert.equal(run0.length, 12);
 });
 
 test("bucketRuns handles an empty series without inventing a run", () => {
@@ -162,9 +189,11 @@ test("series rank by expected time away from normal, not by tick count", () => {
     bands.series.map((s) => s.route),
     ["B", "A"],
   );
-  assert.ok(bands.series[0].nonNormalMin > bands.series[1].nonNormalMin);
+  const [first, second] = bands.series;
+  if (first === undefined || second === undefined) throw new Error("expected two series");
+  assert.ok(first.nonNormalMin > second.nonNormalMin);
   // 10 buckets fully non-normal at 1 minute each.
-  assert.ok(Math.abs(bands.series[0].nonNormalMin - 10) < 1e-9);
+  assert.ok(Math.abs(first.nonNormalMin - 10) < 1e-9);
 });
 
 test("flat-normal lines are dropped only when something else was disrupted", () => {
@@ -180,7 +209,9 @@ test("flat-normal lines are dropped only when something else was disrupted", () 
     allQuiet.series.map((s) => s.route),
     ["Q"],
   );
-  assert.equal(allQuiet.series[0].nonNormalMin, 0);
+  const quietSeries = allQuiet.series[0];
+  if (quietSeries === undefined) throw new Error("expected series[0]");
+  assert.equal(quietSeries.nonNormalMin, 0);
 
   // With a disrupted line present, the flat one is noise and gets dropped.
   const mixed = regimeBands([...quiet, ...loud]);
@@ -208,7 +239,9 @@ test("the row cap reports what it dropped", () => {
   assert.equal(bands.series.length, 6);
   assert.equal(bands.truncated, 14);
   // Worst line first.
-  assert.equal(bands.series[0].route, "R19");
+  const worst = bands.series[0];
+  if (worst === undefined) throw new Error("expected series[0]");
+  assert.equal(worst.route, "R19");
 });
 
 test("no predictions yields an empty, renderable result", () => {

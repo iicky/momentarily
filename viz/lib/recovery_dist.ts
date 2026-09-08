@@ -82,7 +82,11 @@ function ecdf(sortedAsc: number[], t: number): number {
   let hi = sortedAsc.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (sortedAsc[mid] <= t) lo = mid + 1;
+    const v = sortedAsc[mid];
+    if (v === undefined) {
+      throw new Error(`ecdf: index ${mid} out of range (len ${sortedAsc.length})`);
+    }
+    if (v <= t) lo = mid + 1;
     else hi = mid;
   }
   return sortedAsc.length ? lo / sortedAsc.length : 0;
@@ -171,7 +175,16 @@ export function recoveryDistReport(
   const n = samples.length;
   if (!n) return emptyReport(240);
 
-  const tMax = samples[0].predCurve.length - 1;
+  const first = samples[0];
+  if (first === undefined) return emptyReport(240);
+  const tMax = first.predCurve.length - 1;
+  for (const s of samples) {
+    if (s.predCurve.length !== tMax + 1) {
+      throw new Error(
+        `recoveryDistReport: sample predCurve length ${s.predCurve.length} != expected ${tMax + 1} (regime ${s.regimeKey})`,
+      );
+    }
+  }
   const grid: number[] = [];
   for (let t = 0; t <= tMax; t += GRID_STEP) grid.push(t);
 
@@ -212,12 +225,25 @@ export function recoveryDistReport(
     let causal = 0;
     for (let t = 0; t < tMax; t++) {
       const ind = t >= y ? 1 : 0;
-      const dp = f[t] - ind;
+      const ft = f[t];
+      const ot = oracleAt[t];
+      if (ft === undefined || ot === undefined) {
+        throw new Error(
+          `recoveryDistReport: curve/oracle shorter than tMax at t=${t}`,
+        );
+      }
+      const dp = ft - ind;
       crps += dp * dp;
-      const db = oracleAt[t] - ind;
+      const db = ot - ind;
       base += db * db;
       if (causalAt) {
-        const dc = causalAt[t] - ind;
+        const ct = causalAt[t];
+        if (ct === undefined) {
+          throw new Error(
+            `recoveryDistReport: causal baseline shorter than tMax at t=${t}`,
+          );
+        }
+        const dc = ct - ind;
         causal += dc * dc;
       }
     }
@@ -225,7 +251,11 @@ export function recoveryDistReport(
     baseSum += base;
     causalSum += causal;
     const idx = Math.min(tMax, Math.max(0, Math.round(y)));
-    let u = f[idx];
+    const uAt = f[idx];
+    if (uAt === undefined) {
+      throw new Error(`recoveryDistReport: curve missing index ${idx}`);
+    }
+    let u = uAt;
     // Spread the observation across the predictive jump it landed on, if any.
     // left === u for a continuous curve, which leaves this exactly as it was.
     const left = s.predLeft;
@@ -234,7 +264,16 @@ export function recoveryDistReport(
     }
     pitSum += u;
     pit[Math.min(9, Math.max(0, Math.floor(u * 10)))] += 1;
-    grid.forEach((t, i) => (predAccum[i] += f[t]));
+    grid.forEach((t, i) => {
+      const ft = f[t];
+      const acc = predAccum[i];
+      if (ft === undefined || acc === undefined) {
+        throw new Error(
+          `recoveryDistReport: grid index out of range (t=${t}, i=${i})`,
+        );
+      }
+      predAccum[i] = acc + ft;
+    });
 
     const r = byRegime.get(s.regimeKey) ?? {
       crps: 0,
@@ -313,11 +352,15 @@ export function recoveryDistReport(
     grid,
     predictedCurve: predAccum.map((v) => v / n),
     empiricalCurve: grid.map((t) => empAt(t)),
-    horizons: [30, 60, 120].map((h) => ({
-      h,
-      predicted: predAccum[grid.indexOf(h)] / n,
-      observed: empAt(h),
-    })),
+      horizons: [30, 60, 120].map((h) => {
+        const gi = grid.indexOf(h);
+        const acc = gi >= 0 ? predAccum[gi] : undefined;
+        return {
+          h,
+          predicted: acc !== undefined ? acc / n : NaN,
+          observed: empAt(h),
+        };
+      }),
   };
 }
 
@@ -357,8 +400,18 @@ export function recoveryVerdict(result: RecoveryDistReport): RecoveryVerdict {
     };
 
   const expected = total / pit.length;
-  const ends = pit[0] + pit[pit.length - 1];
-  const mid = pit[3] + pit[4] + pit[5] + pit[6];
+  if (pit.length !== 10) {
+    throw new Error(`recoveryVerdict: expected 10 PIT bins, got ${pit.length}`);
+  }
+  const bin = (i: number): number => {
+    const b = pit[i];
+    if (b === undefined) {
+      throw new Error(`recoveryVerdict: missing PIT bin ${i}`);
+    }
+    return b;
+  };
+  const ends = bin(0) + bin(pit.length - 1);
+  const mid = bin(3) + bin(4) + bin(5) + bin(6);
   const lean = result.meanPit;
   const off = Math.abs(lean - 0.5);
   const uShape = ends > expected * 2 * 1.6; // extremes overweight → too narrow
@@ -408,5 +461,10 @@ export function recoveryVerdict(result: RecoveryDistReport): RecoveryVerdict {
   else if (tone === "warn" && skill >= 0.1)
     warning = `Even so, it beats ${against} by ${(skill * 100).toFixed(0)}% — miscalibrated but still more informative.`;
 
-  return { verdict, explain, tone, warning };
+  return {
+    verdict,
+    explain,
+    tone,
+    ...(warning !== undefined ? { warning } : {}),
+  };
 }

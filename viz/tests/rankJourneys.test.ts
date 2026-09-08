@@ -20,7 +20,11 @@ const seg = (route: string, dir: string, from: string, to: string): JourneySegme
 const leg = (route: string, dir: string, stops: string[]): JourneyLeg => ({
   route,
   direction: dir,
-  segments: stops.slice(0, -1).map((s, i) => seg(route, dir, s, stops[i + 1])),
+  segments: stops.slice(0, -1).map((s, i) => {
+    const to = stops[i + 1];
+    if (to === undefined) throw new Error(`leg stops missing index ${i + 1}`);
+    return seg(route, dir, s, to);
+  }),
 });
 
 const journey = (...legs: JourneyLeg[]): Journey => ({
@@ -46,6 +50,9 @@ const cell = (
   to?: string | null,
 ): SegmentStatus => {
   const [route, direction, from_stop] = key.split("|");
+  if (route === undefined || direction === undefined || from_stop === undefined) {
+    throw new Error(`cell key must be route|direction|from_stop, got ${key}`);
+  }
   // Fixture stops are `<letter><n>` and `leg` chains them in order, so the
   // drawn successor of `a1` is `a2`. Pass `to` explicitly to exercise a
   // wrong-successor or attribution-less (null) reading.
@@ -155,9 +162,11 @@ test("disrupted-hop COUNT dominates recovery duration", () => {
     routes: { A: routeStatus("disrupted"), B: routeStatus("disrupted") },
   });
   const ranked = rankJourneys(snap, [twoShort, oneLong]);
-  assert.equal(ranked[0].id, "A");
-  assert.equal(ranked[0].disrupted, 1);
-  assert.equal(ranked[1].disrupted, 2);
+  const [first, second] = ranked;
+  assert.ok(first && second, "expected two ranked journeys");
+  assert.equal(first.id, "A");
+  assert.equal(first.disrupted, 1);
+  assert.equal(second.disrupted, 2);
 });
 
 test("with equal disrupted counts, longer recovery ranks worse and is cited", () => {

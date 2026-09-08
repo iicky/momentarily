@@ -15,13 +15,16 @@ function topo(lines: Record<string, string[]>): { routeStops: RouteStops; edges:
     const route = key.slice(0, bar);
     const direction = key.slice(bar + 1);
     for (let i = 0; i < stops.length - 1; i++) {
+      const from = stops[i];
+      const to = stops[i + 1];
+      if (from === undefined || to === undefined) continue;
       edges.push({
-        key: `${route}|${direction}|${stops[i]}`,
+        key: `${route}|${direction}|${from}`,
         route,
         direction,
-        from: stops[i],
-        to: stops[i + 1],
-        successors: [{ to: stops[i + 1], n_trips: 100 }],
+        from,
+        to,
+        successors: [{ to, n_trips: 100 }],
       });
     }
   }
@@ -68,8 +71,12 @@ test("journeysBetween resolves a multi-platform origin complex to a direct ride"
   const idx = indexComplexes(stations({ O1: "OC", O2: "OC", D1: "DC" }));
   const js = journeysBetween(routeStops, edges, idx, "OC", "DC");
   assert.equal(js.length, 1);
-  assert.equal(js[0].transfers, 0);
-  assert.equal(js[0].legs[0].route, "C");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(j0.transfers, 0);
+  const leg0 = j0.legs[0];
+  assert.ok(leg0, "expected a leg");
+  assert.equal(leg0.route, "C");
 });
 
 test("journeysBetween unifies a multi-id transfer complex across platforms", () => {
@@ -81,10 +88,16 @@ test("journeysBetween unifies a multi-id transfer complex across platforms", () 
   );
   const js = journeysBetween(routeStops, edges, idx, "OC", "DC");
   assert.equal(js.length, 1);
-  assert.equal(js[0].transfers, 1);
-  assert.deepEqual(js[0].legs.map((l) => l.route), ["A", "B"]);
-  assert.equal(js[0].legs[0].segments.at(-1)?.to, "T1");
-  assert.equal(js[0].legs[1].segments[0].from, "T2");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(j0.transfers, 1);
+  assert.deepEqual(j0.legs.map((l) => l.route), ["A", "B"]);
+  const [leg0, leg1] = j0.legs;
+  assert.ok(leg0 && leg1, "expected two legs");
+  assert.equal(leg0.segments.at(-1)?.to, "T1");
+  const seg0 = leg1.segments[0];
+  assert.ok(seg0, "expected a segment");
+  assert.equal(seg0.from, "T2");
 });
 
 test("journeysBetween yields nothing for an unknown complex id", () => {
@@ -112,7 +125,11 @@ test("Atlantic Av → Union Sq via the resolver keeps the direct corridors", () 
   const js = journeysBetween(diagram.route_stops, diagram.adjacency, idx, "617", "602");
   const directs = js
     .filter((j) => j.transfers === 0)
-    .map((j) => `${j.legs[0].route}|${j.legs[0].direction}`)
+    .map((j) => {
+      const leg0 = j.legs[0];
+      if (leg0 === undefined) throw new Error("expected a leg");
+      return `${leg0.route}|${leg0.direction}`;
+    })
     .sort();
   assert.deepEqual(directs, ["4|north", "5|north", "N|north", "Q|north", "R|north", "W|north"]);
 });

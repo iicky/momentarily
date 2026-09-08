@@ -139,8 +139,10 @@ export function resumeChurn(versions: AlertVersion[]): ResumeChurnResult {
   const out: ResumeChurnWindow[] = [];
   for (const [id, vers] of byId) {
     vers.sort((a, b) => a.observedAt - b.observedAt);
-    const route = vers[0].route;
-    const alertType = vers[0].alertType;
+    const first = vers[0];
+    if (!first) continue; // byId only ever holds arrays we pushed into
+    const route = first.route;
+    const alertType = first.alertType;
     const slots: Slot[] = [];
     for (const v of vers) {
       for (const w of v.windows) {
@@ -159,6 +161,7 @@ export function resumeChurn(versions: AlertVersion[]): ResumeChurnResult {
       if (s.ends.length < 2) continue; // can't assess churn from one observation
       const firstEnd = s.ends[0];
       const lastEnd = s.ends[s.ends.length - 1];
+      if (firstEnd === undefined || lastEnd === undefined) continue; // s.ends.length >= 2 checked above
       const delta = lastEnd - firstEnd;
       const status =
         delta > END_EPS_SEC ? "pushed" : delta < -END_EPS_SEC ? "pulled" : "stable";
@@ -283,10 +286,11 @@ export function adherence(
   const onTime = points.filter(
     (p) => Math.abs(p.errorMin) <= ADHERENCE_TOLERANCE_MIN,
   ).length;
+  const medianPoint = n ? points[Math.floor(n / 2)] : undefined;
   return {
     points,
     n,
-    medianErrorMin: n ? points[Math.floor(n / 2)].errorMin : NaN,
+    medianErrorMin: medianPoint ? medianPoint.errorMin : NaN,
     overrunPct: n ? overrun / n : NaN,
     onTimePct: n ? onTime / n : NaN,
     censored,

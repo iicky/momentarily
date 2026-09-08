@@ -343,7 +343,7 @@ function describeSingle(best: JourneyScore): Verdict {
   if (best.suspendedRoutes.length)
     return {
       ...base,
-      culpritRoute: best.suspendedRoutes[0],
+      culpritRoute: best.suspendedRoutes[0] ?? null,
       reason: "has no trains running right now",
       tone: "suspended",
     };
@@ -357,21 +357,21 @@ function describeSingle(best: JourneyScore): Verdict {
   if (best.disruptedFlowRoutes.length)
     return {
       ...base,
-      culpritRoute: best.disruptedFlowRoutes[0],
+      culpritRoute: best.disruptedFlowRoutes[0] ?? null,
       reason: "is running disrupted right now",
       tone: "disrupted",
     };
   if (best.lowSupplyRoutes.length)
     return {
       ...base,
-      culpritRoute: best.lowSupplyRoutes[0],
+      culpritRoute: best.lowSupplyRoutes[0] ?? null,
       reason: "is running far fewer trains than usual",
       tone: "supply",
     };
   if (best.thinSupplyRoutes.length)
     return {
       ...base,
-      culpritRoute: best.thinSupplyRoutes[0],
+      culpritRoute: best.thinSupplyRoutes[0] ?? null,
       reason: "is running fewer trains than usual",
       tone: "supply",
     };
@@ -478,10 +478,11 @@ function reasonFor(
  */
 export function journeyVerdict(snap: Snapshot, journeys: Journey[]): Verdict | null {
   const ranked = rankJourneys(snap, journeys);
-  if (ranked.length === 0) return null;
   const best = ranked[0];
+  if (best === undefined) return null; // ranked.length === 0
   if (ranked.length === 1) return describeSingle(best);
   const runnerUp = ranked[1];
+  if (runnerUp === undefined) return describeSingle(best); // ranked.length >= 2 guaranteed above
 
   // The decisive category is the one where the runner-up's penalty slice most
   // exceeds the best's. Walked in severity order so exact ties in magnitude

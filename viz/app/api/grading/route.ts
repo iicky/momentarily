@@ -80,7 +80,11 @@ async function pool<T>(
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (i < items.length) {
       const idx = i++;
-      out[idx] = await items[idx]();
+      const make = items[idx];
+      if (make === undefined) {
+        throw new Error(`pool: missing task at index ${idx} of ${items.length}`);
+      }
+      out[idx] = await make();
     }
   });
   await Promise.all(workers);
@@ -308,7 +312,7 @@ export async function GET(req: NextRequest) {
         predCurve: predictedRecoveryCurve(elapsedSec, cell.curve_sec, cell.tail_ll, atom),
         actualMin: o.actualMin,
         regimeKey: `${o.route}:${o.regimeEnteredAt}`,
-        predLeft,
+        ...(predLeft !== undefined ? { predLeft } : {}),
       });
     }
     // null: this route grades one requested window of the live stream and holds

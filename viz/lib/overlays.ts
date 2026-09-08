@@ -483,6 +483,8 @@ const RAMP = [
   "var(--ramp-5)",
 ];
 const RAMP_WIDTH = [1.8, 2.2, 2.6, 3.0, 3.4];
+const RAMP_FALLBACK_COLOR = RAMP[RAMP.length - 1] ?? "var(--ramp-5)";
+const RAMP_FALLBACK_WIDTH = RAMP_WIDTH[RAMP_WIDTH.length - 1] ?? 3.4;
 
 export interface TimeBin {
   /** Inclusive upper bound, in seconds. */
@@ -549,15 +551,23 @@ export function timeScale(diagram: Diagram, cls: ServiceClass): TimeScale | null
       values.length - 1,
       Math.ceil((i / probes) * values.length) - 1,
     );
-    if (cut.length > 0 && cut[cut.length - 1].max === values[at]) continue;
-    cut.push({ max: values[at], n: 0 });
+    const val = values[at];
+    if (val === undefined) continue; // at is always within [0, values.length - 1]
+    const lastCut = cut[cut.length - 1];
+    if (lastCut !== undefined && lastCut.max === val) continue;
+    cut.push({ max: val, n: 0 });
   }
   // Every value belongs to the first bin whose bound it clears. The last
   // boundary is the sample's own maximum, so the walk can't run off the end.
   let bin = 0;
   for (const value of values) {
-    while (value > cut[bin].max) bin += 1;
-    cut[bin].n += 1;
+    let current = cut[bin];
+    while (current !== undefined && value > current.max) {
+      bin += 1;
+      current = cut[bin];
+    }
+    if (current === undefined) break; // unreachable: the last boundary is values' own max
+    current.n += 1;
   }
   // Thin to the ramp by folding the emptiest bin into a neighbour. Folding
   // upward drops that bin's boundary and keeps the ones that separate the most
@@ -566,29 +576,42 @@ export function timeScale(diagram: Diagram, cls: ServiceClass): TimeScale | null
   while (cut.length > RAMP.length) {
     let worst = 0;
     for (let i = 1; i < cut.length; i += 1) {
-      if (cut[i].n < cut[worst].n) worst = i;
+      const ci = cut[i];
+      const cWorst = cut[worst];
+      if (ci !== undefined && cWorst !== undefined && ci.n < cWorst.n) worst = i;
     }
     if (worst === cut.length - 1) {
       // The top bin has no upper neighbour, so extend the one below it.
-      cut[worst - 1].max = cut[worst].max;
-      cut[worst - 1].n += cut[worst].n;
+      const below = cut[worst - 1];
+      const top = cut[worst];
+      if (below !== undefined && top !== undefined) {
+        below.max = top.max;
+        below.n += top.n;
+      }
     } else {
-      cut[worst + 1].n += cut[worst].n;
+      const next = cut[worst + 1];
+      const cur = cut[worst];
+      if (next !== undefined && cur !== undefined) {
+        next.n += cur.n;
+      }
     }
     cut.splice(worst, 1);
   }
   // Spread the ramp across however many bins survived, so the fastest and
   // slowest hops always take the ramp's own extremes.
   const step = cut.length === 1 ? 0 : (RAMP.length - 1) / (cut.length - 1);
+  const minValue = values[0];
+  const maxValue = values[values.length - 1];
+  if (minValue === undefined || maxValue === undefined) return null; // values is non-empty here
   return {
     bins: cut.map((b, i) => ({
       max: b.max,
       n: b.n,
-      color: RAMP[Math.round(i * step)],
-      width: RAMP_WIDTH[Math.round(i * step)],
+      color: RAMP[Math.round(i * step)] ?? RAMP_FALLBACK_COLOR,
+      width: RAMP_WIDTH[Math.round(i * step)] ?? RAMP_FALLBACK_WIDTH,
     })),
-    min: values[0],
-    max: values[values.length - 1],
+    min: minValue,
+    max: maxValue,
     timed: values.length,
     slots,
   };
@@ -600,7 +623,11 @@ export function timeBin(scale: TimeScale, seconds: number): TimeBin {
   for (const bin of scale.bins) {
     if (seconds <= bin.max) return bin;
   }
-  return scale.bins[scale.bins.length - 1];
+  const last = scale.bins[scale.bins.length - 1];
+  if (last === undefined) {
+    throw new Error("TimeScale.bins is empty"); // timeScale never returns an empty bins array
+  }
+  return last;
 }
 
 /** The scheduled seconds a service class and direction filter select, or null

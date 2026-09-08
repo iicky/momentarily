@@ -26,6 +26,7 @@ import {
 import type { SupplyBand } from "@/lib/feed";
 import type { Snapshot, RouteStatus, Inference, DirectionAlerts } from "@/lib/types";
 import { Gauge } from "./Gauge";
+import { bulletTextColor } from "./ui";
 import { routeMovementByDirection } from "@/lib/segments";
 import type { DirectionMovement } from "@/lib/segments";
 
@@ -466,10 +467,11 @@ function headline(r: RouteStatus): { lead: string; alt?: string } {
     r.category !== "none" && r.primary_alert_type
       ? `The MTA has a “${r.primary_alert_type}” advisory up.`
       : undefined;
+  // Not-scheduled is a plan, not an incident, so it never carries the alert.
+  const alt = r.condition === "not_scheduled" ? undefined : alert;
   return {
     lead: conditionLead(r.condition),
-    // Not-scheduled is a plan, not an incident, so it never carries the alert.
-    alt: r.condition === "not_scheduled" ? undefined : alert,
+    ...(alt !== undefined ? { alt } : {}),
   };
 }
 
@@ -507,7 +509,7 @@ function RouteCard({
       <div className="card-head">
         <span
           className="bullet"
-          style={{ background: routeColor(snap, r.route_id) }}
+          style={{ background: routeColor(snap, r.route_id), color: bulletTextColor(routeColor(snap, r.route_id)) }}
         >
           {routeLabel(snap, r.route_id)}
         </span>
@@ -782,7 +784,7 @@ function RouteDrawer({
       <h2>
         <span
           className="bullet"
-          style={{ background: routeColor(snap, r.route_id) }}
+          style={{ background: routeColor(snap, r.route_id), color: bulletTextColor(routeColor(snap, r.route_id)) }}
         >
           {routeLabel(snap, r.route_id)}
         </span>

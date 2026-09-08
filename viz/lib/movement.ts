@@ -187,7 +187,15 @@ function median(xs: number[]): number {
   if (!xs.length) return 0;
   const s = [...xs].sort((a, b) => a - b);
   const mid = s.length >> 1;
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  if (s.length % 2) {
+    const v = s[mid];
+    if (v === undefined) throw new Error("median: unreachable index");
+    return v;
+  }
+  const lo = s[mid - 1];
+  const hi = s[mid];
+  if (lo === undefined || hi === undefined) throw new Error("median: unreachable index");
+  return (lo + hi) / 2;
 }
 
 export interface AdvanceBaselineCell {
@@ -368,21 +376,52 @@ interface PredLike {
   condition: string;
 }
 
-const STATE_INDEX: Record<string, number> = { normal: 0, disrupted: 1, suspended: 2 };
+type StateIdx = 0 | 1 | 2;
+type Row3 = [number, number, number];
+type Matrix3 = [Row3, Row3, Row3];
+
+const STATE_INDEX: Record<string, StateIdx> = { normal: 0, disrupted: 1, suspended: 2 };
+
+function stateIndex(s: MovementState): StateIdx {
+  switch (s) {
+    case "normal":
+      return 0;
+    case "disrupted":
+      return 1;
+    case "suspended":
+      return 2;
+  }
+}
+
+/** Inverse of stateIndex, for indices recovered from array position rather
+ * than a typed MovementState (e.g. flatMap's row/col). Throws on a value
+ * outside 0..2, which never happens against a Matrix3's own rows/cols. */
+function indexState(i: number): MovementState {
+  switch (i) {
+    case 0:
+      return "normal";
+    case 1:
+      return "disrupted";
+    case 2:
+      return "suspended";
+    default:
+      throw new Error(`movementConfusion: invalid state index ${i}`);
+  }
+}
 
 export function movementConfusion(
   predictions: PredLike[],
   truth: Map<string, MovementState>,
 ): ConfusionResult {
-  const matrix = [
+  const matrix: Matrix3 = [
     [0, 0, 0],
     [0, 0, 0],
     [0, 0, 0],
   ];
-  const per = new Map<string, { n: number; agree: number; cells: number[][] }>();
+  const per = new Map<string, { n: number; agree: number; cells: Matrix3 }>();
   let unjudged = 0;
   let suspendedUnjudged = 0;
-  const newCells = () => [
+  const newCells = (): Matrix3 => [
     [0, 0, 0],
     [0, 0, 0],
     [0, 0, 0],
@@ -396,7 +435,7 @@ export function movementConfusion(
       if (row === STATE_INDEX.suspended) suspendedUnjudged += 1;
       continue;
     }
-    const col = STATE_INDEX[ms];
+    const col = stateIndex(ms);
     matrix[row][col] += 1;
     const r = per.get(p.route) ?? { n: 0, agree: 0, cells: newCells() };
     r.n += 1;
@@ -431,8 +470,8 @@ export function movementConfusion(
             : [
                 {
                   route,
-                  hmm: STATES[row],
-                  move: STATES[col],
+                  hmm: indexState(row),
+                  move: indexState(col),
                   count,
                   rate: v.n ? count / v.n : 0,
                   kind: kindOf(row, col),

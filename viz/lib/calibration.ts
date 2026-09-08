@@ -69,6 +69,9 @@ export function buildTimelines(
     }
 
     const last = recs[recs.length - 1];
+    if (last === undefined) {
+      throw new Error(`buildTimelines: route ${route} has no transitions`);
+    }
     const observedUntil = Math.max(last.exited_at, nowSec);
     // Open current regime.
     segments.push({
@@ -141,6 +144,7 @@ export function reliability(
   nBins = 10,
 ): ReliabilityResult {
   const field = HORIZON_FIELD[horizonMin];
+  if (!field) throw new Error(`reliability: unsupported horizonMin ${horizonMin}`);
   const horizonSec = horizonMin * 60;
   const bins: { sumP: number; sumY: number; n: number }[] = Array.from(
     { length: nBins },
@@ -166,13 +170,15 @@ export function reliability(
 
     const nn = nextNormalStart(tl, pr.ts);
     const y = nn != null && nn - pr.ts <= horizonSec ? 1 : 0;
-    const p = pr[field] as number;
+    const p = pr[field];
     if (typeof p !== "number" || Number.isNaN(p)) continue;
 
     const idx = Math.min(nBins - 1, Math.max(0, Math.floor(p * nBins)));
-    bins[idx].sumP += p;
-    bins[idx].sumY += y;
-    bins[idx].n += 1;
+    const bin = bins[idx];
+    if (bin === undefined) throw new Error(`reliability: bin index ${idx} out of range`);
+    bin.sumP += p;
+    bin.sumY += y;
+    bin.n += 1;
     brierSum += (p - y) * (p - y);
     n += 1;
     if (y === 1) pos.push(p);
@@ -212,16 +218,22 @@ export function reliability(
 function rankAuc(pos: number[], neg: number[]): number | null {
   if (pos.length === 0 || neg.length === 0) return null;
   const ordered = [...pos, ...neg].sort((a, b) => a - b);
-  const midrank: Record<number, number> = {};
+  const midrank = new Map<number, number>();
   for (let i = 0; i < ordered.length; ) {
     let j = i;
-    while (j + 1 < ordered.length && ordered[j + 1] === ordered[i]) j += 1;
+    const vi = ordered[i];
+    if (vi === undefined) throw new Error("rankAuc: unreachable index");
+    while (j + 1 < ordered.length && ordered[j + 1] === vi) j += 1;
     // 1-based ranks.
-    midrank[ordered[i]] = (i + j) / 2 + 1;
+    midrank.set(vi, (i + j) / 2 + 1);
     i = j + 1;
   }
   let rankSum = 0;
-  for (const p of pos) rankSum += midrank[p];
+  for (const p of pos) {
+    const r = midrank.get(p);
+    if (r === undefined) throw new Error(`rankAuc: missing rank for ${p}`);
+    rankSum += r;
+  }
   return (
     (rankSum - (pos.length * (pos.length + 1)) / 2) / (pos.length * neg.length)
   );
@@ -288,12 +300,18 @@ export function recoveryError(
   const errs = points.map((p) => Math.abs(p.predictedMin - p.actualMin)).sort(
     (a, b) => a - b,
   );
+  let medianAbsErrorMin = NaN;
+  if (n > 0) {
+    const mid = errs[Math.floor(n / 2)];
+    if (mid === undefined) throw new Error("recoveryError: unreachable index");
+    medianAbsErrorMin = mid;
+  }
   return {
     points,
     n,
     excludedSchedule,
     coverage: n ? points.filter((p) => p.inIqr).length / n : NaN,
-    medianAbsErrorMin: n ? errs[Math.floor(n / 2)] : NaN,
+    medianAbsErrorMin,
   };
 }
 
@@ -359,7 +377,10 @@ export interface DetectionLatencyResult {
 }
 
 function median(sorted: number[]): number {
-  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN;
+  if (!sorted.length) return NaN;
+  const mid = sorted[Math.floor(sorted.length / 2)];
+  if (mid === undefined) throw new Error("median: unreachable index");
+  return mid;
 }
 
 /**

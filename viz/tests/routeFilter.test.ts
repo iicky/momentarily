@@ -181,17 +181,26 @@ test("filtering the painted geometry is a pure subset — a branch verdict never
   const painted = paintEdges(movement(), ctx);
   const byId = Object.fromEntries(painted.map((p) => [p.id, p]));
   // Baseline attribution: A carries the disrupted colour, B stays no-reading.
-  assert.equal(byId[edgeId(a)].paint.color, "var(--disrupted)");
-  assert.equal(byId[edgeId(b)].paint.color, null);
+  const paintedA = byId[edgeId(a)];
+  const paintedB = byId[edgeId(b)];
+  if (paintedA === undefined || paintedB === undefined) {
+    throw new Error("expected both edges in the painted map");
+  }
+  assert.equal(paintedA.paint.color, "var(--disrupted)");
+  assert.equal(paintedB.paint.color, null);
 
   const sel = new Set(["1"]);
   const shown = painted.filter((p) => edgeShown(p.edge, sel));
   // Both are route 1, so both survive — and, crucially, each keeps the EXACT
   // paint the overlay attributed. Filtering added nothing and moved nothing.
   assert.equal(shown.length, 2);
-  for (const p of shown) assert.equal(p.paint, byId[p.id].paint);
+  for (const p of shown) {
+    const matched = byId[p.id];
+    if (matched === undefined) throw new Error(`expected ${p.id} in the painted map`);
+    assert.equal(p.paint, matched.paint);
+  }
   assert.equal(
-    byId[edgeId(b)].paint.color,
+    paintedB.paint.color,
     null,
     "the sibling branch never inherits A's verdict",
   );

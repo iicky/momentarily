@@ -15,11 +15,19 @@ import {
 // agree everywhere; they only diverge on a repeated knot.
 function oldDwellCdf(curveSec: number[], x: number): number {
   const k = curveSec.length;
-  if (x >= curveSec[k - 1]) return 1.0;
-  if (x <= curveSec[0]) return 0.0;
+  const last = curveSec[k - 1];
+  const first = curveSec[0];
+  if (last === undefined || first === undefined) {
+    throw new Error("oldDwellCdf: curveSec must be non-empty");
+  }
+  if (x >= last) return 1.0;
+  if (x <= first) return 0.0;
   for (let i = 0; i < k - 1; i++) {
     const lo = curveSec[i];
     const hi = curveSec[i + 1];
+    if (lo === undefined || hi === undefined) {
+      throw new Error("oldDwellCdf: curveSec index out of bounds");
+    }
     if (lo <= x && x <= hi) {
       const frac = hi === lo ? 0.0 : (x - lo) / (hi - lo);
       return (i + frac) / (k - 1);
@@ -146,9 +154,16 @@ test("predictedRecoveryCurve threads the atom into every sampled minute", () => 
     atomP = 0.704,
     atomSec = 300; // 5 minutes
   const out = predictedRecoveryCurve(0, [1, 2], [shape, scale], { p: atomP, sec: atomSec });
-  assert.ok(Math.abs(out[5] - atomP) < 1e-12);
+  const out5 = out[5];
+  if (out5 === undefined) throw new Error("expected a sample at minute 5");
+  assert.ok(Math.abs(out5 - atomP) < 1e-12);
   // Monotone non-decreasing — a CDF sampled over an increasing horizon can't drop.
   for (let t = 1; t < out.length; t++) {
-    assert.ok(out[t] >= out[t - 1] - 1e-12);
+    const cur = out[t];
+    const prev = out[t - 1];
+    if (cur === undefined || prev === undefined) {
+      throw new Error(`expected samples at minutes ${t - 1} and ${t}`);
+    }
+    assert.ok(cur >= prev - 1e-12);
   }
 });

@@ -49,6 +49,35 @@ export function routeHue(snap: Snapshot | null, route: string): string {
   return ROUTE_COLORS[route] ?? "#6e6e73";
 }
 
+// Text colour for a solid route bullet: black on light hues (MTA yellow/orange/
+// lime), white on the dark ones — the same split MTA signage uses (N/Q/R/W ride
+// black on yellow). Chosen by WCAG relative luminance so the pick is identical
+// at every render site and always the higher-contrast option against the exact
+// MTA background hex. Non-hex input (a CSS var fallback) keeps white.
+export function bulletTextColor(bg: string): "#000" | "#fff" {
+  const raw = bg.replace("#", "");
+  const hex =
+    raw.length === 3
+      ? raw
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : raw;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return "#fff";
+  const n = Number.parseInt(hex, 16);
+  const toLin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const lum =
+    0.2126 * toLin((n >> 16) & 0xff) +
+    0.7152 * toLin((n >> 8) & 0xff) +
+    0.0722 * toLin(n & 0xff);
+  const onWhite = 1.05 / (lum + 0.05);
+  const onBlack = (lum + 0.05) / 0.05;
+  return onBlack > onWhite ? "#000" : "#fff";
+}
+
 /** A colored MTA route bullet. Links to the line page when `href` is set. */
 export function RouteBullet({
   snap,
@@ -65,7 +94,7 @@ export function RouteBullet({
   const dot = (
     <span
       className="bullet"
-      style={{ background: color, width: size, height: size, fontSize: size * 0.5 }}
+      style={{ background: color, color: bulletTextColor(color), width: size, height: size, fontSize: size * 0.5 }}
       title={`${route} line`}
     >
       {route}

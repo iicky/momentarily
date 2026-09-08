@@ -48,7 +48,9 @@ test("platformCrowding re-derives against the client clock, not the published nu
   // Published at a 4-minute gap: 40 riders. The reader sees it 3 minutes later,
   // by which time the crowd is 70 — the staleness the recompute exists to fix.
   const pc = surface(10, 4);
-  assert.equal(pc.platforms["127N"].waiting_riders, 40);
+  const platform = pc.platforms["127N"];
+  if (platform === undefined) throw new Error("expected 127N platform in fixture");
+  assert.equal(platform.waiting_riders, 40);
   const v = platformCrowding(pc, "127N", OBSERVED + 180);
   assert.equal(v.estimated, true);
   assert.equal(v.estimated && v.riders, 70);

@@ -44,6 +44,7 @@ test("movementConfusion ranks disagreements and classifies them", () => {
   // Two distinct disagreement cells, ranked by count (A's two first).
   assert.equal(r.disagreements.length, 2);
   const [top] = r.disagreements;
+  if (top === undefined) throw new Error("expected at least one disagreement");
   assert.equal(top.route, "A");
   assert.equal(top.count, 2);
   assert.equal(top.kind, "false-normal");

@@ -99,20 +99,28 @@ export function patternsForTrip(
  * disjoint runs (branch tails, the three S shuttles) append as blocks. */
 export function mergePatterns(patterns: RoutePattern[]): string[] {
   if (patterns.length === 0) return [];
-  const result = [...patterns[0].stops];
+  const first = patterns[0];
+  if (!first) return [];
+  const result = [...first.stops];
   const placed = new Set(result);
   for (let p = 1; p < patterns.length; p++) {
-    const stops = patterns[p].stops;
+    const pattern = patterns[p];
+    if (!pattern) continue;
+    const stops = pattern.stops;
     for (let i = 0; i < stops.length; i++) {
       const s = stops[i];
-      if (placed.has(s)) continue;
+      if (s === undefined || placed.has(s)) continue;
       let at = -1;
       for (let j = i - 1; j >= 0 && at < 0; j--) {
-        const k = result.indexOf(stops[j]);
+        const sj = stops[j];
+        if (sj === undefined) continue;
+        const k = result.indexOf(sj);
         if (k >= 0) at = k + 1;
       }
       for (let j = i + 1; j < stops.length && at < 0; j++) {
-        const k = result.indexOf(stops[j]);
+        const sj = stops[j];
+        if (sj === undefined) continue;
+        const k = result.indexOf(sj);
         if (k >= 0) at = k;
       }
       if (at < 0) at = result.length;

@@ -26,15 +26,18 @@ function topo(
     const route = key.slice(0, bar);
     const direction = key.slice(bar + 1);
     for (let i = 0; i < stops.length - 1; i++) {
-      const k = `${route}|${direction}|${stops[i]}`;
+      const from = stops[i];
+      const to = stops[i + 1];
+      if (from === undefined || to === undefined) continue;
+      const k = `${route}|${direction}|${from}`;
       if (skip.has(k)) continue;
       edges.push({
         key: k,
         route,
         direction,
-        from: stops[i],
-        to: stops[i + 1],
-        successors: [{ to: stops[i + 1], n_trips: 100 }],
+        from,
+        to,
+        successors: [{ to, n_trips: 100 }],
       });
     }
   }
@@ -48,12 +51,16 @@ test("direct: a single line boarding at origin and reaching destination", () => 
   const { routeStops, edges } = topo({ "C|north": ["O", "M", "D"] });
   const js = enumerateJourneys(routeStops, edges, ["O"], ["D"]);
   assert.equal(js.length, 1);
-  assert.equal(js[0].transfers, 0);
-  assert.equal(seq(js[0]), "C|north");
-  assert.equal(boardStop(js[0].legs[0]), "O");
-  assert.equal(alightStop(js[0].legs[0]), "D");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(j0.transfers, 0);
+  assert.equal(seq(j0), "C|north");
+  const leg0 = j0.legs[0];
+  assert.ok(leg0, "expected a leg");
+  assert.equal(boardStop(leg0), "O");
+  assert.equal(alightStop(leg0), "D");
   // The leg carries the ordered pairwise segments, keyed for live-status joins.
-  assert.deepEqual(journeyHopKeys(js[0]), ["C|north|O", "C|north|M"]);
+  assert.deepEqual(journeyHopKeys(j0), ["C|north|O", "C|north|M"]);
 });
 
 test("no journey when the only line runs origin after destination", () => {
@@ -69,10 +76,14 @@ test("single transfer at a shared stop id, and no needless two-transfer", () => 
   });
   const js = enumerateJourneys(routeStops, edges, ["O"], ["D"]);
   assert.equal(js.length, 1);
-  assert.equal(js[0].transfers, 1);
-  assert.equal(seq(js[0]), "A|north / B|north");
-  assert.equal(alightStop(js[0].legs[0]), "X");
-  assert.equal(boardStop(js[0].legs[1]), "X");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(j0.transfers, 1);
+  assert.equal(seq(j0), "A|north / B|north");
+  const [leg0, leg1] = j0.legs;
+  assert.ok(leg0 && leg1, "expected two legs");
+  assert.equal(alightStop(leg0), "X");
+  assert.equal(boardStop(leg1), "X");
 });
 
 test("both a direct and a single transfer are enumerated together", () => {
@@ -98,10 +109,14 @@ test("one canonical journey per route sequence, transferring earliest", () => {
   });
   const js = enumerateJourneys(routeStops, edges, ["O"], ["D"]);
   assert.equal(js.length, 1);
-  assert.equal(seq(js[0]), "A|north / B|north");
-  assert.equal(alightStop(js[0].legs[0]), "X"); // earliest shared complex, not Y
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(seq(j0), "A|north / B|north");
+  const [leg0, leg1] = j0.legs;
+  assert.ok(leg0 && leg1, "expected two legs");
+  assert.equal(alightStop(leg0), "X"); // earliest shared complex, not Y
   assert.deepEqual(
-    js[0].legs[1].segments.map((s) => s.from),
+    leg1.segments.map((s) => s.from),
     ["X", "Y"],
   );
 });
@@ -117,7 +132,9 @@ test("opposite running directions of one route sequence are a single candidate",
   });
   const js = enumerateJourneys(routeStops, edges, ["O"], ["D"]);
   assert.equal(js.length, 1);
-  assert.equal(seq(js[0]), "A|north / B|north");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(seq(j0), "A|north / B|north");
 });
 
 test("a transfer needs two different routes, never a self-transfer", () => {
@@ -142,9 +159,13 @@ test("distinct stop ids transfer only when listed as one complex", () => {
     complexes: [["X1", "X2"]],
   });
   assert.equal(js.length, 1);
-  assert.equal(seq(js[0]), "A|north / B|north");
-  assert.equal(alightStop(js[0].legs[0]), "X1");
-  assert.equal(boardStop(js[0].legs[1]), "X2");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(seq(j0), "A|north / B|north");
+  const [leg0, leg1] = j0.legs;
+  assert.ok(leg0 && leg1, "expected two legs");
+  assert.equal(alightStop(leg0), "X1");
+  assert.equal(boardStop(leg1), "X2");
 });
 
 test("a ride cannot cross a pair the adjacency graph does not back", () => {
@@ -156,7 +177,9 @@ test("a ride cannot cross a pair the adjacency graph does not back", () => {
   );
   const js = enumerateJourneys(routeStops, edges, ["O"], ["D"]);
   assert.deepEqual(js.map(seq), ["A|north / B|north"]);
-  assert.equal(alightStop(js[0].legs[0]), "X");
+  const leg0 = js[0]?.legs[0];
+  assert.ok(leg0, "expected a leg");
+  assert.equal(alightStop(leg0), "X");
 });
 
 test("two transfers only as a fallback when nothing simpler connects", () => {
@@ -167,8 +190,10 @@ test("two transfers only as a fallback when nothing simpler connects", () => {
   });
   const js = enumerateJourneys(routeStops, edges, ["O"], ["D"]);
   assert.equal(js.length, 1);
-  assert.equal(js[0].transfers, 2);
-  assert.equal(seq(js[0]), "A|north / B|north / C|north");
+  const j0 = js[0];
+  assert.ok(j0, "expected a journey");
+  assert.equal(j0.transfers, 2);
+  assert.equal(seq(j0), "A|north / B|north / C|north");
   // Capping transfers below two suppresses the only connection.
   assert.deepEqual(enumerateJourneys(routeStops, edges, ["O"], ["D"], { maxTransfers: 1 }), []);
 });
@@ -213,7 +238,12 @@ test("Atlantic Av → Union Sq: every emitted hop key is a real adjacency cell",
     // Legs are contiguous: each segment's `to` is the next segment's `from`.
     for (const leg of j.legs) {
       for (let i = 1; i < leg.segments.length; i++) {
-        assert.equal(leg.segments[i].from, leg.segments[i - 1].to);
+        const curr = leg.segments[i];
+        const prev = leg.segments[i - 1];
+        if (curr === undefined || prev === undefined) {
+          throw new Error(`missing segment at index ${i}`);
+        }
+        assert.equal(curr.from, prev.to);
       }
     }
   }
@@ -221,14 +251,16 @@ test("Atlantic Av → Union Sq: every emitted hop key is a real adjacency cell",
 
 test("Atlantic Av → Union Sq: the 4 train rides straight through, in order", () => {
   const js = enumerateJourneys(diagram.route_stops, diagram.adjacency, ATLANTIC, UNION_SQ);
-  const four = js.find((j) => j.transfers === 0 && j.legs[0].route === "4");
+  const four = js.find((j) => j.transfers === 0 && j.legs[0]?.route === "4");
   assert.ok(four, "the 4 should be a direct route");
-  assert.equal(boardStop(four.legs[0]), "235N");
-  assert.equal(alightStop(four.legs[0]), "635N");
+  const leg0 = four.legs[0];
+  assert.ok(leg0, "expected a leg");
+  assert.equal(boardStop(leg0), "235N");
+  assert.equal(alightStop(leg0), "635N");
 });
 
 test("Atlantic Av → Union Sq: a single transfer from the 7th-Ave 2 is a candidate", () => {
   const js = enumerateJourneys(diagram.route_stops, diagram.adjacency, ATLANTIC, UNION_SQ);
-  const viaTwo = js.filter((j) => j.transfers === 1 && j.legs[0].route === "2");
+  const viaTwo = js.filter((j) => j.transfers === 1 && j.legs[0]?.route === "2");
   assert.ok(viaTwo.length > 0, "the 2 should reach Union Sq with one transfer");
 });

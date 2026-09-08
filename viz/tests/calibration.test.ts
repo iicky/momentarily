@@ -84,6 +84,7 @@ test("reliability scores forecasts against real recovery; censors the unobservab
   const res30 = reliability(predictions, tls, 30);
   assert.equal(res30.excludedSchedule, 0);
   const r30 = res30.arms[0];
+  if (r30 === undefined) throw new Error("expected arms[0]");
   assert.equal(r30.n, 1); // only the ts=2300 point is observable & non-normal
   // The recompute has no movement truth to hand, so it grades one arm and names it.
   assert.equal(r30.arm, SHADOW_ARM);
@@ -94,6 +95,7 @@ test("reliability scores forecasts against real recovery; censors the unobservab
   assert.equal(bin30.observedFreq, 0);
 
   const r60 = reliability(predictions, tls, 60).arms[0];
+  if (r60 === undefined) throw new Error("expected arms[0]");
   assert.equal(r60.n, 1);
   // recovered in 45m <= 60m → y=1; p=0.7 → brier=0.09
   assert.ok(Math.abs(r60.brier - 0.09) < 1e-9);
@@ -111,6 +113,7 @@ test("reliability skips a withheld (null) horizon without throwing or miscountin
   ];
 
   const r60 = reliability(predictions, tls, 60).arms[0];
+  if (r60 === undefined) throw new Error("expected arms[0]");
   assert.equal(r60.n, 0);
   assert.ok(r60.bins.every((b) => b.n === 0));
   assert.ok(Number.isNaN(r60.brier));
@@ -121,6 +124,7 @@ test("reliability skips a withheld (null) horizon without throwing or miscountin
   // A null neighbor on one horizon field doesn't leak into another horizon's
   // scoring on the same record.
   const r120 = reliability(predictions, tls, 120).arms[0];
+  if (r120 === undefined) throw new Error("expected arms[0]");
   assert.equal(r120.n, 1);
 });
 
@@ -136,6 +140,7 @@ test("reliability skips a withheld (null) 30min forecast without throwing or mis
   ];
 
   const r30 = reliability(predictions, tls, 30).arms[0];
+  if (r30 === undefined) throw new Error("expected arms[0]");
   assert.equal(r30.n, 0);
   assert.ok(r30.bins.every((b) => b.n === 0));
   assert.ok(Number.isNaN(r30.brier));
@@ -143,6 +148,7 @@ test("reliability skips a withheld (null) 30min forecast without throwing or mis
   // A null neighbor on one horizon field doesn't leak into another horizon's
   // scoring on the same record.
   const r60 = reliability(predictions, tls, 60).arms[0];
+  if (r60 === undefined) throw new Error("expected arms[0]");
   assert.equal(r60.n, 1);
 });
 
@@ -156,7 +162,9 @@ test("recoveryError compares predicted band to actual time-to-normal", () => {
   const res = recoveryError(predictions, tls);
   assert.equal(res.n, 1);
   assert.equal(res.coverage, 1);
-  assert.ok(Math.abs(res.points[0].actualMin - 45) < 1e-9);
+  const point0 = res.points[0];
+  if (point0 === undefined) throw new Error("expected points[0]");
+  assert.ok(Math.abs(point0.actualMin - 45) < 1e-9);
   assert.ok(Math.abs(res.medianAbsErrorMin - 5) < 1e-9); // |40 - 45|
 });
 
@@ -168,7 +176,9 @@ test("schedule-recovery predictions are excluded from HMM calibration", () => {
     pred({ ts: 2400, recovery_source: "schedule", resumes_at: 5000 }), // excluded
   ];
   const r30 = reliability(predictions, tls, 30);
-  assert.equal(r30.arms[0].n, 1);
+  const arm0 = r30.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.equal(arm0.n, 1);
   assert.equal(r30.excludedSchedule, 2);
 
   const rec = recoveryError(predictions, tls);
@@ -188,8 +198,12 @@ test("detectionLatency measures alert-onset → first disrupted/suspended tick",
   const res = detectionLatency(predictions);
   assert.equal(res.n, 1);
   assert.equal(res.missed, 0);
-  assert.ok(Math.abs(res.points[0].latencyMin - 600 / 60) < 1e-9); // 10 min
-  assert.equal(res.byAlertType[0].alertType, "Delays");
+  const point0 = res.points[0];
+  if (point0 === undefined) throw new Error("expected points[0]");
+  assert.ok(Math.abs(point0.latencyMin - 600 / 60) < 1e-9); // 10 min
+  const alertType0 = res.byAlertType[0];
+  if (alertType0 === undefined) throw new Error("expected byAlertType[0]");
+  assert.equal(alertType0.alertType, "Delays");
 });
 
 test("detectionLatency counts an onset that clears without a flip as missed", () => {
@@ -201,5 +215,7 @@ test("detectionLatency counts an onset that clears without a flip as missed", ()
   const res = detectionLatency(predictions);
   assert.equal(res.n, 0);
   assert.equal(res.missed, 1);
-  assert.equal(res.byAlertType[0].missed, 1);
+  const alertType0 = res.byAlertType[0];
+  if (alertType0 === undefined) throw new Error("expected byAlertType[0]");
+  assert.equal(alertType0.missed, 1);
 });

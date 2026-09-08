@@ -279,8 +279,15 @@ export function reshapeArm(
     auc: c.auc ?? null,
     skillPersistence: c.bss_persistence,
     skillClimatology: c.bss_climatology,
-    unknownShare,
-    decomp: nn || xn ? { normalNow: nn, notNormalNow: xn } : undefined,
+    ...(unknownShare !== undefined ? { unknownShare } : {}),
+    ...(nn || xn
+      ? {
+          decomp: {
+            ...(nn !== undefined ? { normalNow: nn } : {}),
+            ...(xn !== undefined ? { notNormalNow: xn } : {}),
+          },
+        }
+      : {}),
     bins: c.bins.map((b) => ({
       p: (b.bin_lo + b.bin_hi) / 2,
       predictedMean: b.mean_pred ?? NaN,

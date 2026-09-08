@@ -34,8 +34,14 @@ export function SaveJourney({ snap, journey }: { snap: Snapshot; journey: Journe
   }, [snap]);
 
   const defaultName = useMemo(() => {
-    const origin = nameOf(boardStop(journey.legs[0]));
-    const dest = nameOf(alightStop(journey.legs[journey.legs.length - 1]));
+    const firstLeg = journey.legs[0];
+    const lastLeg = journey.legs[journey.legs.length - 1];
+    if (!firstLeg || !lastLeg) {
+      // A Journey is only ever constructed with at least one leg.
+      throw new Error("journey has no legs");
+    }
+    const origin = nameOf(boardStop(firstLeg));
+    const dest = nameOf(alightStop(lastLeg));
     return `${origin} → ${dest}`;
   }, [journey, nameOf]);
 

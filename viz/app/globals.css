@@ -28,7 +28,7 @@
   --panel-2: #22262e;
   --border: #2c313a;
   --text: #c8ccd4;
-  --muted: #828997;
+  --muted: #949aa6;
   --normal: #98c379;
   --disrupted: #e5c07b;
   --suspended: #e06c75;
@@ -76,6 +76,12 @@ a {
   text-decoration: none;
 }
 a:hover {
+  text-decoration: underline;
+}
+/* Links sitting inside a block of prose must be distinguishable without colour
+   alone (WCAG link-in-text-block). Standalone links — nav, cards, bullets —
+   carry their own affordance, so scope the underline to paragraph text. */
+p a {
   text-decoration: underline;
 }
 
@@ -2381,7 +2387,7 @@ a.trip-stop-name:hover {
   max-width: 210px;
 }
 .gauge-fine {
-  color: var(--unknown);
+  color: var(--muted);
 }
 .gauge.low .gauge-fill {
   stroke: var(--suspended);

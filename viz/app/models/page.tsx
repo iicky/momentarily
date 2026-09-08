@@ -339,7 +339,7 @@ export default function ModelsPage() {
                   of them learned. The second row is the model running right now,
                   on its own predictions.
                 </p>
-                <RecoverySummary result={recAgg} currentParams={currentParams} />
+                <RecoverySummary result={recAgg} currentParams={currentParams ?? null} />
               </>
             )
           ) : (
@@ -475,7 +475,7 @@ export default function ModelsPage() {
             entries={heatmap}
             states={states}
             trainedAt={data.paramsTrainedAt}
-            selfLoopCap={data.paramsSelfLoopCap}
+            selfLoopCap={data.paramsSelfLoopCap ?? null}
           />
         </ChartMetaProvider>
         </ChartErrorBoundary>

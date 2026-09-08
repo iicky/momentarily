@@ -330,6 +330,7 @@ test("a route absent from route_status reads no-reading and says which absence",
   const ctx = ctxOf({ diagram: diagramOf([edge()]), snap });
   assert.equal(overlay("supply").paint(edge(), ctx)?.color, null);
   const [row] = overlay("supply").detail(edge(), ctx);
+  if (row === undefined) throw new Error("expected a detail row");
   assert.match(row.note ?? "", /not in the snapshot's route_status/);
 });
 
@@ -376,6 +377,7 @@ test("the supply overlay says out loud that its unit is the route", () => {
   assert.match(prose(overlay("supply").caption), /route/);
   assert.match(prose(overlay("supply").note(ctx)), /per-route/);
   const [row] = overlay("supply").detail(edge(), ctx);
+  if (row === undefined) throw new Error("expected a detail row");
   assert.match(row.note ?? "", /not measured on this segment/);
 });
 
@@ -386,7 +388,9 @@ test("supply reports the published ratio and never invents a missing one", () =>
     },
   });
   const ctx = ctxOf({ diagram: diagramOf([edge()]), snap: withRatio });
-  assert.match(overlay("supply").detail(edge(), ctx)[0].note ?? "", /35%/);
+  const [ratioRow] = overlay("supply").detail(edge(), ctx);
+  if (ratioRow === undefined) throw new Error("expected a detail row");
+  assert.match(ratioRow.note ?? "", /35%/);
 
   const noRatio = snapOf({
     route_status: {
@@ -394,7 +398,9 @@ test("supply reports the published ratio and never invents a missing one", () =>
     },
   });
   const bare = ctxOf({ diagram: diagramOf([edge()]), snap: noRatio });
-  const note = overlay("supply").detail(edge(), bare)[0].note ?? "";
+  const [bareRow] = overlay("supply").detail(edge(), bare);
+  if (bareRow === undefined) throw new Error("expected a detail row");
+  const note = bareRow.note ?? "";
   assert.match(note, /without a ratio/);
   assert.doesNotMatch(note, /\d+%/);
 });
@@ -405,7 +411,8 @@ function timed(
   seconds: DiagramEdge["seconds"],
   over: Partial<DiagramEdge> = {},
 ): DiagramEdge {
-  return edge({ seconds, ...over });
+  const secondsField: Partial<DiagramEdge> = seconds !== undefined ? { seconds } : {};
+  return edge({ ...secondsField, ...over });
 }
 
 test("a direction with no scheduled time renders no timing, not zero", () => {
@@ -433,7 +440,9 @@ test("a service class the timetable doesn't cover reads no timing for the hop", 
     time: timeScale(diagram, "sunday"),
   });
   assert.equal(overlay("time").paint(e, ctx)?.color, null);
-  assert.equal(overlay("time").detail(e, ctx)[0].value, "no timing");
+  const [timeRow] = overlay("time").detail(e, ctx);
+  if (timeRow === undefined) throw new Error("expected a detail row");
+  assert.equal(timeRow.value, "no timing");
 });
 
 test("each service class is ranked against its own timetable", () => {
@@ -655,6 +664,7 @@ test("positions fold onto the parent station, keeping stopped apart from inbound
   );
   assert.equal(layer.markers.length, 1);
   const [marker] = layer.markers;
+  if (marker === undefined) throw new Error("expected a marker");
   assert.equal(marker.station, "101");
   assert.equal(marker.x, 5);
   assert.equal(marker.y, 7);
@@ -737,8 +747,11 @@ test("an incomplete read dims the whole line map instead of implying emptiness",
   // A station with nothing reported can only be called empty when every feed
   // reported.
   const [row] = overlay("trains").detail(edge(), partial);
+  if (row === undefined) throw new Error("expected a detail row");
   assert.match(row.note ?? "", /read is incomplete/);
-  assert.equal(overlay("trains").detail(edge(), whole)[0].note, "no trains reported here");
+  const [wholeRow] = overlay("trains").detail(edge(), whole);
+  if (wholeRow === undefined) throw new Error("expected a detail row");
+  assert.equal(wholeRow.note, "no trains reported here");
 });
 
 test("a complete feed set with no positions is an observation, not a gap", () => {

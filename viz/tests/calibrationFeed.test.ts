@@ -52,11 +52,13 @@ function doc(over: Partial<CalibrationDoc> = {}): CalibrationDoc {
 
 test("calibrationReliability maps bins to midpoint/predicted/observed", () => {
   const [r] = calibrationReliability(doc());
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
   assert.equal(r.horizonMin, 30);
   assert.equal(r.excludedSchedule, 0);
   // No movement block in the fixture, so the shadow grading is the only arm.
   assert.equal(r.arms.length, 1);
   const [shadow] = r.arms;
+  if (shadow === undefined) throw new Error("expected arms[0]");
   assert.equal(shadow.isForecastTarget, false);
   assert.equal(shadow.n, 42);
   assert.equal(shadow.brier, 0.12);
@@ -66,14 +68,18 @@ test("calibrationReliability maps bins to midpoint/predicted/observed", () => {
     observedFreq: 0.0,
     n: 3,
   });
-  assert.equal(shadow.bins[1].p, 0.95);
+  const bin1 = shadow.bins[1];
+  if (bin1 === undefined) throw new Error("expected bins[1]");
+  assert.equal(bin1.p, 0.95);
 });
 
 test("calibrationReliability threads skill scores and the state decomposition", () => {
   const d = doc();
-  d.calibration[0].excluded_schedule = 9;
-  d.calibration[0].auc = 0.41;
-  d.calibration[0].by_current = {
+  const cal0 = d.calibration[0];
+  if (cal0 === undefined) throw new Error("expected calibration[0]");
+  cal0.excluded_schedule = 9;
+  cal0.auc = 0.41;
+  cal0.by_current = {
     normal_now: {
       n: 30,
       brier: 0.02,
@@ -92,8 +98,10 @@ test("calibrationReliability threads skill scores and the state decomposition", 
     },
   };
   const [r] = calibrationReliability(d);
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
   assert.equal(r.excludedSchedule, 9);
   const [shadow] = r.arms;
+  if (shadow === undefined) throw new Error("expected arms[0]");
   assert.equal(shadow.skillPersistence, 0.4);
   assert.equal(shadow.skillClimatology, 0.52);
   assert.equal(shadow.auc, 0.41);
@@ -115,22 +123,33 @@ test("calibrationReliability threads skill scores and the state decomposition", 
 
 test("calibrationReliability leaves decomp undefined when the feed omits it", () => {
   const [r] = calibrationReliability(doc());
-  assert.equal(r.arms[0].decomp, undefined);
-  assert.equal(r.arms[0].skillPersistence, 0.4);
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
+  const arm0 = r.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.equal(arm0.decomp, undefined);
+  assert.equal(arm0.skillPersistence, 0.4);
 });
 
 test("a feed with no auc reports null, never a fabricated 0.5", () => {
   const [r] = calibrationReliability(doc());
-  assert.equal(r.arms[0].auc, null);
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
+  const arm0 = r.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.equal(arm0.auc, null);
 });
 
 test("a stratum missing the sharpness fields reports null, not undefined", () => {
   const d = doc();
-  d.calibration[0].by_current = {
+  const cal0 = d.calibration[0];
+  if (cal0 === undefined) throw new Error("expected calibration[0]");
+  cal0.by_current = {
     normal_now: { n: 30, brier: 0.02, bss_persistence: 0.6 },
   };
   const [r] = calibrationReliability(d);
-  assert.deepEqual(r.arms[0].decomp?.normalNow, {
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
+  const arm0 = r.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.deepEqual(arm0.decomp?.normalNow, {
     n: 30,
     bss: 0.6,
     meanPred: null,
@@ -166,10 +185,14 @@ test("the movement grading leads and is flagged as the forecast's target", () =>
     ],
   };
   const [r] = calibrationReliability(d);
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
   assert.equal(r.arms.length, 2);
   // Movement first: it is what p_normal_in_H forecasts, so it is read first even
   // though it is the thinner sample.
   const [movement, shadow] = r.arms;
+  if (movement === undefined || shadow === undefined) {
+    throw new Error("expected two arms");
+  }
   assert.equal(movement.isForecastTarget, true);
   assert.equal(movement.arm, "published_condition (movement-primary)");
   assert.equal(movement.auc, 0.96);
@@ -189,17 +212,29 @@ test("a horizon the movement block never graded still renders its shadow arm", (
     horizons: [],
   };
   const [r] = calibrationReliability(d);
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
   assert.equal(r.arms.length, 1);
-  assert.equal(r.arms[0].isForecastTarget, false);
+  const arm0 = r.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.equal(arm0.isForecastTarget, false);
 });
 
 test("calibrationReliability null brier/means become NaN", () => {
   const d = doc();
-  d.calibration[0].brier = null;
-  d.calibration[0].bins[0].mean_pred = null;
+  const cal0 = d.calibration[0];
+  if (cal0 === undefined) throw new Error("expected calibration[0]");
+  cal0.brier = null;
+  const bin0 = cal0.bins[0];
+  if (bin0 === undefined) throw new Error("expected bins[0]");
+  bin0.mean_pred = null;
   const [r] = calibrationReliability(d);
-  assert.ok(Number.isNaN(r.arms[0].brier));
-  assert.ok(Number.isNaN(r.arms[0].bins[0].predictedMean));
+  if (r === undefined) throw new Error("expected calibrationReliability[0]");
+  const arm0 = r.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.ok(Number.isNaN(arm0.brier));
+  const armBin0 = arm0.bins[0];
+  if (armBin0 === undefined) throw new Error("expected arm bins[0]");
+  assert.ok(Number.isNaN(armBin0.predictedMean));
 });
 
 /** Movement block with its own coverage, used to build per-line fixtures. */
@@ -252,10 +287,16 @@ test("the line view reports THIS route's coverage, not the window aggregate", ()
     },
   };
   const line = calibrationForLine(d, "1")!;
-  const movement = line.reliability[0].arms.find((a) => a.isForecastTarget)!;
+  const rel0 = line.reliability[0];
+  if (rel0 === undefined) throw new Error("expected reliability[0]");
+  const movement = rel0.arms.find((a) => a.isForecastTarget);
+  if (movement === undefined) throw new Error("expected a forecast-target arm");
   assert.equal(movement.unknownShare, 0.02);
   // And the window aggregate still reports its own rate.
-  const agg = calibrationReliability(d)[0].arms.find((a) => a.isForecastTarget)!;
+  const aggRel0 = calibrationReliability(d)[0];
+  if (aggRel0 === undefined) throw new Error("expected calibrationReliability[0]");
+  const agg = aggRel0.arms.find((a) => a.isForecastTarget);
+  if (agg === undefined) throw new Error("expected a forecast-target arm");
   assert.equal(agg.unknownShare, 0.25);
 });
 
@@ -300,7 +341,10 @@ test("a route with no per-route coverage shows no coverage claim at all", () => 
     },
   };
   const line = calibrationForLine(d, "1")!;
-  const movement = line.reliability[0].arms.find((a) => a.isForecastTarget)!;
+  const rel0 = line.reliability[0];
+  if (rel0 === undefined) throw new Error("expected reliability[0]");
+  const movement = rel0.arms.find((a) => a.isForecastTarget);
+  if (movement === undefined) throw new Error("expected a forecast-target arm");
   // Undefined suppresses the chip. Falling back to the aggregate would be a
   // false route-specific claim; falling back to 0 would claim full coverage.
   assert.equal(movement.unknownShare, undefined);
@@ -313,8 +357,12 @@ test("a route the publisher never movement-graded renders shadow-only", () => {
     "7": { n_predictions: 900, calibration: d.calibration, recovery: d.recovery },
   };
   const line = calibrationForLine(d, "7")!;
-  assert.equal(line.reliability[0].arms.length, 1);
-  assert.equal(line.reliability[0].arms[0].isForecastTarget, false);
+  const rel0 = line.reliability[0];
+  if (rel0 === undefined) throw new Error("expected reliability[0]");
+  assert.equal(rel0.arms.length, 1);
+  const arm0 = rel0.arms[0];
+  if (arm0 === undefined) throw new Error("expected arms[0]");
+  assert.equal(arm0.isForecastTarget, false);
 });
 
 test("calibrationForLine returns null for a route the feed has no breakdown for", () => {
@@ -335,6 +383,8 @@ test("calibrationRoutes sorts numerically, not lexically", () => {
 test("calibrationHeatmap keeps only 3x3 matrices, sorted naturally", () => {
   const h = calibrationHeatmap(doc());
   assert.equal(h.length, 1);
-  assert.equal(h[0].route, "1");
-  assert.equal(h[0].transition.length, 3);
+  const h0 = h[0];
+  if (h0 === undefined) throw new Error("expected heatmap[0]");
+  assert.equal(h0.route, "1");
+  assert.equal(h0.transition.length, 3);
 });

@@ -125,6 +125,10 @@ This Python package is the offline toolkit — used for HMM training (Baum-Welch
 
 You can run your own publisher — your own snapshot URL on your own Cloudflare account, independent of the iicky-operated instance. No MTA API key needed. See [docs/self-hosting.md](docs/self-hosting.md).
 
+### Operator tools
+
+Manual grading, evaluation, and calibration CLIs that are not run by any workflow are catalogued in [docs/ops-tools.md](docs/ops-tools.md).
+
 ## Status mapping
 
 MTA's alerts feed uses an open-set `alert_type` string. Momentarily maps observed values to a coarse status bucket so downstream consumers have a stable vocabulary; unknown values pass through as their raw label rather than being dropped. The live table is documented in [`worker/README.md`](worker/README.md); [`src/momentarily/mapping.py`](src/momentarily/mapping.py) is the offline reference implementation.

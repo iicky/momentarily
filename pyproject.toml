@@ -69,4 +69,10 @@ addopts = "-ra -q --cov=momentarily --cov=training --cov-report=term"
 
 [tool.coverage.run]
 source = ["src/momentarily", "training"]
-omit = ["tests/*"]
+# One-off demos with no importers and no workflow: their 0%/near-0% coverage is
+# noise that masks the real gap in the graded pipeline. See docs/ops-tools.md.
+omit = [
+    "tests/*",
+    "training/backfill_service_baseline.py",
+    "training/run_filter.py",
+]

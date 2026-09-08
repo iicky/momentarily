@@ -33,11 +33,17 @@ function fullSnapshot(): Record<string, unknown> {
 test("a fetch that never resolves rejects within the timeout", async () => {
   // The mock honours the abort signal the way a real transport does — it hangs
   // until aborted — so this asserts fetchSnapshot's own timeout wiring fires.
-  // Promise.withResolvers is ES2024; this package targets ES2022, so the
-  // executor form is the available way to reject on abort.
+  // A real in-flight request holds the event loop open; this mock must too, or
+  // on Node 22 (where AbortSignal.timeout's timer is unref'd) the loop drains
+  // before the timeout fires and the runner cancels the whole file. The ref'd
+  // interval is the transport's stand-in and is cleared on abort.
   globalThis.fetch = ((_url: string, opts?: { signal?: AbortSignal }) =>
     new Promise<Response>((_, reject) => {
-      opts?.signal?.addEventListener("abort", () => reject(opts.signal!.reason));
+      const keepAlive = setInterval(() => {}, 1_000);
+      opts?.signal?.addEventListener("abort", () => {
+        clearInterval(keepAlive);
+        reject(opts.signal!.reason);
+      });
     })) as typeof fetch;
 
   const start = Date.now();

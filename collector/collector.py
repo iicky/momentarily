@@ -43,6 +43,7 @@ ENE_SOURCES: tuple[tuple[str, str], ...] = (
 # Config — overridable via env
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
+# Mirrored by worker/src/index.ts's ENE_INTERVAL_SECONDS archive cadence: the upstream ENE feed refreshes ~hourly.
 ENE_POLL_INTERVAL = int(os.environ.get("ENE_POLL_INTERVAL_SECONDS", "3600"))
 REQUEST_TIMEOUT = httpx.Timeout(30.0)
 

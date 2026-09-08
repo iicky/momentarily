@@ -34,14 +34,14 @@ in your shell before running `wrangler` directly, or use `wrangler secret put`
 ## 1. Create the R2 bucket
 
 ```bash
-wrangler r2 bucket create my-momentarily
+wrangler r2 bucket create momentarily
 ```
 
 ## 2. Point the config at your account
 
 In `worker/wrangler.toml`:
 
-- set `[[r2_buckets]] bucket_name` to your bucket (`my-momentarily`);
+- set `[[r2_buckets]] bucket_name` to your bucket (`momentarily`);
 - either remove the `[[routes]]` custom-domain block (you'll get a free
   `*.workers.dev` URL) or replace `feed.momentarily.nyc` with a domain you've
   added to Cloudflare.
@@ -76,7 +76,7 @@ cd trainer
 wrangler secret put R2_ACCOUNT_ID
 wrangler secret put R2_ACCESS_KEY_ID
 wrangler secret put R2_SECRET_ACCESS_KEY
-wrangler secret put R2_BUCKET          # my-momentarily
+wrangler secret put R2_BUCKET          # momentarily
 wrangler deploy
 ```
 
@@ -91,7 +91,7 @@ for the dashboard. Run it on a schedule (GitHub Actions, like `.github/workflows
 or any cron) with the same `R2_*` environment variables set:
 
 ```bash
-R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=… R2_SECRET_ACCESS_KEY=… R2_BUCKET=my-momentarily \
+R2_ACCOUNT_ID=… R2_ACCESS_KEY_ID=… R2_SECRET_ACCESS_KEY=… R2_BUCKET=momentarily \
   uv run python -m training.eval --days 7
 ```
 

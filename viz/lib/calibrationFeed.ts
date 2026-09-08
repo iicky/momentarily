@@ -5,13 +5,8 @@
 // with no R2 credentials — the public Worker doesn't expose LIST, but it does
 // serve this single object.
 
+import { FEED_BASE } from "./feed.ts";
 import type { HeatmapEntry } from "./types";
-
-// Same public feed as lib/feed.ts; kept as a value import-free local so the
-// mappers below can be unit-tested under `node --test` without pulling the
-// snapshot module's runtime deps. Override with NEXT_PUBLIC_FEED_BASE.
-const FEED_BASE =
-  process.env.NEXT_PUBLIC_FEED_BASE ?? "https://feed.momentarily.nyc";
 
 export interface CalibrationRecoveryStats {
   n: number;

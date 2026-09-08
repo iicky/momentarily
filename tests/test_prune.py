@@ -106,3 +106,19 @@ def test_long_window_archives_are_policed() -> None:
     assert expired["archive/alerts_liveness/"] == [
         "archive/alerts_liveness/2010-01-01/1.json"
     ]
+
+
+def test_movement_transitions_uses_the_90d_sibling_window() -> None:
+    # v1/movement_transitions/ is capped at 90d like its v1/predictions/ and
+    # v1/regime_transitions/ siblings: an object past the window expires, one
+    # inside it is kept.
+    client = _FakeClient(
+        [
+            "v1/movement_transitions/2026-01-01/1-route.jsonl",  # ~160d → expired
+            "v1/movement_transitions/2026-06-01/2-route.jsonl",  # 10d → kept
+        ]
+    )
+    expired = collect_expired(client, "b", NOW)  # type: ignore[arg-type]
+    assert expired["v1/movement_transitions/"] == [
+        "v1/movement_transitions/2026-01-01/1-route.jsonl"
+    ]

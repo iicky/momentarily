@@ -90,6 +90,12 @@ DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     # republish the whole history is a rounding error. See training.gtfs_archive.
     ("v1/predictions/", 90),
     ("v1/regime_transitions/", 90),
+    # Per-tick movement transition rows, written by worker/src/grading.ts every
+    # 5-minute tick (route + segment scope) and read back by training/eval.py.
+    # Same date partitioning and same 90-day window as the v1/predictions/ and
+    # v1/regime_transitions/ siblings above; capped so the stream stays policed
+    # rather than silently unbounded.
+    ("v1/movement_transitions/", 90),
 )
 
 # state/params/v<epoch>.json rollback snapshots.

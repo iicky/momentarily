@@ -145,6 +145,7 @@ export interface Env {
 // domain must NOT be bound directly to the bucket.
 const PUBLIC_PREFIX = 'v1/';
 
+// Mirrors collector.py's ENE_POLL_INTERVAL (env ENE_POLL_INTERVAL_SECONDS): the upstream ENE feed refreshes ~hourly, so archive and poll share that cadence.
 const ENE_INTERVAL_SECONDS = 3600;
 const STATIONS_INTERVAL_SECONDS = 86_400;
 

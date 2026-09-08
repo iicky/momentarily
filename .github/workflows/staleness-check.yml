@@ -31,9 +31,30 @@ jobs:
       issues: write
     timeout-minutes: 3
     steps:
+      # Two-consecutive-run state for the vehicle_feeds check below. The prior
+      # run's stale line-group set is restored so a one-tick feed blip that only
+      # shows up in the single snapshot this run samples cannot alarm on its own —
+      # freshness.vehicle_feeds carries no debounce of its own (see that block).
+      # The key is per run ATTEMPT (run_id + run_attempt), so a re-run whose feed
+      # recovered records its own fresh observation instead of being masked by the
+      # first attempt's immutable cache. This attempt's key never exists at restore
+      # time (it is saved below), so restore-keys always yields the newest prior
+      # attempt; the check ignores it when its payload run_id matches this run (a
+      # same-run re-run restore). No checkout needed (this job has none).
+      - name: Restore previous vehicle_feeds staleness observation
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: /tmp/vehicle_feeds_stale.json
+          key: vehicle-feeds-stale-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vehicle-feeds-stale-
       - name: Check generated_at lag and freshness sub-fields
         run: |
           set -euo pipefail
+          # Guarantee the carry file exists (first run, or a run whose snapshot
+          # fetch fails before the vehicle_feeds block) so the save step below
+          # never trips on a missing path. Does not clobber a restored set.
+          test -f /tmp/vehicle_feeds_stale.json || echo '{"stale":[]}' > /tmp/vehicle_feeds_stale.json
           # Cache-bust past the CDN (s-maxage=300) so we measure the origin.
           url="https://feed.momentarily.nyc/v1/snapshot.json?cb=$(date +%s)"
           curl -fsS --max-time 30 -o /tmp/snapshot.json "$url"
@@ -103,6 +124,71 @@ jobs:
             echo "::error::provenance.params.trained_at is ${trained_age_days}d old (threshold 45d; the paused-cron reality, tighten when un-paused)"
             exit 1
           fi
+          # --- vehicle_feeds per-group liveness (nzm1.23) ---
+          # freshness.vehicle_feeds.stale names the trip-update line groups that
+          # failed to round-trip THIS tick. vehicle_positions above only dates the
+          # last decode of ANY group, so one group rejecting every tick stays
+          # hidden behind the other seven's fresh stamp — this field is the only
+          # per-group signal. It carries NO debounce: index.ts fetches the 8 groups
+          # with Promise.allSettled and drops a rejected feed straight out of
+          # vehicleFreshFeeds (fetch.ts fetchProtobuf throws on !ok / timeout /
+          # empty-body, no retry), unlike the movement surface's 2-tick regime
+          # debounce (movement_state.ts). So a single transient rejection on the
+          # tick this run happens to sample would show a non-empty stale set.
+          # Require the SAME group stale across two consecutive runs before
+          # alarming: the prior run's set was restored above, the intersection is
+          # what a persistent partial outage looks like — a one-tick blip is not.
+          cur_stale=$(jq -c '(.freshness.vehicle_feeds // {}).stale // empty' /tmp/snapshot.json)
+          if [ -z "$cur_stale" ]; then
+            echo "::error::freshness.vehicle_feeds.stale missing from snapshot"
+            exit 1
+          fi
+          # Read the prior run's observation, ignoring it in two cases so the gate
+          # stays about two DISTINCT, CONSECUTIVE scheduled runs:
+          #   - same run: github.run_id is stable across re-runs, so a re-run
+          #     restores its own earlier attempt's cache as a hit; comparing
+          #     against it would fabricate a two-run outage from one run's attempts.
+          #   - stale carry: actions/cache is best-effort and restore-keys returns
+          #     the newest SURVIVING prefix match, which after an eviction of the
+          #     immediately-preceding entry could be a much older one. The payload
+          #     stamps its recording epoch; anything older than 2h — well above the
+          #     neighboring-run gap even with GHA cron delay, and well below the
+          #     multi-day age of any evicted-then-resurrected cache — is not a
+          #     neighbor and is not counted. A missed pairing only delays detection
+          #     one cycle (safe); a resurrected cache cannot manufacture an alarm.
+          prev_stale='[]'
+          now=$(date +%s)
+          if [ -s /tmp/vehicle_feeds_stale.json ]; then
+            prev_run=$(jq -r '.run_id // ""' /tmp/vehicle_feeds_stale.json)
+            prev_at=$(jq -r '.at // 0' /tmp/vehicle_feeds_stale.json)
+            if [ "$prev_run" != "$GITHUB_RUN_ID" ] && [ "$prev_at" -gt 0 ] \
+                && [ "$(( now - prev_at ))" -le 7200 ]; then
+              prev_stale=$(jq -c '.stale // []' /tmp/vehicle_feeds_stale.json)
+            fi
+          fi
+          # Record THIS run's set (run_id + epoch) for the save step — before any
+          # exit below, so a failing run still records its observation.
+          jq -cn --arg rid "$GITHUB_RUN_ID" --argjson at "$now" --argjson stale "$cur_stale" \
+            '{run_id: $rid, at: $at, stale: $stale}' > /tmp/vehicle_feeds_stale.json
+          echo "vehicle_feeds.stale this=$cur_stale prev=$prev_stale"
+          # Intersection: groups stale in BOTH the previous run and this one.
+          persistent=$(jq -cn --argjson a "$prev_stale" --argjson b "$cur_stale" '$a - ($a - $b)')
+          if [ "$(jq 'length' <<<"$persistent")" -gt 0 ]; then
+            groups=$(jq -r 'join(", ")' <<<"$persistent")
+            echo "::error::freshness.vehicle_feeds.stale: line group(s) [$groups] failed to round-trip across two consecutive checks — a partial trip-update outage hidden behind a fresh vehicle_positions stamp"
+            exit 1
+          fi
+      # Persist THIS attempt's stale set (tagged with its run_id) for the next
+      # run's two-consecutive compare. always() so a run that fails any assertion
+      # above still records the observation. The key includes run_attempt, so a
+      # re-run saves its own record (newest wins on the next restore) rather than
+      # colliding with the first attempt's immutable cache.
+      - name: Save vehicle_feeds staleness observation
+        if: always()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: /tmp/vehicle_feeds_stale.json
+          key: vehicle-feeds-stale-${{ github.run_id }}-${{ github.run_attempt }}
       # A red run only emails the workflow file's last committer, which is easy
       # to miss; a tracking issue is visible to everyone and de-duplicates across
       # repeated failures. No checkout here, so gh needs GH_REPO explicitly.

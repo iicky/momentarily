@@ -1,0 +1,118 @@
+name: Trainer staleness check
+
+# Escalation for the trainer Container, which has no GitHub job wrapping it: it
+# runs as a Cloudflare Container behind a Durable-Object cron (trainer/), so an
+# OOM/crash or a non-advancing fit surfaces only in the Cloudflare dashboard —
+# no tracking issue, and the model can age silently. This asserts that the
+# trainer actually advanced state/params.json (the artifact the trainer WRITES,
+# read straight from R2 via MURK_KEY like eval-daily — NOT the published
+# snapshot, whose provenance also depends on the Worker adopting the params, a
+# separate failure the snapshot-staleness watchdog already covers). A stale
+# trained_at here means the trainer itself did not produce a new model.
+#
+# GATED behind the same paused reality as the cron. trainer/wrangler.toml ships
+# crons = [] on purpose (accrue a clean eval window on one version), so a
+# weekly-cadence assertion would false-alarm every day. The gate reads that same
+# file: while crons is empty this job logs and no-ops; restoring crons is the
+# ONE change that both resumes the weekly retrain and activates this check.
+# The coarse 45-day trained_at bound in staleness-check.yml stays the always-on
+# safety net for the paused window; this is the tight weekly-cadence net.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # daily, after eval-daily (06:00); GHA cron is best-effort
+  workflow_dispatch:
+
+# Read-only by default (R2 I/O rides murk/MURK_KEY, never the repo); the
+# failure-alert step is granted issues: write per-job.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # issues: write for the failure tracking issue; contents: read for checkout
+    # (the gate reads trainer/wrangler.toml).
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Gate on the trainer cron being un-paused
+        id: gate
+        run: |
+          set -euo pipefail
+          # Matches only the live, uncommented `crons = []` assignment (commented
+          # lines start with #). Any non-empty array un-gates the assertion.
+          if grep -qE '^[[:space:]]*crons[[:space:]]*=[[:space:]]*\[[[:space:]]*\]' trainer/wrangler.toml; then
+            echo "Trainer cron is paused (crons = [] in trainer/wrangler.toml): params only move on a deliberate manual retrain, so the weekly-cadence assertion does not apply. Restoring crons both resumes the weekly retrain and activates this check."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Trainer cron is active; asserting the trainer advanced state/params.json trained_at within cadence."
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        if: steps.gate.outputs.active == 'true'
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+        if: steps.gate.outputs.active == 'true'
+      - name: Assert the trainer advanced state/params.json trained_at within cadence
+        if: steps.gate.outputs.active == 'true'
+        env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import json
+          import sys
+          import time
+
+          from training.r2_client import get_object_bytes, load_config, make_client
+
+          # state/params.json is the live pointer the trainer writes and the Worker
+          # reads (worker/src/params.ts, training/train_em.write_params); its
+          # top-level trained_at is the fit epoch. Reading it from R2 isolates
+          # "did the trainer run" from "did the Worker adopt the result".
+          cfg = load_config()
+          client = make_client(cfg)
+          doc = json.loads(get_object_bytes(client, cfg.bucket, "state/params.json"))
+          trained_at = int(doc["trained_at"])
+          age_days = (int(time.time()) - trained_at) // 86400
+          print(f"state/params.json trained_at={trained_at} age_days={age_days}")
+          # Weekly cron (Sun 05:00 UTC) + 1 day of slack for GHA best-effort cron
+          # jitter: a healthy trained_at resets every Sunday, so >8d means at least
+          # one weekly retrain was missed — the trainer Container likely OOMed or
+          # crashed (visible only in the Cloudflare dashboard) or failed to publish.
+          threshold_days = 8
+          if age_days > threshold_days:
+              print(
+                  f"::error::state/params.json trained_at is {age_days}d old "
+                  f"(threshold {threshold_days}d = weekly cadence + 1d slack): the "
+                  "un-paused trainer has not advanced params on cadence — the "
+                  "trainer Container likely OOMed/crashed or failed to publish"
+              )
+              sys.exit(1)
+          PY
+      # A red run only emails the workflow file's last committer, which is easy
+      # to miss; a tracking issue is visible to everyone and de-duplicates across
+      # repeated failures. No checkout dependency here, so gh needs GH_REPO.
+      - name: Open or update the tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Trainer staleness check is failing"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="\`${{ github.workflow }}\` failed at $(date -u +%FT%TZ). Run: $RUN_URL"
+          number=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
+          fi

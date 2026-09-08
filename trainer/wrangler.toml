@@ -9,8 +9,13 @@ workers_dev = false
 preview_urls = false
 
 # Weekly retrain PAUSED — the cron is disabled so params stay pinned while a
-# single version accrues a clean evaluation window. Retrain deliberately with
-# `murk exec -- uv run python -m training.train_em`; restore `crons` to resume.
+# single version (v1788229972) accrues a clean evaluation window. Retrain
+# deliberately with `murk exec -- uv run python -m training.train_em`; restore
+# `crons` to resume. Do not un-pause until the RESUME CRITERION in src/index.ts
+# is met (>= 20 graded recovery incidents across >= 3 routes on the
+# post-v1788229972 window). Restoring `crons` also flips
+# .github/workflows/trainer-staleness-check.yml from no-op to active, so a
+# missed weekly retrain then opens a tracking issue instead of ageing silently.
 # Cloudflare's cron parser wants SUN/7 for Sunday, not 0.
 [triggers]
 crons = []

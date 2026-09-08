@@ -29,6 +29,24 @@ export default {
   // only change needed to resume. R2 credentials are forwarded from Worker
   // secrets into the container's environment, where training/r2_client.py reads
   // them ahead of the (absent) murk vault.
+  //
+  // RESUME CRITERION (derived from the 2026-09-04 shadow-HMM review of the live
+  // model v1788229972; journal 2026-09-04 entry): the pause exists so this one
+  // version accrues a clean eval window, and that review returned NO-GO because
+  // the recovery arm was too thin and single-route to grade. Resume — un-pause
+  // `crons` or run the manual train_em above — once the post-v1788229972 shadow
+  // window has accrued at least 20 graded recovery incidents (MIN_RECOVERY_REGIMES,
+  // training/eval.py — the low_sample floor that review's current-segment arm
+  // missed at 19<20) spanning at least 3 distinct routes (that window's recovery
+  // population was ~98% route H, 115/117 current-segment ticks, which collapsed
+  // causal_skill=-1.70 to a single-route read, not a network statement). The
+  // 20-incident floor is the review's own data-sufficiency threshold; the 3-route
+  // span is an added condition against that single-route artifact (the review sets
+  // no route floor of its own). Together they let the next review render a real
+  // GO/NO-GO on recovery rather than "directional only". Un-pausing `crons` also
+  // activates
+  // .github/workflows/trainer-staleness-check.yml, which then alarms if a weekly
+  // run fails to advance state/params.json trained_at.
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const container = getContainer(env.TRAINER, "weekly");
     await container.start({

@@ -80,9 +80,44 @@ wrangler secret put R2_BUCKET          # momentarily
 wrangler deploy
 ```
 
-It runs Baum-Welch weekly (Sunday 05:00 UTC) and republishes `state/params.json`;
-the Worker picks up new params on its next tick. Until the first run, the Worker
-uses bootstrap params.
+The trainer fits the per-route HMM with Baum-Welch and republishes
+`state/params.json`; the Worker picks up new params on its next tick, and until
+the first run it uses bootstrap params.
+
+**The shipped cron is paused.** `trainer/wrangler.toml` sets `crons = []`, so the
+deployed trainer does not run on a schedule — the momentarily instance keeps it
+paused so one params version accrues a clean evaluation window. Its **resume
+criterion** (from the 2026-09-04 shadow-HMM review of the live model
+`v1788229972`): un-pause only once the post-`v1788229972` window has accrued **at
+least 20 graded recovery incidents spanning at least 3 distinct routes**. The 20
+is the review's own floor — `MIN_RECOVERY_REGIMES` distinct recovery regimes, the
+low-sample threshold its recovery arm stalled one short of (19). The 3-route span
+is **not a review floor** (the go/no-go template defines no route count); it is a
+derived anti-concentration guard, because that window's recovery population was
+~98% a single route, which made the causal skill a one-route read rather than a
+network statement. See the RESUME CRITERION note in `trainer/src/index.ts`. Two
+ways to run the trainer:
+
+- **Once, by hand** (what the paused instance does when it deliberately retrains).
+  Run from the **repository root** — the `training` package lives there, not in
+  `trainer/`, so step 4's `cd trainer` must be undone first:
+  ```bash
+  cd ..   # back to the repo root if you are still in trainer/ from step 4
+  murk exec -- uv run python -m training.train_em   # or set R2_* env and drop `murk exec --`
+  ```
+- **On the weekly schedule**, restore the trigger in `trainer/wrangler.toml` and
+  redeploy:
+  ```toml
+  [triggers]
+  crons = ["0 5 * * SUN"]   # Sunday 05:00 UTC; Cloudflare wants SUN/7, not 0
+  ```
+  ```bash
+  cd trainer && wrangler deploy
+  ```
+  Restoring `crons` also activates `.github/workflows/trainer-staleness-check.yml`
+  (gated off while `crons` is empty), which opens a tracking issue if a weekly run
+  fails to advance `state/params.json` — the trainer Container has no other
+  GitHub-visible failure signal.
 
 ## 5. (Optional) Eval + calibration
 

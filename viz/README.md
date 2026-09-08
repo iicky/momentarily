@@ -118,6 +118,33 @@ Status needs no credentials. To run it alone without murk: `npm run dev:plain`.
 npm test     # verifies the calibration math (Node's built-in runner)
 ```
 
+## End-to-end (Playwright)
+
+```bash
+npm run e2e:install   # once: downloads the Chromium build Playwright drives
+npm run e2e           # build + start, screenshot the five views, run the gates
+```
+
+A local visual + smoke pass (`playwright.config.ts`, `e2e/`). It boots a
+production build (`next build && next start`, not `next dev`, so no
+compile-on-navigate latency or dev-only overlay warnings), then visits `/`,
+`/lines`, `/map`, `/models` and one station page at 1280×800 and 390×844.
+Each view must reach a key landmark, log no console error, and show no React
+hydration warning; full-page screenshots land in `e2e/__screenshots__/` (name
+`<route>-<viewport>.png`, gitignored — review artifacts, not fixtures).
+
+The run is offline and needs no secrets. `e2e/mock.ts` routes every request:
+the public feed (`v1/snapshot.json`, `v1/trains.json`) and the three same-origin
+API routes are served from committed fixtures under `e2e/fixtures/` (captured
+once from the live public feed; `segment_flow` trimmed to keep the snapshot
+under 500 KB), same-origin app assets pass through to the server, and anything
+else off-box is aborted. An aborted un-mocked *data* request fails the run —
+that abort-everything-external rule is the disconnect check.
+
+An `@axe-core/playwright` scan runs on `/` and on `/` with the first status
+card's drawer open. Serious/critical violations are printed for review; the run
+is a baseline and does not fail on them yet.
+
 ## The diagram asset
 
 `public/diagram.json` is the map's geometry — station positions, one edge per

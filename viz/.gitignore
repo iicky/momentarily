@@ -4,3 +4,10 @@
 next-env.d.ts
 .env.local
 *.tsbuildinfo
+
+# Playwright: screenshots are review artifacts, not committed; test-runner
+# scratch and the downloaded browsers likewise.
+/e2e/__screenshots__
+/e2e/.artifacts
+/playwright-report
+/test-results

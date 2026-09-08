@@ -108,6 +108,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run css-check
+      # Local-only dashboard, but the e2e pass is fully offline (feed mocked,
+      # no secrets) and runs in well under a minute, so it gates here too. It
+      # boots a production build and screenshots the five views at two
+      # viewports; the screenshots are review artifacts, not committed.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
 
   # --- Deploy -------------------------------------------------------------
   # Deployment used to be a laptop command, so production drifted behind main

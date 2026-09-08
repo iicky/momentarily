@@ -8,17 +8,17 @@ compatibility_date = "2026-06-11"
 workers_dev = false
 preview_urls = false
 
-# Weekly retrain PAUSED — the cron is disabled so params stay pinned while a
-# single version (v1788229972) accrues a clean evaluation window. Retrain
-# deliberately with `murk exec -- uv run python -m training.train_em`; restore
-# `crons` to resume. Do not un-pause until the RESUME CRITERION in src/index.ts
-# is met (>= 20 graded recovery incidents across >= 3 routes on the
-# post-v1788229972 window). Restoring `crons` also flips
+# Weekly retrain RESUMED — the RESUME CRITERION in src/index.ts was met on the
+# post-v1788229972 window (2026-09-01..2026-09-08): 23 graded recovery incidents
+# across 4 routes (FS, H, SI, W), clearing the >= 20 incidents / >= 3 routes
+# floors. The cron below runs the weekly fit; retrain deliberately out of band
+# with `murk exec -- uv run python -m training.train_em`. Set `crons = []` to
+# pause again — a non-empty `crons` also flips
 # .github/workflows/trainer-staleness-check.yml from no-op to active, so a
 # missed weekly retrain then opens a tracking issue instead of ageing silently.
 # Cloudflare's cron parser wants SUN/7 for Sunday, not 0.
 [triggers]
-crons = []
+crons = ["0 5 * * SUN"]
 
 # Trainer container. Build context is the repo root so training/ can import
 # `momentarily` from src/. instance_type basic = 1/4 vCPU / 1 GiB — overkill

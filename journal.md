@@ -9501,3 +9501,45 @@ Method to rebuild the join:
   goodservice x alerts condition. The first uses the raw published condition so
   no route-tick is silently dropped; the movement-arm view intentionally drops
   alert-sourced ticks and is the denominator for the movement-arm binary.
+
+## 2026-09-08 — retrain-resume criterion MET on the post-v1788229972 window: 23 graded recovery incidents across 4 routes, weekly cron un-paused
+
+origin: agent
+
+Measured the RESUME CRITERION (trainer/src/index.ts, docs/self-hosting.md) on the
+post-v1788229972 shadow window. Live params version v1788229972 has trained_at
+epoch 1788229972 = 2026-09-01T02:32:52 UTC, so the window is 2026-09-01 through
+now (2026-09-08). Command, run from the repo root with R2_* in the environment:
+
+    uv run python -m training.review --days 8
+
+This is the same CLI that produced the 2026-09-04 shadow-HMM scorecard whose
+current-segment recovery arm stalled at low_sample n=19. The graded recovery
+incident count and route span come from summary.json current_params (the block
+filtered to the latest params_version = 1788229972, so it is strictly the
+post-cutover population): n_regimes = 23 graded recovery incidents, low_sample
+false against min_regimes 20, and recovery.by_route spans 4 distinct routes
+H, W, SI, FS (per-tick support 125/13/7/1 of 146 graded ticks). The pooled
+recovery block carried 24 regimes over 5 routes because it also picks up a GS
+segment from pre-02:32 predictions on 09-01 that belong to the previous version;
+current_params excludes those.
+
+Both floors met: 23 >= 20 incidents and 4 >= 3 routes. Unlike the 09-04 read
+(then ~98% single route H, which collapsed causal_skill to -1.70 as a one-route
+statement), the population now spans four routes, so the anti-concentration
+guard clears too.
+
+Reproduction: an initial default-end run and a second default-end run both
+returned 23 incidents / 4 routes, but their end instants differed (prequential
+pairs 39,532 vs 39,554 as now advanced). Pinning --end to the first run's exact
+instant (--end 2026-09-08T12:28:40.324368+00:00) reproduced the measured gate
+values exactly: 23 incidents, 4 routes, and 39,532 prequential pairs (the two
+gate counts plus prequential pairs were compared, not every summary/PNG byte).
+
+Acted on the result: restored crons = ["0 5 * * SUN"] in trainer/wrangler.toml
+(the weekly Sunday 05:00 UTC fit) and updated the paused-state comments in
+trainer/wrangler.toml and .github/workflows/trainer-staleness-check.yml. The
+staleness gate is self-adjusting — its grep of trainer/wrangler.toml now yields
+active=true — so no gate-logic change was needed; setting crons = [] again would
+re-dormant it. Verified: cd trainer && bunx tsc --noEmit clean, and actionlint
+.github/workflows/trainer-staleness-check.yml clean.

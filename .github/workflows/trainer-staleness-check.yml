@@ -10,13 +10,14 @@ name: Trainer staleness check
 # separate failure the snapshot-staleness watchdog already covers). A stale
 # trained_at here means the trainer itself did not produce a new model.
 #
-# GATED behind the same paused reality as the cron. trainer/wrangler.toml ships
-# crons = [] on purpose (accrue a clean eval window on one version), so a
-# weekly-cadence assertion would false-alarm every day. The gate reads that same
-# file: while crons is empty this job logs and no-ops; restoring crons is the
-# ONE change that both resumes the weekly retrain and activates this check.
+# COUPLED to the trainer cron. The gate step below reads trainer/wrangler.toml:
+# while crons = [] (paused) this job logs and no-ops, and any non-empty crons
+# both resumes the weekly retrain and activates this check. crons was restored
+# once the post-v1788229972 window met its resume criterion (23 graded recovery
+# incidents across 4 routes, clearing the >= 20 / >= 3 floors), so this
+# weekly-cadence assertion is now live; setting crons = [] again re-dormants it.
 # The coarse 45-day trained_at bound in staleness-check.yml stays the always-on
-# safety net for the paused window; this is the tight weekly-cadence net.
+# safety net; this is the tight weekly-cadence net.
 
 on:
   schedule:

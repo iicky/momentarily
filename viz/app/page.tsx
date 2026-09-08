@@ -535,11 +535,13 @@ function RouteCard({
           {r.primary_alert_type ?? (r.alerts.length ? "alert" : "good service")}
         </span>
         <span className="meta-right">
-          {inf && inf.is_disrupted
-            ? inf.recovery_indeterminate
-              ? "recovery: indeterminate"
-              : `~${fmtMinutes(inf.recovery_minutes)}`
-            : ""}
+          {inf && inf.is_disrupted && (
+            <span className="meta-eta">
+              {inf.recovery_indeterminate
+                ? "recovery: indeterminate"
+                : `~${fmtMinutes(inf.recovery_minutes)}`}
+            </span>
+          )}
           <span className="card-trains" title={supplyTitle(r.service_ratio)}>
             <SupplyGlyph band={band} runningHigh={runningHigh} size={13} />
             {runningHigh && r.service_ratio != null && (

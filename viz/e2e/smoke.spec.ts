@@ -96,3 +96,53 @@ test("front door reads in rider language", async ({ page }, testInfo) => {
   // The freshness strip gained the train-position dot bound to vehicle_positions.
   await expect(page.locator(".freshness")).toContainText("Train positions");
 });
+
+// A card footer whose recovery clause is long once crushed the alert label to a
+// clipped sliver, so its first glyph read as a stray fragment ("l recovery:
+// indeterminate"). The label must always start at the card's content-box left
+// and never scroll horizontally: its leading word stays whole and any
+// truncation falls on the right, exactly like the no-clause cards. Runs at both
+// viewports because the crush only appeared on the narrow desktop-grid card.
+test("card footers start at the content-box left and never left-clip", async ({
+  page,
+}) => {
+  await installFeedMock(page);
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.locator(".grid").first()).toBeVisible();
+
+  const offenders = await page.evaluate(() => {
+    const bad: {
+      bullet: string;
+      scrollLeft: number;
+      gap: number;
+      clipped: boolean;
+    }[] = [];
+    for (const footer of document.querySelectorAll<HTMLElement>(".card .meta")) {
+      const card = footer.closest<HTMLElement>(".card")!;
+      const cs = getComputedStyle(card);
+      const contentLeft =
+        card.getBoundingClientRect().left +
+        parseFloat(cs.borderLeftWidth) +
+        parseFloat(cs.paddingLeft);
+      const label = footer.querySelector<HTMLElement>(".meta-label")!;
+      const gap = label.getBoundingClientRect().left - contentLeft;
+      // A footer that carries a recovery clause must keep its whole alert label:
+      // the clause takes all the truncation, so the label is never clipped (its
+      // scroll width fits its box). That is the exact state the bug violated —
+      // the clause crushed the label until only a sliver of its first glyph
+      // showed, while its box still sat flush at the content-box left.
+      const hasEta = !!footer.querySelector(".meta-eta");
+      const clipped = hasEta && label.scrollWidth > label.clientWidth + 1;
+      if (label.scrollLeft !== 0 || gap < -0.5 || clipped) {
+        bad.push({
+          bullet: card.querySelector(".bullet")?.textContent?.trim() ?? "?",
+          scrollLeft: label.scrollLeft,
+          gap,
+          clipped,
+        });
+      }
+    }
+    return bad;
+  });
+  expect(offenders, JSON.stringify(offenders)).toEqual([]);
+});

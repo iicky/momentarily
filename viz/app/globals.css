@@ -536,7 +536,24 @@ p a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
+  min-width: 0;
+  /* The recovery clause ("recovery: indeterminate") can be as wide as a narrow
+     card. Let this side shrink so its eta ellipsizes on the right; the train
+     glyph inside never shrinks. */
+  flex: 0 1 auto;
+}
+/* When a card carries a recovery clause, pin the alert label at its full width
+   so the eta absorbs all truncation: the label reads as a whole word instead of
+   being crushed to a clipped sliver. Cards without a clause keep the ordinary
+   label ellipsis (see .meta-label). */
+.meta:has(.meta-eta) .meta-label {
+  flex-shrink: 0;
+}
+.meta-eta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .drawer {

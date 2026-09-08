@@ -5,6 +5,7 @@ import { installFeedMock } from "./mock";
 // must load against the mocked feed, reach a key landmark, emit no console
 // error and no hydration warning, and touch nothing off-box.
 const ROUTES = [
+  { slug: "about", path: "/about", landmark: ".grp" },
   { slug: "home", path: "/", landmark: ".grid" },
   { slug: "lines", path: "/lines", landmark: ".line-grid" },
   { slug: "map", path: "/map", landmark: "svg.diagram" },
@@ -46,3 +47,30 @@ for (const route of ROUTES) {
     expect(mock.externalHits, mock.externalHits.join("\n")).toEqual([]);
   });
 }
+
+// The global nav grew to seven items; at a phone width the single row used to
+// overflow and clip the last link. It now wraps onto a second row, so the nav
+// must never scroll horizontally and every item must stay fully reachable with
+// a 40px-tall tap target.
+test("nav wraps without clipping at 390px", async ({ page }) => {
+  await installFeedMock(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/", { waitUntil: "networkidle" });
+  const nav = page.locator("nav.nav");
+  await expect(nav).toBeVisible();
+  const overflow = await nav.evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(overflow, `nav overflows its box by ${overflow}px`).toBeLessThanOrEqual(0);
+
+  // The last item (About) is the one that used to clip: it must be visible,
+  // sit inside the nav's box, and give a >=40px tap target.
+  const last = nav.locator("a").last();
+  await expect(last).toHaveText("About");
+  await expect(last).toBeVisible();
+  const fits = await last.evaluate((el) => {
+    const a = el.getBoundingClientRect();
+    const box = el.closest("nav.nav")!.getBoundingClientRect();
+    return { h: a.height, within: a.right <= box.right + 0.5 && a.left >= box.left - 0.5 };
+  });
+  expect(fits.within, "last nav item overflows the nav box").toBe(true);
+  expect(fits.h, `last nav item is only ${fits.h}px tall`).toBeGreaterThanOrEqual(40);
+});

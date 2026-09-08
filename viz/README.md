@@ -85,6 +85,8 @@ Ground truth comes from the transition stream, not the model's own labels, so
 these are a real test. Predictions whose outcome isn't yet observable in the
 window are censored out.
 
+**About** (`/about`) — plain-English orientation: what this is, the MTA feeds behind it, how status is decided from train movement, what freshness means, what the board can't see, and a link to Models for the full methodology.
+
 ### Credentials (Models view only)
 
 The grading streams are timestamped JSONL; reading a window needs an R2 LIST,

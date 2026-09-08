@@ -106,6 +106,39 @@ a:hover {
   color: var(--text);
 }
 
+/* --- nav wrapping ---------------------------------------------------------
+   The nav sits inline with the wordmark and grew to seven items; on a phone
+   the single row overflowed and clipped the last link. Make the row a flex
+   container that wraps onto a second line so every item stays reachable, and
+   at phone width drop the whole nav below the wordmark with 40px-tall tap
+   targets. Scoped to .topbar / .nav only. */
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 14px;
+  row-gap: 2px;
+}
+.nav a {
+  margin-left: 0;
+}
+@media (max-width: 480px) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+  .nav {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    column-gap: 18px;
+  }
+  .nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+}
+/* --- end nav wrapping ----------------------------------------------------- */
+
 .sub {
   color: var(--muted);
   font-size: 12px;

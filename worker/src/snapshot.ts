@@ -206,6 +206,19 @@ interface RouteStatusOut {
   inference: Inference | null;
 }
 
+// Per-line-group liveness of the trip-update feeds this tick. `expected` is the
+// full NYCT line-group count (constant, the 8 TRIP_UPDATE_FEED_NAMES); `fresh`
+// how many of those round-tripped; `stale` names the groups that did not — empty
+// on a clean tick, the whole set on a total outage. vehicle_positions above
+// answers "when did any feed last decode"; this answers "which groups are down
+// right now", the signal a watchdog needs to catch a single silently-missing
+// group behind an otherwise-fresh vehicle_positions stamp.
+interface VehicleFeedsFreshness {
+  expected: number;
+  fresh: number;
+  stale: string[];
+}
+
 interface Freshness {
   subway_alerts: number | null;
   lirr_alerts: number | null;
@@ -222,6 +235,12 @@ interface Freshness {
   // an absent observation caused by a feed outage from one caused by a
   // service gap.
   vehicle_positions: number | null;
+  // Per-line-group liveness of the trip-update feeds this tick — see
+  // VehicleFeedsFreshness. vehicle_positions dates the last decode; this names
+  // which of the expected groups failed to round-trip right now, so a partial
+  // outage (one group rejecting every tick) is visible rather than hidden
+  // behind a still-fresh vehicle_positions stamp.
+  vehicle_feeds: VehicleFeedsFreshness;
   // True when this tick ran on bootstrap params because the published
   // params.json carried a schema_version the Worker cannot read (a trainer
   // deploy that bumped the params format during deploy skew). The inference is
@@ -574,6 +593,15 @@ export function buildSnapshot(args: {
   /** Epoch of the last poll on which a vehicle-position feed round-tripped,
    * for freshness.vehicle_positions. Null before the first one. */
   vehiclePositionsFreshness?: number | null;
+  /** This tick's trip-update feed liveness for freshness.vehicle_feeds: the
+   * line groups that round-tripped (`vehicleFreshFeeds`) against the full
+   * expected set (`vehicleExpectedFeeds`, the 8 NYCT groups). The stale set is
+   * the expected groups absent from fresh. Both are required — the caller must
+   * state the tick's feed context explicitly rather than let an omitted arg
+   * fabricate either a healthy zero or a full outage. A caller with no poll
+   * context (a synthetic snapshot) passes two empty arrays. */
+  vehicleFreshFeeds: readonly string[];
+  vehicleExpectedFeeds: readonly string[];
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -733,6 +761,13 @@ export function buildSnapshot(args: {
   // Omit prov_ref entirely (rather than emit null) when there is no PROV
   // document to point at, matching the optional-field contract.
   const provRef = provRefFor(args.trainedParams);
+  // freshness.vehicle_feeds: count fresh against the expected set (not the raw
+  // fresh list) so a fresh feed outside the expected groups can't inflate the
+  // tally, and name the missing groups as `stale`.
+  const vehicleFreshSet = new Set(args.vehicleFreshFeeds);
+  const vehicleStaleFeeds = args.vehicleExpectedFeeds.filter(
+    (name) => !vehicleFreshSet.has(name),
+  );
   return {
     schema_version: SCHEMA_VERSION,
     generated_at: args.generatedAt,
@@ -753,6 +788,11 @@ export function buildSnapshot(args: {
       ene: args.eneFreshness ?? null,
       stations_static: args.stationsStaticFreshness ?? null,
       vehicle_positions: args.vehiclePositionsFreshness ?? null,
+      vehicle_feeds: {
+        expected: args.vehicleExpectedFeeds.length,
+        fresh: args.vehicleExpectedFeeds.length - vehicleStaleFeeds.length,
+        stale: vehicleStaleFeeds,
+      },
       params_stale: args.paramsSchemaMismatch ?? false,
       alerts_parse_degraded: args.alertsParseDegraded ?? false,
     },

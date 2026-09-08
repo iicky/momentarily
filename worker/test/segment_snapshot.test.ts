@@ -117,6 +117,8 @@ function build(opts: {
     trainedParams: null,
     tickSeconds: TICK_SECONDS,
     ...opts,
+    vehicleFreshFeeds: [],
+    vehicleExpectedFeeds: [],
   });
 }
 

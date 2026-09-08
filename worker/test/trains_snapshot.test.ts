@@ -38,6 +38,8 @@ describe('Snapshot no longer carries a trains field', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(Object.keys(snap)).not.toContain('trains');
     expect(JSON.stringify(snap)).not.toContain('"trains"');

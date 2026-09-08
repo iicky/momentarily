@@ -610,6 +610,9 @@
           "default": null,
           "title": "Subway Alerts"
         },
+        "vehicle_feeds": {
+          "$ref": "#/$defs/VehicleFeeds"
+        },
         "vehicle_positions": {
           "anyOf": [
             {
@@ -1998,6 +2001,31 @@
         "operator"
       ],
       "title": "Tunnel",
+      "type": "object"
+    },
+    "VehicleFeeds": {
+      "description": "Per-line-group liveness of the trip-update feeds this tick.\n\n``expected`` is the full NYCT line-group count (constant, the 8 feed groups);\n``fresh`` how many of those round-tripped this tick; ``stale`` names the groups\nthat did not \u2014 empty on a clean tick, the whole set on a total outage.\nFreshness.vehicle_positions dates the last decode; this names which groups are\ndown right now, so a partial outage (one group rejecting every tick) is visible\nrather than hidden behind a still-fresh vehicle_positions stamp.",
+      "properties": {
+        "expected": {
+          "default": 0,
+          "title": "Expected",
+          "type": "integer"
+        },
+        "fresh": {
+          "default": 0,
+          "title": "Fresh",
+          "type": "integer"
+        },
+        "stale": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Stale",
+          "type": "array"
+        }
+      },
+      "title": "VehicleFeeds",
       "type": "object"
     }
   },

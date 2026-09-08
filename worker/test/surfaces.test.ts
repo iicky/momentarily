@@ -181,6 +181,8 @@ describe('snapshotConsistencyWarnings', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     snap.system.by_mode.subway = { routes_with_alerts: ['A'], alert_count: 3, severity_max: 5 };
     expect(snapshotConsistencyWarnings(snap)).toEqual([expect.stringContaining('alert_count=3')]);
@@ -197,6 +199,8 @@ describe('snapshotConsistencyWarnings', () => {
       tickSeconds: TICK_SECONDS,
       alerts: buildAlertList(payload, NOW),
       equipment: buildEquipmentList([cat('EL1', 'S1', 'elevator')], [outage('EL1', 'elevator')], NOW),
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.alerts.length).toBe(1);
     expect(snap.equipment.length).toBe(1);
@@ -261,6 +265,8 @@ describe('platform_crowding validates against schema/snapshot.schema.json', () =
       stations,
       stationWait,
       ridershipBaseline,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.platform_crowding).not.toBeNull();
     expect(snap.platform_crowding?.n_platforms).toBe(1);

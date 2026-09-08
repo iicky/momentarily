@@ -470,6 +470,24 @@ class SystemStatus(BaseModel):
     most_recovered_line: str | None = None
 
 
+class VehicleFeeds(BaseModel):
+    """Per-line-group liveness of the trip-update feeds this tick.
+
+    ``expected`` is the full NYCT line-group count (constant, the 8 feed groups);
+    ``fresh`` how many of those round-tripped this tick; ``stale`` names the groups
+    that did not — empty on a clean tick, the whole set on a total outage.
+    Freshness.vehicle_positions dates the last decode; this names which groups are
+    down right now, so a partial outage (one group rejecting every tick) is visible
+    rather than hidden behind a still-fresh vehicle_positions stamp.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    expected: int = 0
+    fresh: int = 0
+    stale: list[str] = []
+
+
 class Freshness(BaseModel):
     """When each upstream source was last successfully fetched (epoch seconds)."""
 
@@ -488,6 +506,12 @@ class Freshness(BaseModel):
     # and the crowding surface — published so a consumer can tell an absent
     # observation caused by a feed outage from one caused by a service gap.
     vehicle_positions: int | None = None
+    # Per-line-group liveness of the trip-update feeds this tick — see
+    # VehicleFeeds. vehicle_positions above dates the last decode; this names
+    # which of the expected groups failed to round-trip right now, so a partial
+    # outage (one group rejecting every tick) is visible rather than hidden
+    # behind a still-fresh vehicle_positions stamp.
+    vehicle_feeds: VehicleFeeds = Field(default_factory=VehicleFeeds)
     # True when the Worker ran this tick on bootstrap params because the
     # published params.json carried a schema_version it cannot read — a trainer
     # deploy that bumped the params format during deploy skew. The inference is

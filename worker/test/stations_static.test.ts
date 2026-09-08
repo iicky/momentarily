@@ -108,6 +108,8 @@ describe('snapshot stations surface', () => {
       tickSeconds: TICK_SECONDS,
       stations: byId,
       stationsStaticFreshness: NOW,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.stations.R03?.borough).toBe('Queens');
     expect(snap.freshness.stations_static).toBe(NOW);
@@ -122,6 +124,8 @@ describe('snapshot stations surface', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.stations).toEqual({});
     expect(snap.freshness.stations_static).toBeNull();

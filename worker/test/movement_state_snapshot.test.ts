@@ -61,6 +61,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'disrupted' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const a = snap.route_status.A!;
     expect(a.condition).toBe('disrupted');
@@ -83,6 +85,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({}) }, // B absent
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const b = snap.route_status.B!;
     expect(b.condition_source).toBe('unknown');
@@ -100,6 +104,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { A: roll('disrupted') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status.A!.condition_source).toBe('unknown');
     expect(snap.route_status.A!.condition).toBe('unknown');
@@ -119,6 +125,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({ Z: 'suspended' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const z = snap.route_status.Z!;
     expect(z.condition).toBe('not_scheduled');
@@ -139,6 +147,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 3600, regimes: settled({ A: 'disrupted' }) }, // 1h old
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status.A!.condition_source).toBe('unknown');
     expect(snap.route_status.A!.condition).toBe('unknown');
@@ -157,6 +167,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'suspended', B: 'normal' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status.A!.condition).toBe('suspended');
     expect(snap.system.lines_disrupted_count).toBe(1); // A counted, B normal
@@ -171,6 +183,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({ Q: 'disrupted' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const q = snap.route_status.Q!;
     expect(q.condition).toBe('disrupted');
@@ -187,6 +201,8 @@ describe('buildSnapshot: movement-determined condition', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({ Q: 'disrupted' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const q = snap.route_status.Q!;
     expect(q.inference).toBeNull();
@@ -217,6 +233,8 @@ describe('buildSnapshot: service_condition (supply axis)', () => {
         service_regimes: settled({ A: 'degraded' }),
         service_ratios: { A: 0.3 },
       },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const a = snap.route_status.A!;
     expect(a.condition).toBe('normal');
@@ -234,6 +252,8 @@ describe('buildSnapshot: service_condition (supply axis)', () => {
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: settled({ B: 'normal' }), service_regimes: settled({}) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status.B!.service_condition).toBe('unknown');
   });
@@ -253,6 +273,8 @@ describe('buildSnapshot: service_condition (supply axis)', () => {
       // exactly as before this change: unknown/null, never a thrown parse or a
       // fabricated ratio.
       movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'normal' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status.A!.service_condition).toBe('unknown');
     expect(snap.route_status.A!.service_ratio).toBeNull();
@@ -276,6 +298,8 @@ describe('buildSnapshot: service_condition (supply axis)', () => {
         service_ratios: { A: 0.9 },
         service_quantile_ratios: { A: { low: 0.8, high: 1.3 } },
       },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const a = snap.route_status.A!;
     expect(a.service_low_ratio).toBe(0.8);
@@ -299,6 +323,8 @@ describe('buildSnapshot: service_condition (supply axis)', () => {
         // No quantile cell for A, even though service_quantile_ratios is present.
         service_quantile_ratios: {},
       },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const a = snap.route_status.A!;
     expect(a.service_ratio).toBe(0.9);

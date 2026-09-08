@@ -133,6 +133,8 @@ function pNormal(
     trainedParams,
     tickSeconds: TICK_SECONDS,
     movementStates: { observed_at: NOW - 300, regimes: { A: movementRegime('normal', elapsedSec) } },
+    vehicleFreshFeeds: [],
+    vehicleExpectedFeeds: [],
   });
   const status = snap.route_status.A!;
   const inf = status.inference!;
@@ -230,6 +232,8 @@ describe('p_normal_in_H for a route whose published condition is movement-normal
       trainedParams: withoutCurve,
       tickSeconds: TICK_SECONDS,
       movementStates: { observed_at: NOW - 300, regimes: { A: movementRegime('normal', 20 * HOUR) } },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const status = snap.route_status.A!;
     const inf = status.inference!;

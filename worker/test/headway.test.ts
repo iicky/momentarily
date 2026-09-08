@@ -719,6 +719,8 @@ describe('the published observations surface', () => {
       tickSeconds: TICK_SECONDS,
       headway,
       vehiclePositionsFreshness,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
   }
 

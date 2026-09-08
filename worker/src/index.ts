@@ -802,6 +802,11 @@ export default {
               : lastSeen.vehicles_at > 0
                 ? lastSeen.vehicles_at
                 : null,
+          // Per-line-group trip-update liveness for freshness.vehicle_feeds:
+          // which of the 8 NYCT groups round-tripped this tick against the full
+          // expected set, so a partial outage self-reports in the snapshot.
+          vehicleFreshFeeds,
+          vehicleExpectedFeeds: TRIP_UPDATE_FEED_NAMES,
         });
       } catch (err) {
         console.error('snapshot build failed; tick continues without a fresh publish:', err);

@@ -226,6 +226,8 @@ function build(routeSnapshots: Map<string, RouteSnapshot>, rolls: Record<string,
     rolls,
     trainedParams: null,
     tickSeconds: TICK_SECONDS,
+    vehicleFreshFeeds: [],
+    vehicleExpectedFeeds: [],
   });
 }
 

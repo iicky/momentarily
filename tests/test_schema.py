@@ -12,6 +12,7 @@ from momentarily.schema import (
     Bridge,
     Compat,
     Crossing,
+    Freshness,
     Inference,
     Observation,
     ObservationSample,
@@ -26,6 +27,7 @@ from momentarily.schema import (
     TrainPosition,
     Trains,
     Tunnel,
+    VehicleFeeds,
 )
 
 
@@ -221,6 +223,27 @@ def test_freshness_degradation_flags_default_false() -> None:
     snap = Snapshot(generated_at=0)
     assert snap.freshness.params_stale is False
     assert snap.freshness.alerts_parse_degraded is False
+
+
+def test_freshness_vehicle_feeds_default_reports_nothing_tracked() -> None:
+    """A cold-start snapshot names no expected feeds yet — expected 0, no stale
+    groups — rather than fabricating a full or empty set."""
+    snap = Snapshot(generated_at=0)
+    assert snap.freshness.vehicle_feeds == VehicleFeeds(expected=0, fresh=0, stale=[])
+
+
+def test_freshness_vehicle_feeds_names_the_stale_group() -> None:
+    """A partial trip-update outage: 7 of 8 groups round-trip, the eighth is
+    named in stale so a watchdog sees the single silently-missing group behind
+    an otherwise-fresh vehicle_positions stamp."""
+    fresh = VehicleFeeds(expected=8, fresh=7, stale=["si"])
+    snap = Snapshot(generated_at=0, freshness=Freshness(vehicle_feeds=fresh))
+    payload = json.loads(snap.model_dump_json())
+    assert payload["freshness"]["vehicle_feeds"] == {
+        "expected": 8,
+        "fresh": 7,
+        "stale": ["si"],
+    }
 
 
 def test_bridge_with_crossings() -> None:

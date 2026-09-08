@@ -133,6 +133,8 @@ function build(opts: {
       opts.movement === undefined || opts.movement === null
         ? null
         : { observed_at: NOW - 300, regimes: { [opts.routeId]: opts.movement } },
+    vehicleFreshFeeds: [],
+    vehicleExpectedFeeds: [],
   });
 }
 

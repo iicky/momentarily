@@ -374,6 +374,8 @@ function buildWithCrowding(opts: {
     trainedParams: null,
     tickSeconds: TICK_SECONDS,
     ...opts,
+    vehicleFreshFeeds: [],
+    vehicleExpectedFeeds: [],
   });
 }
 

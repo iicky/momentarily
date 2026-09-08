@@ -58,7 +58,7 @@ vi.mock('../src/snapshot', async (importOriginal) => {
   };
 });
 
-import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS } from '../src/fetch';
+import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, TRIP_UPDATE_FEED_NAMES } from '../src/fetch';
 import { tod_bin } from '../src/hmm';
 import worker, { tickMinute } from '../src/index';
 import type { Env } from '../src/index';
@@ -1037,6 +1037,58 @@ describe('freshness.params_stale: schema_version deploy skew', () => {
     };
     expect(snapshot.freshness.params_stale).toBe(false);
     expect(snapshot.provenance.params.trained_at).toBe(42);
+  });
+});
+
+describe('freshness.vehicle_feeds: per-line-group trip-update liveness', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+
+  async function runBoundary(env: Env): Promise<void> {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
+
+  test('a single rejecting feed group is named stale while the rest report fresh', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    // Seed the 'ace' group with a real vehicle; the other six unlisted feeds
+    // resolve empty-but-successful (still fresh). The 'si' group REJECTS every
+    // tick — the silent partial outage this surface exists to expose.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    const siFeed = TRIP_UPDATE_FEEDS.find(([name]) => name === 'si')![1];
+    fetchState.protobufFailUrls.add(siFeed);
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runBoundary(env);
+    } finally {
+      err.mockRestore();
+    }
+
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as {
+      freshness: {
+        vehicle_feeds: { expected: number; fresh: number; stale: string[] };
+        vehicle_positions: number | null;
+      };
+    };
+    // Seven of eight groups round-tripped; only 'si' is stale. Its named in
+    // stale even though vehicle_positions is fresh off the other seven — the
+    // whole point is that a still-fresh timestamp can't hide the down group.
+    expect(snapshot.freshness.vehicle_feeds).toEqual({
+      expected: TRIP_UPDATE_FEED_NAMES.length,
+      fresh: TRIP_UPDATE_FEED_NAMES.length - 1,
+      stale: ['si'],
+    });
+    expect(snapshot.freshness.vehicle_positions).toBe(BOUNDARY_AT);
   });
 });
 

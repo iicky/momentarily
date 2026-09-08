@@ -41,6 +41,8 @@ function buildInferred() {
     rolls: { '1': INFERRED_ROLL },
     trainedParams: null,
     tickSeconds: TICK_SECONDS,
+    vehicleFreshFeeds: [],
+    vehicleExpectedFeeds: [],
   });
 }
 

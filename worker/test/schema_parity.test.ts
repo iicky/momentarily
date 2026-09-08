@@ -68,6 +68,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         rolls: {},
         trainedParams: null,
         tickSeconds: TICK_SECONDS,
+        vehicleFreshFeeds: [],
+        vehicleExpectedFeeds: [],
       }),
     );
   });
@@ -112,6 +114,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         trips: {},
         gaps: [],
       },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     expect(snap.observations.length).toBe(2);
@@ -134,6 +138,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     // __GIT_SHA__ isn't defined under vitest, so the typeof guard yields the
@@ -165,6 +171,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         serviceBaselineHourly: null,
       } as unknown as Parameters<typeof buildSnapshot>[0]['trainedParams'],
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     expect(snap.provenance.params).toEqual({
@@ -193,6 +201,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         provRef: 'state/prov/v1787787983.json',
       } as unknown as Parameters<typeof buildSnapshot>[0]['trainedParams'],
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     expect(snap.provenance.prov_ref).toBe(
@@ -220,6 +230,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         provRef: null,
       } as unknown as Parameters<typeof buildSnapshot>[0]['trainedParams'],
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     // Absent, never null — an unpublished PROV doc is a missing field.
@@ -236,6 +248,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       rolls: {},
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     expect('prov_ref' in snap.provenance).toBe(false);
@@ -273,6 +287,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
           oldest_outage_since: null,
         },
       },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     check(snap);
     expect(snap.system.accessibility).toEqual({
@@ -305,6 +321,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
         rolls: { '1': roll },
         trainedParams: null,
         tickSeconds: TICK_SECONDS,
+        vehicleFreshFeeds: [],
+        vehicleExpectedFeeds: [],
       }),
     );
   });
@@ -332,6 +350,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status['1']!.inference!.condition).toBe('normal');
   });
@@ -359,6 +379,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
   });
@@ -386,6 +408,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
   });
@@ -413,6 +437,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     expect(snap.route_status['1']!.inference!.condition).toBe('normal');
   });
@@ -440,6 +466,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     // No alert to explain a disruption → the shadow HMM condition is gated
     // to normal, is_disrupted is false, and recovery collapses to 0.
@@ -497,6 +525,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       },
       trainedParams: trained,
       tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
     });
     const inf = snap.route_status['1']!.inference!;
     // The alert arm still estimates recovery from the empirical cell, but it

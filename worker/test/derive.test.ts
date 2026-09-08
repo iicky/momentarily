@@ -11,7 +11,7 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { classifyAlertsPayload, deriveRouteSnapshots } from '../src/derive';
+import { alertsPayloadDegraded, classifyAlertsPayload, deriveRouteSnapshots } from '../src/derive';
 
 const NOW = 1_700_000_000;
 
@@ -157,102 +157,115 @@ function stationNotice(id: string): unknown {
   };
 }
 
-describe('derive: classifyAlertsPayload (alerts-schema drift floor)', () => {
-  // The floor (index.ts step 4a) trips on: entities > 0 AND
-  // recognizedInScope + recognizedOutOfScope === 0.
-  test('a normal route alert is recognized in scope', () => {
-    const health = classifyAlertsPayload(
-      payload(
-        entity({
-          id: 'lmm:alert:1',
-          alertType: 'Delays',
-          route: 'A',
-          periods: [{ start: NOW - 600 }],
-        }),
-      ),
+describe('derive: alerts-schema drift floor (classifyAlertsPayload + alertsPayloadDegraded)', () => {
+  // The floor (index.ts step 4a) trips when the payload carries entities and
+  // either nothing in it is a recognizable MTA alert, or the route-bearing
+  // alerts it carries are all ones parseAlertEntity cannot consume.
+  const degraded = (p: unknown) => alertsPayloadDegraded(classifyAlertsPayload(p));
+
+  test('a normal route alert is recognized in scope and not degraded', () => {
+    const p = payload(
+      entity({ id: 'lmm:alert:1', alertType: 'Delays', route: 'A', periods: [{ start: NOW - 600 }] }),
     );
-    expect(health.entities).toBe(1);
-    expect(health.recognizedInScope).toBe(1);
-    expect(health.recognizedOutOfScope).toBe(0);
-    expect(health.unrecognizable).toBe(0);
+    const health = classifyAlertsPayload(p);
+    expect(health).toEqual({
+      entities: 1,
+      recognizedInScope: 1,
+      inScopeUnparseable: 0,
+      recognizedOutOfScope: 0,
+      unrecognizable: 0,
+    });
+    expect(degraded(p)).toBe(false);
   });
 
   test('structural drift: entities present, but none are recognizable MTA alerts', () => {
-    // The failure the floor exists to catch: an MTA alerts-schema change that
-    // still ships an entity array whose members carry no alert object with a
-    // header_text or the mercury alert_type at all.
-    const health = classifyAlertsPayload({
+    // An MTA alerts-schema change that still ships an entity array whose
+    // members carry no alert object with a header_text or the mercury
+    // alert_type at all.
+    const p = {
       entity: [
         { id: 'x1', alert: { some_new_shape: { renamed: 'Delays' } } },
         { id: 'x2', alert: { informed_entity: [{ route_id: 'A' }] } },
       ],
-    });
-    expect(health.entities).toBe(2);
-    expect(health.recognizedInScope + health.recognizedOutOfScope).toBe(0);
-    expect(health.unrecognizable).toBe(2);
+    };
+    expect(classifyAlertsPayload(p).unrecognizable).toBe(2);
+    expect(degraded(p)).toBe(true);
   });
 
-  test('header_text with no selectors and no alert_type is NOT recognizable (drift)', () => {
-    // Regression: an entity stripped to a bare header_text — no mercury
-    // alert_type, no informed_entity selectors — is not a readable MTA alert.
-    // It must count as drift, never bless the payload as healthy and suppress
-    // the degraded flag (a header_text can survive a drift that renamed/removed
-    // the route selectors and the alert body).
-    const health = classifyAlertsPayload({
-      entity: [{ id: 'x', alert: { header_text: { translation: [{ text: 'Delays' }] } } }],
-    });
-    expect(health.entities).toBe(1);
-    expect(health.recognizedInScope + health.recognizedOutOfScope).toBe(0);
-    expect(health.unrecognizable).toBe(1);
+  test('header_text with no selectors and no alert_type is drift', () => {
+    // An entity stripped to a bare header_text — no mercury alert_type, no
+    // informed_entity selectors — is not a readable MTA alert and must not
+    // bless the payload as healthy.
+    const p = { entity: [{ id: 'x', alert: { header_text: { translation: [{ text: 'Delays' }] } } }] };
+    expect(classifyAlertsPayload(p).unrecognizable).toBe(1);
+    expect(degraded(p)).toBe(true);
   });
 
-  test('a feed of only station notices is recognized out of scope, NOT drift', () => {
-    // A valid feed carrying only out-of-scope alerts: elevator/escalator notices
-    // name a stop, not a subway route. They are recognizable MTA alerts, so the
-    // floor does not trip — even though they derive no subway route snapshot.
+  test('mercury extension dropped from route alerts is drift, even beside station notices', () => {
+    // The most plausible real drift: the vendor mercury_alert extension (and
+    // its alert_type) disappears while standard GTFS-RT fields survive. Such
+    // entities still name a route and read as recognizable, but
+    // parseAlertEntity rejects every one, so the pipeline would silently see
+    // no route alerts. Station notices beside them keep their alert_type and
+    // must NOT mask the drift.
+    const stripped = (id: string, route: string) => ({
+      id,
+      alert: {
+        header_text: { translation: [{ text: 'Delays', language: 'en' }] },
+        informed_entity: [{ route_id: route }],
+        active_period: [{ start: NOW - 600 }],
+      },
+    });
+    const p = { entity: [stripped('lmm:alert:1', 'A'), stripped('lmm:alert:2', 'L'), stationNotice('lmm:alert:elev1')] };
+    const health = classifyAlertsPayload(p);
+    expect(health.recognizedInScope).toBe(0);
+    expect(health.inScopeUnparseable).toBe(2);
+    expect(health.recognizedOutOfScope).toBe(1);
+    expect(degraded(p)).toBe(true);
+    expect(deriveRouteSnapshots(p, NOW).size).toBe(0);
+  });
+
+  test('a feed of only station notices is out of scope, NOT drift', () => {
+    // Elevator/escalator notices name a stop, not a subway route. They are
+    // recognizable MTA alerts, so the floor does not trip — even though they
+    // derive no subway route snapshot.
     const p = payload(stationNotice('lmm:alert:elev1'), stationNotice('lmm:alert:elev2'));
     const health = classifyAlertsPayload(p);
-    expect(health.entities).toBe(2);
     expect(health.recognizedInScope).toBe(0);
     expect(health.recognizedOutOfScope).toBe(2);
+    expect(degraded(p)).toBe(false);
     expect(deriveRouteSnapshots(p, NOW).size).toBe(0);
   });
 
-  test('a valid feed of only inactive route alerts is recognized in scope, NOT drift', () => {
+  test('a valid feed of only inactive route alerts is in scope, NOT drift', () => {
     // A well-formed route alert whose active_period is expired (or future —
     // planned work published ahead). deriveRouteSnapshots drops it by active
-    // window, but it is recognizable in scope, so the floor does not trip.
+    // window, but it parses, so the floor does not trip.
     const p = payload(
-      entity({
-        id: 'lmm:alert:1',
-        alertType: 'Delays',
-        route: 'A',
-        periods: [{ start: NOW - 7200, end: NOW - 3600 }], // ended an hour ago
-      }),
+      entity({ id: 'lmm:alert:1', alertType: 'Delays', route: 'A', periods: [{ start: NOW - 7200, end: NOW - 3600 }] }),
     );
-    const health = classifyAlertsPayload(p);
-    expect(health.entities).toBe(1);
-    expect(health.recognizedInScope).toBe(1);
+    expect(classifyAlertsPayload(p).recognizedInScope).toBe(1);
+    expect(degraded(p)).toBe(false);
     expect(deriveRouteSnapshots(p, NOW).size).toBe(0);
   });
 
-  test('mixed recognizable and garbage: still NOT drift', () => {
-    // One real route alert beside unrecognizable garbage: the payload plainly
-    // still carries MTA alerts (recognizable > 0), so it is not degraded.
-    const health = classifyAlertsPayload({
+  test('mixed parseable route alert and garbage: NOT drift', () => {
+    // One real route alert beside unrecognizable garbage: the pipeline still
+    // consumes a route alert, so the payload is not degraded.
+    const p = {
       entity: [
         entity({ id: 'lmm:alert:1', alertType: 'Delays', route: 'A', periods: [{ start: NOW - 600 }] }),
         { id: 'garbage', alert: { some_new_shape: {} } },
       ],
-    });
-    expect(health.entities).toBe(2);
+    };
+    const health = classifyAlertsPayload(p);
     expect(health.recognizedInScope).toBe(1);
     expect(health.unrecognizable).toBe(1);
+    expect(degraded(p)).toBe(false);
   });
 
-  test('a genuinely empty feed carries no entities', () => {
-    const health = classifyAlertsPayload(payload());
-    expect(health.entities).toBe(0);
-    expect(health.recognizedInScope + health.recognizedOutOfScope).toBe(0);
+  test('a genuinely empty feed is a quiet system, NOT drift', () => {
+    expect(classifyAlertsPayload(payload()).entities).toBe(0);
+    expect(degraded(payload())).toBe(false);
   });
 });

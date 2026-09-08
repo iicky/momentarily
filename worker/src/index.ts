@@ -34,7 +34,7 @@ import {
 } from './archive';
 import { updateStationWait } from './crowding';
 import type { RouteSnapshot } from './derive';
-import { SUBWAY_ROUTES, buildAlertList, classifyAlertsPayload, deriveRouteSnapshots, quietObservation } from './derive';
+import { SUBWAY_ROUTES, alertsPayloadDegraded, buildAlertList, classifyAlertsPayload, deriveRouteSnapshots, quietObservation } from './derive';
 import { parseEquipmentFeed, parseOutageFeed } from './ene';
 import {
   FEEDS,
@@ -570,13 +570,14 @@ export default {
     let alertsParseDegraded = false;
     if (alertsPayload !== null) {
       const health = classifyAlertsPayload(alertsPayload);
-      const recognizable = health.recognizedInScope + health.recognizedOutOfScope;
-      alertsParseDegraded = health.entities > 0 && recognizable === 0;
+      alertsParseDegraded = alertsPayloadDegraded(health);
       if (alertsParseDegraded) {
         console.error(
-          `alerts payload carried ${health.entities} entities but none were ` +
-            'recognizable MTA alerts; abstaining every route and flagging ' +
-            'freshness.alerts_parse_degraded',
+          `alerts payload carried ${health.entities} entities ` +
+            `(in-scope ${health.recognizedInScope}, in-scope-unparseable ` +
+            `${health.inScopeUnparseable}, out-of-scope ${health.recognizedOutOfScope}, ` +
+            `unrecognizable ${health.unrecognizable}); abstaining every route and ` +
+            'flagging freshness.alerts_parse_degraded',
         );
       }
     }

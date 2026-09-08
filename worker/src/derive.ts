@@ -171,11 +171,18 @@ export function deriveRouteSnapshots(
 }
 
 /**
- * Classify every entity in the alerts payload into one of three per-entity
+ * Classify every entity in the alerts payload into one of four per-entity
  * classes, for the system-wide sanity floor in index.ts step 4a:
  *
  *   - recognizedInScope    a structurally recognizable MTA alert that names a
- *                          canonical subway route in its informed_entity.
+ *                          canonical subway route AND parses (parseAlertEntity
+ *                          consumes it) — the only class the route pipeline
+ *                          ever sees.
+ *   - inScopeUnparseable   names a subway route but parseAlertEntity rejects it
+ *                          — most plausibly the vendor mercury_alert extension
+ *                          (and its alert_type) was dropped while the standard
+ *                          GTFS-RT fields survived. The pipeline silently drops
+ *                          these, so they must count as drift, not quiet.
  *   - recognizedOutOfScope a structurally recognizable MTA alert that names NO
  *                          subway route — a station-scoped elevator/escalator
  *                          notice, an agency-wide notice, a non-subway alert.
@@ -185,33 +192,55 @@ export function deriveRouteSnapshots(
  * header_text OR the mercury alert_type — the fields the MTA schema always
  * carries — regardless of whether the alert is active or names a route.
  *
- * The gate degrades only when entities > 0 and recognizedInScope +
- * recognizedOutOfScope === 0 — the payload carried content but nothing in it
- * looks like an MTA alert at all, the structural schema break the flag exists to
- * catch. A feed of only out-of-scope notices, or only planned work whose
- * active_period is future/expired, is recognizable and reads as a quiet system,
- * never drift; only a genuinely unreadable payload abstains.
+ * The gate (alertsPayloadDegraded) degrades when entities > 0 and either
+ * nothing at all is recognizable, or route-bearing entities exist but none of
+ * them parse. A feed of only out-of-scope notices, or only planned work whose
+ * active_period is future/expired, is recognizable and parseable and reads as a
+ * quiet system, never drift.
  */
-export function classifyAlertsPayload(alertsPayload: unknown): {
+export interface AlertsPayloadHealth {
   entities: number;
   recognizedInScope: number;
+  inScopeUnparseable: number;
   recognizedOutOfScope: number;
   unrecognizable: number;
-} {
+}
+
+export function classifyAlertsPayload(alertsPayload: unknown): AlertsPayloadHealth {
   const entities = extractEntities(alertsPayload);
   let recognizedInScope = 0;
+  let inScopeUnparseable = 0;
   let recognizedOutOfScope = 0;
   let unrecognizable = 0;
   for (const entity of entities) {
     if (!isRecognizableAlert(entity)) {
       unrecognizable += 1;
     } else if (namesSubwayRoute(entity)) {
-      recognizedInScope += 1;
+      if (parseAlertEntity(entity) !== null) recognizedInScope += 1;
+      else inScopeUnparseable += 1;
     } else {
       recognizedOutOfScope += 1;
     }
   }
-  return { entities: entities.length, recognizedInScope, recognizedOutOfScope, unrecognizable };
+  return {
+    entities: entities.length,
+    recognizedInScope,
+    inScopeUnparseable,
+    recognizedOutOfScope,
+    unrecognizable,
+  };
+}
+
+/** The sanity-floor decision: the payload carried content, and either nothing
+ * in it reads as an MTA alert, or the route-bearing alerts it does carry are all
+ * ones the pipeline cannot consume. Either way "no route alerts" would be a
+ * schema artifact, not an observation, so the tick abstains. */
+export function alertsPayloadDegraded(health: AlertsPayloadHealth): boolean {
+  if (health.entities === 0) return false;
+  const recognizable =
+    health.recognizedInScope + health.inScopeUnparseable + health.recognizedOutOfScope;
+  if (recognizable === 0) return true;
+  return health.inScopeUnparseable > 0 && health.recognizedInScope === 0;
 }
 
 /**

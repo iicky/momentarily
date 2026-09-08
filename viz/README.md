@@ -3,6 +3,8 @@
 A local-only Next.js app for *seeing* the Momentarily feed and judging the HMM.
 Not deployed, not part of the publish path — run it on your machine.
 
+Built on Next.js 16 (React 19.2), Node 22.18+.
+
 ```bash
 cd viz
 npm install

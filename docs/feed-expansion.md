@@ -37,3 +37,41 @@ Subway alerts and elevator/escalator state ship today.
   alert surface — which is why it carries protobuf complexity the alert feeds don't.
 - Geographic rendering (station coordinates, route shapes, crossing centroids) is
   tracked separately from feed expansion.
+
+## Cross-check sources — goodservice.io (evaluated, NOT adopted)
+
+goodservice.io (now **subwaynow**) is an independent, GTFS-RT-derived per-route
+status estimate. It was evaluated as a possible detection-truth cross-check for
+our movement/condition axis (the goodservice cross-check spike). **Outcome: no-go.**
+Do not build a dependency on it. Two independent reasons:
+
+- **Their Terms of Use prohibit automated access.** The subwaynow Terms
+  (`https://www.subwaynow.app/terms-of-use-ios`, Prohibited Uses clause b)
+  forbid using "any robot, spider, or other automatic device, process, or means
+  to access Service ... including monitoring or copying any of the material."
+  `robots.txt` permits `/api/routes` and the term is nominally scoped to their
+  mobile app, but the operator has published an explicit anti-automation intent,
+  so we do not poll their endpoint on a schedule. The probe was stopped as soon
+  as this term was found.
+- **The status vocabularies are incommensurable at our severity tier.** Even the
+  short pre-stop sample makes this clear: goodservice's "Slow / Delay / Not Good"
+  fire on headway spread that our severity-graded truth reads as normal. In a
+  calm ~35-minute window goodservice flagged ~76% of movement-clean route-ticks
+  as degraded while our movement arm read normal on 100% of them (Cohen's
+  kappa ~= 0 against both our movement and alerts arms). Its published label is
+  a different, far more sensitive threshold than our "disrupted"; only its raw
+  headway numbers (not exposed by `/api/routes`) could ever be re-thresholded to
+  our tier.
+
+The shared-input caveat that motivated the spike is structural and stands:
+because goodservice consumes the same GTFS-RT realtime as our movement arm, it
+can never be an *independent* truth for the movement axis — agreement there is
+partly mechanical by construction. The only axis it could ever contrast against
+is the alerts-derived read (moot under the ToS). The short sample's low
+agreement does not disprove that confound; with ~0 severe positives on our side
+in the window there was nothing for a mechanical co-movement to latch onto, so
+the number is uninformative about the coupling and only demonstrates the
+threshold gap. The probe/join code was removed at landing (its only real target
+is a host whose ToS forbids automated access, and no permitted source exists
+today); the numbers, go/no-go, and the full rebuild method are in `journal.md`
+under `goodservice-crosscheck`.

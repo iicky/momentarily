@@ -9385,3 +9385,119 @@ the 35d window reaches) shows only that recover_by_120 CAN be pinned purely by a
 short window. A synthetic fixture cannot establish that any live cell's pin has
 that cause. Establishing it needs the held-out recover-by-120 re-grade on the
 live 35d archive, which is unmeasurable offline and remains the next step.
+## 2026-09-07 — goodservice-crosscheck: no-go, blocked by ToS and by an incommensurable severity threshold
+
+origin: agent
+
+This spike asked whether goodservice.io (now subwaynow) could be
+an independent detection-truth cross-check for our movement/condition axis. It
+is a GTFS-RT-derived per-route status served publicly and unauthenticated at
+`https://www.goodservice.io/api/routes` (302 -> `api.subwaynow.app/routes`),
+vocabulary {Good Service, Slow, Delay, Not Good, Service Change, Not Scheduled}.
+robots.txt permits `/api/routes` (only /sidekiq and /oauth are disallowed).
+
+GO/NO-GO: NO-GO, for two independent reasons.
+
+1. Terms of Use forbid it. subwaynow's Terms
+   (www.subwaynow.app/terms-of-use-ios, Prohibited Uses clause b) prohibit "any
+   robot, spider, or other automatic device, process, or means to access Service
+   ... including monitoring or copying any of the material." The term is
+   nominally scoped to their mobile app and robots.txt contradicts it for the
+   web API, but it is an explicit anti-automation intent, so a scheduled poller
+   is off the table. The probe was stopped the moment this was found (7 ticks,
+   ~35 min). The task's instruction was to respect ToS and stop; done.
+
+2. Even the cut-short sample shows the labels are incommensurable at our
+   severity tier, so it would fail as truth regardless. Over 7 ticks / 203
+   route-ticks / 29 routes, restricted to route-ticks where both sides gave a
+   clean normal-or-disrupted verdict (Service Change and Not Scheduled excluded;
+   60 and 2 route-ticks respectively for the movement view):
+   - vs our MOVEMENT arm: n=71, raw agreement 0.239, Cohen's kappa ~= 0.
+     goodservice called 54/71 degraded; our movement arm read normal on 100% of
+     all 133 movement-judged route-ticks.
+   - vs our near-independent ALERTS arm: n=98, raw agreement 0.255, kappa 0.007.
+     goodservice called 73 degraded; our alerts arm flagged 1 (which goodservice
+     also flagged, overlap 1/1 — one point, proves nothing).
+   goodservice's "Slow/Delay/Not Good" fire on ordinary headway spread that our
+   severity-graded truth reads as normal; its positive class was ~76% of clean
+   route-ticks in a calm window where our severe-tier positive rate was ~0.
+
+Shared-input caveat, which axis it can adjudicate: the confound is structural
+and stands. goodservice consumes the same GTFS-RT realtime as our movement arm,
+so it can NEVER be an independent truth FOR the movement axis — any agreement
+there is partly mechanical by construction, and no amount of sampling changes
+that. The only axis it could ever contrast against is the alerts-derived read
+(and that is off the table anyway under the ToS). The low agreement in this
+sample does NOT show the confound is absent: our side had ~0 severe positives in
+the window, so there was nothing for a mechanical co-movement to latch onto, and
+the number is simply uninformative about the shared-input coupling. What the
+sample does establish is the separate threshold-mismatch problem above. For
+scale, our own two arms agreed with each other on 96.2% of 133 route-ticks in
+the same window (movement disrupted 0, alerts disrupted 5).
+
+Sample is far too short (7 ticks, one calm window, ~0 severe events on our side)
+to make any statistical claim, and the ToS makes running it longer moot. The
+probe/join stay committed as `training/goodservice_probe.py` so the method is
+reproducible against a source whose terms permit it, but goodservice is not that
+source. To revisit goodservice specifically would require its raw per-route
+headway numbers (not exposed by /api/routes) re-thresholded to our severe tier,
+plus permission for automated access.
+
+## 2026-09-07 — goodservice-crosscheck: probe/join code removed at landing; method preserved here
+
+origin: agent
+
+Revises the entry above. At landing the executable probe/join
+(training/goodservice_probe.py) and its test were removed from the branch (git
+rm). Reason: the sampler's only real-world target is a host whose Terms of Use
+forbid automated access, and no permitted equivalent source exists today, so an
+executable poller in the repo is compliance risk with zero current use. The
+NO-GO finding (entry above) and the docs section stay. The full method is
+recorded here so it can be rebuilt against a permitted source later without the
+deleted code.
+
+Method to rebuild the join:
+
+- Tick grid. A 5-minute wall-clock grid, GRID = 300 s. For a sample taken at
+  epoch `now`, tick = floor(now / 300) * 300. In one pass per tick, fetch BOTH
+  sources and write one JSONL record: the external per-route status source, and
+  our snapshot https://feed.momentarily.nyc/v1/snapshot.json. Capturing both in
+  the same record is what makes the join exact per route-tick.
+- Fields kept per tick. From the external source (goodservice/subwaynow shape
+  `{"routes": {route_id: {"status": ..., "scheduled": ...}}}`): each route's
+  `status` string. From our snapshot's `route_status[route_id]`: `condition`,
+  `condition_source`, `inference.condition`, `service_condition`.
+- Pairing key. (tick, route_id) over the INTERSECTION of route ids present in
+  both sources that tick. Per joined route-tick derive three of our reads:
+  movement_raw = route_status.condition (always); movement = that same
+  `condition` but ONLY when condition_source == "movement" else None (the
+  movement arm, gated so an alert-sourced condition is not miscounted as a
+  movement read); alerts = route_status.inference.condition (the alert-HMM
+  shadow arm). service_condition is a separate vehicle-derived supply axis and is
+  NOT used for arm agreement.
+- Coarse buckets. Their disrupted set = {Slow, Delay, Not Good}; their normal
+  set = {Good Service}. "Service Change" (planned reroute) and "Not Scheduled"
+  are neither and are EXCLUDED from the binary denominator (counted separately),
+  kept in the full cross-tabs. Our disrupted set = {disrupted, suspended}; our
+  indeterminate/excluded set = {unknown, not_scheduled, None}.
+- Binary agreement (per arm). Over route-ticks where BOTH sides give a clean
+  verdict — their status in normal-set or disrupted-set, and our read not in the
+  excluded set — form the 2x2 with cells both_disrupted, both_normal, only_gs
+  (their-disrupted / our-normal), only_our (their-normal / our-disrupted); n is
+  their sum. Raw agreement po = (both_disrupted + both_normal) / n.
+- Cohen's kappa on that 2x2. p_gs_d = (both_disrupted + only_gs) / n; p_our_d =
+  (both_disrupted + only_our) / n; expected pe = p_gs_d*p_our_d +
+  (1 - p_gs_d)*(1 - p_our_d); kappa = (po - pe) / (1 - pe). Also report overlap
+  recalls: both_disrupted / (our disrupted total) and both_disrupted / (their
+  disrupted total).
+- Arm-coupling (context for the shared-input caveat). Over route-ticks where
+  BOTH our movement and alerts reads are definite (neither in the excluded set),
+  the fraction where (movement in disrupted-set) == (alerts in disrupted-set),
+  plus the counts movement_disrupted, alerts_disrupted, both_disrupted. This
+  quantifies how coupled our own two arms are, so a low external agreement can be
+  read against how much our arms even agree with each other.
+- Matrices to print. goodservice status (rows) x our published condition
+  (movement_raw, all route-ticks); goodservice x movement-arm-only condition;
+  goodservice x alerts condition. The first uses the raw published condition so
+  no route-tick is silently dropped; the movement-arm view intentionally drops
+  alert-sourced ticks and is the denominator for the movement-arm binary.

@@ -2,9 +2,8 @@
  * Minimal GTFS-realtime protobuf reader — just the slice we need from the NYCT
  * subway feeds. No dependency: we read a handful of fields, so a full protobuf
  * lib (reflection + NYCT-extension registration) would be all cost and no
- * benefit. We never materialize the StopTimeUpdate rows — only count them —
- * which is what keeps decoding 8 feeds/tick cheap. The same feed bytes carry
- * both TripUpdate and VehiclePosition entities, so both decoders share one fetch.
+ * benefit. The same feed bytes carry both TripUpdate and VehiclePosition
+ * entities, so both decoders share one fetch.
  *
  * Field numbers verified against a live ACE feed (trip-update 2026-06-14,
  * vehicle 2026-06-19):
@@ -12,7 +11,14 @@
  *   FeedEntity.trip_update        = 3  (message)
  *   FeedEntity.vehicle            = 4  (message — VehiclePosition)
  *   TripUpdate.trip               = 1  (TripDescriptor)
- *   TripUpdate.stop_time_update   = 2  (repeated — we count these)
+ *   TripUpdate.stop_time_update   = 2  (repeated StopTimeUpdate)
+ *   StopTimeUpdate.arrival        = 2  (StopTimeEvent)
+ *   StopTimeUpdate.departure      = 3  (StopTimeEvent)
+ *   StopTimeUpdate.stop_id        = 4  (string — includes the direction
+ *                                        suffix, e.g. Q05S / 626N)
+ *   StopTimeUpdate.schedule_relationship = 5 (enum: 0=SCHEDULED, 1=SKIPPED,
+ *                                        2=NO_DATA, 3=UNSCHEDULED)
+ *   StopTimeEvent.time            = 2  (int64 varint — absolute POSIX seconds)
  *   VehiclePosition.trip          = 1  (TripDescriptor)
  *   VehiclePosition.current_stop_sequence = 3  (uint32)
  *   VehiclePosition.current_status        = 4  (enum: 0=INCOMING_AT,
@@ -42,12 +48,30 @@ const WIRE_I64 = 1;
 const WIRE_LEN = 2;
 const WIRE_I32 = 5;
 
+/** One decoder reused for every string in every feed — constructing a
+ * TextDecoder per call is a native allocation, and materializing stop-time rows
+ * calls string() thousands of times per feed. */
+const UTF8 = new TextDecoder();
+
+/** One StopTimeUpdate row: where a trip is due and when. Times are the feed's
+ * own absolute POSIX seconds, carried through untouched — no schedule join, no
+ * delay math here. */
+export interface StopTimeLite {
+  stopId: string; // GTFS stop id incl. direction suffix; '' when absent
+  arrival: number | null; // arrival.time; null when the event or its time is absent
+  departure: number | null; // departure.time; same
+  // schedule_relationship enum. Absent means SCHEDULED (0) per the proto
+  // default; SKIPPED (1) rows are still carried so consumers can drop them.
+  scheduleRelationship: number;
+}
+
 export interface TripLite {
   routeId: string;
   tripId: string;
   isAssigned: boolean;
   direction: number | null; // NYCT enum: 1=N, 3=S; null when absent
-  stopCount: number; // remaining stop_time_update entries
+  stopCount: number; // remaining stop_time_update entries === stopTimes.length
+  stopTimes: StopTimeLite[]; // in feed order (NYCT emits them in stop sequence)
 }
 
 export interface VehicleLite {
@@ -106,7 +130,7 @@ class Reader {
   }
 
   string(): string {
-    return new TextDecoder().decode(this.lenView());
+    return UTF8.decode(this.lenView());
   }
 
   skip(wire: number): void {
@@ -195,7 +219,7 @@ function parseVehicleEntity(view: Uint8Array, out: VehicleLite[]): void {
 
 function parseVehiclePosition(view: Uint8Array): VehicleLite | null {
   const r = new Reader(view);
-  let descriptor: ReturnType<typeof parseTripDescriptor> | null = null;
+  let descriptor: TripDescriptorLite | null = null;
   let stopId = '';
   let status: number | null = null;
   let stopSeq: number | null = null;
@@ -228,16 +252,26 @@ function parseVehiclePosition(view: Uint8Array): VehicleLite | null {
 }
 
 function parseTripUpdate(view: Uint8Array): TripLite | null {
-  const r = new Reader(view);
-  let descriptor: ReturnType<typeof parseTripDescriptor> | null = null;
+  // Count pass first: it only reads each stop row's tag + length and steps over
+  // the body, so it buys an exactly-sized rows array instead of growing one row
+  // at a time.
+  const counter = new Reader(view);
   let stopCount = 0;
+  while (!counter.done) {
+    const { field, wire } = counter.tag();
+    if (field === 2 && wire === WIRE_LEN) stopCount += 1;
+    counter.skip(wire);
+  }
+  const stopTimes: StopTimeLite[] = new Array(stopCount);
+  const r = new Reader(view);
+  let descriptor: TripDescriptorLite | null = null;
+  let n = 0;
   while (!r.done) {
     const { field, wire } = r.tag();
     if (field === 1 && wire === WIRE_LEN) {
       descriptor = parseTripDescriptor(r.lenView());
     } else if (field === 2 && wire === WIRE_LEN) {
-      stopCount += 1;
-      r.skip(wire); // count only; never materialize the stop row
+      stopTimes[n++] = parseStopTimeUpdate(r.lenView());
     } else {
       r.skip(wire);
     }
@@ -249,15 +283,54 @@ function parseTripUpdate(view: Uint8Array): TripLite | null {
     isAssigned: descriptor.isAssigned,
     direction: descriptor.direction,
     stopCount,
+    stopTimes,
   };
 }
 
-function parseTripDescriptor(view: Uint8Array): {
+function parseStopTimeUpdate(view: Uint8Array): StopTimeLite {
+  const r = new Reader(view);
+  let stopId = '';
+  let arrival: number | null = null;
+  let departure: number | null = null;
+  let scheduleRelationship = 0;
+  while (!r.done) {
+    const { field, wire } = r.tag();
+    if (field === 4 && wire === WIRE_LEN) {
+      stopId = r.string();
+    } else if (field === 2 && wire === WIRE_LEN) {
+      arrival = stopTimeEventTime(r.lenView());
+    } else if (field === 3 && wire === WIRE_LEN) {
+      departure = stopTimeEventTime(r.lenView());
+    } else if (field === 5 && wire === WIRE_VARINT) {
+      scheduleRelationship = r.varint();
+    } else {
+      r.skip(wire);
+    }
+  }
+  return { stopId, arrival, departure, scheduleRelationship };
+}
+
+/** StopTimeEvent.time only. delay (1) and uncertainty (3) are skipped: without
+ * a static-schedule join a relative delay tells us nothing we can publish. */
+function stopTimeEventTime(view: Uint8Array): number | null {
+  const r = new Reader(view);
+  let time: number | null = null;
+  while (!r.done) {
+    const { field, wire } = r.tag();
+    if (field === 2 && wire === WIRE_VARINT) time = r.varint();
+    else r.skip(wire);
+  }
+  return time;
+}
+
+interface TripDescriptorLite {
   routeId: string;
   tripId: string;
   isAssigned: boolean;
   direction: number | null;
-} {
+}
+
+function parseTripDescriptor(view: Uint8Array): TripDescriptorLite {
   const r = new Reader(view);
   let routeId = '';
   let tripId = '';

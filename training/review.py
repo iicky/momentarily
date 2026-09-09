@@ -57,6 +57,7 @@ from training.eval import (
     TransitionRecord,
     build_eval,
     independent_recovery_metrics,
+    independent_recovery_report,
     load_predictions,
     load_transitions,
     prequential_calibration,
@@ -768,6 +769,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"  recovery vs feed-clearance: {len(clearance)} disruptions, "
         f"n={recovery_clearance.overall.n} graded ticks"
     )
+    # True service recovery: recovery_minutes graded against disruptions derived
+    # from the trip-updates assigned_n series — the truth sharing no input with
+    # the model. Same series/baseline as degradation_state above. Until now this
+    # block lived only in the daily eval (v1/eval.json), so every committed memo
+    # read it as "unmeasured this run".
+    recovery_independent = independent_recovery_report(preds, tu_series, tu_baseline)
+    print(
+        f"  recovery vs trip-updates service level: "
+        f"{recovery_independent['n_disruptions']} disruptions, "
+        f"n={recovery_independent['overall']['n']} graded ticks"
+    )
 
     episode_types = disruptive_types_by_key(truth_obs)
     episodes = extract_episodes(
@@ -964,6 +976,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "truth_source": "alert_feed_clearance",
             "n_disruptions": len(clearance),
         },
+        "recovery_independent": recovery_independent,
         "current_params": eval_doc["current_params"],
         # Canonical confusion matrix: HMM condition vs severe-only MTA truth
         # (truth_version + severity_floor recorded in truth_definition above).

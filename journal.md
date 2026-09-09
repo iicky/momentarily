@@ -9543,3 +9543,42 @@ staleness gate is self-adjusting — its grep of trainer/wrangler.toml now yield
 active=true — so no gate-logic change was needed; setting crons = [] again would
 re-dormant it. Verified: cd trainer && bunx tsc --noEmit clean, and actionlint
 .github/workflows/trainer-staleness-check.yml clean.
+
+## 2026-09-08 — recovery_independent wired into training.review: n=0 of 94 independent disruptions, because the published arm read disrupted on 4 of 65,134 ticks
+
+origin: agent
+
+The 2026-09-04 memo listed `recovery_independent` (recovery_minutes graded
+against disruptions derived from the trip-updates assigned_n series) as
+"unmeasured this run". The cause was structural, not data: `training/review.py`
+imported the machinery but never emitted the block; only the daily
+`training/eval.py` did, into v1/eval.json. Fixed by splitting
+`eval.independent_recovery_report` (grading) from `build_independent_recovery`
+(fetch + grade) and calling the former from the review on the assigned_n
+series/baseline it already loads for the degraded-now truth.
+
+First run with the column, window 2026-09-01..2026-09-08 (uv run python -m
+training.review --days 8, params v1788229972 throughout):
+
+- Independent truth: 94 disruptions from 1,132 baseline cells. The truth works.
+- Graded ticks: **0**. excluded_schedule 2, excluded_cross_arm 0.
+- Why: the published movement-primary `condition` was `disrupted` on **2** ticks
+  and `suspended` on **2** ticks of 65,134 (normal 42,016; unknown 17,988;
+  not_scheduled 5,126). There was nothing to grade.
+- The same week's daily eval over 27 days (v1/eval.json, 2026-08-12..09-08):
+  338 independent disruptions, n=1 graded, arm disrupted 176 + suspended 293
+  of 227,679 ticks.
+- Feed-clearance proxy: 488 disruptions, n=2 graded. Same shape.
+- Alert-shadow episode recovery (the arm the memo grades): n=42 scored,
+  causal_skill -1.60, oracle_skill -2.11. Consistent with the memo's -1.70 on 35.
+- Movement false-alarm bound: 4.95e-5/tick [0, 1.71e-4] over 156/234 runs.
+  Trivially clean — the arm almost never fires.
+
+Read: the eval is not thin because the truth is thin. It is empty because the
+published arm produces ~no disrupted ticks to grade, while the independent
+supply truth sees ~12 disruptions/day. Whether that is the arm being right
+(supply collapse without movement disruption) or the arm being silent is exactly
+the open "derive an independent movement-recovery truth or reframe the claim"
+question, and no amount of window widening answers it. The next review — the
+first after the 09-13 fit under the 35-day dwell window — should carry this
+column; the number to beat is n>0.

@@ -1657,26 +1657,49 @@ def publish_calibration(
 # --- CLI ---
 
 
+def independent_recovery_report(
+    predictions: list[PredictionRecord],
+    series: dict[tuple[str, int], int],
+    baseline: dict[tuple[str, Any], float],
+) -> dict[str, Any]:
+    """Grade recovery_minutes against disruptions derived from the trip-updates
+    service metric — a recovery truth independent of the HMM's own argmax.
+    `series`/`baseline` come from load_r2.build_service_series/compute_baseline
+    so a caller that already built them for another truth need not rebuild.
+
+    Binned by degradation_label.BIN_FN, not tod_bin: this is the same
+    degrade/recover call that module reports on, and a truth that fires at
+    every wide-bin edge would grade the arm against the clock."""
+    from training.degradation_label import BIN_FN
+    from training.load_r2 import derive_actual_recovery
+
+    disruptions = derive_actual_recovery(series, baseline, bin_fn=BIN_FN)
+    result = independent_recovery_metrics(predictions, disruptions)
+    return {
+        **recovery_as_dict(result, graded_arm=MOVEMENT_ARM_LABEL),
+        "truth_source": "trip_updates_service_level",
+        "n_disruptions": len(disruptions),
+        "n_baseline_cells": len(baseline),
+        # A zero graded n against a non-zero n_disruptions is the diagnostic
+        # case: the arm and the truth never overlapped on the same route-tick.
+        # Coverage separates "movement had no reading" from genuine disagreement.
+        "coverage": published_condition_coverage(list(predictions)),
+    }
+
+
 def build_independent_recovery(
     client: S3Client,
     predictions: list[PredictionRecord],
     start_date: date,
     end_date: date,
 ) -> dict[str, Any] | None:
-    """Load the trip-updates service metric, derive independent disruptions, and
-    grade recovery_minutes against them — a recovery truth independent of the
-    HMM's own argmax. Returns None until the archive accumulates (the metric
-    ships archive-first; ~2 weeks before the baseline is trustworthy). A load
-    failure is non-fatal.
-
-    Binned by degradation_label.BIN_FN, not tod_bin: this is the same
-    degrade/recover call that module reports on, and a truth that fires at
-    every wide-bin edge would grade the arm against the clock."""
+    """Fetch the trip-updates archive and grade recovery against it. Returns
+    None until the archive accumulates (the metric ships archive-first; ~2 weeks
+    before the baseline is trustworthy). A load failure is non-fatal."""
     from training.degradation_label import BIN_FN
     from training.load_r2 import (
         build_service_series,
         compute_baseline,
-        derive_actual_recovery,
         fetch_trip_update_metrics,
     )
 
@@ -1691,18 +1714,7 @@ def build_independent_recovery(
         return None
     series = build_service_series(bodies)
     baseline = compute_baseline(series, bin_fn=BIN_FN)
-    disruptions = derive_actual_recovery(series, baseline, bin_fn=BIN_FN)
-    result = independent_recovery_metrics(predictions, disruptions)
-    return {
-        **recovery_as_dict(result, graded_arm=MOVEMENT_ARM_LABEL),
-        "truth_source": "trip_updates_service_level",
-        "n_disruptions": len(disruptions),
-        "n_baseline_cells": len(baseline),
-        # A zero graded n against a non-zero n_disruptions is the diagnostic
-        # case: the arm and the truth never overlapped on the same route-tick.
-        # Coverage separates "movement had no reading" from genuine disagreement.
-        "coverage": published_condition_coverage(list(predictions)),
-    }
+    return independent_recovery_report(predictions, series, baseline)
 
 
 def build_emission_drift(

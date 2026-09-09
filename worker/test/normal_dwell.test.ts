@@ -15,6 +15,12 @@
  * training/eval.py. hmm.ts's projectForward is unrelated to this path now —
  * snapshot.ts never calls it for a normal-state forecast, curve or no curve —
  * and stays covered on its own by parity.test.ts's `describe('projectForward', ...)`.
+ *
+ * Every assertion here reads the GRADED inference from buildSnapshot's
+ * `fullInferences` sink, not route_status[].inference: the public object
+ * withholds every fitted forecast while PUBLISH_FITTED_RECOVERY is closed
+ * (pinned in withheld_recovery.test.ts), and this file is about the
+ * arithmetic, which the grading stream is what still sees.
  */
 
 import { describe, expect, test } from 'vitest';
@@ -24,6 +30,7 @@ import { deriveRouteSnapshots } from '../src/derive';
 import { pLeaveBy } from '../src/dwell';
 import type { TrainedParams } from '../src/params';
 import { parseTrainedParams } from '../src/params';
+import type { Inference } from '../src/snapshot';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
 
 const NOW = 1_700_000_000;
@@ -125,6 +132,7 @@ function pNormal(
   trainedParams: TrainedParams | null,
   elapsedSec: number,
 ): { p30: number | null; p60: number | null; p120: number | null } {
+  const full = new Map<string, Inference>();
   const snap = buildSnapshot({
     generatedAt: NOW,
     alertsFreshness: NOW,
@@ -135,9 +143,10 @@ function pNormal(
     movementStates: { observed_at: NOW - 300, regimes: { A: movementRegime('normal', elapsedSec) } },
     vehicleFreshFeeds: [],
     vehicleExpectedFeeds: [],
+    fullInferences: full,
   });
   const status = snap.route_status.A!;
-  const inf = status.inference!;
+  const inf = full.get('A')!;
   expect(status.condition).toBe('normal');
   expect(status.condition_source).toBe('movement');
   expect(inf.condition).toBe('normal');
@@ -224,6 +233,7 @@ describe('p_normal_in_H for a route whose published condition is movement-normal
     // unlike the disrupted/suspended branches there is no geometric fallback
     // for 'normal' — so the forecast is withheld outright rather than
     // silently describing a different arm's clock.
+    const full = new Map<string, Inference>();
     const snap = buildSnapshot({
       generatedAt: NOW,
       alertsFreshness: NOW,
@@ -234,9 +244,10 @@ describe('p_normal_in_H for a route whose published condition is movement-normal
       movementStates: { observed_at: NOW - 300, regimes: { A: movementRegime('normal', 20 * HOUR) } },
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
+      fullInferences: full,
     });
     const status = snap.route_status.A!;
-    const inf = status.inference!;
+    const inf = full.get('A')!;
     // The published condition is still movement-sourced...
     expect(status.condition).toBe('normal');
     expect(status.condition_source).toBe('movement');

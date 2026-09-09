@@ -116,14 +116,15 @@ jobs:
       - run: npm run e2e
 
   # --- Deploy -------------------------------------------------------------
-  # Deployment used to be a laptop command, so production drifted behind main
-  # for days at a time and no artifact recorded the gap. These jobs make
-  # "live code == main" the default rather than an errand. Credentials come from
-  # the murk vault via MURK_KEY (same mechanism as eval-daily.yml), so no
-  # Cloudflare token is duplicated into GitHub secrets.
+  # These deploy jobs wait on every check job — lint, type-check, test, worker,
+  # trainer, and viz — so a red main can never ship. viz is included even
+  # though the dashboard is not on the publish path: a red workflow must never
+  # be routine. None of the six check jobs carries an `if` or a path filter, so
+  # none can be skipped; a job that `needs` a skipped job is itself skipped, and
+  # adding a conditional check job here would silently turn deploys off.
 
   deploy-publisher:
-    needs: [lint, type-check, test, worker, trainer]
+    needs: [lint, type-check, test, worker, trainer, viz]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -176,7 +177,7 @@ jobs:
   # Docker, which ubuntu-latest provides), so it is path-gated rather than
   # running on every push.
   deploy-trainer:
-    needs: [lint, type-check, test, worker, trainer]
+    needs: [lint, type-check, test, worker, trainer, viz]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -249,3 +250,29 @@ jobs:
         if: steps.scope.outputs.rebuild == 'true'
         run: bun run deploy:ci
         working-directory: trainer
+
+  # A red run on main only emails the last committer, which is easy to miss;
+  # this opens or updates a single tracking issue so a broken main is loud.
+  alert-on-failure:
+    needs: [lint, type-check, test, worker, trainer, viz, deploy-publisher, deploy-trainer]
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the tracking issue on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "CI is red on main"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body="\`${{ github.workflow }}\` failed on ${{ github.sha }} at $(date -u +%FT%TZ). Run: $RUN_URL"
+          number=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
+          fi

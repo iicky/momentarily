@@ -133,6 +133,42 @@
     "AlertSource": {
       "type": "string"
     },
+    "Arrival": {
+      "description": "One upcoming train at a stop, decoded from the trip-update feeds. Times\nare absolute POSIX seconds from the feed (no schedule join); seconds_away is\neta_epoch - now. trip_id is the NYCT run id, null when the feed omitted it.",
+      "properties": {
+        "eta_epoch": {
+          "title": "Eta Epoch",
+          "type": "integer"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        },
+        "seconds_away": {
+          "title": "Seconds Away",
+          "type": "integer"
+        },
+        "trip_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trip Id"
+        }
+      },
+      "required": [
+        "route",
+        "eta_epoch",
+        "seconds_away",
+        "trip_id"
+      ],
+      "title": "Arrival",
+      "type": "object"
+    },
     "Bridge": {
       "description": "Infrastructure asset. Schema scaffold; populated when a data source is wired.",
       "properties": {
@@ -609,6 +645,18 @@
           ],
           "default": null,
           "title": "Subway Alerts"
+        },
+        "trip_updates": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trip Updates"
         },
         "vehicle_feeds": {
           "$ref": "#/$defs/VehicleFeeds"
@@ -2120,6 +2168,17 @@
       },
       "title": "Alerts",
       "type": "array"
+    },
+    "arrivals": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/Arrival"
+        },
+        "type": "array"
+      },
+      "default": null,
+      "title": "Arrivals",
+      "type": "object"
     },
     "attribution": {
       "default": "Snapshot built from MTA GTFS-RT feeds via api.mta.info. Published by Momentarily (https://feed.momentarily.nyc). Not affiliated with the MTA.",

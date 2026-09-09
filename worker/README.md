@@ -33,6 +33,12 @@ with `recovery_withheld: "pending_validation"`) and publishes the schedule
 countdowns; `v1/predictions` keeps the full numbers for grading. The gate is
 the `PUBLISH_FITTED_RECOVERY` constant in [`snapshot.ts`](src/snapshot.ts).
 
+`deriveArrivals` ([`arrivals.ts`](src/arrivals.ts)) folds the decoded trip-update
+stop times into a per-stop `arrivals` surface (`buildSnapshot` attaches it when
+passed, `freshness.trip_updates` dates the decode), but the cron does not derive
+or attach it yet — it is absent from the published `v1/snapshot.json`. Wiring and
+cadence are a separate task.
+
 `v1/prov/v<trained_at>.json` also lives under the public prefix but is written by
 the weekly Python trainer, not the Worker; the Worker only derives its public URL
 ([`params.ts`](src/params.ts) `publicProvUrl`).

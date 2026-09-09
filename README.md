@@ -44,6 +44,7 @@ left un-rewritten rather than published as a false empty read.
 - **`station_flow`** — per-station movement verdicts derived from the vehicle feed, one tick (~5 min) lagged
 - **`segment_flow`** — per-segment movement verdicts, one tick (~5 min) lagged, keyed by the `route|direction|from_stop` cell id. Carries every judged cell, normal and disrupted alike, so a key absent from it was never judged this tick — never a healthy read by omission.
 - **`platform_crowding`** — estimated riders waiting on each directional platform: the platform's share of its complex's usual entry rate for the hour, times how long since a train cleared it. An estimate on a stated assumption (see the surface's `method`), not a head count.
+- **`arrivals`** — per-stop upcoming trains keyed by GTFS stop id incl. direction suffix (e.g. `Q05S`), each entry giving `route`, `eta_epoch`, `seconds_away` and `trip_id`, soonest first. Derived from the trip-update feeds with `freshness.trip_updates` dating the last decode. Optional/additive and not yet emitted by the cron — absent from today's published snapshot.
 - **`equipment`** — elevator/escalator outage state
 - **`bridges`**, **`tunnels`** — infrastructure scaffolds; populated when a travel-time data source is wired
 - **`system`** — top-of-dashboard rollup; one human-readable `overall_label`

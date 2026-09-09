@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from momentarily.schema import (
     SCHEMA_VERSION,
+    Arrival,
     Bridge,
     Compat,
     Crossing,
@@ -243,6 +244,51 @@ def test_freshness_vehicle_feeds_names_the_stale_group() -> None:
         "expected": 8,
         "fresh": 7,
         "stale": ["si"],
+    }
+
+
+def test_freshness_trip_updates_defaults_null() -> None:
+    """The arrivals upstream stamp is null until a trip-update feed first
+    decodes — the same honest 'not yet' posture as vehicle_positions."""
+    snap = Snapshot(generated_at=0)
+    assert snap.freshness.trip_updates is None
+
+
+def test_arrival_requires_trip_id_but_allows_null() -> None:
+    """trip_id is required-but-nullable: every arrival carries the key (so the
+    shape matches the Worker's Arrival, which always emits trip_id), but it may
+    be null when the feed omitted the run id. Omitting the key is a contract
+    violation, not a defaulted null."""
+    assert Arrival(route="Q", eta_epoch=1, seconds_away=1, trip_id=None).trip_id is None
+    with pytest.raises(ValidationError):
+        Arrival(route="Q", eta_epoch=1, seconds_away=1)  # type: ignore[call-arg]
+
+
+def test_arrivals_is_optional_and_never_null_in_the_schema() -> None:
+    """The contract is absent-or-map: arrivals is not required, and its schema
+    is a plain object with no null branch (SkipJsonSchema drops it), matching
+    the Worker attaching the key only when it derives arrivals."""
+    schema = Snapshot.model_json_schema()
+    assert "arrivals" not in schema.get("required", [])
+    arrivals = schema["properties"]["arrivals"]
+    assert arrivals["type"] == "object"
+    assert "anyOf" not in arrivals  # no {type: null} alternative
+    # value is a list of Arrival refs — the per-stop ranked list
+    assert arrivals["additionalProperties"]["items"]["$ref"].endswith("/Arrival")
+
+
+def test_snapshot_carries_a_supplied_arrivals_surface() -> None:
+    """When arrivals is attached it round-trips as a per-stop map of the four
+    published fields, keyed by the direction-suffixed stop id."""
+    snap = Snapshot(
+        generated_at=0,
+        arrivals={
+            "Q05S": [Arrival(route="Q", eta_epoch=120, seconds_away=120, trip_id="q1")]
+        },
+    )
+    payload = json.loads(snap.model_dump_json())
+    assert payload["arrivals"] == {
+        "Q05S": [{"route": "Q", "eta_epoch": 120, "seconds_away": 120, "trip_id": "q1"}]
     }
 
 

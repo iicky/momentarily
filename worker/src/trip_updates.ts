@@ -23,13 +23,13 @@ export interface ServiceRow {
 }
 
 /** Express variants (6X, 7X, FX) fold to their base route, matching derive.ts. */
-function baseRoute(routeId: string): string {
+export function baseRoute(routeId: string): string {
   return routeId.replace(/X$/, '');
 }
 
 /** NYCT direction: the extension enum (1=N, 3=S) when present, else the
  * direction char after `..` in the trip_id (e.g. `..N` / `..S`). */
-function directionOf(t: TripLite): 'N' | 'S' | null {
+export function directionOf(t: TripLite): 'N' | 'S' | null {
   if (t.direction === 1) return 'N';
   if (t.direction === 3) return 'S';
   const i = t.tripId.indexOf('..');

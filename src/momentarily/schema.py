@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 SCHEMA_VERSION = "1"
 
@@ -527,6 +528,10 @@ class Freshness(BaseModel):
     # and the crowding surface — published so a consumer can tell an absent
     # observation caused by a feed outage from one caused by a service gap.
     vehicle_positions: int | None = None
+    # Epoch of the last poll on which a trip-update feed decoded successfully —
+    # the upstream behind `arrivals`, dated like vehicle_positions dates the
+    # vehicle feeds. Null before the first successful trip-update decode.
+    trip_updates: int | None = None
     # Per-line-group liveness of the trip-update feeds this tick — see
     # VehicleFeeds. vehicle_positions above dates the last decode; this names
     # which of the expected groups failed to round-trip right now, so a partial
@@ -922,6 +927,19 @@ class PlatformCrowding(BaseModel):
     abstained: dict[str, int] = Field(default_factory=dict)
 
 
+class Arrival(BaseModel):
+    """One upcoming train at a stop, decoded from the trip-update feeds. Times
+    are absolute POSIX seconds from the feed (no schedule join); seconds_away is
+    eta_epoch - now. trip_id is the NYCT run id, null when the feed omitted it."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    route: str
+    eta_epoch: int
+    seconds_away: int
+    trip_id: str | None
+
+
 class Snapshot(BaseModel):
     """The full published snapshot. The contract."""
 
@@ -961,6 +979,13 @@ class Snapshot(BaseModel):
     # Estimated riders waiting per platform. Null before the ridership baseline
     # is published, before the first vehicle tick after deploy, or when stale.
     platform_crowding: PlatformCrowding | None = None
+    # Per-stop upcoming arrivals keyed by GTFS stop id incl. direction suffix
+    # ('Q05S'), soonest first. Optional/additive: the Worker attaches the key
+    # only when it derives arrivals and omits it otherwise, and the generated
+    # schema carries no null branch (SkipJsonSchema drops it), so the public
+    # contract is absent-or-map. The default is None here — a bare model dump
+    # emits null unless excluded — and the cron does not populate it yet.
+    arrivals: dict[str, list[Arrival]] | SkipJsonSchema[None] = None
     system: SystemStatus = Field(default_factory=SystemStatus)
 
     # Legacy compat — preserves zero-breakage upgrade for HA 0.x consumers

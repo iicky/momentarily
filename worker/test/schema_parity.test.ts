@@ -74,6 +74,35 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     );
   });
 
+  test('arrivals: attached when supplied, absent as an own key when omitted', () => {
+    const base = {
+      generatedAt: 1_700_000_000,
+      alertsFreshness: 1_700_000_000,
+      routeSnapshots: new Map(),
+      rolls: {},
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
+    };
+    const withArrivals = buildSnapshot({
+      ...base,
+      tripUpdatesFreshness: 1_700_000_000,
+      arrivals: { Q05S: [{ route: 'Q', eta_epoch: 1_700_000_120, seconds_away: 120, trip_id: 'q1' }] },
+    });
+    check(withArrivals);
+    expect(withArrivals.arrivals).toEqual({
+      Q05S: [{ route: 'Q', eta_epoch: 1_700_000_120, seconds_away: 120, trip_id: 'q1' }],
+    });
+    expect(withArrivals.freshness.trip_updates).toBe(1_700_000_000);
+
+    const without = buildSnapshot(base);
+    check(without);
+    expect(Object.hasOwn(without, 'arrivals')).toBe(false);
+    // trip_updates is a required freshness field; null when nothing supplied it.
+    expect(without.freshness.trip_updates).toBeNull();
+  });
+
   test('a populated observations surface validates, enum and all', () => {
     // The headway surface is the one thing in the snapshot fed by the GTFS-RT
     // protobuf, and Observation.direction is a CLOSED vocabulary in the

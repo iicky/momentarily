@@ -30,6 +30,7 @@
  */
 
 import type { RouteRoll } from './alpha';
+import type { Arrivals } from './arrivals';
 import type { ParamsProvenance, Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
 import { CROWDING_MAX_GAP_MINUTES, CROWDING_SERVED_WINDOW_MINUTES, derivePlatformCrowding } from './crowding';
@@ -335,6 +336,10 @@ interface Freshness {
   // an absent observation caused by a feed outage from one caused by a
   // service gap.
   vehicle_positions: number | null;
+  // Epoch of the last poll on which a trip-update feed decoded successfully —
+  // the upstream behind `arrivals`, dated like vehicle_positions dates the
+  // vehicle feeds. Null before the first successful trip-update decode.
+  trip_updates: number | null;
   // Per-line-group liveness of the trip-update feeds this tick — see
   // VehicleFeedsFreshness. vehicle_positions dates the last decode; this names
   // which of the expected groups failed to round-trip right now, so a partial
@@ -575,6 +580,10 @@ export interface Snapshot {
   // baseline is published, before the first vehicle tick after deploy, or
   // when stale.
   platform_crowding: PlatformCrowdingOut | null;
+  // Per-stop upcoming arrivals keyed by GTFS stop id incl. direction suffix
+  // (e.g. 'Q05S'), soonest first. Optional/additive: absent from the document
+  // when the tick derived none (not yet wired into the cron path).
+  arrivals?: Arrivals;
   system: SystemStatus;
   compat: Compat;
 }
@@ -711,6 +720,13 @@ export function buildSnapshot(args: {
    * context (a synthetic snapshot) passes two empty arrays. */
   vehicleFreshFeeds: readonly string[];
   vehicleExpectedFeeds: readonly string[];
+  /** Epoch of the last successful trip-update decode, for
+   * freshness.trip_updates. Null before the first one. */
+  tripUpdatesFreshness?: number | null;
+  /** Per-stop upcoming arrivals for this tick (deriveArrivals). Attached to the
+   * document when given; the `arrivals` key is absent when omitted. Not wired
+   * into the cron path yet — supplied only by callers that derive it. */
+  arrivals?: Arrivals;
   /** Write-only sink for the FULL, unprojected per-route inference, keyed by
    * route. route_status[].inference on the returned document is the public
    * projection (fitted recovery withheld — see PUBLISH_FITTED_RECOVERY), so
@@ -908,6 +924,7 @@ export function buildSnapshot(args: {
       ene: args.eneFreshness ?? null,
       stations_static: args.stationsStaticFreshness ?? null,
       vehicle_positions: args.vehiclePositionsFreshness ?? null,
+      trip_updates: args.tripUpdatesFreshness ?? null,
       vehicle_feeds: {
         expected: args.vehicleExpectedFeeds.length,
         fresh: args.vehicleExpectedFeeds.length - vehicleStaleFeeds.length,
@@ -928,6 +945,7 @@ export function buildSnapshot(args: {
     station_flow: stationFlowOut,
     segment_flow: segmentFlowOut,
     platform_crowding: platformCrowdingOut,
+    ...(args.arrivals !== undefined ? { arrivals: args.arrivals } : {}),
     system,
     compat,
   };

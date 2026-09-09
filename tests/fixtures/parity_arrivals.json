@@ -1,0 +1,343 @@
+{
+  "now": 1000000,
+  "trips": [
+    {
+      "route_id": "Q",
+      "trip_id": "q0",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1000600,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q1",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1000120,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q2",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1000900,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q3",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1000300,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q4",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1001500,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q5",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1000060,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q6",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1001200,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "Q",
+      "trip_id": "q7",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "Q05S",
+          "arrival": 1001800,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "F",
+      "trip_id": "f-dep",
+      "direction": 1,
+      "stop_times": [
+        {
+          "stop_id": "F10N",
+          "arrival": null,
+          "departure": 1000500,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "F",
+      "trip_id": "f-arr",
+      "direction": 1,
+      "stop_times": [
+        {
+          "stop_id": "F10N",
+          "arrival": 1000300,
+          "departure": 1000999,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "A",
+      "trip_id": "a-skip",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "A15S",
+          "arrival": 1000250,
+          "departure": null,
+          "schedule_relationship": 1
+        }
+      ]
+    },
+    {
+      "route_id": "A",
+      "trip_id": "a-ok",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "A15S",
+          "arrival": 1000700,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "R",
+      "trip_id": "r-dup",
+      "direction": 1,
+      "stop_times": [
+        {
+          "stop_id": "R10N",
+          "arrival": 1000400,
+          "departure": null,
+          "schedule_relationship": 0
+        },
+        {
+          "stop_id": "R10N",
+          "arrival": 1000200,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "B",
+      "trip_id": "b-past",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "B20S",
+          "arrival": 999900,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "C",
+      "trip_id": "c-far",
+      "direction": 3,
+      "stop_times": [
+        {
+          "stop_id": "C30S",
+          "arrival": 1003601,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "6X",
+      "trip_id": "6x-exp",
+      "direction": 1,
+      "stop_times": [
+        {
+          "stop_id": "D40N",
+          "arrival": 1000350,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "E",
+      "trip_id": "",
+      "direction": 1,
+      "stop_times": [
+        {
+          "stop_id": "E50N",
+          "arrival": 1000150,
+          "departure": null,
+          "schedule_relationship": 0
+        },
+        {
+          "stop_id": "",
+          "arrival": 1000150,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    },
+    {
+      "route_id": "E",
+      "trip_id": "",
+      "direction": 1,
+      "stop_times": [
+        {
+          "stop_id": "E50N",
+          "arrival": 1000450,
+          "departure": null,
+          "schedule_relationship": 0
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "Q05S": [
+      {
+        "route": "Q",
+        "eta_epoch": 1000060,
+        "seconds_away": 60,
+        "trip_id": "q5"
+      },
+      {
+        "route": "Q",
+        "eta_epoch": 1000120,
+        "seconds_away": 120,
+        "trip_id": "q1"
+      },
+      {
+        "route": "Q",
+        "eta_epoch": 1000300,
+        "seconds_away": 300,
+        "trip_id": "q3"
+      },
+      {
+        "route": "Q",
+        "eta_epoch": 1000600,
+        "seconds_away": 600,
+        "trip_id": "q0"
+      },
+      {
+        "route": "Q",
+        "eta_epoch": 1000900,
+        "seconds_away": 900,
+        "trip_id": "q2"
+      },
+      {
+        "route": "Q",
+        "eta_epoch": 1001200,
+        "seconds_away": 1200,
+        "trip_id": "q6"
+      }
+    ],
+    "F10N": [
+      {
+        "route": "F",
+        "eta_epoch": 1000300,
+        "seconds_away": 300,
+        "trip_id": "f-arr"
+      },
+      {
+        "route": "F",
+        "eta_epoch": 1000500,
+        "seconds_away": 500,
+        "trip_id": "f-dep"
+      }
+    ],
+    "A15S": [
+      {
+        "route": "A",
+        "eta_epoch": 1000700,
+        "seconds_away": 700,
+        "trip_id": "a-ok"
+      }
+    ],
+    "R10N": [
+      {
+        "route": "R",
+        "eta_epoch": 1000400,
+        "seconds_away": 400,
+        "trip_id": "r-dup"
+      }
+    ],
+    "D40N": [
+      {
+        "route": "6",
+        "eta_epoch": 1000350,
+        "seconds_away": 350,
+        "trip_id": "6x-exp"
+      }
+    ],
+    "E50N": [
+      {
+        "route": "E",
+        "eta_epoch": 1000150,
+        "seconds_away": 150,
+        "trip_id": null
+      },
+      {
+        "route": "E",
+        "eta_epoch": 1000450,
+        "seconds_away": 450,
+        "trip_id": null
+      }
+    ]
+  }
+}

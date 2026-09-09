@@ -133,17 +133,16 @@ export function scoreJourney(snap: Snapshot, journey: Journey): JourneyScore {
     if (cell.status === "disrupted") {
       disrupted++;
       const rec = cell.recovery;
-      // A withheld estimate carries no information about how long this hop
-      // stays down (worker/src/snapshot.ts PUBLISH_FITTED_RECOVERY nulls the
-      // numbers), so it adds nothing to the penalty — ranking it above a
-      // journey with a known short recovery would be inventing the estimate we
-      // just declined to publish. The disrupted count already says it is down.
+      // No published duration — the feed withheld the fitted estimate
+      // (worker/src/snapshot.ts PUBLISH_FITTED_RECOVERY) or the cell has no
+      // curve at all. Unknown is not short: scoring it 0 would rank a
+      // disruption of unknown length ahead of the same disruption known to
+      // clear in 20 minutes. It takes the cap, like an indeterminate one, so
+      // a known bounded recovery always ranks ahead of an unknown one.
       const capped =
-        rec === null || rec.recovery_minutes === null
-          ? 0
-          : rec.recovery_indeterminate
-            ? W.recoveryCap
-            : Math.min(rec.recovery_minutes, W.recoveryCap);
+        rec === null || rec.recovery_minutes === null || rec.recovery_indeterminate
+          ? W.recoveryCap
+          : Math.min(rec.recovery_minutes, W.recoveryCap);
       recoveryPenalty += capped;
       const ev: SegmentEvidence = {
         route: seg.route,

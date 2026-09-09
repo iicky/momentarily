@@ -199,10 +199,11 @@ test("with equal disrupted counts, longer recovery ranks worse and is cited", ()
   assert.match(v.reason, /45m to clear/);
 });
 
-test("a withheld recovery adds no penalty: the hop counts, the missing time does not", () => {
+test("a withheld recovery ranks behind a known bounded one: unknown is not short", () => {
   // Same one disrupted hop on each side; only A's cell publishes a recovery
-  // time. Ranking B worse would be inventing the estimate the feed declined to
-  // publish, so the two must tie on recovery and A's number is what breaks it.
+  // time. B's duration is unknown, and unknown must not read as best-case, so
+  // A's bounded 45 minutes ranks ahead of B — the same way an indeterminate
+  // recovery would.
   const withNumber = journey(leg("A", "north", ["a1", "a2"]));
   const withheld = journey(leg("B", "north", ["b1", "b2"]));
   const snap = snapshot({
@@ -212,15 +213,14 @@ test("a withheld recovery adds no penalty: the hop counts, the missing time does
     },
     routes: { A: routeStatus("disrupted"), B: routeStatus("disrupted") },
   });
-  const ranked = rankJourneys(snap, [withNumber, withheld]);
+  const ranked = rankJourneys(snap, [withheld, withNumber]);
   const [first, second] = ranked;
   assert.ok(first && second, "expected two ranked journeys");
   assert.equal(first.disrupted, 1);
   assert.equal(second.disrupted, 1);
-  // The withheld side carries no recovery penalty, so it ranks ahead of the
-  // 45-minute one rather than behind it.
-  assert.equal(first.id, "B");
-  assert.equal(second.id, "A");
+  assert.equal(first.id, "A");
+  assert.equal(second.id, "B");
+  assert.ok(second.recoveryPenalty > first.recoveryPenalty);
 });
 
 test("low supply is penalised and surfaced as the reason", () => {

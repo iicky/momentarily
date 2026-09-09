@@ -7,16 +7,19 @@ export type Condition = "normal" | "disrupted" | "suspended" | "unknown";
 
 export interface Inference {
   condition: string;
-  recovery_minutes: number;
+  // Null means NO ESTIMATE IS PUBLISHED (see recovery_withheld below), not
+  // zero minutes. Render the null case, never coerce it to a number.
+  recovery_minutes: number | null;
   is_disrupted: boolean;
   p_normal: number;
   p_disrupted: number;
   p_suspended: number;
   regime_entered_at: number;
   regime_age_seconds: number;
-  recovery_minutes_low: number;
-  recovery_minutes_high: number;
-  // Dwell estimate saturated the ceiling — recovery bounds are clamped/meaningless.
+  recovery_minutes_low: number | null;
+  recovery_minutes_high: number | null;
+  // Dwell estimate saturated the ceiling — recovery bounds are clamped/
+  // meaningless. Only meaningful when recovery_minutes is non-null.
   recovery_indeterminate: boolean;
   p_normal_in_30min: number | null;
   // All three horizons are withheld (null) rather than publish a number
@@ -40,6 +43,14 @@ export interface Inference {
   resumes_at: number | null;
   // now has passed resumes_at but the alert is still up.
   overdue: boolean;
+  // "pending_validation" exactly when this row's recovery numbers came off a
+  // fitted dwell curve and were withheld: the 2026-09-04 review graded them
+  // wrong (causal skill -1.70, IQR coverage 0.03-0.06), so the Worker
+  // publishes no estimate until a fitted arm clears the validation gate.
+  // recovery_source still names the arm that was withheld.
+  // Absent when the Worker publishes fitted recovery again (the gate flips and
+  // the marker is dropped from the document), so test for null loosely.
+  recovery_withheld?: "pending_validation" | null;
 }
 
 export interface DirectionAlerts {
@@ -153,14 +164,21 @@ export interface StationStatus {
   oldest_outage_since: number | null;
 }
 
+// Every value here comes off a fitted dwell curve, so the whole block is
+// withheld today (recovery_withheld set, every number null). Present-but-empty
+// still says more than a missing block: `recovery: null` on a SegmentStatus
+// means no trained curve and no started clock.
 export interface SegmentRecovery {
-  recovery_minutes: number;
-  recovery_minutes_low: number;
-  recovery_minutes_high: number;
+  recovery_minutes: number | null;
+  recovery_minutes_low: number | null;
+  recovery_minutes_high: number | null;
   recovery_indeterminate: boolean;
   p_normal_in_30min: number | null;
-  p_normal_in_60min: number;
-  p_normal_in_120min: number;
+  p_normal_in_60min: number | null;
+  p_normal_in_120min: number | null;
+  // Absent when the Worker publishes fitted recovery again (the gate flips and
+  // the marker is dropped from the document), so test for null loosely.
+  recovery_withheld?: "pending_validation" | null;
 }
 
 export interface SegmentStatus {

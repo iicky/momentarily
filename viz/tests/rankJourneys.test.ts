@@ -41,6 +41,19 @@ const recovery = (minutes: number, indeterminate = false): SegmentRecovery => ({
   p_normal_in_30min: 0.5,
   p_normal_in_60min: 0.7,
   p_normal_in_120min: 0.9,
+  recovery_withheld: null,
+});
+
+/** What the feed publishes today: the estimate exists and is not published. */
+const withheldRecovery = (): SegmentRecovery => ({
+  recovery_minutes: null,
+  recovery_minutes_low: null,
+  recovery_minutes_high: null,
+  recovery_indeterminate: false,
+  p_normal_in_30min: null,
+  p_normal_in_60min: null,
+  p_normal_in_120min: null,
+  recovery_withheld: "pending_validation",
 });
 
 const cell = (
@@ -184,6 +197,30 @@ test("with equal disrupted counts, longer recovery ranks worse and is cited", ()
   assert.equal(v.best.id, "A");
   assert.equal(v.culpritRoute, "F");
   assert.match(v.reason, /45m to clear/);
+});
+
+test("a withheld recovery adds no penalty: the hop counts, the missing time does not", () => {
+  // Same one disrupted hop on each side; only A's cell publishes a recovery
+  // time. Ranking B worse would be inventing the estimate the feed declined to
+  // publish, so the two must tie on recovery and A's number is what breaks it.
+  const withNumber = journey(leg("A", "north", ["a1", "a2"]));
+  const withheld = journey(leg("B", "north", ["b1", "b2"]));
+  const snap = snapshot({
+    segments: {
+      "A|north|a1": cell("A|north|a1", "disrupted", recovery(45)),
+      "B|north|b1": cell("B|north|b1", "disrupted", withheldRecovery()),
+    },
+    routes: { A: routeStatus("disrupted"), B: routeStatus("disrupted") },
+  });
+  const ranked = rankJourneys(snap, [withNumber, withheld]);
+  const [first, second] = ranked;
+  assert.ok(first && second, "expected two ranked journeys");
+  assert.equal(first.disrupted, 1);
+  assert.equal(second.disrupted, 1);
+  // The withheld side carries no recovery penalty, so it ranks ahead of the
+  // 45-minute one rather than behind it.
+  assert.equal(first.id, "B");
+  assert.equal(second.id, "A");
 });
 
 test("low supply is penalised and surfaced as the reason", () => {

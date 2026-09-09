@@ -75,6 +75,7 @@ import {
 } from './movement_state';
 import type { PredictionRecord } from './grading';
 import {
+  buildPredictionRows,
   detectTransitions,
   movementTransitions,
   writeMovementTransitions,
@@ -99,7 +100,7 @@ import {
   publishSnapshot,
   publishTrains,
 } from './snapshot';
-import type { Snapshot } from './snapshot';
+import type { Inference, Snapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
 import {
@@ -759,6 +760,11 @@ export default {
       // fail the whole tick and skip every step below (predictions, transitions,
       // E&E, last_seen). Same fail-soft posture as the publish call right after.
       let snapshot: Snapshot | null = null;
+      // The published route_status[].inference withholds curve-fitted recovery
+      // (snapshot.ts PUBLISH_FITTED_RECOVERY); the grading stream at step 7
+      // must keep seeing the numbers, so buildSnapshot hands back the
+      // unprojected objects here.
+      const fullInferences = new Map<string, Inference>();
       try {
         snapshot = buildSnapshot({
           generatedAt: observedAt,
@@ -766,6 +772,7 @@ export default {
           routeSnapshots,
           rolls: newAlphaState.routes,
           trainedParams,
+          fullInferences,
           // Present-but-unreadable params.json (bumped schema_version): the tick
           // publishes on bootstrap params, and this flag surfaces the skew as
           // freshness.params_stale so a consumer can see the model is stale.
@@ -877,43 +884,22 @@ export default {
       // they degrade with it: if buildSnapshot threw above, there is nothing to
       // grade this tick. Transitions/E&E/last_seen below do NOT depend on the
       // snapshot object and still run — that is the point of catching the throw.
-      const predictions: PredictionRecord[] = [];
+      //
+      // The numbers come from `fullInferences`, not from rs.inference: the
+      // published block withholds curve-fitted recovery and the grader needs it
+      // whole. Same object, same tick — rs supplies only the published context
+      // (condition, condition_source, primary_alert_type) the row is graded
+      // against.
+      let predictions: PredictionRecord[] = [];
       if (snapshot !== null) {
-        for (const [routeId, rs] of Object.entries(snapshot.route_status)) {
-          const inf = rs.inference;
-          if (!inf) continue;
-          const mv = movementCounts.get(routeId);
-          predictions.push({
-            ts: observedAt,
-            route: routeId,
-            condition: inf.condition,
-            regime_entered_at: inf.regime_entered_at,
-            p_normal: inf.p_normal,
-            p_disrupted: inf.p_disrupted,
-            p_suspended: inf.p_suspended,
-            p_normal_in_30min: inf.p_normal_in_30min,
-            p_normal_in_60min: inf.p_normal_in_60min,
-            p_normal_in_120min: inf.p_normal_in_120min,
-            recovery_minutes: inf.recovery_minutes,
-            recovery_minutes_low: inf.recovery_minutes_low,
-            recovery_minutes_high: inf.recovery_minutes_high,
-            recovery_indeterminate: inf.recovery_indeterminate,
-            recovery_source: inf.recovery_source,
-            resumes_at: inf.resumes_at,
-            primary_alert_type: rs.primary_alert_type,
-            params_version: paramsVersion,
-            published_condition: rs.condition,
-            condition_source: rs.condition_source,
-            // From the same one-tick-lagged doc the snapshot published the
-            // condition from, so the row describes the regime consumers saw.
-            movement_regime_entered_at: movementStates?.regimes[routeId]?.entered_at ?? 0,
-            // Null when the movement channel did not fire this tick — there is no
-            // count to attribute, and a number here would imply the binomial
-            // contributed when it contributed 0.
-            matched_n: mv?.matched_n ?? null,
-            advanced_n: mv?.advanced_n ?? null,
-          });
-        }
+        predictions = buildPredictionRows({
+          ts: observedAt,
+          routeStatuses: snapshot.route_status,
+          inferences: fullInferences,
+          paramsVersion,
+          movementRegimes: movementStates?.regimes,
+          movementCounts,
+        });
         try {
           await writePredictions(env.MOMENTARILY, observedAt, predictions);
         } catch (err) {

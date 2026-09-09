@@ -9,12 +9,17 @@
  * published beside recovery_minutes=0, interval [0,0] and
  * recovery_indeterminate=false, because the movement arm's `normal` branch
  * honestly returns 0/0/0-determinate meaning "nothing to recover from".
- *
  * The fix withholds the number the way the ceiling gate already does for the
  * mirror-image case. These tests pin the disagreement, and pin that the two
  * rows from the same live snapshot that were already correct — H (no movement
  * read, alert-arm estimate) and Z (not_scheduled, ceiling convention) — did
  * not move.
+ *
+ * These guards live in buildInference, whose full-fidelity output is what the
+ * grading stream archives, so the estimates are asserted on `snap.full` (the
+ * unprojected object) — on the PUBLIC block a fitted arm's numbers are nulled
+ * outright while the estimate is ungraduated (snapshot.ts
+ * PUBLISH_FITTED_RECOVERY, pinned in withheld_recovery.test.ts).
  */
 
 import { describe, expect, test } from 'vitest';
@@ -23,6 +28,7 @@ import type { RouteRoll } from '../src/alpha';
 import { deriveRouteSnapshots } from '../src/derive';
 import type { TrainedParams } from '../src/params';
 import { parseTrainedParams } from '../src/params';
+import type { Inference, Snapshot } from '../src/snapshot';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
 
 const NOW = 1_700_000_000;
@@ -112,8 +118,9 @@ function build(opts: {
   roll: RouteRoll;
   alerts?: unknown[];
   movement?: { state: string; entered_at: number } | null;
-}) {
-  return buildSnapshot({
+}): Snapshot & { full: Map<string, Inference> } {
+  const full = new Map<string, Inference>();
+  const snapshot = buildSnapshot({
     generatedAt: NOW,
     alertsFreshness: NOW,
     routeSnapshots: deriveRouteSnapshots({ entity: opts.alerts ?? [] }, NOW),
@@ -126,7 +133,11 @@ function build(opts: {
         : { observed_at: NOW - 300, regimes: { [opts.routeId]: opts.movement } },
     vehicleFreshFeeds: [],
     vehicleExpectedFeeds: [],
+    fullInferences: full,
   });
+  // The public block withholds a fitted arm's numbers; `full` carries the
+  // unprojected object these guards actually operate on.
+  return Object.assign(snapshot, { full });
 }
 
 /** The live J row: real-time Delays alert (so the alert arm is not force-normal)
@@ -164,17 +175,23 @@ describe('inference: arms that disagree must not compose into a confident zero',
     expect(inf.recovery_source).toBe('movement');
 
     // The defect: a determinate, confident zero on an object that calls itself
-    // disrupted. Withheld via the existing ceiling convention instead.
-    expect(inf.recovery_indeterminate).toBe(true);
-    expect(inf.recovery_minutes).toBe(MAX_RECOVERY_MINUTES);
-    expect(inf.recovery_minutes_low).toBe(MAX_RECOVERY_MINUTES);
-    expect(inf.recovery_minutes_high).toBe(MAX_RECOVERY_MINUTES);
+    // disrupted. Withheld via the existing ceiling convention in the graded
+    // object, and nulled outright on the wire.
+    const graded = snap.full.get('J')!;
+    expect(graded.recovery_indeterminate).toBe(true);
+    expect(graded.recovery_minutes).toBe(MAX_RECOVERY_MINUTES);
+    expect(graded.recovery_minutes_low).toBe(MAX_RECOVERY_MINUTES);
+    expect(graded.recovery_minutes_high).toBe(MAX_RECOVERY_MINUTES);
+    expect(inf.recovery_minutes).toBeNull();
 
     // p_normal_in_30min forecasts the PUBLISHED condition, which is normal, so
-    // "still normal in 30 min" is a correct and well-measured claim. It is
-    // deliberately not withheld with the recovery number.
-    expect(inf.p_normal_in_30min).not.toBeNull();
-    expect(inf.p_normal_in_30min!).toBeGreaterThan(0.9);
+    // "still normal in 30 min" is a correct and well-measured claim, and the
+    // arm-agreement guard deliberately does not withhold it. The publish gate
+    // does, because it came off the same fitted curve: it survives in the
+    // graded object and is null on the wire.
+    expect(graded.p_normal_in_30min).not.toBeNull();
+    expect(graded.p_normal_in_30min!).toBeGreaterThan(0.9);
+    expect(inf.p_normal_in_30min).toBeNull();
   });
 
   test('schedule arm clamped to an overdue zero withholds too (the arm-enumeration hole)', () => {
@@ -365,11 +382,14 @@ describe('inference: arms that disagree must not compose into a confident zero',
     expect(snap.route_status.J!.condition).toBe('disrupted');
     expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('movement');
-    // A real movement-curve estimate, not the withheld ceiling.
-    expect(inf.recovery_indeterminate).toBe(false);
-    expect(inf.recovery_minutes).toBeGreaterThan(0);
-    expect(inf.recovery_minutes).toBeLessThan(MAX_RECOVERY_MINUTES);
-    expect(inf.recovery_minutes_high).toBeGreaterThan(inf.recovery_minutes_low);
+    // A real movement-curve estimate, not the withheld ceiling — read off the
+    // graded object, since the fitted arm publishes no number.
+    const graded = snap.full.get('J')!;
+    expect(graded.recovery_indeterminate).toBe(false);
+    expect(graded.recovery_minutes).toBeGreaterThan(0);
+    expect(graded.recovery_minutes).toBeLessThan(MAX_RECOVERY_MINUTES);
+    expect(graded.recovery_minutes_high).toBeGreaterThan(graded.recovery_minutes_low);
+    expect(inf.recovery_minutes).toBeNull();
   });
 
   test('agreeing arms are untouched: both read normal, recovery stays a determinate zero', () => {
@@ -383,10 +403,11 @@ describe('inference: arms that disagree must not compose into a confident zero',
     expect(inf.is_disrupted).toBe(false);
     expect(inf.recovery_source).toBe('movement');
     // Nothing to recover from, and nothing claiming otherwise: 0 is honest.
-    expect(inf.recovery_indeterminate).toBe(false);
-    expect(inf.recovery_minutes).toBe(0);
-    expect(inf.recovery_minutes_low).toBe(0);
-    expect(inf.recovery_minutes_high).toBe(0);
+    const graded = snap.full.get('J')!;
+    expect(graded.recovery_indeterminate).toBe(false);
+    expect(graded.recovery_minutes).toBe(0);
+    expect(graded.recovery_minutes_low).toBe(0);
+    expect(graded.recovery_minutes_high).toBe(0);
   });
 
   test('H-style row (no movement read, alert-arm dwell estimate) keeps its estimate', () => {
@@ -413,9 +434,10 @@ describe('inference: arms that disagree must not compose into a confident zero',
     expect(inf.condition).toBe('disrupted');
     expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('hmm');
-    expect(inf.recovery_indeterminate).toBe(false);
-    expect(inf.recovery_minutes).toBeGreaterThan(0);
-    expect(inf.recovery_minutes).toBeLessThan(MAX_RECOVERY_MINUTES);
+    const graded = snap.full.get('H')!;
+    expect(graded.recovery_indeterminate).toBe(false);
+    expect(graded.recovery_minutes).toBeGreaterThan(0);
+    expect(graded.recovery_minutes).toBeLessThan(MAX_RECOVERY_MINUTES);
     // Still the alert arm forecasting its own regime, so the probability is
     // withheld exactly as before.
     expect(inf.p_normal_in_30min).toBeNull();
@@ -446,9 +468,10 @@ describe('inference: arms that disagree must not compose into a confident zero',
     expect(inf.condition).toBe('not_scheduled');
     expect(inf.is_disrupted).toBe(false);
     expect(inf.resumes_at).toBeNull();
-    expect(inf.recovery_indeterminate).toBe(true);
-    expect(inf.recovery_minutes).toBe(MAX_RECOVERY_MINUTES);
-    expect(inf.recovery_minutes_low).toBe(MAX_RECOVERY_MINUTES);
-    expect(inf.recovery_minutes_high).toBe(MAX_RECOVERY_MINUTES);
+    const graded = snap.full.get('Z')!;
+    expect(graded.recovery_indeterminate).toBe(true);
+    expect(graded.recovery_minutes).toBe(MAX_RECOVERY_MINUTES);
+    expect(graded.recovery_minutes_low).toBe(MAX_RECOVERY_MINUTES);
+    expect(graded.recovery_minutes_high).toBe(MAX_RECOVERY_MINUTES);
   });
 });

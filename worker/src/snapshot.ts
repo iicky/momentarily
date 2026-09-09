@@ -96,11 +96,42 @@ export const ATTRIBUTION =
   "Published by Momentarily (https://feed.momentarily.nyc). " +
   "Not affiliated with the MTA.";
 
+/**
+ * Whether curve-fitted recovery estimates reach the PUBLIC snapshot.
+ *
+ * false since 2026-09-08 (owner decision): the review memo
+ * docs/review/2026-09-04-shadow-hmm/memo.md graded recovery_minutes wrong —
+ * causal_skill -1.70 against a pre-window duration climatology, PIT 0.17, IQR
+ * coverage 0.03-0.06. An estimate the review grades as wrong is not published.
+ * Withheld are the fitted arms only (recovery_source 'movement' and 'hmm', and
+ * every segment/station recovery block, all of which come off a dwell curve);
+ * recovery_source 'schedule' is a deterministic countdown to an announced
+ * resume time, carries no fit, and publishes unchanged.
+ *
+ * GRADUATION CRITERION — flip to true when the fitted arm shows positive
+ * causal CRPS skill against the pre-window climatology on >= 20 incidents
+ * across >= 3 routes, graded against an independent truth. Deliberately one
+ * constant and not a config file, env var or params.json knob: the gate is a
+ * code decision with a review behind it, and flipping it restores the previous
+ * published document byte for byte: the withheld numbers come back and the
+ * `recovery_withheld` marker — which would say nothing once every row reads
+ * null — is omitted from the document entirely.
+ *
+ * NOT a gate on the grading stream. v1/predictions keeps the full numeric
+ * values either way — the review that graduates this needs them (see
+ * `fullInferences` on buildSnapshot).
+ */
+export const PUBLISH_FITTED_RECOVERY = false;
+
 // The HMM/alert forecast for a route — recovery timing (recovery_minutes,
 // p_normal_in_H) plus the alert-derived regime read. With movement-primary
 // publishing this is the SHADOW: its `condition`/`is_disrupted`/probabilities are
 // the alert view, not the published current state (route_status.condition).
-interface Inference {
+//
+// This is the FULL-fidelity internal object: every recovery number is present,
+// whatever the publish gate says. It is what the grading stream archives. The
+// public projection of it is PublicInference below.
+export interface Inference {
   condition: string;
   recovery_minutes: number;
   is_disrupted: boolean;
@@ -154,6 +185,75 @@ interface Inference {
   overdue: boolean;
 }
 
+// The PUBLISHED projection of Inference — what route_status[].inference is on
+// snapshot.json, and what src/momentarily/schema.py Inference mirrors. Same
+// object with one difference: when the recovery numbers came off a fitted
+// dwell curve and PUBLISH_FITTED_RECOVERY is false, they are null and
+// recovery_withheld says so. See projectInference.
+interface PublicInference
+  extends Omit<
+    Inference,
+    "recovery_minutes" | "recovery_minutes_low" | "recovery_minutes_high"
+  > {
+  // Null means NO ESTIMATE IS PUBLISHED — not "zero minutes", and not the
+  // ceiling standing in for "we don't know". Non-null only for a countdown
+  // that carries no fit (recovery_source 'schedule') or once the fitted arm
+  // graduates.
+  recovery_minutes: number | null;
+  recovery_minutes_low: number | null;
+  recovery_minutes_high: number | null;
+  // "pending_validation" exactly when this row's fitted recovery numbers were
+  // nulled by the publish gate; null on a row that had nothing to withhold
+  // (recovery_source 'schedule'). recovery_source still names the arm that was
+  // withheld, so a consumer can see what is missing and why.
+  //
+  // Optional for one reason: with PUBLISH_FITTED_RECOVERY open the field says
+  // nothing (it would read null on every row), so it is omitted entirely and
+  // graduation restores the previous document byte for byte. While the gate is
+  // closed — today — every published inference carries it.
+  recovery_withheld?: "pending_validation" | null;
+}
+
+/**
+ * Project the full internal inference onto the published contract: null out a
+ * fitted arm's recovery numbers (and its forecast horizons) while the estimate
+ * is ungraduated, and mark it withheld. A schedule-sourced row is a
+ * deterministic countdown, not a fit, and passes through untouched.
+ *
+ * Applied where the inference is attached to the snapshot document, so the
+ * document buildSnapshot returns IS the public contract — every publisher of
+ * it inherits the projection. The grading stream reads the unprojected object
+ * from buildSnapshot's `fullInferences` sink instead.
+ *
+ * recovery_indeterminate is left exactly as computed; it is meaningful only
+ * when recovery_minutes is non-null.
+ *
+ * `publishFitted` defaults to the gate and is a parameter for exactly one
+ * reason: a test can pin that graduation restores the previous bytes exactly,
+ * without editing the constant. Production never passes it.
+ */
+export function projectInference(
+  inf: Inference,
+  publishFitted: boolean = PUBLISH_FITTED_RECOVERY,
+): PublicInference {
+  // Nothing withheld and nothing to say about withholding: the object the
+  // Worker published before this gate existed, field for field.
+  if (publishFitted) return { ...inf };
+  if (inf.recovery_source === "schedule") {
+    return { ...inf, recovery_withheld: null };
+  }
+  return {
+    ...inf,
+    recovery_minutes: null,
+    recovery_minutes_low: null,
+    recovery_minutes_high: null,
+    p_normal_in_30min: null,
+    p_normal_in_60min: null,
+    p_normal_in_120min: null,
+    recovery_withheld: "pending_validation",
+  };
+}
+
 interface RouteStatusOut {
   route_id: string;
   alerts: string[];
@@ -203,7 +303,7 @@ interface RouteStatusOut {
     northbound: DirectionAlerts;
     southbound: DirectionAlerts;
   };
-  inference: Inference | null;
+  inference: PublicInference | null;
 }
 
 // Per-line-group liveness of the trip-update feeds this tick. `expected` is the
@@ -311,14 +411,23 @@ interface Compat {
 // Expected recovery off a dwell curve conditioned on a regime clock. Same
 // field names as Inference's recovery block (in minutes, not seconds) so a
 // segment's or station's recovery is directly comparable to a route's.
+//
+// Every value here is curve-fitted — there is no schedule arm at segment
+// granularity — so the whole block is subject to PUBLISH_FITTED_RECOVERY and
+// today publishes as nulls plus recovery_withheld. A block of nulls is still
+// distinct from `recovery: null`, which means no curve and no clock: this one
+// says an estimate exists and is not being published. See segmentRecovery.
 interface SegmentRecovery {
-  recovery_minutes: number;
-  recovery_minutes_low: number;
-  recovery_minutes_high: number;
+  recovery_minutes: number | null;
+  recovery_minutes_low: number | null;
+  recovery_minutes_high: number | null;
   recovery_indeterminate: boolean;
-  p_normal_in_30min: number;
-  p_normal_in_60min: number;
-  p_normal_in_120min: number;
+  p_normal_in_30min: number | null;
+  p_normal_in_60min: number | null;
+  p_normal_in_120min: number | null;
+  // Absent entirely once PUBLISH_FITTED_RECOVERY opens, so graduation restores
+  // the previous block byte for byte; set on every block while it is closed.
+  recovery_withheld?: "pending_validation" | null;
 }
 
 // Per-segment published status: the debounced regime + clock, successor
@@ -602,6 +711,13 @@ export function buildSnapshot(args: {
    * context (a synthetic snapshot) passes two empty arrays. */
   vehicleFreshFeeds: readonly string[];
   vehicleExpectedFeeds: readonly string[];
+  /** Write-only sink for the FULL, unprojected per-route inference, keyed by
+   * route. route_status[].inference on the returned document is the public
+   * projection (fitted recovery withheld — see PUBLISH_FITTED_RECOVERY), so
+   * the grading stream reads its numbers from here instead: index.ts step 7
+   * builds v1/predictions off this map. Omit it when nothing grades the tick;
+   * the snapshot is unaffected either way. */
+  fullInferences?: Map<string, Inference>;
 }): Snapshot {
   const route_status: Record<string, RouteStatusOut> = {};
 
@@ -702,6 +818,10 @@ export function buildSnapshot(args: {
           args.alertsParseDegraded ?? false,
         )
       : null;
+    // The full object goes to the grader, the projection goes on the wire.
+    if (inference !== null) args.fullInferences?.set(routeId, inference);
+    const publicInference =
+      inference === null ? null : projectInference(inference);
 
     const label = snap?.coarse_label ?? NO_ALERTS_FALLBACK;
     // Current state is movement-primary: train movement is the published answer to
@@ -747,7 +867,7 @@ export function buildSnapshot(args: {
         northbound: { alerts: [], primary_alert_type: null },
         southbound: { alerts: [], primary_alert_type: null },
       },
-      inference,
+      inference: publicInference,
     };
   }
 
@@ -1271,8 +1391,10 @@ function buildInference(
   // they were timing the alert regime's return, not the route's. Withheld the
   // way the outlived-every-dwell case already is: recovery_indeterminate says
   // the number is not a prediction and the value carries the ceiling, rather
-  // than a fabricated estimate. Not null, because recovery_minutes is an
-  // integer in the published snapshot contract that external consumers read.
+  // than a fabricated estimate. Stays a number here — this is the internal
+  // object the grading stream archives, where the ceiling+flag encoding is the
+  // contract. On the public snapshot the projection nulls it outright
+  // (projectInference); the two withholdings compose, they don't conflict.
   if (publishedNotNormal && !forecastsThePublishedCondition) {
     recovery_minutes = MAX_RECOVERY_MINUTES;
     recovery_minutes_low = MAX_RECOVERY_MINUTES;
@@ -1335,7 +1457,8 @@ function buildInference(
   // which is a legitimate forecast and must survive. Withheld the same way the
   // ceiling gate above withholds: recovery_indeterminate says the number is not
   // a prediction and the value carries the ceiling, rather than a fabricated
-  // confident zero. Not null, for the same contract reason.
+  // confident zero. A number here for the same reason as above: the grading
+  // stream's encoding, nulled on the public surface by projectInference.
   //
   // p_normal_in_30min is deliberately left alone. It forecasts the PUBLISHED
   // condition, which on the J row is normal, so "0.998 chance still normal in
@@ -1499,6 +1622,13 @@ function movementRecovery(
  * a NORMAL cell — buildSegmentFlowOut publishes `recovery: null` for one
  * directly, without a curve lookup: a healthy segment has nothing to
  * forecast, so there is no "recovery from normal" to compute.
+ *
+ * Every number it can produce is curve-fitted, so with
+ * PUBLISH_FITTED_RECOVERY false it returns the block with all values null and
+ * recovery_withheld set: the estimate exists, and it is not published. That is
+ * deliberately NOT the same answer as null (no curve, no clock), and unlike
+ * the route arm there is no grading stream to keep whole here — no surface
+ * archives segment recovery, so nothing downstream loses the numbers.
  */
 function segmentRecovery(
   dwell: SegmentDwellDoc | null,
@@ -1532,6 +1662,18 @@ function segmentRecovery(
     recovery_minutes_low = MAX_RECOVERY_MINUTES;
     recovery_minutes_high = MAX_RECOVERY_MINUTES;
     recovery_indeterminate = true;
+  }
+  if (!PUBLISH_FITTED_RECOVERY) {
+    return {
+      recovery_minutes: null,
+      recovery_minutes_low: null,
+      recovery_minutes_high: null,
+      recovery_indeterminate,
+      p_normal_in_30min: null,
+      p_normal_in_60min: null,
+      p_normal_in_120min: null,
+      recovery_withheld: "pending_validation",
+    };
   }
   return {
     recovery_minutes,
@@ -1789,9 +1931,10 @@ export function snapshotConsistencyWarnings(s: Snapshot): string[] {
  * publishes normally. Marginal floats (e.g. 1.0000001) are finite and ship
  * as-is — we do NOT range-check, because that once stalled the whole feed.
  *
- * A DELIBERATELY WITHHELD horizon is a different thing entirely: the 60- and
- * 120-minute forecasts are null by design on every fitted-curve row (see the
- * Inference interface), and null is their valid published value. Treating that
+ * A DELIBERATELY WITHHELD value is a different thing entirely: the 60- and
+ * 120-minute forecasts are null by design on every fitted-curve row, and so is
+ * the whole recovery block while PUBLISH_FITTED_RECOVERY is false (see
+ * PublicInference), and null is their valid published value. Treating that
  * as corruption would scrub every inference on every tick and empty the feed of
  * exactly the data it exists to carry — which is what the regression test below
  * this function is guarding. Absent is fine; not-a-number is not.
@@ -1811,9 +1954,9 @@ export function scrubCorruptInferences(s: Snapshot): string[] {
       finiteOrWithheld(inf.p_normal_in_30min) &&
       finiteOrWithheld(inf.p_normal_in_60min) &&
       finiteOrWithheld(inf.p_normal_in_120min) &&
-      Number.isFinite(inf.recovery_minutes) &&
-      Number.isFinite(inf.recovery_minutes_low) &&
-      Number.isFinite(inf.recovery_minutes_high);
+      finiteOrWithheld(inf.recovery_minutes) &&
+      finiteOrWithheld(inf.recovery_minutes_low) &&
+      finiteOrWithheld(inf.recovery_minutes_high);
     if (!allFinite) {
       rs.inference = null;
       scrubbed.push(routeId);

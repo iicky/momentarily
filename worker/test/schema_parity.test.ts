@@ -470,13 +470,17 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       vehicleExpectedFeeds: [],
     });
     // No alert to explain a disruption → the shadow HMM condition is gated
-    // to normal, is_disrupted is false, and recovery collapses to 0.
+    // to normal and is_disrupted is false. The recovery estimate behind it
+    // (a 0) is fitted-arm sourced, so the published block withholds it.
     expect(snap.route_status['1']!.inference!.condition).toBe('normal');
     expect(snap.route_status['1']!.inference!.is_disrupted).toBe(false);
-    expect(snap.route_status['1']!.inference!.recovery_minutes).toBe(0);
+    expect(snap.route_status['1']!.inference!.recovery_minutes).toBeNull();
+    expect(snap.route_status['1']!.inference!.recovery_withheld).toBe(
+      'pending_validation',
+    );
   });
 
-  test('an alert-arm inference publishes recovery but withholds every forecast horizon', () => {
+  test('an alert-arm inference withholds its fitted recovery, and validates so', () => {
     const trained = {
       schema_version: '1',
       trained_at: 1,
@@ -530,16 +534,23 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     });
     const inf = snap.route_status['1']!.inference!;
     // The alert arm still estimates recovery from the empirical cell, but it
-    // publishes no forecast: no movement reading here, so the published
-    // condition is 'unknown' and a probability sourced from the alert regime
-    // would describe something else entirely.
+    // publishes neither the estimate nor a forecast: the estimate is fitted
+    // and ungraduated, and with no movement reading the published condition
+    // is 'unknown', so a probability sourced from the alert regime would
+    // describe something else entirely. The schema check above the assertions
+    // is the point — a withheld block is a VALID published document.
+    check(snap);
     expect(snap.route_status['1']!.condition).toBe('unknown');
     expect(inf.recovery_source).toBe('hmm');
+    expect(inf.recovery_minutes).toBeNull();
+    expect(inf.recovery_minutes_low).toBeNull();
+    expect(inf.recovery_minutes_high).toBeNull();
+    expect(inf.recovery_withheld).toBe('pending_validation');
     expect(inf.p_normal_in_30min).toBeNull();
     expect(inf.p_normal_in_60min).toBeNull();
     expect(inf.p_normal_in_120min).toBeNull();
-    // An unreadable route has nothing to recover from, so the estimate is not
-    // clamped to the indeterminate ceiling either.
+    // An unreadable route has nothing to recover from, so the estimate behind
+    // the withholding was not clamped to the indeterminate ceiling either.
     expect(inf.recovery_indeterminate).toBe(false);
   });
 });

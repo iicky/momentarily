@@ -13,6 +13,8 @@ import {
   isRunningHigh,
   supplyBand,
   fmtMinutes,
+  fmtRecovery,
+  NO_RECOVERY_ESTIMATE,
 } from "@/lib/feed";
 import type { Snapshot, RouteStatus } from "@/lib/types";
 
@@ -99,8 +101,12 @@ function TriageRow({ snap, route, r }: { snap: Snapshot; route: string; r: Route
   const inf = r.inference;
   const supplyTone = isRunningHigh(r) ? "high" : supplyBand(r);
   const recovery =
-    inf && inf.is_disrupted && !inf.recovery_indeterminate
-      ? `~${fmtMinutes(inf.recovery_minutes)} to recover`
+    inf && inf.is_disrupted
+      ? inf.recovery_withheld != null
+        ? NO_RECOVERY_ESTIMATE
+        : inf.recovery_indeterminate
+          ? null
+          : `~${fmtRecovery(inf.recovery_minutes)} to recover`
       : null;
   return (
     <Link href={`/lines/${route}`} className={`triage-row ${cls}`}>

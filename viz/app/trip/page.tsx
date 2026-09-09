@@ -20,7 +20,7 @@ import { useSnapshot, useTopology } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
 import { TripVerdict } from "./TripVerdict";
 import { undirected } from "@/lib/stations";
-import { fmtMinutes } from "@/lib/feed";
+import { fmtMinutes, fmtRecovery, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
 import { indexComplexes, journeysBetween } from "@/lib/complexes";
 import { alightStop, boardStop, journeyId } from "@/lib/journeys";
 import type { Journey, JourneyLeg } from "@/lib/journeys";
@@ -398,7 +398,11 @@ function Leg({
                 <span className={`cond ${status}`}>
                   {status}
                   {status === "disrupted" && cell?.recovery
-                    ? ` · ~${fmtMinutes(cell.recovery.recovery_minutes)}`
+                    ? ` · ${
+                        cell.recovery.recovery_minutes == null
+                          ? NO_RECOVERY_ESTIMATE
+                          : `~${fmtRecovery(cell.recovery.recovery_minutes)}`
+                      }`
                     : ""}
                 </span>
               ) : (

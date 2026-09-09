@@ -149,8 +149,13 @@ export type Disagreement = "alert-only" | "movement-only";
 export interface SegmentReading {
   segment: CommuteSegment;
   status: CellStatus | null;
-  // Recovery estimate for a disrupted cell, when the model has one; else null.
+  // Recovery estimate for a disrupted cell, when the model has one AND it is
+  // published; else null. `recoveryWithheld` tells the two apart.
   recoveryMinutes: number | null;
+  // True when the cell has an estimate the feed withheld (fitted-curve
+  // recovery, ungraduated — see worker/src/snapshot.ts). Distinct from "no
+  // estimate exists", which is both fields falsy.
+  recoveryWithheld: boolean;
   // The alert feed's primary advisory for this segment's route+direction, or
   // null when that direction carries none. Shown verbatim; "No Scheduled
   // Service" is a benign off-hours state and never drives a disagreement.
@@ -216,6 +221,7 @@ export function commuteStatus(snap: Snapshot, commute: Commute): CommuteStatus {
         segment,
         status,
         recoveryMinutes: cell?.recovery?.recovery_minutes ?? null,
+        recoveryWithheld: cell?.recovery?.recovery_withheld != null,
         alert,
         disagreement,
       });

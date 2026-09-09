@@ -28,6 +28,11 @@ streams accumulate one object per write.
 | `v1/regime_transitions/<date>/<observed_at>.jsonl` | [`grading.ts`](src/grading.ts) `writeTransitions` | every 5-min tick (only on a regime change) |
 | `v1/movement_transitions/<date>/<observed_at>-<scope>.jsonl` | [`grading.ts`](src/grading.ts) `writeMovementTransitions` | every 5-min tick (only on a movement-regime change) |
 
+`v1/snapshot.json` withholds curve-fitted recovery pending validation (nulled,
+with `recovery_withheld: "pending_validation"`) and publishes the schedule
+countdowns; `v1/predictions` keeps the full numbers for grading. The gate is
+the `PUBLISH_FITTED_RECOVERY` constant in [`snapshot.ts`](src/snapshot.ts).
+
 `v1/prov/v<trained_at>.json` also lives under the public prefix but is written by
 the weekly Python trainer, not the Worker; the Worker only derives its public URL
 ([`params.ts`](src/params.ts) `publicProvUrl`).

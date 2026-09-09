@@ -203,10 +203,19 @@ class DirectionStatus(BaseModel):
 
 
 class Inference(BaseModel):
-    """HMM-derived state inference.
+    """HMM-derived state inference: the published forecast block for a route.
 
-    Populated only after the shadow review (Phase 3+). During Phase 1 this field
-    stays None on every entity status object.
+    Populated live on every route the model has state for — not None, and no
+    longer shadow-only. What IS held back is the curve-fitted recovery
+    estimate: the 2026-09-04 review (docs/review/2026-09-04-shadow-hmm/memo.md)
+    graded recovery_minutes wrong (causal skill -1.70 against a pre-window
+    duration climatology, PIT 0.17, IQR coverage 0.03-0.06), so while
+    recovery_source names a fitted arm ("movement" or "hmm") the recovery
+    numbers and their horizons publish as null and recovery_withheld says why.
+    A "schedule" row is a deterministic countdown to an announced resume time,
+    carries no fit, and publishes its numbers. The full numeric values still
+    flow to the v1/predictions grading stream, which is what a future review
+    will graduate the estimate on.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -216,7 +225,9 @@ class Inference(BaseModel):
     # not_scheduled is a planned non-disruption (off-timetable, e.g. rush-only
     # lines off-hours); open for future regimes.
     condition: str
-    recovery_minutes: int
+    # Null means NO ESTIMATE IS PUBLISHED — not zero minutes, and not a ceiling
+    # standing in for "unknown". See the class docstring and recovery_withheld.
+    recovery_minutes: int | None
     is_disrupted: bool
 
     # Probability vector (attribute-depth)
@@ -229,8 +240,8 @@ class Inference(BaseModel):
     regime_age_seconds: int
 
     # Recovery posterior bounds (attribute-depth)
-    recovery_minutes_low: int  # 25th percentile
-    recovery_minutes_high: int  # 75th percentile
+    recovery_minutes_low: int | None  # 25th percentile
+    recovery_minutes_high: int | None  # 75th percentile
 
     # True whenever recovery_minutes is NOT a prediction, in which case it and
     # its bounds all carry the ceiling. Three producers: the dwell estimate
@@ -240,6 +251,9 @@ class Inference(BaseModel):
     # could answer a live recovery question; or the arm that produced the
     # recovery block disagrees with is_disrupted about whether there is a
     # disruption at all.
+    #
+    # Meaningful ONLY when recovery_minutes is non-null: it qualifies a number,
+    # and a withheld block has no number to qualify.
     recovery_indeterminate: bool = False
 
     # Forward predictions.
@@ -282,6 +296,13 @@ class Inference(BaseModel):
     # now has passed resumes_at but the planned alert is still active — recovery
     # is clamped to 0 rather than counting down past the announced time.
     overdue: bool = False
+    # "pending_validation" exactly when this row's fitted recovery numbers were
+    # nulled because the estimate has not cleared the validation gate; None
+    # otherwise. recovery_source still names the arm that was withheld, so a
+    # consumer can see what is missing and why.
+    # Closed, unlike recovery_source above: this is a two-valued marker, not an
+    # open label set. A new reason to withhold is a contract change.
+    recovery_withheld: Literal["pending_validation"] | None = None
 
 
 class RouteStatus(BaseModel):
@@ -618,17 +639,25 @@ class Provenance(BaseModel):
 class SegmentRecovery(BaseModel):
     """Expected recovery off a dwell curve conditioned on a regime clock — same
     field names as Inference's recovery block, so a segment's recovery is
-    directly comparable to a route's."""
+    directly comparable to a route's.
+
+    Every value here is curve-fitted; there is no schedule arm at segment
+    granularity. So the whole block is subject to the same validation gate as
+    Inference's recovery (see that docstring) and currently publishes as nulls
+    plus recovery_withheld. A block of nulls still says something a null block
+    does not: the segment HAS an estimate and it is not being published, where
+    `recovery: null` means no trained curve and no started clock."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    recovery_minutes: int
-    recovery_minutes_low: int
-    recovery_minutes_high: int
+    recovery_minutes: int | None
+    recovery_minutes_low: int | None
+    recovery_minutes_high: int | None
     recovery_indeterminate: bool = False
     p_normal_in_30min: float | None
-    p_normal_in_60min: float
-    p_normal_in_120min: float
+    p_normal_in_60min: float | None
+    p_normal_in_120min: float | None
+    recovery_withheld: Literal["pending_validation"] | None = None
 
 
 class StationServiceFlow(BaseModel):

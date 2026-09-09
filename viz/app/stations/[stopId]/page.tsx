@@ -7,7 +7,7 @@ import { useSnapshot, useCoords, useTopology, useStationFacts, useStationMainten
 import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
-import { fmtEta, fmtMinutes, fmtRiders, platformCrowding } from "@/lib/feed";
+import { fmtEta, fmtMinutes, fmtRecovery, fmtRiders, platformCrowding, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
 import type { PlatformCrowdingView } from "@/lib/feed";
 import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery, SegmentStatus } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
@@ -310,9 +310,11 @@ function RecoveryLine({ rec }: { rec: SegmentRecovery }) {
     <div className="kv">
       <span className="k">Expected recovery</span>
       <span className="v">
-        {rec.recovery_indeterminate
-          ? "indeterminate"
-          : `~${fmtMinutes(rec.recovery_minutes)} (${fmtMinutes(rec.recovery_minutes_low)}–${fmtMinutes(rec.recovery_minutes_high)})`}
+        {rec.recovery_withheld != null || rec.recovery_minutes == null
+          ? NO_RECOVERY_ESTIMATE
+          : rec.recovery_indeterminate
+            ? "indeterminate"
+            : `~${fmtRecovery(rec.recovery_minutes)} (${fmtRecovery(rec.recovery_minutes_low)}–${fmtRecovery(rec.recovery_minutes_high)})`}
       </span>
     </div>
   );

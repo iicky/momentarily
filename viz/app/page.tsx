@@ -11,6 +11,8 @@ import {
   alertHeadline,
   fmtAgo,
   fmtMinutes,
+  fmtRecovery,
+  NO_RECOVERY_ESTIMATE,
   heldFor,
   fmtProb,
   supplyBand,
@@ -537,9 +539,11 @@ function RouteCard({
         <span className="meta-right">
           {inf && inf.is_disrupted && (
             <span className="meta-eta">
-              {inf.recovery_indeterminate
-                ? "recovery: indeterminate"
-                : `~${fmtMinutes(inf.recovery_minutes)}`}
+              {inf.recovery_withheld != null
+                ? NO_RECOVERY_ESTIMATE
+                : inf.recovery_indeterminate
+                  ? "recovery: indeterminate"
+                  : `~${fmtRecovery(inf.recovery_minutes)}`}
             </span>
           )}
           <span className="card-trains" title={supplyTitle(r.service_ratio)}>
@@ -577,6 +581,7 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
           No forecast. We have no live read on this line right now, so we do not
           call its status or its return.
         </div>
+        <div className="section-note">{NO_RECOVERY_ESTIMATE}</div>
       </>
     );
   }
@@ -626,10 +631,26 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
             <span className="v">
               {inf.overdue
                 ? "passed, alert still up"
-                : fmtMinutes(inf.recovery_minutes)}
+                : fmtRecovery(inf.recovery_minutes)}
             </span>
           </div>
         )}
+      </>
+    );
+  }
+
+  // The dominant case since 2026-09-08: the estimate exists but came off a
+  // fitted dwell curve the review graded wrong, so the worker publishes no
+  // number. Named before the indeterminate branch below because there is no
+  // number left for that flag to qualify.
+  if (inf.recovery_withheld != null) {
+    return (
+      <>
+        <div className="section-title">Recovery forecast</div>
+        <div className="warnbox">
+          No estimate yet. Our recovery times did not hold up when we checked
+          them against what actually happened, so we do not publish them.
+        </div>
       </>
     );
   }
@@ -649,7 +670,7 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
         <div className="section-title">Recovery forecast</div>
         <div className="warnbox">
           {inf.recovery_source === "movement"
-            ? `No estimate. Recovery runs past the ${fmtMinutes(
+            ? `No estimate. Recovery runs past the ${fmtRecovery(
                 inf.recovery_minutes,
               )} we forecast ahead.`
             : "No estimate. The model has no forecast that matches the status above."}
@@ -663,11 +684,11 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
       <div className="section-title">Recovery forecast</div>
       <div className="kv">
         <span className="k">Median</span>
-        <span className="v">{fmtMinutes(inf.recovery_minutes)}</span>
+        <span className="v">{fmtRecovery(inf.recovery_minutes)}</span>
         <span className="k" title="IQR (25–75%)">likely range</span>
         <span className="v">
-          {fmtMinutes(inf.recovery_minutes_low)} –{" "}
-          {fmtMinutes(inf.recovery_minutes_high)}
+          {fmtRecovery(inf.recovery_minutes_low)} –{" "}
+          {fmtRecovery(inf.recovery_minutes_high)}
         </span>
         <span className="k" title="P(normal in 30m)">
           chance it is back to normal within 30 min

@@ -630,7 +630,7 @@
       "type": "object"
     },
     "Inference": {
-      "description": "HMM-derived state inference.\n\nPopulated only after the shadow review (Phase 3+). During Phase 1 this field\nstays None on every entity status object.",
+      "description": "HMM-derived state inference: the published forecast block for a route.\n\nPopulated live on every route the model has state for \u2014 not None, and no\nlonger shadow-only. What IS held back is the curve-fitted recovery\nestimate: the 2026-09-04 review (docs/review/2026-09-04-shadow-hmm/memo.md)\ngraded recovery_minutes wrong (causal skill -1.70 against a pre-window\nduration climatology, PIT 0.17, IQR coverage 0.03-0.06), so while\nrecovery_source names a fitted arm (\"movement\" or \"hmm\") the recovery\nnumbers and their horizons publish as null and recovery_withheld says why.\nA \"schedule\" row is a deterministic countdown to an announced resume time,\ncarries no fit, and publishes its numbers. The full numeric values still\nflow to the v1/predictions grading stream, which is what a future review\nwill graduate the estimate on.",
       "properties": {
         "condition": {
           "title": "Condition",
@@ -704,21 +704,55 @@
           "type": "boolean"
         },
         "recovery_minutes": {
-          "title": "Recovery Minutes",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes"
         },
         "recovery_minutes_high": {
-          "title": "Recovery Minutes High",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes High"
         },
         "recovery_minutes_low": {
-          "title": "Recovery Minutes Low",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes Low"
         },
         "recovery_source": {
           "default": "hmm",
           "title": "Recovery Source",
           "type": "string"
+        },
+        "recovery_withheld": {
+          "anyOf": [
+            {
+              "const": "pending_validation",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Withheld"
         },
         "regime_age_seconds": {
           "title": "Regime Age Seconds",
@@ -1475,11 +1509,18 @@
       "type": "object"
     },
     "SegmentRecovery": {
-      "description": "Expected recovery off a dwell curve conditioned on a regime clock \u2014 same\nfield names as Inference's recovery block, so a segment's recovery is\ndirectly comparable to a route's.",
+      "description": "Expected recovery off a dwell curve conditioned on a regime clock \u2014 same\nfield names as Inference's recovery block, so a segment's recovery is\ndirectly comparable to a route's.\n\nEvery value here is curve-fitted; there is no schedule arm at segment\ngranularity. So the whole block is subject to the same validation gate as\nInference's recovery (see that docstring) and currently publishes as nulls\nplus recovery_withheld. A block of nulls still says something a null block\ndoes not: the segment HAS an estimate and it is not being published, where\n`recovery: null` means no trained curve and no started clock.",
       "properties": {
         "p_normal_in_120min": {
-          "title": "P Normal In 120Min",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P Normal In 120Min"
         },
         "p_normal_in_30min": {
           "anyOf": [
@@ -1493,8 +1534,15 @@
           "title": "P Normal In 30Min"
         },
         "p_normal_in_60min": {
-          "title": "P Normal In 60Min",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P Normal In 60Min"
         },
         "recovery_indeterminate": {
           "default": false,
@@ -1502,16 +1550,50 @@
           "type": "boolean"
         },
         "recovery_minutes": {
-          "title": "Recovery Minutes",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes"
         },
         "recovery_minutes_high": {
-          "title": "Recovery Minutes High",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes High"
         },
         "recovery_minutes_low": {
-          "title": "Recovery Minutes Low",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes Low"
+        },
+        "recovery_withheld": {
+          "anyOf": [
+            {
+              "const": "pending_validation",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Withheld"
         }
       },
       "required": [

@@ -123,7 +123,7 @@ function build(opts: {
 }
 
 describe('segment_flow: per-segment status + recovery', () => {
-  test('a segment with a dwell curve publishes recovery conditioned on its own elapsed clock', () => {
+  test('a segment with a dwell curve publishes a withheld recovery block, not a number', () => {
     const elapsed30 = 30 * MIN;
     const snap = build({
       segmentFlow: flowDoc(NOW - 300, { [KEY]: regime('disrupted', NOW - elapsed30) }),
@@ -137,25 +137,30 @@ describe('segment_flow: per-segment status + recovery', () => {
     expect(seg.from_stop).toBe('A09S');
     expect(seg.to).toBe('A10S');
     expect(seg.entered_at).toBe(NOW - elapsed30);
+
+    // Every segment recovery number comes off a fitted dwell curve, and that
+    // estimate has not cleared the validation gate (snapshot.ts
+    // PUBLISH_FITTED_RECOVERY), so the block is present-but-empty: the cell
+    // HAS an estimate and it is deliberately not published. That is a
+    // different statement from `recovery: null` (no curve, no clock) below,
+    // which is why the block survives at all.
     expect(seg.recovery).not.toBeNull();
+    expect(seg.recovery!.recovery_withheld).toBe('pending_validation');
+    expect(seg.recovery!.recovery_minutes).toBeNull();
+    expect(seg.recovery!.recovery_minutes_low).toBeNull();
+    expect(seg.recovery!.recovery_minutes_high).toBeNull();
+    expect(seg.recovery!.p_normal_in_30min).toBeNull();
+    expect(seg.recovery!.p_normal_in_60min).toBeNull();
+    expect(seg.recovery!.p_normal_in_120min).toBeNull();
+    checkSchema(snap);
 
-    // Conditioned on elapsed=30min, not the unconditional (elapsed=0) curve —
-    // computed straight off the same dwell.ts helper the Worker uses.
-    const expected = conditionalRecovery(DISRUPTED_CURVE, elapsed30)!;
-    expect(seg.recovery!.recovery_minutes).toBe(Math.round(expected.median_sec / 60));
-
-    // A different elapsed clock on the SAME curve must yield a different
-    // reading — pins the conditioning, not just presence of a number.
-    const elapsed5 = 5 * MIN;
-    const snap5 = build({
-      segmentFlow: flowDoc(NOW - 300, { [KEY]: regime('disrupted', NOW - elapsed5) }),
-      segmentParams: params,
-      segmentDwell: dwellDoc(),
-    });
-    const seg5 = snap5.segment_flow!.segments[KEY]!;
-    expect(seg5.recovery!.recovery_minutes).not.toBe(seg.recovery!.recovery_minutes);
-    const expected5 = conditionalRecovery(DISRUPTED_CURVE, elapsed5)!;
-    expect(seg5.recovery!.recovery_minutes).toBe(Math.round(expected5.median_sec / 60));
+    // The conditioning the block would carry is still exercised, at the
+    // dwell.ts helper the Worker calls: elapsed=30min and elapsed=5min give
+    // different medians off the same curve.
+    const at30 = conditionalRecovery(DISRUPTED_CURVE, elapsed30)!;
+    const at5 = conditionalRecovery(DISRUPTED_CURVE, 5 * MIN)!;
+    expect(at30).not.toBeNull();
+    expect(Math.round(at30.median_sec / 60)).not.toBe(Math.round(at5.median_sec / 60));
   });
 
   test('a segment without a trained curve publishes status and NO recovery', () => {

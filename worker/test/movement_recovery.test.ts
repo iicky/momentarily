@@ -17,6 +17,7 @@ import { deriveRouteSnapshots } from '../src/derive';
 import { conditionalRecovery, pLeaveBy } from '../src/dwell';
 import type { TrainedParams } from '../src/params';
 import { movementDwellFor, parseTrainedParams } from '../src/params';
+import type { Inference, Snapshot } from '../src/snapshot';
 import { TICK_SECONDS, buildSnapshot } from '../src/snapshot';
 
 const NOW = 1_700_000_000;
@@ -121,8 +122,9 @@ function build(opts: {
   routeSnapshots?: Map<string, RouteSnapshot>;
   movement?: { state: string; entered_at: number } | null;
   trainedParams: TrainedParams | null;
-}) {
-  return buildSnapshot({
+}): Snapshot & { full: Map<string, Inference> } {
+  const full = new Map<string, Inference>();
+  const snapshot = buildSnapshot({
     generatedAt: NOW,
     alertsFreshness: NOW,
     routeSnapshots: opts.routeSnapshots ?? deriveRouteSnapshots({ entity: [] }, NOW),
@@ -135,7 +137,13 @@ function build(opts: {
         : { observed_at: NOW - 300, regimes: { [opts.routeId]: opts.movement } },
     vehicleFreshFeeds: [],
     vehicleExpectedFeeds: [],
+    fullInferences: full,
   });
+  // These tests are about what the movement curve computes, which the public
+  // block withholds while the estimate is ungraduated (snapshot.ts
+  // PUBLISH_FITTED_RECOVERY). `full` is the unprojected object the grading
+  // stream archives, so the arithmetic is asserted there.
+  return Object.assign(snapshot, { full });
 }
 
 describe('movement recovery: p_normal_in_H off the movement curve + clock', () => {
@@ -151,8 +159,8 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: movementRegime('normal', HOUR),
       trainedParams: params,
     });
-    const disruptedInf = disruptedSnap.route_status.A!.inference!;
-    const normalInf = normalSnap.route_status.B!.inference!;
+    const disruptedInf = disruptedSnap.full.get('A')!;
+    const normalInf = normalSnap.full.get('B')!;
 
     // Both routes read `normal` on the alert-HMM shadow — zero alerts forces
     // it — yet the PUBLISHED condition (movement) disagrees for A. This is
@@ -190,8 +198,8 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: null,
       trainedParams: withoutMovementCurve,
     });
-    const a = withMovement.route_status.A!.inference!;
-    const b = withoutMovementStates.route_status.A!.inference!;
+    const a = withMovement.full.get('A')!;
+    const b = withoutMovementStates.full.get('A')!;
     // Published condition still reflects movement (worker/src/snapshot.ts's
     // own condition read doesn't depend on dwell_movement)...
     expect(withMovement.route_status.A!.condition).toBe('disrupted');
@@ -221,8 +229,8 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       trainedParams: params,
     });
     const noMovement = build({ routeId: 'A', movement: null, trainedParams: params });
-    const a = zeroClock.route_status.A!.inference!;
-    const b = noMovement.route_status.A!.inference!;
+    const a = zeroClock.full.get('A')!;
+    const b = noMovement.full.get('A')!;
     // A movement regime with no usable clock cannot supply the forecast, and
     // the alert arm's timing is not about the published `disrupted`.
     expect(a.recovery_source).toBe('hmm');
@@ -255,7 +263,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: movementRegime('suspended', 30 * MIN),
       trainedParams: params,
     });
-    const inf = suspendedCurve.route_status.A!.inference!;
+    const inf = suspendedCurve.full.get('A')!;
     expect(suspendedCurve.route_status.A!.condition).toBe('suspended');
     expect(suspendedCurve.route_status.A!.condition_source).toBe('movement');
     expect(inf.recovery_source).not.toBe('movement');
@@ -264,7 +272,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     // condition is still movement's `suspended`, so the alert arm's estimate
     // is withheld rather than shown against it.
     const fallback = build({ routeId: 'A', movement: null, trainedParams: params });
-    const fb = fallback.route_status.A!.inference!;
+    const fb = fallback.full.get('A')!;
     expect(inf.p_normal_in_30min).toBe(fb.p_normal_in_30min);
     expect(inf.p_normal_in_30min).toBeNull();
     expect(inf.recovery_indeterminate).toBe(true);
@@ -275,7 +283,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
 
     // No movement reading at all this tick.
     const noReading = build({ routeId: 'A', movement: null, trainedParams: params });
-    expect(noReading.route_status.A!.inference!.recovery_source).toBe('hmm');
+    expect(noReading.full.get('A')!.recovery_source).toBe('hmm');
 
     // A movement reading, but not_scheduled wins precedence over movement —
     // buildSnapshot itself never reads condition_source='movement' here, and
@@ -317,7 +325,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     });
     expect(notScheduled.route_status.A!.condition).toBe('not_scheduled');
     expect(notScheduled.route_status.A!.condition_source).toBe('schedule');
-    expect(notScheduled.route_status.A!.inference!.recovery_source).toBe('hmm');
+    expect(notScheduled.full.get('A')!.recovery_source).toBe('hmm');
 
     // A genuine movement reading with a curve: 'movement'.
     const withReading = build({
@@ -325,7 +333,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: movementRegime('disrupted', 30 * MIN),
       trainedParams: params,
     });
-    expect(withReading.route_status.A!.inference!.recovery_source).toBe('movement');
+    expect(withReading.full.get('A')!.recovery_source).toBe('movement');
   });
 
   test('a not_scheduled route counts down its announced resume instead of guessing', () => {
@@ -366,7 +374,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       ],
     ]);
     const snap = build({ routeId: 'A', routeSnapshots: snaps, trainedParams: params });
-    const inf = snap.route_status.A!.inference!;
+    const inf = snap.full.get('A')!;
     expect(snap.route_status.A!.condition).toBe('not_scheduled');
     expect(inf.condition).toBe('not_scheduled');
     expect(inf.recovery_source).toBe('schedule');
@@ -388,7 +396,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       routeSnapshots: unannounced,
       trainedParams: params,
     });
-    const quietInf = quiet.route_status.A!.inference!;
+    const quietInf = quiet.full.get('A')!;
     expect(quiet.route_status.A!.condition).toBe('not_scheduled');
     expect(quietInf.recovery_source).toBe('hmm');
     expect(quietInf.recovery_indeterminate).toBe(true);
@@ -436,7 +444,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: null,
       trainedParams: params,
     });
-    const inf = snap.route_status.A!.inference!;
+    const inf = snap.full.get('A')!;
     expect(snap.route_status.A!.condition).toBe('unknown');
     expect(inf.recovery_source).toBe('hmm');
     expect(inf.p_normal_in_30min).toBeNull();
@@ -492,7 +500,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: movementRegime('disrupted', 45 * MIN),
       trainedParams: params,
     });
-    const inf = snap.route_status.S!.inference!;
+    const inf = snap.full.get('S')!;
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.recovery_minutes).toBe(30);
     expect(inf.resumes_at).toBe(NOW + 30 * MIN);
@@ -550,7 +558,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       movement: movementRegime('disrupted', 45 * MIN),
       trainedParams: params,
     });
-    const inf = snap.route_status.S!.inference!;
+    const inf = snap.full.get('S')!;
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.p_normal_in_30min).toBe(0);
     expect(inf.p_normal_in_60min).toBe(0);
@@ -595,7 +603,7 @@ describe('movement recovery: atom mixture on the disrupted cell (the site this f
       movement: movementRegime('disrupted', elapsed),
       trainedParams: params,
     });
-    const inf = snap.route_status.A!.inference!;
+    const inf = snap.full.get('A')!;
     expect(inf.recovery_source).toBe('movement');
 
     const tail: [number, number] = [ATOM_SHAPE, ATOM_SCALE];
@@ -650,7 +658,7 @@ describe('movement recovery: atom mixture on the disrupted cell (the site this f
       movement: movementRegime('disrupted', elapsed),
       trainedParams: params,
     });
-    const inf = snap.route_status.A!.inference!;
+    const inf = snap.full.get('A')!;
     const expectedCond = conditionalRecovery(DISRUPTED_CURVE, elapsed, tail)!;
     expect(inf.recovery_minutes).toBe(Math.round(expectedCond.median_sec / 60));
     const closed30 = pLeaveBy(DISRUPTED_CURVE, elapsed, 1800, tail);

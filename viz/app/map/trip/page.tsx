@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useCoords, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
 import { undirected, edgesFor, orderTrip, projector } from "@/lib/stations";
-import { fmtMinutes } from "@/lib/feed";
+import { fmtMinutes, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 import type { StationCoord, Topology } from "@/lib/stations";
 
@@ -28,6 +28,9 @@ interface Seg {
   y2: number;
   status: "normal" | "quiet" | "disrupted" | null;
   recoveryMin: number | null;
+  // The cell has an estimate the feed withheld, as opposed to no estimate at
+  // all — see worker/src/snapshot.ts PUBLISH_FITTED_RECOVERY.
+  recoveryWithheld: boolean;
 }
 
 const STROKE: Record<string, string> = {
@@ -211,6 +214,7 @@ function buildTrip(
       y2: b.y,
       status: live?.status ?? null,
       recoveryMin: live?.recovery?.recovery_minutes ?? null,
+      recoveryWithheld: live?.recovery?.recovery_withheld != null,
     });
   }
   // Read in trip order — the panel lists the segments as you'd ride them.
@@ -292,7 +296,9 @@ function SegPanel({ snap, route, trip }: { snap: Snapshot; route: string; trip: 
                   {s.status}
                   {s.status === "disrupted" && s.recoveryMin != null
                     ? ` · ~${fmtMinutes(s.recoveryMin)}`
-                    : ""}
+                    : s.status === "disrupted" && s.recoveryWithheld
+                      ? ` · ${NO_RECOVERY_ESTIMATE}`
+                      : ""}
                 </span>
               ) : (
                 <span className="cond unknown">—</span>

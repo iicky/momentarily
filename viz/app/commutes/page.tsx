@@ -14,7 +14,7 @@ import Link from "next/link";
 import { useSnapshot } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
 import { undirected } from "@/lib/stations";
-import { fmtMinutes } from "@/lib/feed";
+import { fmtMinutes, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
 import {
   commuteStatus,
   loadCommutes,
@@ -295,6 +295,7 @@ function CommuteStrip({
                   const reading = byKey.get(s.key);
                   const cell = reading?.status ?? null;
                   const recovery = reading?.recoveryMinutes ?? null;
+                  const recoveryWithheld = reading?.recoveryWithheld ?? false;
                   return (
                     <li className="trip-seg" key={s.key}>
                       <span className="trip-rail">
@@ -307,7 +308,11 @@ function CommuteStrip({
                       {cell ? (
                         <span className={`cond ${cell}`}>
                           {cell}
-                          {cell === "disrupted" && recovery != null ? ` · ~${fmtMinutes(recovery)}` : ""}
+                          {cell === "disrupted" && recovery != null
+                            ? ` · ~${fmtMinutes(recovery)}`
+                            : cell === "disrupted" && recoveryWithheld
+                              ? ` · ${NO_RECOVERY_ESTIMATE}`
+                              : ""}
                         </span>
                       ) : (
                         <span className="cond unknown" title="not judged this tick">

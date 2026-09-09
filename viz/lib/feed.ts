@@ -274,6 +274,21 @@ export function fmtMinutes(min: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+// The one phrase for "the feed published no recovery estimate". The Worker
+// withholds any recovery number that came off a fitted dwell curve until the
+// estimate clears its validation gate (worker/src/snapshot.ts
+// PUBLISH_FITTED_RECOVERY), which is most disruptions — so this reads as a
+// plain statement to a rider, not as an error or a missing value. Used
+// everywhere a recovery time would otherwise be shown.
+export const NO_RECOVERY_ESTIMATE = "recovery: no estimate yet";
+
+// A recovery time, or the one phrase for "none published". Every reader of
+// inference.recovery_minutes / SegmentRecovery.recovery_minutes goes through
+// this, so the null case reads the same everywhere.
+export function fmtRecovery(min: number | null): string {
+  return min == null ? NO_RECOVERY_ESTIMATE : fmtMinutes(min);
+}
+
 // Probabilities, clamped to the resolution they can actually support.
 //
 // The filter saturates hard: a settled route publishes p_normal exactly 1.0

@@ -8,6 +8,8 @@ import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
 import { undirected, orderTrip } from "@/lib/stations";
 import {
   fmtMinutes,
+  fmtRecovery,
+  NO_RECOVERY_ESTIMATE,
   fmtRiders,
   platformCrowding,
   serviceLead,
@@ -189,9 +191,11 @@ function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
   const supplyTone = gaugeTone(r);
   const recovery =
     inf && inf.is_disrupted
-      ? inf.recovery_indeterminate
-        ? "recovery runs past our forecast"
-        : `~${fmtMinutes(inf.recovery_minutes)} to recover`
+      ? inf.recovery_withheld != null
+        ? NO_RECOVERY_ESTIMATE
+        : inf.recovery_indeterminate
+          ? "recovery runs past our forecast"
+          : `~${fmtRecovery(inf.recovery_minutes)} to recover`
       : null;
   return (
     <div className={`verdict ${cls}`}>
@@ -278,7 +282,11 @@ function StopRow({
         <span className={`cond ${flowClass}`}>
           {flow.status}
           {flow.status === "degraded" && flow.worst_recovery
-            ? ` · ~${fmtMinutes(flow.worst_recovery.recovery_minutes)}`
+            ? ` · ${
+                flow.worst_recovery.recovery_minutes == null
+                  ? NO_RECOVERY_ESTIMATE
+                  : `~${fmtRecovery(flow.worst_recovery.recovery_minutes)}`
+              }`
             : ""}
         </span>
       )}

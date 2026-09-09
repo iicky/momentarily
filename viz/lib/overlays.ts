@@ -26,7 +26,7 @@
 // for the same reason the test files do.
 import { edgePath } from "./diagram.ts";
 import type { Diagram, DiagramEdge, Direction, ServiceClass } from "./diagram.ts";
-import { fmtAgo, fmtMinutes } from "./feed.ts";
+import { fmtAgo, fmtMinutes, fmtRecovery, NO_RECOVERY_ESTIMATE } from "./feed.ts";
 import type { TrainsFeed } from "./feed.ts";
 import {
   DIRECTIONS,
@@ -285,11 +285,18 @@ const MOVEMENT: Overlay = {
         }
         // Recovery is the answer to "when does this come back", which only
         // means something while the segment is down — a normal cell's
-        // recovery is always null, so this never shows on a healthy row.
-        const recovery =
-          cell.recovery?.recovery_indeterminate === false ? cell.recovery : null;
-        if (recovery !== null) {
-          parts.push(`recovery ~${fmtMinutes(recovery.recovery_minutes)}`);
+        // recovery is always null, so this never shows on a healthy row. A
+        // disrupted cell whose estimate is withheld says so rather than going
+        // silent: the segment IS down and we are not guessing at a time.
+        const recovery = cell.recovery;
+        if (recovery !== null && recovery.recovery_withheld != null) {
+          parts.push(NO_RECOVERY_ESTIMATE);
+        } else if (
+          recovery !== null &&
+          recovery.recovery_indeterminate === false &&
+          recovery.recovery_minutes !== null
+        ) {
+          parts.push(`recovery ~${fmtRecovery(recovery.recovery_minutes)}`);
         }
       } else {
         parts.push(side.key ?? "no cell in this direction");

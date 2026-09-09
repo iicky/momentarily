@@ -32,6 +32,7 @@ import type { RouteRoll } from './alpha';
 import { STATES } from './hmm';
 import type { State } from './hmm';
 import type { RegimeChange } from './regime';
+import type { Inference } from './snapshot';
 
 export interface PredictionRecord {
   ts: number;
@@ -97,6 +98,82 @@ export interface PredictionRecord {
   // per tick instead of inferred. See journal.md 2026-08-23.
   matched_n: number | null;
   advanced_n: number | null;
+}
+
+/**
+ * The grading row for every route the model inferred this tick.
+ *
+ * Takes the FULL inference objects, not `snapshot.route_status[].inference`:
+ * the published block withholds curve-fitted recovery (snapshot.ts
+ * PUBLISH_FITTED_RECOVERY) and the review that graduates the estimate is
+ * exactly what needs the numbers. The snapshot still supplies the published
+ * context each row is graded against (`published_condition`,
+ * `condition_source`, `primary_alert_type`), so both come from one tick and
+ * cannot drift.
+ *
+ * A route contributes no row when it has no inference (no filter state) or
+ * when its PUBLISHED inference was scrubbed: publishSnapshot nulls
+ * route_status[].inference on any route carrying a non-finite number
+ * (scrubCorruptInferences) and runs before this, so a scrubbed route is one
+ * whose posterior is corrupt. Grading it would archive exactly the numbers the
+ * publish path just refused to serve.
+ */
+export function buildPredictionRows(args: {
+  ts: number;
+  routeStatuses: Record<
+    string,
+    {
+      condition: string;
+      condition_source: string;
+      primary_alert_type: string | null;
+      // Presence only: null means scrubbed (or never inferred), so skip.
+      inference: unknown;
+    }
+  >;
+  inferences: Map<string, Inference>;
+  paramsVersion: number;
+  /** Per-route movement regimes this tick, for movement_regime_entered_at. */
+  movementRegimes: Record<string, { entered_at: number }> | undefined;
+  /** The movement channel's per-route inputs; absent route -> null counts. */
+  movementCounts: Map<string, { matched_n: number; advanced_n: number }>;
+}): PredictionRecord[] {
+  const rows: PredictionRecord[] = [];
+  for (const [routeId, rs] of Object.entries(args.routeStatuses)) {
+    const inf = args.inferences.get(routeId);
+    if (!inf || rs.inference == null) continue;
+    const mv = args.movementCounts.get(routeId);
+    rows.push({
+      ts: args.ts,
+      route: routeId,
+      condition: inf.condition,
+      regime_entered_at: inf.regime_entered_at,
+      p_normal: inf.p_normal,
+      p_disrupted: inf.p_disrupted,
+      p_suspended: inf.p_suspended,
+      p_normal_in_30min: inf.p_normal_in_30min,
+      p_normal_in_60min: inf.p_normal_in_60min,
+      p_normal_in_120min: inf.p_normal_in_120min,
+      recovery_minutes: inf.recovery_minutes,
+      recovery_minutes_low: inf.recovery_minutes_low,
+      recovery_minutes_high: inf.recovery_minutes_high,
+      recovery_indeterminate: inf.recovery_indeterminate,
+      recovery_source: inf.recovery_source,
+      resumes_at: inf.resumes_at,
+      primary_alert_type: rs.primary_alert_type,
+      params_version: args.paramsVersion,
+      published_condition: rs.condition,
+      condition_source: rs.condition_source,
+      // From the same one-tick-lagged doc the snapshot published the
+      // condition from, so the row describes the regime consumers saw.
+      movement_regime_entered_at: args.movementRegimes?.[routeId]?.entered_at ?? 0,
+      // Null when the movement channel did not fire this tick — there is no
+      // count to attribute, and a number here would imply the binomial
+      // contributed when it contributed 0.
+      matched_n: mv?.matched_n ?? null,
+      advanced_n: mv?.advanced_n ?? null,
+    });
+  }
+  return rows;
 }
 
 export interface TransitionRecord {

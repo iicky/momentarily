@@ -257,6 +257,7 @@ test("a disrupted row still reports its clock and recovery", () => {
             p_normal_in_30min: null,
             p_normal_in_60min: 0.5,
             p_normal_in_120min: 0.8,
+            recovery_withheld: null,
           },
         }),
       }),
@@ -266,6 +267,38 @@ test("a disrupted row still reports its clock and recovery", () => {
   assert.equal(row?.value, "not advancing");
   assert.match(row?.note ?? "", /since/);
   assert.match(row?.note ?? "", /recovery ~12m/);
+});
+
+test("a disrupted row whose recovery is withheld says so, rather than going silent", () => {
+  // What the live feed publishes today: the segment IS down and the estimate
+  // behind it is not published (worker/src/snapshot.ts
+  // PUBLISH_FITTED_RECOVERY). Dropping the line entirely would read as "we
+  // have nothing to say about this hop", which is the wrong claim.
+  const ctx = ctxOf({
+    diagram: diagramOf([edge()]),
+    now: 1000,
+    snap: snapOf({
+      segment_flow: flow({
+        "1|north|103N": cell({
+          entered_at: 400,
+          recovery: {
+            recovery_minutes: null,
+            recovery_minutes_low: null,
+            recovery_minutes_high: null,
+            recovery_indeterminate: false,
+            p_normal_in_30min: null,
+            p_normal_in_60min: null,
+            p_normal_in_120min: null,
+            recovery_withheld: "pending_validation",
+          },
+        }),
+      }),
+    }),
+  });
+  const row = overlay("movement").detail(edge(), ctx).find((r) => r.key === "N");
+  assert.equal(row?.value, "not advancing");
+  assert.match(row?.note ?? "", /since/);
+  assert.match(row?.note ?? "", /recovery: no estimate yet/);
 });
 
 test("nothing on the movement overlay is dashed", () => {

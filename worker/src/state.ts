@@ -502,7 +502,7 @@ export async function readServiceBaseline(
 // route/direction's canonical reference stop — the timetable baseline a headway
 // reading is normalised against for the "every 9 min, scheduled 6" read. Its
 // OWN object, written weekly by the trainer beside the other fit artifacts
-// (training/train_em.write_scheduled_headway); a display normaliser, NOT the
+// (training/publish_params.write_scheduled_headway); a display normaliser, NOT the
 // excess-wait severity baseline (that stays own-cell).
 export const SCHEDULED_HEADWAY_KEY = "state/scheduled_headway.json";
 

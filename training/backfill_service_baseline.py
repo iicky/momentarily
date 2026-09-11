@@ -6,7 +6,7 @@ was historically folded into params.json, so it could only be refreshed by a
 full retrain. A retrain moves the HMM artifact's trained_at, which reseeds the
 Worker's filter and splits the grader's params-version window. This tool computes
 just that baseline and publishes it to its own versioned object
-(train_em.write_service_baseline), so a frozen model can light or refresh the
+(publish_params.write_service_baseline), so a frozen model can light or refresh the
 supply axis with its evaluation window and weights left untouched.
 
 The sidecar carries its OWN `generated_at` stamp (a fresh timestamp per run, so
@@ -27,13 +27,15 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from training.r2_client import load_config, make_client
-from training.train_em import (
+from training.publish_params import (
     PARAMS_KEY,
     SERVICE_BASELINE_KEY,
     SERVICE_SIDECAR_WINDOW_DAYS,
-    _service_baseline,  # pyright: ignore[reportPrivateUsage]
     write_service_baseline,
+)
+from training.r2_client import load_config, make_client
+from training.train_em import (
+    _service_baseline,  # pyright: ignore[reportPrivateUsage]
 )
 
 if TYPE_CHECKING:

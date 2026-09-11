@@ -106,7 +106,9 @@ test("reliability skips a withheld (null) horizon without throwing or miscountin
   const tls = buildTimelines(transitions, NOW);
   const predictions = [
     // p_normal_in_60min withheld: measured worse than naive persistence
-    // (journal.md:1040-1051), so this horizon is published as null rather
+    // (see journal.md § "2026-08-11 — forecast horizon inversion: projection
+    // defect, not left-censoring (trustworthy-clock subset still inverted,
+    // AUC 0.352 at 120min)"), so this horizon is published as null rather
     // than a number we know is inverted. reliability() must skip it, not
     // coerce null -> 0 and silently score a confident-looking miss.
     pred({ ts: 100, p_normal_in_60min: null, p_normal_in_120min: 0.6 }),

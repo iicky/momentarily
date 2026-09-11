@@ -146,7 +146,7 @@ _NOT_NORMAL = tuple(s for s in STATES if s != "normal")
 
 def aligned_window(start: date, end: date) -> tuple[int, int]:
     """Tick-aligned UTC epochs covering [start, end+1day). Same convention as
-    train_em._aligned_window, so a window named here means the same span it
+    publish_params.aligned_window, so a window named here means the same span it
     would mean to the trainer."""
     start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
     end_dt = datetime(end.year, end.month, end.day, tzinfo=UTC) + timedelta(days=1)

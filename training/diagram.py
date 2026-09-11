@@ -267,7 +267,7 @@ class Diagram:
     else records what produced it.
 
     `adjacency` and `route_stops` are the same static-GTFS topology
-    `training.train_em.write_segment_params` publishes to the credentialed
+    `training.publish_params.write_segment_params` publishes to the credentialed
     `state/segment_params.json` (route|direction|from_stop successors and
     scheduled stopping patterns) — carried here too so the spatial views
     (`/lines`, `/stations/*`, `/map/trip`) can read a full pairwise segment
@@ -785,7 +785,7 @@ def build(zf: zipfile.ZipFile) -> Diagram:
 
     # A third read of stop_times.txt: the scheduled stopping patterns
     # (training.gtfs_static.route_patterns), the same static-topology read
-    # `training.train_em.write_segment_params` feeds into
+    # `training.publish_params.write_segment_params` feeds into
     # `state/segment_params.json`'s own `route_stops`. Reusing it here, rather
     # than relinearizing `succ`, keeps the asset's canonical line order the
     # exact one the trainer already publishes.

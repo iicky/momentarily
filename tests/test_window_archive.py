@@ -9,13 +9,15 @@ faces, and the same defences apply.
 from __future__ import annotations
 
 import gzip
+import io
 import json
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from training.planned_work import Window, windows_from_alerts
+from training.r2_client import R2Config
 from training.traversal_archive import DayProvenance
 from training.window_archive import (
     PARSER_VERSION,
@@ -24,6 +26,8 @@ from training.window_archive import (
     decode_day,
     encode_day,
     key_for,
+    read_days,
+    write_day,
 )
 
 
@@ -218,3 +222,74 @@ def test_gradeability_survives_the_round_trip_because_it_derives_from_the_type()
     assert by_type["Boarding Change"].gradeable is False
     assert by_type["Planned - Part Suspended"].gradeable is True
     assert set(rows) == {ungradeable, gradeable}
+
+
+class _FakeArchiveClient:
+    """R2 stand-in: a literal key -> bytes map, listing by prefix and serving
+    puts, so write_day's full path (list alert keys, fetch bodies, parse,
+    encode, put) is exercised without R2. Mirrors the client surface
+    load_r2/r2_client actually touch: list_objects_v2, get_object, put_object.
+    """
+
+    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+        self._objects = dict(objects or {})
+
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
+        prefix = str(kwargs["Prefix"])
+        return {
+            "Contents": [
+                {"Key": k} for k in sorted(self._objects) if k.startswith(prefix)
+            ],
+            "IsTruncated": False,
+        }
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        return {"Body": io.BytesIO(self._objects[str(kwargs["Key"])])}
+
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: Any) -> None:
+        del Bucket
+        self._objects[Key] = bytes(Body)
+
+
+def _r2_config() -> R2Config:
+    return R2Config(
+        account_id="acct",
+        access_key_id="key",
+        secret_access_key="secret",
+        bucket="test-bucket",
+    )
+
+
+def test_write_day_then_read_days_round_trips_through_the_client_path():
+    """encode_day/decode_day agreeing in isolation does not prove write_day's
+    full path -- list alert keys, fetch bodies, parse, encode, put -- hands a
+    later read_days back exactly what was parsed. Exercised end to end against
+    a fake R2 client instead of real alert objects, which is the on-disk
+    contract every replay-grade depends on."""
+    day = date(2026, 8, 12)
+    alert_key = f"archive/alerts/{day.isoformat()}/1-a.json"
+    client = cast(Any, _FakeArchiveClient({alert_key: json.dumps(_alert()).encode()}))
+    cfg = _r2_config()
+
+    prov = write_day(day, config=cfg, client=client, now=date(2026, 8, 13))
+
+    assert prov is not None
+    assert (prov.n_rows, prov.n_source_objects) == (1, 1)
+    result = read_days(day, day, config=cfg, client=client)
+    assert result.windows == [_window()]
+    assert result.provenance == {day: prov}
+
+
+def test_write_day_skips_a_day_already_present_without_overwrite():
+    """A day present at the destination key is left untouched unless
+    overwrite is set -- the guard that keeps a finalized day from ever being
+    silently shortened once alerts prune."""
+    day = date(2026, 8, 12)
+    key = key_for(day)
+    client = cast(Any, _FakeArchiveClient({key: b"already-written"}))
+    cfg = _r2_config()
+
+    prov = write_day(day, config=cfg, client=client, now=date(2026, 8, 13))
+
+    assert prov is None
+    assert client._objects[key] == b"already-written"

@@ -548,7 +548,7 @@ def test_adjacency_carries_the_full_static_successor_graph_ranked() -> None:
 
 def test_route_stops_carries_scheduled_patterns_most_run_first() -> None:
     """route_stops is gtfs_static.route_patterns() (the same read
-    train_em.write_segment_params publishes as segment_params.json's own
+    publish_params.write_segment_params publishes as segment_params.json's own
     route_stops), keyed 'route|direction', most-run pattern first."""
     payload = to_json(build(_feed()))
     assert set(payload["route_stops"]) == {"1|north", "1|south", "2|north", "2|south"}

@@ -15,6 +15,7 @@
  *   7. (Only if alpha persisted) Write predictions + transitions grading streams
  *   8. Hourly: fetch the 3 E&E feeds and archive snapshots
  *   9. Persist last_seen.json via etag CAS
+ *  10. Archive this tick's write-failure counts (archive/health/)
  *
  * Steps 1-9 are the 5-minute pipeline and only run on a 5-minute boundary
  * (minute % 5 === 0) even though the cron itself now fires every minute — see
@@ -23,9 +24,11 @@
 
 import type { AlphaState, RouteRoll } from './alpha';
 import { readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
+import type { WriteFailureCounts } from './archive';
 import {
   archiveAlertsLiveness,
   archiveEneSnapshot,
+  archiveHealth,
   archiveNewAlerts,
   archiveTraceRows,
   archiveTripUpdateMetric,
@@ -216,6 +219,17 @@ export default {
       console.log(`step ${label} t+${Date.now() - t0}ms`);
     };
     console.log(`tick cron=${event.cron} t=${observedAt}`);
+
+    // Per-tick write-failure counts, archived at the very end of the tick
+    // (after step 9) as archive/health/. Every archive/state write below
+    // that only console.error's on failure also calls failWrite(key) here —
+    // see archive.ts's archiveHealth for why: those writes already degrade
+    // fail-soft per tick, which hides a PERSISTENT failure on one prefix
+    // behind an otherwise-fresh live snapshot.
+    const writeFailures: WriteFailureCounts = {};
+    const failWrite = (key: string): void => {
+      writeFailures[key] = (writeFailures[key] ?? 0) + 1;
+    };
 
     // --- Step 0: per-minute vehicle trace, and the 5-minute pipeline gate ---
     //
@@ -500,6 +514,7 @@ export default {
       );
     } catch (err) {
       console.error('alerts liveness archive failed:', err);
+      failWrite('alerts_liveness');
     }
     step('2b-alerts-liveness');
 
@@ -515,6 +530,7 @@ export default {
         console.log(`archive: ${written} new alert versions`);
       } catch (err) {
         console.error('archive failed:', err);
+        failWrite('alerts_archive');
       }
     }
     step('3-archive');
@@ -694,6 +710,7 @@ export default {
       }
     } catch (err) {
       console.error('alpha write failed; skipping outputs this tick:', err);
+      failWrite('alpha_write');
     }
     step('5-alpha-write');
 
@@ -827,6 +844,7 @@ export default {
           );
         } catch (err) {
           console.error('snapshot publish failed:', err);
+          failWrite('snapshot_publish');
         }
       }
       step('6b-publish-snapshot');
@@ -871,6 +889,7 @@ export default {
             'trains publish failed; leaving v1/trains.json unrewritten this tick:',
             err,
           );
+          failWrite('trains_publish');
         }
       } else {
         console.warn(
@@ -904,6 +923,7 @@ export default {
           await writePredictions(env.MOMENTARILY, observedAt, predictions);
         } catch (err) {
           console.error('predictions write failed:', err);
+          failWrite('predictions_write');
         }
       }
 
@@ -918,6 +938,7 @@ export default {
           console.log(`transitions: ${transitions.length} regime flips this tick`);
         } catch (err) {
           console.error('transitions write failed:', err);
+          failWrite('transitions_write');
         }
       }
       step('7-grading-writes');
@@ -1098,6 +1119,7 @@ export default {
               }
             } catch (err) {
               console.error('movement transitions write failed:', err);
+              failWrite('movement_transitions_write');
             }
           }
 
@@ -1135,6 +1157,7 @@ export default {
                 );
               } catch (err) {
                 console.error('segment movement transitions write failed:', err);
+                failWrite('segment_movement_transitions_write');
               }
             }
           } catch (err) {
@@ -1160,9 +1183,14 @@ export default {
       try {
         const stations = parseStationsFeed(await fetchJson(STATIONS_FEED));
         if (stations.length > 0) {
-          await writeStationsCache(env.MOMENTARILY, stations, observedAt);
-          lastSeen.stations_at = observedAt;
-          console.log(`stations: ${stations.length} static records cached`);
+          try {
+            await writeStationsCache(env.MOMENTARILY, stations, observedAt);
+            lastSeen.stations_at = observedAt;
+            console.log(`stations: ${stations.length} static records cached`);
+          } catch (err) {
+            console.error('stations cache write failed:', err);
+            failWrite('stations_cache_write');
+          }
         } else {
           console.warn('stations: feed parsed to zero records, freshness held');
         }
@@ -1186,9 +1214,21 @@ export default {
         }
       } catch (err) {
         console.error('last_seen write failed:', err);
+        failWrite('last_seen_write');
       }
     }
     step('9-last-seen-write');
+
+    // --- Step 10: archive this tick's write-failure counts ---
+    // Unconditional and its own try/catch, same posture as step 2b's alerts
+    // liveness record: a broken health archive must never mask (or be
+    // masked by) any of the writes it is reporting on.
+    try {
+      await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
+    } catch (err) {
+      console.error('health archive failed:', err);
+    }
+    step('10-health');
   },
 } satisfies ExportedHandler<Env>;
 

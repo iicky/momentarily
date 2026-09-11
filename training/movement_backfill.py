@@ -290,8 +290,8 @@ def resolve_stop_filter(scope: str) -> StopFilter | None:
     to (route, direction, stop) triples with both a scheduled predecessor and
     successor (training.gtfs_static.through_stops) — a chain endpoint or a
     stop the timetable never names stalls by schedule, not disruption, and
-    would otherwise pollute the advance signal. Mirrors train_em.py's
-    _static_topology: a fetch failure degrades to None with the reason
+    would otherwise pollute the advance signal. Mirrors publish_params.py's
+    static_topology: a fetch failure degrades to None with the reason
     printed, never raises.
     """
     if scope != "through":

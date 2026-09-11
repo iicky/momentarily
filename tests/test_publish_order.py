@@ -17,10 +17,7 @@ from botocore.exceptions import ClientError
 from momentarily.hmm import EmissionParams, HMMParams, Observation
 from training.eval import PredictionRecord, TransitionRecord
 from training.load import TICK_SECONDS
-from training.r2_client import R2Config
-from training.segment_dwell import SegmentDwellStats
-from training.train_em import (
-    MIN_DATA_DAYS,
+from training.publish_params import (
     PARAMS_KEY,
     PROV_KEY,
     PUBLIC_PROV_KEY,
@@ -28,10 +25,15 @@ from training.train_em import (
     VERSIONED_PARAMS_PREFIX,
     VERSIONED_PROV_PREFIX,
     CorpusStats,
-    MovementInputs,
-    ServiceInputs,
     build_params_doc,
     implausible_params,
+)
+from training.r2_client import R2Config
+from training.segment_dwell import SegmentDwellStats
+from training.train_em import (
+    MIN_DATA_DAYS,
+    MovementInputs,
+    ServiceInputs,
     main,
 )
 
@@ -194,7 +196,7 @@ def _install_publish_stubs(
     def _make_client(config: R2Config | None = None) -> S3Client:
         return cast("S3Client", client)
 
-    def _static_topology() -> tuple[None, None, str]:
+    def static_topology() -> tuple[None, None, str]:
         return None, None, "observed"
 
     def _load_series(
@@ -253,7 +255,7 @@ def _install_publish_stubs(
 
     monkeypatch.setattr("training.train_em.load_config", _r2_config)
     monkeypatch.setattr("training.train_em.make_client", _make_client)
-    monkeypatch.setattr("training.train_em._static_topology", _static_topology)
+    monkeypatch.setattr("training.train_em.static_topology", static_topology)
     monkeypatch.setattr("training.train_em.load_series_by_route", _load_series)
     monkeypatch.setattr("training.train_em.fetch_gtfs_feed", _fetch_feed)
     monkeypatch.setattr("training.eval.load_transitions", _load_transitions)

@@ -22,7 +22,7 @@ export const PARAMS_SCHEMA_VERSION = '1';
 
 // The trainer writes state/params.json (the live pointer the Worker reads) plus
 // an immutable per-run snapshot under this prefix as v<trained_at>.json — see
-// training/train_em.py write_params (VERSIONED_PARAMS_PREFIX). Kept in lockstep
+// training/publish_params.py write_params (VERSIONED_PARAMS_PREFIX). Kept in lockstep
 // with it so the snapshot's provenance can name the exact object a `trained_at`
 // maps to without a LIST.
 export const VERSIONED_PARAMS_PREFIX = 'state/params/';
@@ -35,7 +35,7 @@ export function versionedParamsKey(trainedAt: number): string {
 }
 
 // The trainer mirrors each run's W3C PROV-JSON document publicly under this
-// prefix as v<trained_at>.json (training/train_em.py PUBLIC_PROV_PREFIX), served
+// prefix as v<trained_at>.json (training/publish_params.py PUBLIC_PROV_PREFIX), served
 // off the Worker's own custom domain. Standard-vocabulary provenance is FOR
 // outside consumers, so the snapshot points at the public URL rather than the
 // private state/ key. Kept in lockstep with the trainer's layout.

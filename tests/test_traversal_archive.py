@@ -10,12 +10,15 @@ that get averaged with older ones years from now.
 from __future__ import annotations
 
 import gzip
+import io
 import json
 from datetime import date
+from typing import Any, cast
 
 import pytest
 
 from training.gtfs_static import FeedVersion
+from training.r2_client import R2Config
 from training.trace import EXACT, RIGHT, Traversal, traversals_from_trace
 from training.traversal_archive import (
     EXTRACTOR_VERSION,
@@ -27,7 +30,9 @@ from training.traversal_archive import (
     encode_day,
     is_closed,
     key_for,
+    read_days,
     resolve_feed_version,
+    write_day,
 )
 
 AT = 1786551646
@@ -293,3 +298,106 @@ def test_the_extractor_semantics_are_pinned_so_a_change_cannot_pass_silently():
         "extractor semantics changed above; bump EXTRACTOR_VERSION and re-derive "
         "surviving raw trace rather than editing the expectation"
     )
+
+
+def _trace_body(
+    at: int, *, stop_id: str, stop_seq: int, trip: str = "T1"
+) -> dict[str, object]:
+    return {
+        "scheduled_at": at,
+        "rows": [
+            {
+                "trip_id": trip,
+                "route_id": "A",
+                "direction": "south",
+                "stop_id": stop_id,
+                "stop_seq": stop_seq,
+                "stopped": True,
+                "vehicle_ts": at,
+            }
+        ],
+    }
+
+
+class _FakeArchiveClient:
+    """R2 stand-in: a literal key -> bytes map, listing by prefix and serving
+    puts, so write_day's full path (list trace keys, fetch bodies, derive,
+    encode, put) is exercised without R2. Mirrors the client surface
+    load_r2/r2_client actually touch: list_objects_v2, get_object, put_object.
+    """
+
+    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+        self._objects = dict(objects or {})
+
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
+        prefix = str(kwargs["Prefix"])
+        return {
+            "Contents": [
+                {"Key": k} for k in sorted(self._objects) if k.startswith(prefix)
+            ],
+            "IsTruncated": False,
+        }
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        return {"Body": io.BytesIO(self._objects[str(kwargs["Key"])])}
+
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: Any) -> None:
+        del Bucket
+        self._objects[Key] = bytes(Body)
+
+
+def _r2_config() -> R2Config:
+    return R2Config(
+        account_id="acct",
+        access_key_id="key",
+        secret_access_key="secret",
+        bucket="test-bucket",
+    )
+
+
+def test_write_day_then_read_days_round_trips_through_the_client_path():
+    """encode_day/decode_day agreeing in isolation does not prove write_day's
+    full path -- list trace keys, fetch bodies, derive, encode, put -- hands a
+    later read_days back exactly what was derived. Exercised end to end
+    against a fake R2 client instead of a real trace archive, which is the
+    on-disk contract every replay-grade depends on."""
+    day = date(2026, 8, 12)
+    bodies = [
+        _trace_body(AT, stop_id="A1S", stop_seq=1),
+        _trace_body(AT + 60, stop_id="A2S", stop_seq=2),
+    ]
+    expected, _stats = traversals_from_trace(bodies)
+    assert expected  # sanity: the fixture actually derives a traversal
+
+    objects = {
+        f"archive/trace/{day.isoformat()}/{i}.json": json.dumps(b).encode()
+        for i, b in enumerate(bodies)
+    }
+    client = cast(Any, _FakeArchiveClient(objects))
+    cfg = _r2_config()
+    feed = FeedVersion(
+        version="20260807", start=date(2026, 8, 7), end=date(2026, 8, 21)
+    )
+
+    prov = write_day(day, feed=feed, config=cfg, client=client, now=date(2026, 8, 13))
+
+    assert prov is not None
+    assert prov.feed_version == "20260807"
+    result = read_days(day, day, config=cfg, client=client)
+    assert result.traversals == expected
+    assert result.provenance == {day: prov}
+
+
+def test_write_day_skips_a_day_already_present_without_overwrite():
+    """A day present at the destination key is left untouched unless
+    overwrite is set -- the guard that keeps a finalized day from ever being
+    silently shortened once the raw trace prunes."""
+    day = date(2026, 8, 12)
+    key = key_for(day)
+    client = cast(Any, _FakeArchiveClient({key: b"already-written"}))
+    cfg = _r2_config()
+
+    prov = write_day(day, feed=None, config=cfg, client=client, now=date(2026, 8, 13))
+
+    assert prov is None
+    assert client._objects[key] == b"already-written"

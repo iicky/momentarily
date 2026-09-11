@@ -28,11 +28,8 @@ from training.load_r2 import (
     schedule_rate_to_json,
 )
 from training.prov import ArtifactFacts, FeedFacts
-from training.r2_client import R2Config
-from training.train_em import (
+from training.publish_params import (
     DWELL_WINDOW_DAYS,
-    MAX_SELF_LOOP,
-    MIN_DATA_DAYS,
     PARAMS_KEY,
     PROV_KEY,
     PUBLIC_PROV_KEY,
@@ -42,21 +39,26 @@ from training.train_em import (
     VERSIONED_PARAMS_PREFIX,
     VERSIONED_PROV_PREFIX,
     CorpusStats,
+    params_to_json,
+    write_params,
+    write_prov,
+    write_segment_dwell,
+    write_segment_params,
+)
+from training.r2_client import R2Config
+from training.train_em import (
+    MAX_SELF_LOOP,
+    MIN_DATA_DAYS,
     MovementInputs,
     ServiceInputs,
     _apply_advance_prior,  # pyright: ignore[reportPrivateUsage]
     _cap_self_loops,  # pyright: ignore[reportPrivateUsage]
     _movement_baseline,  # pyright: ignore[reportPrivateUsage]
     _movement_dwell,  # pyright: ignore[reportPrivateUsage]
-    _params_to_json,  # pyright: ignore[reportPrivateUsage]
     _service_baseline,  # pyright: ignore[reportPrivateUsage]
     compute_advance_baseline_by_route,
     main,
     train,
-    write_params,
-    write_prov,
-    write_segment_dwell,
-    write_segment_params,
 )
 
 if TYPE_CHECKING:
@@ -284,7 +286,7 @@ def test_params_to_json_round_trip_shape() -> None:
             bernoulli_p=(0.001, 0.05, 0.95),
         ),
     )
-    body = _params_to_json(params)
+    body = params_to_json(params)
     assert body["transition"] == [
         [0.9, 0.08, 0.02],
         [0.1, 0.85, 0.05],
@@ -321,7 +323,7 @@ def test_params_to_json_drops_service_gaussian_in_every_bin() -> None:
         emissions=em,
         emissions_by_bin=tuple(em for _ in range(5)),
     )
-    body = _params_to_json(params)
+    body = params_to_json(params)
     assert "service_mu" not in body["emissions"]
     for binned in body["emissions_by_bin"]:
         assert "service_mu" not in binned
@@ -1079,7 +1081,7 @@ def test_main_passes_movement_baseline_through_to_write_params(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -1193,7 +1195,7 @@ def test_main_threads_service_baselines_to_their_writers(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -1305,7 +1307,7 @@ def test_main_passes_advance_priors_through_to_train(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -1382,7 +1384,7 @@ def test_main_refuses_empty_movement_baseline(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -1474,7 +1476,7 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -1588,7 +1590,7 @@ def test_main_fits_dwell_quantiles_and_by_cause_on_the_wider_window(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -1719,11 +1721,11 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
     def _no_adjacency(_bodies: list[dict[str, Any]]) -> dict[tuple[str, str, str], Any]:
         return {}
 
-    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _no_vehicles)
+    monkeypatch.setattr("training.publish_params.fetch_vehicle_metrics", _no_vehicles)
     monkeypatch.setattr(
-        "training.train_em.build_segment_baseline", _fake_build_segment_baseline
+        "training.publish_params.build_segment_baseline", _fake_build_segment_baseline
     )
-    monkeypatch.setattr("training.train_em.canonical_adjacency", _no_adjacency)
+    monkeypatch.setattr("training.publish_params.canonical_adjacency", _no_adjacency)
 
     write_segment_params(
         _r2_config(),
@@ -1764,10 +1766,10 @@ def test_write_segment_params_stamps_provenance_and_route_stops(
     def _prov() -> dict[str, Any]:
         return {"code_sha": "abc123", "dirty": False, "producer": "test"}
 
-    monkeypatch.setattr("training.train_em.fetch_vehicle_metrics", _vehicles)
-    monkeypatch.setattr("training.train_em.build_segment_baseline", _baseline)
-    monkeypatch.setattr("training.train_em.canonical_adjacency", _no_adjacency)
-    monkeypatch.setattr("training.train_em.code_provenance", _prov)
+    monkeypatch.setattr("training.publish_params.fetch_vehicle_metrics", _vehicles)
+    monkeypatch.setattr("training.publish_params.build_segment_baseline", _baseline)
+    monkeypatch.setattr("training.publish_params.canonical_adjacency", _no_adjacency)
+    monkeypatch.setattr("training.publish_params.code_provenance", _prov)
 
     n = write_segment_params(
         _r2_config(),
@@ -1984,7 +1986,7 @@ def test_main_passes_movement_dwell_through_to_write_params(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
@@ -2246,7 +2248,7 @@ def test_main_publishes_prov_sidecar_and_threads_prov_ref(
 
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
-        "training.train_em._static_topology",
+        "training.train_em.static_topology",
         lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)

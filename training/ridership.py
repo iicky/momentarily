@@ -65,6 +65,17 @@ FETCH_TIMEOUT = httpx.Timeout(10.0, read=150.0)
 BASELINE_KEY = "state/ridership_baseline.json"
 # Immutable per-run snapshots live under this prefix as v<generated_at>.json.
 VERSIONED_BASELINE_PREFIX = "state/ridership_baseline/"
+# RETENTION: the versioned state/ridership_baseline/ snapshots are kept
+# forever. training.prune has no rule for this prefix -- its DATED_PREFIXES
+# cover only the dated archive/v1 streams, and PARAMS_PREFIX covers only
+# state/params/ -- so nothing sweeps it. This sidecar is unrelated to the HMM
+# training window (it derives from the MTA ridership open-data feed on its
+# own weekly cron, ridership-weekly.yml) and carries no params_trained_at
+# cross-reference, so it needs its own rollback trail exactly like
+# state/params/'s: one small per-run baseline doc, negligible next to any
+# dated archive prefix, restorable by exact key per docs/params-rollback.md.
+# If this needs to become bounded, add a rule beside PARAMS_PREFIX in
+# training/prune.py.
 SCHEMA_VERSION = "1"
 
 # Socrata SODA 2.0's hard ceiling on $limit for an aggregated (GROUP BY)
@@ -355,7 +366,7 @@ def build_doc(
 
 def write_baseline(client: S3Client, bucket: str, doc: dict[str, Any]) -> str:
     """Write the live pointer + an immutable versioned snapshot, mirroring
-    train_em.write_service_baseline: same content-type/cache-control
+    publish_params.write_service_baseline: same content-type/cache-control
     convention as params.json (read every tick, so it gets that edge-cache
     window rather than service_baseline's no-store), keyed by this run's own
     `generated_at`. Returns the versioned key."""

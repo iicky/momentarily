@@ -74,7 +74,7 @@ jobs:
           from training.r2_client import get_object_bytes, load_config, make_client
 
           # state/params.json is the live pointer the trainer writes and the Worker
-          # reads (worker/src/params.ts, training/train_em.write_params); its
+          # reads (worker/src/params.ts, training/publish_params.write_params); its
           # top-level trained_at is the fit epoch. Reading it from R2 isolates
           # "did the trainer run" from "did the Worker adopt the result".
           cfg = load_config()

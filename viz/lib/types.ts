@@ -25,7 +25,9 @@ export interface Inference {
   // All three horizons are withheld (null) rather than publish a number
   // known to be wrong, for different reasons per horizon:
   // 60/120min: model-derived forecasts scored worse than naive persistence
-  // (AUC 0.395 / 0.352, BSS as low as -1.30 — see journal.md:1040-1051).
+  // (AUC 0.395 / 0.352, BSS as low as -1.30 — see journal.md § "2026-08-11 —
+  // forecast horizon inversion: projection defect, not left-censoring
+  // (trustworthy-clock subset still inverted, AUC 0.352 at 120min)").
   // 30min: withheld whenever the forecast arm isn't the arm that produced
   // `condition` above. Graded against the published condition,
   // movement-sourced forecasts score AUC 0.856, hmm-sourced score AUC
@@ -452,8 +454,10 @@ export interface PredictionRecord {
   recovery_indeterminate: boolean;
   p_normal_in_30min: number | null;
   // 60/120min are withheld (null) on records where the forecast came from a
-  // fitted model — they measured worse than naive persistence (see
-  // journal.md:1040-1051). Schedule-sourced rows are unaffected.
+  // fitted model — they measured worse than naive persistence (see journal.md
+  // § "2026-08-11 — forecast horizon inversion: projection defect, not
+  // left-censoring (trustworthy-clock subset still inverted, AUC 0.352 at
+  // 120min)"). Schedule-sourced rows are unaffected.
   // 30min is withheld when `recovery_source`'s arm isn't the one that
   // produced `condition`: graded against the published condition, mixing
   // movement- and hmm-sourced forecasts scores AUC 0.084 (worse than either

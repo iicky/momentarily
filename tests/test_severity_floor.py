@@ -570,8 +570,9 @@ def _episodic_series(floor: int) -> list[Observation]:
 def _run_diagnostic(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], floor: int
 ) -> tuple[int, str]:
+    from training.publish_params import CorpusStats
     from training.r2_client import R2Config
-    from training.train_em import CorpusStats, MovementInputs
+    from training.train_em import MovementInputs
 
     cfg = R2Config(
         account_id="acct",
@@ -597,7 +598,7 @@ def _run_diagnostic(
 
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
-        "training.train_em._static_topology", lambda: (None, None, "observed")
+        "training.train_em.static_topology", lambda: (None, None, "observed")
     )
 
     def _fake_movement_baseline(*a: object, **k: object) -> MovementInputs:

@@ -7,6 +7,7 @@
  *   archive/alerts/YYYY-MM-DD/<updated_at>-<alert_id>.json
  *   archive/alerts_liveness/YYYY-MM-DD/<observed_at>.json
  *   archive/ene/YYYY-MM-DD/HH0000-<source>.json
+ *   archive/health/YYYY-MM-DD/<observed_at>.json
  *
  * We dedupe alerts by (alert_id, updated_at) — an alert that persists for hours
  * occupies one R2 object until its `updated_at` changes, not 72 copies of the
@@ -147,6 +148,46 @@ export async function archiveAlertsLiveness(
   await bucket.put(
     key,
     JSON.stringify({ observed_at: observedAt, ...liveness }),
+    { httpMetadata: { contentType: 'application/json' } },
+  );
+}
+
+/**
+ * This tick's per-prefix write-failure counts — every archive/state write in
+ * index.ts's `scheduled` that currently only console.error's on failure also
+ * increments its own key here (see `WriteFailureCounts` callers in index.ts).
+ * Plain counts, not booleans: keeps the shape uniform even though today only
+ * one write of each kind happens per tick.
+ */
+export type WriteFailureCounts = Record<string, number>;
+
+/**
+ * Archive this tick's write-failure counts — one tiny object per tick,
+ * written unconditionally (empty `write_failures` on a clean tick), mirroring
+ * archiveAlertsLiveness above. WHY THIS EXISTS: every write it covers already
+ * degrades fail-soft (log and move on), which is correct for a single tick
+ * but means a PERSISTENT failure on one prefix — say, predictions writes
+ * wedged behind a bad object — never fails a tick or pages anyone. The live
+ * snapshot stays fresh from the writes that DO succeed, while that one
+ * training-input stream quietly stops accruing, invisibly, until an offline
+ * consumer notices a gap weeks later. Counting failures here, every tick,
+ * turns that silent corpus rot into a queryable time series: a reader sees
+ * `write_failures.predictions_write > 0` for consecutive ticks and knows
+ * exactly which stream and roughly when it started.
+ *
+ * Keyed on observedAt exactly like archiveAlertsLiveness — see that
+ * function's comment for why an overlapping/retried tick keeps both records
+ * rather than overwriting.
+ */
+export async function archiveHealth(
+  bucket: R2Bucket,
+  writeFailures: WriteFailureCounts,
+  observedAt: number,
+): Promise<void> {
+  const key = `archive/health/${utcDate(observedAt)}/${observedAt}.json`;
+  await bucket.put(
+    key,
+    JSON.stringify({ observed_at: observedAt, write_failures: writeFailures }),
     { httpMetadata: { contentType: 'application/json' } },
   );
 }

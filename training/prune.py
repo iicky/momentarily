@@ -86,6 +86,13 @@ DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     # as archive/vehicles/ above: kept for future usefulness and set
     # explicitly so it stays policed rather than silently unbounded.
     ("archive/alerts_liveness/", 3650),
+    # Per-tick write-failure counter (archive/health/), written by worker/
+    # src/archive.ts's archiveHealth every 5-minute tick. One ~50-100-byte
+    # JSON body plus a ~45-char key per tick, 288 ticks/day: ~15-30 KB/day.
+    # Mirrors archive/alerts_liveness/'s treatment: a tiny permanent
+    # operational health record, not a raw stream capped by size, so it gets
+    # the same effectively-keep window and stays explicitly policed.
+    ("archive/health/", 3650),
     # NOT date-partitioned: archive/gtfs/ is content-addressed by sha256, so the
     # date matcher below never matches it and it is intentionally absent from
     # this table. Deleting a feed artifact by age would break replay of exactly

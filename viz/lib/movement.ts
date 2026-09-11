@@ -33,13 +33,15 @@
 // below); null/absent means "count every stop" — pre-through-stops behavior,
 // and the fallback for any tick the static topology couldn't be fetched for.
 
+import { classifyAdvance, MIN_MATCHED_TRIPS } from "../../shared/classify.ts";
+
 export const TICK_SECONDS = 300;
-// Thresholds mirror training/load_r2.py + worker/src/movement_state.ts so the
-// offline series and the live signal agree on the movement call.
-export const MIN_MATCHED_TRIPS = 3; // advanced_n + stalled_n floor to judge a tick
-export const CLASSIFY_PRIOR_STRENGTH = 8; // pseudo-trials regularizing a single tick toward the cell baseline
-export const DISRUPTED_RATIO = 0.5; // disrupted when posterior advance rate <= this * baseline p0
-export const CLASSIFY_ALPHA = 0.05; // disrupted only when the low advance count is significant (binomial lower tail <= this)
+// The classifier's decision rule and its thresholds (MIN_MATCHED_TRIPS,
+// CLASSIFY_PRIOR_STRENGTH, DISRUPTED_RATIO, CLASSIFY_ALPHA, binomLowerTail,
+// classifyAdvance) are imported from shared/classify.ts — the single source
+// shared with worker/src/movement_state.ts. The constants below back the
+// offline advance-baseline fit (compute_advance_baseline), mirroring
+// training/load_r2.py.
 export const ADVANCE_PRIOR_STRENGTH = 50; // Beta pseudo-trials behind the baseline prior
 export const P0_FLOOR = 1e-3; // keep p0 off the degenerate Beta endpoints
 export const BASELINE_MIN_SAMPLES = 20; // ticks needed to back a cell baseline
@@ -253,22 +255,6 @@ export function computeAdvanceBaseline(
   return out;
 }
 
-/** P(X <= k) for X ~ Binomial(n, p) via an iterative pmf sum. Exact for the
- * tick-level counts here and free of special functions. Mirrors binomLowerTail
- * in worker/src/movement_state.ts and _binom_lower_tail in load_r2.py. */
-function binomLowerTail(k: number, n: number, p: number): number {
-  if (k >= n) return 1;
-  if (k < 0) return 0;
-  const q = 1 - p;
-  let pmf = q ** n; // P(X = 0)
-  let cdf = pmf;
-  for (let i = 0; i < k; i++) {
-    pmf *= ((n - i) / (i + 1)) * (p / q);
-    cdf += pmf;
-  }
-  return cdf;
-}
-
 /** Beta-Binomial call for one (route,direction) at one tick, three ways:
  * normal (posterior above DISRUPTED_RATIO * p0); disrupted (posterior at/under it
  * AND the low advance count is significant, binomial lower tail <= CLASSIFY_ALPHA);
@@ -280,13 +266,8 @@ export function classifyDirection(
   stalledN: number,
   cell: AdvanceBaselineCell | undefined,
 ): "normal" | "disrupted" | null {
-  const matched = advancedN + stalledN;
-  if (matched < MIN_MATCHED_TRIPS) return null;
   if (!cell) return null;
-  const post =
-    (CLASSIFY_PRIOR_STRENGTH * cell.p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
-  if (post > DISRUPTED_RATIO * cell.p0) return "normal";
-  return binomLowerTail(advancedN, matched, cell.p0) <= CLASSIFY_ALPHA ? "disrupted" : null;
+  return classifyAdvance(advancedN, stalledN, cell.p0);
 }
 
 /** Independent current-state for one route at one tick, or null when movement

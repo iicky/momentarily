@@ -9,6 +9,7 @@
 // rather than papered over with a fabricated ratio.
 
 import type { Observation, Snapshot } from "./types";
+import { HEADWAY_WINDOW_SIZE } from "../../shared/headway.ts";
 
 // A cell counted this many scheduled trains or fewer in the hour is a thin,
 // wide-headway cell: the median is still shown, but a consumer should not read
@@ -22,11 +23,11 @@ export const THIN_N_TRIPS = 3;
 export const GAPPED_RATIO = 1.25;
 export const BUNCHED_RATIO = 0.8;
 
-// The worker caps the rolling window at this many gaps — a full hour of history
-// (worker/src/headway.ts HEADWAY_WINDOW_SIZE). A shorter window is a cell that
-// has seen fewer trains recently, worth saying so the strip is not read as if
-// it covered the whole hour.
-export const HEADWAY_WINDOW_SIZE = 12;
+// The worker caps the rolling window at this many gaps — a full hour of history.
+// The size is defined once in shared/headway.ts and re-exported here: a shorter
+// published window is a cell that has seen fewer trains recently, worth saying
+// so the strip is not read as if it covered the whole hour.
+export { HEADWAY_WINDOW_SIZE };
 
 /** The headway Observation for one (route, direction), or null when the surface
  * carries none this tick — a cold cell, a feed outage, or a full suspension. */

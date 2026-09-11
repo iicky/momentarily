@@ -61,11 +61,10 @@ export interface Topology {
   routeStops: RouteStops;
 }
 
-/** Collapse a directional stop id to its station: strip a trailing N/S.
- * Mirrors worker/src/segment_flow.ts stationId. */
-export function undirected(stop: string): string {
-  return /[NS]$/.test(stop) ? stop.slice(0, -1) : stop;
-}
+/** Collapse a directional stop id to its station: strip a trailing N/S. The
+ * rule is defined once in shared/stops.ts (stationId); re-exported here under
+ * the name the viz station/journey surfaces use. */
+export { stationId as undirected } from "../../shared/stops.ts";
 
 // Station metadata labels shuttles as one "S" and the SIR as "SIR"; the segment
 // topology keys them by the trainer's route ids. Map a line to the topology

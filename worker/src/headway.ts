@@ -104,6 +104,8 @@ import type {
 } from './state';
 import type { TraceRow } from './vehicles';
 import { hourOfWeek } from './hmm';
+import { HEADWAY_WINDOW_SIZE } from '../../shared/headway';
+export { HEADWAY_WINDOW_SIZE };
 
 /**
  * The scheduled stopping patterns the through-stop rule reads, as
@@ -218,7 +220,8 @@ export const HEADWAY_WRITE_ATTEMPTS = 3;
  * HARD cap: the snapshot cannot bloat as routes and directions multiply, no
  * matter how frequent the service. See cellWindow.
  */
-export const HEADWAY_WINDOW_SIZE = 12;
+// HEADWAY_WINDOW_SIZE (the rolling window's passing count) is defined once in
+// shared/headway.ts and re-exported above; HEADWAY_LEDGER_SIZE derives from it.
 
 /**
  * How far back the rolling window reaches, in seconds. A count cap alone is not

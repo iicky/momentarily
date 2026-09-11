@@ -9582,3 +9582,32 @@ the open "derive an independent movement-recovery truth or reframe the claim"
 question, and no amount of window widening answers it. The next review — the
 first after the 09-13 fit under the 35-day dwell window — should carry this
 column; the number to beat is n>0.
+
+## 2026-09-10 — shared/ model-core extraction: viz matched Python, the worker was the ≤1e-16 outlier; toolchain forced a relative source dir over a file: package
+
+Collapsed the worker↔viz duplications (classifier constants + binomLowerTail/
+classifyAdvance, the dwell survival math, the supply degrade/recover ratios,
+HEADWAY_WINDOW_SIZE, stationId) into a top-level shared/ of source .ts imported
+by both. Two non-obvious constraints cost the most effort:
+
+- A file: package shipping source .ts is NOT viable: Node v26 refuses type
+  stripping under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
+  which is exactly viz's `node --test` command. A relative shared/*.ts re-export
+  passes. Node also needs the explicit `.ts` extension on relative TS imports
+  (extensionless → ERR_MODULE_NOT_FOUND), so viz/lib carries `.ts` while the
+  worker tsconfig (no allowImportingTsExtensions) uses extensionless — both
+  resolve the same file.
+- Next 16 / Turbopack refuses to resolve an import outside the viz/ root
+  ("Module not found") until `turbopack.root` is pointed at the repo root in
+  viz/next.config.mjs. tsc and node passing is NOT sufficient proof; only the
+  real `next build` exercises this.
+
+Parity surprise: the two dwell copies were never bit-identical. training/dwell.py
+groups mixture_survival as ((1-atomP)*S_t)/s_tau and guards mixture_quantile;
+viz matched Python byte-for-byte while the worker's private copy used
+(1-atomP)*(S_t/s_tau) and omitted the guards — a float-associativity gap of
+**≤1e-16** on the mixture branch, no logic difference. Canonicalised shared on
+the Python form: the deleted viz copies are byte-identical to shared (parity grid
+128,861 checks, 0 mismatches) and the worker moved ≤1e-16 toward Python, inside
+its own 1e-9 dwell parity and invisible in minute-rounded published output (all
+132 worker dwell/movement tests unchanged).

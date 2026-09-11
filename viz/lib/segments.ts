@@ -36,19 +36,17 @@
 
 import type { Diagram, DiagramEdge, Direction } from "./diagram";
 import type { SegmentFlow, SegmentStatus } from "./types";
+import { stationId as stationOf } from "../../shared/stops.ts";
 
 export const DIRECTIONS: readonly Direction[] = ["north", "south"];
 
 export type SegmentState = "disrupted" | "normal" | "quiet" | "unmeasured" | "unscheduled";
 
-/** A directional stop id collapsed to its parent station: `A24S` -> `A24`.
- * Mirrors worker/src/segment_flow.ts stationId and training/diagram.py
- * parent_station — the segment surface is keyed on platforms, the diagram on
- * stations, and this is the one place that bridges them. */
-export function stationOf(stop: string): string {
-  const last = stop.slice(-1);
-  return last === "N" || last === "S" ? stop.slice(0, -1) : stop;
-}
+// A directional stop id collapsed to its parent station (`A24S` -> `A24`): the
+// segment surface is keyed on platforms, the diagram on stations, and this is
+// where they bridge. The rule is defined once in shared/stops.ts (stationId),
+// imported above and re-exported here under this module's name.
+export { stationOf };
 
 // Worst-first, and `unmeasured` outranks `normal` deliberately: when one
 // direction of a pair has a good reading and the other has none, the pair as a

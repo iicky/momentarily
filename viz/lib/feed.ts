@@ -1,4 +1,8 @@
 import type { PlatformCrowding, RouteStatus, Snapshot, Trains } from "./types";
+import {
+  SERVICE_DEGRADE_RATIO as SUPPLY_DEGRADE_RATIO,
+  SERVICE_RECOVER_RATIO as SUPPLY_RECOVER_RATIO,
+} from "../../shared/supply.ts";
 
 // The public snapshot. Override with NEXT_PUBLIC_FEED_BASE to point at a local
 // Worker or a staging feed.
@@ -308,13 +312,13 @@ export function fmtProb(p: number): string {
   return `${(p * 100).toFixed(1)}%`;
 }
 
-// Supply-axis thresholds, mirroring worker/src/movement_state.ts: a route
-// degrades below DEGRADE and only recovers back above the higher RECOVER, each
-// confirmed for two ticks. Both are marked on the drawer meter so a reader can
-// see where a route sits relative to what actually flips the axis, rather than
-// guessing from a bare percentage.
-export const SUPPLY_DEGRADE_RATIO = 0.5;
-export const SUPPLY_RECOVER_RATIO = 0.8;
+// Supply-axis thresholds — the single source shared with
+// worker/src/movement_state.ts (SERVICE_DEGRADE_RATIO/SERVICE_RECOVER_RATIO): a
+// route degrades below DEGRADE and only recovers back above the higher RECOVER,
+// each confirmed for two ticks. Both are marked on the drawer meter so a reader
+// can see where a route sits relative to what actually flips the axis, rather
+// than guessing from a bare percentage.
+export { SUPPLY_DEGRADE_RATIO, SUPPLY_RECOVER_RATIO };
 
 // Whether a route is running notably more trains than usual, compared against
 // that (route, hour) cell's OWN spread rather than one global multiple: across

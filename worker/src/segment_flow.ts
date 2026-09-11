@@ -35,6 +35,8 @@
  */
 
 import { schedule_bin } from './hmm';
+import { stationId } from '../../shared/stops';
+export { stationId };
 import { classifyAdvance, poisLowerTail } from './movement_state';
 import type { RegimeEntry } from './regime';
 import type { MovementRow } from './vehicles';
@@ -137,11 +139,9 @@ const QUIET_MAX_EXPECTED = -Math.log(THROUGHPUT_ALPHA);
 // feed that still decodes vehicles but stops matching them across ticks would
 // depress matched without depressing this.
 
-/** Collapse a directional stop id to its station: strip a trailing N/S. */
-export function stationId(stop: string): string {
-  const last = stop.at(-1);
-  return last === 'N' || last === 'S' ? stop.slice(0, -1) : stop;
-}
+// stationId (strip a trailing N/S) is defined once in shared/stops.ts and
+// re-exported above, so the worker and the viz segment/station surfaces collapse
+// platforms to stations by the identical rule.
 
 /** This tick's advanced/matched per (route|dir|from) from the raw transitions. */
 function tickCounts(

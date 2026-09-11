@@ -32,50 +32,21 @@ import type { RegimeEntry } from './regime';
 import type { MovementMetricDoc, ServiceMetricDoc, ServiceQuantiles } from './state';
 import type { MovementRow } from './vehicles';
 import type { ServiceRow } from './trip_updates';
+import { classifyAdvance, MIN_MATCHED_TRIPS } from '../../shared/classify';
+import { SERVICE_DEGRADE_RATIO, SERVICE_RECOVER_RATIO } from '../../shared/supply';
+export { classifyAdvance, SERVICE_DEGRADE_RATIO, SERVICE_RECOVER_RATIO };
 
 // ON: the movement-derived condition is the published current state (movement-
 // primary). Each tick's states are written for the next tick's snapshot to read;
 // routes movement can't judge fall through to 'unknown', never an alert fallback.
 export const MOVEMENT_STATE_PUBLISH = true;
 
-// Classification-time prior strength in pseudo-trials — regularizes a single
-// tick's advance fraction toward the cell baseline so a thin sample can't swing
-// the call. Distinct from the trainer's advance-baseline prior strength, which
-// anchors the HMM emission accumulated over the whole training window.
-const CLASSIFY_PRIOR_STRENGTH = 8;
-// A direction reads disrupted when its posterior advance rate sits at/under this
-// fraction of the cell's own baseline p0 — advancing at under half its normal
-// rate. Baseline-relative, so shuttles and trunk lines are each judged against
-// their own normal instead of one global cutoff.
-const DISRUPTED_RATIO = 0.5;
-// A large posterior drop only reads disrupted when the low advance count is also
-// statistically significant against the cell baseline (binomial lower tail at or
-// under this). Guards degenerate-low baselines — a short shuttle advances ~0 even
-// when healthy, so a normal zero-advance tick would otherwise flip disrupted.
-const CLASSIFY_ALPHA = 0.05;
 // A route in service (>=1 dispatched train) in fewer than this fraction of usable
 // ticks at its schedule bin reads not_scheduled — not suspended — when nothing is
 // running now. Applied to the trainer's per-bin in-service rate (schedule_rate).
 const NOT_SCHEDULED_MAX = 0.5;
-export const MIN_MATCHED_TRIPS = 3; // advanced_n + stalled_n floor to make a cross-tick call
 
 export type MovementCondition = 'normal' | 'disrupted' | 'suspended' | 'not_scheduled';
-
-// P(X <= k) for X ~ Binomial(n, p) via an iterative pmf sum. Exact for the
-// tick-level counts here (n well under ~50) and free of special functions, so it
-// mirrors 1:1 in Python/viz. p is the cell baseline p0, floored off 0 upstream.
-export function binomLowerTail(k: number, n: number, p: number): number {
-  if (k >= n) return 1;
-  if (k < 0) return 0;
-  const q = 1 - p;
-  let pmf = q ** n; // P(X = 0)
-  let cdf = pmf;
-  for (let i = 0; i < k; i++) {
-    pmf *= ((n - i) / (i + 1)) * (p / q);
-    cdf += pmf;
-  }
-  return cdf;
-}
 
 // P(X <= k) for X ~ Poisson(mu) via the same iterative pmf sum, sibling of
 // binomLowerTail and mirrored 1:1 in Python (training/segments.py). Used by the
@@ -92,30 +63,6 @@ export function poisLowerTail(k: number, mu: number): number {
     cdf += pmf;
   }
   return Math.min(1, cdf);
-}
-
-// Beta-Binomial call against a baseline advance rate p0, three ways:
-//   normal    — posterior advance rate above DISRUPTED_RATIO * p0.
-//   disrupted — posterior at/under DISRUPTED_RATIO * p0 AND the low advance count
-//               is significant against p0 (binomial lower tail <= CLASSIFY_ALPHA).
-//   null      — too few matches, or a point-estimate drop not distinguishable from
-//               a low-p0 normal fluctuation (a degenerate-baseline zero-advance
-//               tick, not a stall).
-// The one decision rule shared by the direction classifier and the segment
-// classifier (segment_flow.ts), so the two never disagree. NOTE: with smoothed
-// (decayed) counts the binomial tail is a tuned score, not a calibrated p-value —
-// CLASSIFY_ALPHA is an empirical threshold.
-export function classifyAdvance(
-  advancedN: number,
-  stalledN: number,
-  p0: number,
-): 'normal' | 'disrupted' | null {
-  const matched = advancedN + stalledN;
-  if (matched < MIN_MATCHED_TRIPS) return null;
-  const post =
-    (CLASSIFY_PRIOR_STRENGTH * p0 + advancedN) / (CLASSIFY_PRIOR_STRENGTH + matched);
-  if (post > DISRUPTED_RATIO * p0) return 'normal';
-  return binomLowerTail(advancedN, matched, p0) <= CLASSIFY_ALPHA ? 'disrupted' : null;
 }
 
 // Beta-Binomial call for one (route, direction) at one tick, keyed on the cell's
@@ -208,13 +155,13 @@ export function deriveMovementStates(
 
 export type ServiceCondition = 'normal' | 'degraded' | 'unknown';
 
-// Hysteresis band and debounce, ported from the offline degradation label
+// Debounce for the service regime clock: a degrade/recover target must hold for
+// this many consecutive ticks before the committed regime flips, so a route
+// riding the threshold doesn't flap. The ratios that define those targets live
+// in shared/supply.ts (SERVICE_DEGRADE_RATIO/SERVICE_RECOVER_RATIO, re-exported
+// above). Ported from the offline degradation label
 // (load_r2.derive_actual_recovery) so the published axis and the grading truth
-// agree: a route degrades below DEGRADE_RATIO and only recovers back above the
-// higher RECOVER_RATIO, each confirmed for DEBOUNCE_TICKS consecutive ticks, so
-// a route riding the threshold doesn't flap.
-export const SERVICE_DEGRADE_RATIO = 0.5;
-export const SERVICE_RECOVER_RATIO = 0.8;
+// agree.
 export const SERVICE_DEBOUNCE_TICKS = 2;
 
 // assigned_n against its own (route, schedule_bin) baseline for one route at one

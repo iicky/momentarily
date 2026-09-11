@@ -282,6 +282,8 @@ export async function archiveTraceRows(
   freshFeeds: string[],
   observedAt: number,
   scheduledAt: number,
+  feedDigest: string | null = null,
+  feedEtag: string | null = null,
 ): Promise<void> {
   // Keyed on the SCHEDULED second, not observedAt. The trace step runs before
   // any compare-and-swap winner check, so a retried or overlapping invocation
@@ -293,14 +295,27 @@ export async function archiveTraceRows(
   // rerun overwrites. observed_at stays in the body: it is the real execution
   // time, and the per-vehicle feed timestamps on each row are finer still.
   const key = `archive/trace/${utcDate(scheduledAt)}/${scheduledAt}.json`;
+  // feed_digest / feed_etag: this tick's GTFS static feed identity from
+  // gtfs_feed.resolveFeedIdentity's HEAD+ETag compare against
+  // archive/gtfs/latest.json. feed_etag is set whenever the HEAD succeeded —
+  // including a mismatch tick where the capture (GET+store) has only just
+  // been kicked off and hasn't finished — while feed_digest stays null until
+  // a LATER tick's HEAD observes the refreshed pointer. Both null when the
+  // HEAD itself failed (network error/timeout) or params are unavailable.
+  // Older (pre-change) trace objects omit both fields; new objects always
+  // carry them so an explicit null records a resolution failure rather than
+  // being indistinguishable from a historical gap.
+  const body: Record<string, unknown> = {
+    observed_at: observedAt,
+    scheduled_at: scheduledAt,
+    fresh_feeds: freshFeeds,
+    feed_digest: feedDigest,
+    feed_etag: feedEtag,
+    rows,
+  };
   await bucket.put(
     key,
-    JSON.stringify({
-      observed_at: observedAt,
-      scheduled_at: scheduledAt,
-      fresh_feeds: freshFeeds,
-      rows,
-    }),
+    JSON.stringify(body),
     { httpMetadata: { contentType: 'application/json' } },
   );
 }

@@ -38,10 +38,12 @@ import zipfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import httpx
+
 from training.gtfs_static import (
+    FETCH_TIMEOUT,
     GTFS_STATIC_URL,
     Timetable,
-    fetch_gtfs_zip,
 )
 from training.gtfs_static import timetable as parse_timetable
 from training.load_r2 import list_keys
@@ -51,6 +53,31 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
 PREFIX = "archive/gtfs/"
+# A tiny pointer to the most recently archived feed: the Worker reads this at
+# trace time so each trace object names the feed artifact that was in force when
+# it was collected.  Written by store() on every archive run, so it tracks the
+# feed MTA is currently serving.  The digest it names is guaranteed to exist
+# under PREFIX as a content-addressed .zip — the pointer is written AFTER the
+# artifact, never before.
+LATEST_KEY = f"{PREFIX}latest.json"
+# One tiny object per HTTP ETag the feed has ever been seen under, so the
+# Worker's intra-day HEAD-vs-ETag comparison can resolve "have we already
+# captured this exact republish?" with a single R2 read keyed on the ETag
+# alone, without downloading or re-hashing the body. Written by store()
+# AFTER the zip lands but BEFORE latest.json, mirroring the zip-before-pointer
+# rule below: neither pointer may name something not yet in place.
+BY_ETAG_PREFIX = f"{PREFIX}by_etag/"
+
+
+def etag_key(etag: str) -> str:
+    """archive/gtfs/by_etag/<etag>.json, with the quoting an HTTP ETag header
+    carries (and the weak-validator `W/` prefix, if present) stripped so the
+    R2 key is a clean identifier rather than embedding a literal quote."""
+    stripped = etag.strip()
+    if stripped[:2] in ("W/", "w/"):
+        stripped = stripped[2:]
+    stripped = stripped.strip('"')
+    return f"{BY_ETAG_PREFIX}{stripped}.json"
 
 
 def digest_of(blob: bytes) -> str:
@@ -69,12 +96,15 @@ class FeedSnapshot:
     version: str
     key: str
     n_bytes: int
+    etag: str | None  # the HTTP ETag this snapshot was fetched under, if any
     stored: bool  # False when this digest was already present
 
 
 def store(
     blob: bytes,
     *,
+    etag: str | None = None,
+    last_modified: str | None = None,
     config: R2Config | None = None,
     client: S3Client | None = None,
 ) -> FeedSnapshot:
@@ -83,6 +113,16 @@ def store(
     Idempotent by construction: the key IS the content hash, so a nightly job
     that fetches an unchanged feed writes nothing and cannot create a second
     copy under a different name.
+
+    Also writes (or refreshes) a ``latest.json`` pointer so the Worker can
+    learn the current feed digest with a single tiny R2 read, and — when the
+    caller has an HTTP ``etag`` in hand — a ``by_etag/<etag>.json`` mapping so
+    the Worker's intra-day comparison can resolve a repeated ETag without
+    re-downloading or re-hashing the feed.
+
+    WRITE ORDER is load-bearing: the zip lands first, the etag mapping second,
+    the ``latest.json`` pointer last, so neither pointer can ever be read
+    naming a digest or an etag mapping that has not actually landed yet.
     """
     cfg = config or load_config()
     client = client or make_client(cfg)
@@ -91,15 +131,62 @@ def store(
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         version = parse_timetable(zf).version.version
 
-    if key in set(list_keys(client, cfg.bucket, PREFIX)):
-        return FeedSnapshot(
-            digest=sha, version=version, key=key, n_bytes=len(blob), stored=False
+    already_held = key in set(list_keys(client, cfg.bucket, PREFIX))
+    if not already_held:
+        client.put_object(
+            Bucket=cfg.bucket, Key=key, Body=blob, ContentType="application/zip"
         )
-    client.put_object(
-        Bucket=cfg.bucket, Key=key, Body=blob, ContentType="application/zip"
+
+    if etag is not None:
+        client.put_object(
+            Bucket=cfg.bucket,
+            Key=etag_key(etag),
+            Body=json.dumps({"digest": sha}, separators=(",", ":")),
+            ContentType="application/json",
+        )
+
+    # Always refresh the pointer, even when the artifact was already held: a
+    # prior run may have stored the artifact but crashed before writing the
+    # pointer, and the pointer's own timestamp lets a reader see how recent the
+    # last archive run was.
+    _write_latest(
+        client, cfg.bucket, sha, version, etag=etag, last_modified=last_modified
     )
+
     return FeedSnapshot(
-        digest=sha, version=version, key=key, n_bytes=len(blob), stored=True
+        digest=sha,
+        version=version,
+        key=key,
+        n_bytes=len(blob),
+        etag=etag,
+        stored=not already_held,
+    )
+
+
+def _write_latest(
+    client: S3Client,
+    bucket: str,
+    digest: str,
+    version: str,
+    *,
+    etag: str | None = None,
+    last_modified: str | None = None,
+) -> None:
+    """Overwrite the latest-digest pointer."""
+    from datetime import UTC, datetime
+
+    doc = {
+        "digest": digest,
+        "version": version,
+        "etag": etag,
+        "last_modified": last_modified,
+        "stored_at": int(datetime.now(UTC).timestamp()),
+    }
+    client.put_object(
+        Bucket=bucket,
+        Key=LATEST_KEY,
+        Body=json.dumps(doc, separators=(",", ":")),
+        ContentType="application/json",
     )
 
 
@@ -109,7 +196,24 @@ def store_current(
     config: R2Config | None = None,
     client: S3Client | None = None,
 ) -> FeedSnapshot:
-    return store(fetch_gtfs_zip(url), config=config, client=client)
+    """Fetch the feed unconditionally and store it, carrying the ETag and
+    Last-Modified validators the response was served with.
+
+    Unlike `fetch_gtfs_zip` (which trades the body away and keeps only bytes
+    for its local 304 cache), this needs the response object itself: the
+    validators it carries are what `store()` stamps on `latest.json` and
+    `by_etag/`, so the Worker can later tell "same republish" from "new one"
+    without re-hashing.
+    """
+    with httpx.Client(timeout=FETCH_TIMEOUT, follow_redirects=True) as http_client:
+        response = http_client.get(url)
+        response.raise_for_status()
+        blob = response.content
+    etag = response.headers.get("etag")
+    last_modified = response.headers.get("last-modified")
+    return store(
+        blob, etag=etag, last_modified=last_modified, config=config, client=client
+    )
 
 
 def load(
@@ -165,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
                 "version": snap.version,
                 "key": snap.key,
                 "n_bytes": snap.n_bytes,
+                "etag": snap.etag,
                 "stored": snap.stored,
             },
             indent=2,

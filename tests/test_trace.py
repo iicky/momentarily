@@ -496,3 +496,24 @@ def test_schedule_comparison_reports_an_out_of_window_replay_separately():
     assert report["arrival_to_arrival"]["n"] == 1
     assert report["arrival_to_arrival"]["unmatched"] == 0
     assert report["feed_version"] == FEED_VERSION
+
+
+# --- feed_digest tolerance (2a3.15) -------------------------------------------
+
+
+def test_trace_body_without_feed_digest_still_parses():
+    """Older archive objects carry no feed_digest. The reader must not reject
+    or break on their absence."""
+    bodies = [_body(0, [_row("A1S", stopped=True, seq=1)])]
+    assert "feed_digest" not in bodies[0]
+    arrivals = arrivals_from_trace(bodies)
+    assert len(arrivals) == 1
+
+
+def test_trace_body_with_feed_digest_still_parses():
+    """A body carrying the new feed_digest field is parsed identically — the
+    field is metadata, not row data, and the reader ignores it."""
+    body = _body(0, [_row("A1S", stopped=True, seq=1)])
+    body["feed_digest"] = "abc123feeddigest"
+    arrivals = arrivals_from_trace([body])
+    assert len(arrivals) == 1

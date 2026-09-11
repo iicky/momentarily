@@ -155,6 +155,9 @@ function fakeBucket() {
       store.set(key, { body, etag, ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}) });
       return { etag };
     },
+    async head(key: string) {
+      return store.has(key) ? { etag: store.get(key)!.etag } : null;
+    },
   };
   return { bucket: bucket as unknown as R2Bucket, store };
 }
@@ -187,7 +190,17 @@ function traceRowsAt(store: Map<string, StoredObject>, key: string): unknown[] {
 function scheduledAt(epochSec: number): ScheduledController {
   return { cron: '* * * * *', scheduledTime: epochSec * 1000 } as unknown as ScheduledController;
 }
-const execCtx = {} as unknown as ExecutionContext;
+// gtfs_feed.ts's resolveFeedIdentity calls the raw global `fetch` (HEAD, and
+// a capture GET on mismatch) — unlike fetchJson/fetchProtobuf above, which
+// are fully replaced by the ../src/fetch mock. Stubbed to always reject so
+// these tests never hit the real network: every scheduled() run here
+// therefore sees a HEAD failure, resolving feed identity to {digest: null,
+// etag: null} with no capture — exactly the old default (feed_digest always
+// absent) since the fake bucket never seeds archive/gtfs/latest.json either.
+// HEAD+ETag capture behavior itself is exercised in gtfs_feed.test.ts.
+const execCtx = {
+  waitUntil: (_promise: Promise<unknown>) => {},
+} as unknown as ExecutionContext;
 
 beforeEach(() => {
   fetchState.jsonByUrl.clear();
@@ -196,6 +209,9 @@ beforeEach(() => {
   fetchState.protobufFailUrls.clear();
   fetchState.jsonFailUrls.clear();
   snapshotState.buildThrows = false;
+  vi.stubGlobal('fetch', vi.fn(async () => {
+    throw new Error('network disabled in index.test.ts');
+  }));
 });
 
 describe('tickMinute', () => {
@@ -1403,5 +1419,71 @@ describe('freshness.alerts_parse_degraded: alerts-schema drift abstention', () =
     // No entities to parse is honest quiet: route A still reads its movement
     // 'normal', never abstained.
     expect(snapshot.route_status['A']!.condition).toBe('normal');
+  });
+});
+
+describe('feed identity: end-to-end through scheduled()', () => {
+  const NON_BOUNDARY_AT = 1_704_067_380; // minute 3
+
+  test('HEAD mismatch + GET failure: trace body carries feed_etag with feed_digest null, latest.json unchanged', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+
+    // Seed a vehicle feed so the trace has rows to archive.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+
+    // Seed an existing latest.json pointer with an OLD etag.
+    const oldPointer = JSON.stringify({
+      digest: 'old_digest_' + '0'.repeat(53),
+      version: 'V1',
+      etag: '"old-etag"',
+      last_modified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+      stored_at: 1_704_000_000,
+    });
+    store.set('archive/gtfs/latest.json', { body: oldPointer, etag: 'r2-1' });
+
+    // Stub global fetch: HEAD returns a NEW etag (mismatch), GET throws.
+    const newEtag = '"brand-new-etag"';
+    let fetchCallCount = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCallCount++;
+      if (init?.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: { ETag: newEtag, 'Last-Modified': 'Wed, 10 Sep 2026 00:00:00 GMT' },
+        });
+      }
+      // GET (capture attempt) throws
+      throw new Error('simulated GET failure');
+    }));
+
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (p: Promise<unknown>) => { waitUntilPromises.push(p); },
+    } as unknown as ExecutionContext;
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(NON_BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, ctx);
+      // Wait for the detached capture to settle (it should fail gracefully).
+      await Promise.allSettled(waitUntilPromises);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // The trace was archived with the etag but null digest.
+    const traceKeys = keysWithPrefix(store, 'archive/trace/');
+    expect(traceKeys).toHaveLength(1);
+    const traceBody = jsonAt(store, traceKeys[0]!) as Record<string, unknown>;
+    expect(traceBody.feed_etag).toBe(newEtag);
+    expect(traceBody.feed_digest).toBeNull();
+    expect((traceBody.rows as unknown[]).length).toBeGreaterThan(0);
+
+    // latest.json was NOT updated (capture failed).
+    const latestAfter = store.get('archive/gtfs/latest.json');
+    expect(latestAfter?.body).toBe(oldPointer);
   });
 });

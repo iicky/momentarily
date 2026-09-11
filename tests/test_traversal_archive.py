@@ -25,6 +25,7 @@ from training.traversal_archive import (
     FIELDS,
     SCHEMA_VERSION,
     DayProvenance,
+    FeedDigestRange,
     ReadResult,
     decode_day,
     encode_day,
@@ -300,7 +301,7 @@ def test_the_extractor_semantics_are_pinned_so_a_change_cannot_pass_silently():
     )
 
 
-def _trace_body(
+def _stop_body(
     at: int, *, stop_id: str, stop_seq: int, trip: str = "T1"
 ) -> dict[str, object]:
     return {
@@ -363,8 +364,8 @@ def test_write_day_then_read_days_round_trips_through_the_client_path():
     on-disk contract every replay-grade depends on."""
     day = date(2026, 8, 12)
     bodies = [
-        _trace_body(AT, stop_id="A1S", stop_seq=1),
-        _trace_body(AT + 60, stop_id="A2S", stop_seq=2),
+        _stop_body(AT, stop_id="A1S", stop_seq=1),
+        _stop_body(AT + 60, stop_id="A2S", stop_seq=2),
     ]
     expected, _stats = traversals_from_trace(bodies)
     assert expected  # sanity: the fixture actually derives a traversal
@@ -401,3 +402,310 @@ def test_write_day_skips_a_day_already_present_without_overwrite():
 
     assert prov is None
     assert client._objects[key] == b"already-written"
+
+
+# --- feed_digest extraction from trace bodies (2a3.15) -------------------------
+#
+# These exercise write_day end-to-end through a fake R2 client so the consensus
+# logic, the decode round-trip, and the persisted DayProvenance are all covered.
+
+
+def _trace_body(
+    minute: int,
+    *,
+    feed_digest: str | None = None,
+    feed_etag: str | None = None,
+) -> dict[str, Any]:
+    """A minimal trace body with one stopped row, optionally carrying feed identity."""
+    at = 1_786_550_000 + minute * 60
+    body: dict[str, Any] = {
+        "observed_at": at + 3,
+        "scheduled_at": at,
+        "fresh_feeds": ["ace"],
+        "feed_digest": feed_digest,
+        "feed_etag": feed_etag,
+        "rows": [
+            {
+                "trip_id": "t1",
+                "route_id": "A",
+                "direction": "south",
+                "stop_id": "A1S",
+                "stop_seq": 1,
+                "stopped": True,
+                "vehicle_ts": at,
+            },
+        ],
+    }
+    return body
+
+
+class _FakeR2:
+    """Minimal S3Client stub for write_day: supports list, get, and put.
+
+    Optionally seeds ``archive/gtfs/by_etag/`` objects so ``_consensus_digest``
+    can resolve mismatch-tick etags to digests.
+    """
+
+    def __init__(
+        self,
+        trace_bodies: list[dict[str, Any]],
+        day: date,
+        *,
+        etag_map: dict[str, str] | None = None,
+    ) -> None:
+        self._objects: dict[str, bytes] = {}
+        prefix = f"archive/trace/{day.isoformat()}/"
+        for i, body in enumerate(trace_bodies):
+            key = f"{prefix}{body.get('scheduled_at', i)}.json"
+            self._objects[key] = json.dumps(body).encode()
+        # Seed by_etag mappings (etag string -> digest)
+        for etag_val, digest_val in (etag_map or {}).items():
+            stripped = etag_val.strip()
+            if stripped[:2] in ("W/", "w/"):
+                stripped = stripped[2:]
+            stripped = stripped.strip('"')
+            etag_key = f"archive/gtfs/by_etag/{stripped}.json"
+            self._objects[etag_key] = json.dumps({"digest": digest_val}).encode()
+        self.puts: list[str] = []
+
+    def list_objects_v2(
+        self, *, Bucket: str, Prefix: str, MaxKeys: int = 1000, **_: object
+    ) -> dict[str, object]:
+        contents = [{"Key": k} for k in self._objects if k.startswith(Prefix)]
+        return {"Contents": contents, "IsTruncated": False}
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+        import io
+
+        if Key not in self._objects:
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return {"Body": io.BytesIO(self._objects[Key])}
+
+    def put_object(self, *, Bucket: str, Key: str, Body: object, **_: object) -> None:
+        self.puts.append(Key)
+        self._objects[Key] = Body if isinstance(Body, bytes) else b""
+
+
+class _FakeCfg:
+    bucket = "b"
+    endpoint_url = ""
+    access_key_id = ""
+    secret_access_key = ""
+
+
+_DAY = date(2026, 8, 10)  # safely in the past
+# A feed version that covers _DAY
+_FEED = FeedVersion(version="V1", start=date(2026, 1, 1), end=date(2026, 12, 31))
+
+
+def test_write_day_extracts_unanimous_feed_digest() -> None:
+    """When every trace body carries the same feed_digest and no explicit digest
+    is passed, write_day stamps it on the DayProvenance."""
+    digest = "a" * 64
+    client = _FakeR2(
+        [_trace_body(0, feed_digest=digest), _trace_body(1, feed_digest=digest)],
+        _DAY,
+    )
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest == digest
+    assert prov.feed_digests is None
+
+
+def test_write_day_mismatch_tick_resolved_via_by_etag() -> None:
+    """A mismatch tick carries feed_digest=null + feed_etag set. By the time
+    write_day runs the capture has completed and by_etag maps the etag to its
+    digest. The resolved digest participates in the consensus."""
+    digest = "a" * 64
+    etag = '"etag-new"'
+    client = _FakeR2(
+        [
+            _trace_body(0, feed_digest=digest),
+            _trace_body(1, feed_etag=etag),  # mismatch tick: digest null, etag set
+            _trace_body(2, feed_digest=digest),
+        ],
+        _DAY,
+        etag_map={etag: digest},  # capture completed: same feed
+    )
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    # All three bodies resolve to the same digest (two directly, one via etag)
+    assert prov.feed_digest == digest
+    assert prov.feed_digests is None
+
+
+def test_write_day_mismatch_tick_resolves_to_different_digest_yields_ranges() -> None:
+    """A mid-day feed change: first ticks carry digest_a, the mismatch tick's
+    etag resolves to digest_b, and subsequent ticks carry digest_b directly.
+    write_day must produce two ranges spanning the transition."""
+    digest_a, digest_b = "a" * 64, "b" * 64
+    etag_b = '"etag-new-b"'
+    client = _FakeR2(
+        [
+            _trace_body(0, feed_digest=digest_a),
+            _trace_body(1, feed_digest=digest_a),
+            _trace_body(2, feed_etag=etag_b),  # mismatch tick -> resolves to digest_b
+            _trace_body(3, feed_digest=digest_b),
+        ],
+        _DAY,
+        etag_map={etag_b: digest_b},
+    )
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest is None
+    assert prov.feed_digests == [
+        FeedDigestRange(digest=digest_a, first_ts=1_786_550_000, last_ts=1_786_550_060),
+        FeedDigestRange(digest=digest_b, first_ts=1_786_550_120, last_ts=1_786_550_180),
+    ]
+
+
+def test_write_day_ranges_are_contiguous_runs_broken_by_reverts_and_unresolved_ticks() -> (
+    None
+):
+    """A -> B -> A must yield three runs, never one A range whose span covers
+    B's ticks; and an unresolved tick (HEAD failed, capture never landed)
+    breaks a run the same way, so no range claims a tick whose feed is unknown."""
+    digest_a, digest_b = "a" * 64, "b" * 64
+    client = _FakeR2(
+        [
+            _trace_body(0, feed_digest=digest_a),
+            _trace_body(1, feed_digest=digest_b),
+            _trace_body(2, feed_digest=digest_a),
+            _trace_body(3, feed_digest=None, feed_etag=None),  # HEAD failed
+            _trace_body(4, feed_digest=digest_a),
+        ],
+        _DAY,
+    )
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest is None
+    assert prov.feed_digests == [
+        FeedDigestRange(digest=digest_a, first_ts=1_786_550_000, last_ts=1_786_550_000),
+        FeedDigestRange(digest=digest_b, first_ts=1_786_550_060, last_ts=1_786_550_060),
+        FeedDigestRange(digest=digest_a, first_ts=1_786_550_120, last_ts=1_786_550_120),
+        FeedDigestRange(digest=digest_a, first_ts=1_786_550_240, last_ts=1_786_550_240),
+    ]
+
+
+def test_write_day_mixed_digest_resolves_to_ranges() -> None:
+    """Two different digests directly in trace bodies -> ranges."""
+    digest_a, digest_b = "a" * 64, "b" * 64
+    client = _FakeR2(
+        [
+            _trace_body(0, feed_digest=digest_a),
+            _trace_body(1, feed_digest=digest_a),
+            _trace_body(2, feed_digest=digest_b),
+            _trace_body(3, feed_digest=digest_b),
+        ],
+        _DAY,
+    )
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest is None
+    assert prov.feed_digests == [
+        FeedDigestRange(digest=digest_a, first_ts=1_786_550_000, last_ts=1_786_550_060),
+        FeedDigestRange(digest=digest_b, first_ts=1_786_550_120, last_ts=1_786_550_180),
+    ]
+
+
+def test_write_day_no_digest_in_any_body() -> None:
+    """All bodies lack feed_digest (pre-change archive) → both None."""
+    client = _FakeR2([_trace_body(0), _trace_body(1)], _DAY)
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest is None
+    assert prov.feed_digests is None
+
+
+def test_write_day_some_unresolved_ticks_prevent_unanimous() -> None:
+    """A day where most ticks carry a digest but some couldn't resolve (HEAD
+    failure, no etag) must NOT stamp feed_digest — it would falsely claim
+    whole-day coverage. Instead it gets runs for the resolved ticks only."""
+    digest = "a" * 64
+    client = _FakeR2(
+        [
+            _trace_body(0, feed_digest=digest),
+            _trace_body(1),  # HEAD failure: no digest, no etag
+            _trace_body(2, feed_digest=digest),
+        ],
+        _DAY,
+    )
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest is None  # NOT unanimous — one body unresolved
+    # The unresolved tick splits the run: no range may claim coverage over a
+    # tick whose feed is unknown.
+    assert prov.feed_digests == [
+        FeedDigestRange(digest=digest, first_ts=1_786_550_000, last_ts=1_786_550_000),
+        FeedDigestRange(digest=digest, first_ts=1_786_550_120, last_ts=1_786_550_120),
+    ]
+
+
+def test_write_day_explicit_digest_overrides_bodies() -> None:
+    """An explicit feed_digest parameter takes precedence over bodies, and no
+    ranges are derived when the caller already hands over a proven value."""
+    explicit = "f" * 64
+    client = _FakeR2([_trace_body(0, feed_digest="a" * 64)], _DAY)
+    prov = write_day(
+        _DAY,
+        feed=_FEED,
+        feed_digest=explicit,
+        config=_FakeCfg(),  # type: ignore[arg-type]
+        client=client,  # type: ignore[arg-type]
+        allow_partial=True,
+        present=set(),
+    )
+    assert prov is not None
+    assert prov.feed_digest == explicit
+    assert prov.feed_digests is None

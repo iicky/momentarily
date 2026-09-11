@@ -48,7 +48,7 @@ from training.r2_client import R2Config, get_object_bytes, load_config, make_cli
 # Reused rather than re-declared: the two derived archives must answer the
 # "may these days be pooled" question the same way, and a second provenance type
 # would be a second convention that could drift from the first.
-from training.traversal_archive import DayProvenance, is_closed
+from training.traversal_archive import ComparableKey, DayProvenance, is_closed
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -164,7 +164,7 @@ class WindowReadResult:
     provenance: dict[date, DayProvenance]
 
     @property
-    def versions(self) -> set[tuple[int, int, str | None, str | None]]:
+    def versions(self) -> set[ComparableKey]:
         return {p.comparable_key for p in self.provenance.values()}
 
     @property

@@ -27,14 +27,17 @@ from __future__ import annotations
 
 import bisect
 import csv
+import hashlib
 import io
 import itertools
+import json
 import statistics
 import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, TextIO
 from zoneinfo import ZoneInfo
 
@@ -47,18 +50,90 @@ GTFS_STATIC_URL = "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip"
 
 FETCH_TIMEOUT = httpx.Timeout(30.0)
 
+# Local HTTP-level cache for fetch_gtfs_zip.  Advisory: callers see identical
+# bytes whether they come from the wire or disk, and a missing directory or
+# corrupt sidecar falls through to a normal unconditional GET.
+# .cache/gtfs/ is gitignored.
+_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "gtfs"
+
+
+def _cache_stem(url: str) -> str:
+    """A stable, filesystem-safe stem derived from the URL so different URLs
+    never share cached bytes (a 304 for one URL must not return another's zip).
+    """
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
 # (route, direction, from_stop) — the same cell key convention as
 # training.segments.Adjacency, keyed on the directional stop_id.
 SegmentKey = tuple[str, str, str]
 
 
-def fetch_gtfs_zip(url: str = GTFS_STATIC_URL) -> bytes:
-    """Download the static GTFS zip. Raises on a non-2xx response; the caller
-    decides what "unavailable" means for its own fallback."""
+def fetch_gtfs_zip(
+    url: str = GTFS_STATIC_URL,
+    *,
+    cache_dir: Path | None = None,
+) -> bytes:
+    """Download the static GTFS zip with ETag / Last-Modified caching.
+
+    On a cache hit (304) the locally cached bytes are returned without
+    re-downloading the ~5.6 MB file.  Behaviour is identical when the server
+    sends neither ETag nor Last-Modified, or when there is no prior cache.
+    A partial or failed download is never persisted to the cache.
+    """
+    cache = cache_dir or _CACHE_DIR
+    stem = _cache_stem(url)
+    zip_path = cache / f"{stem}.zip"
+    meta_path = cache / f"{stem}.meta.json"
+
+    # Build conditional-request headers from a prior successful fetch.
+    headers: dict[str, str] = {}
+    cached_bytes_available = zip_path.is_file()
+    if cached_bytes_available and meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text())
+            if meta.get("etag"):
+                headers["If-None-Match"] = meta["etag"]
+            if meta.get("last_modified"):
+                headers["If-Modified-Since"] = meta["last_modified"]
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass  # corrupt metadata — fall through to a full fetch
+
     with httpx.Client(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
-        response = client.get(url)
+        response = client.get(url, headers=headers)
+        if response.status_code == 304 and cached_bytes_available:
+            return zip_path.read_bytes()
         response.raise_for_status()
-        return response.content
+        content = response.content
+
+    # Persist the successful download + validators atomically.  The old meta is
+    # removed BEFORE the zip is replaced so a crash between the two leaves no
+    # stale validators beside new bytes (a stale ETag could trick a later 304
+    # into returning bytes the server has already moved past).
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        if meta_path.is_file():
+            meta_path.unlink()
+        tmp = zip_path.with_suffix(".zip.tmp")
+        tmp.write_bytes(content)
+        tmp.replace(zip_path)
+
+        new_meta: dict[str, str] = {}
+        etag = response.headers.get("etag")
+        last_modified = response.headers.get("last-modified")
+        if etag:
+            new_meta["etag"] = etag
+        if last_modified:
+            new_meta["last_modified"] = last_modified
+        if new_meta:
+            meta_path.write_text(json.dumps(new_meta))
+        elif meta_path.is_file():
+            meta_path.unlink(missing_ok=True)
+    except OSError:
+        # Cache write failure is non-fatal; the bytes are already in hand.
+        pass
+
+    return content
 
 
 def base_route(route_id: str) -> str:

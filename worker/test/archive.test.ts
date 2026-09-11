@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { archiveAlertsLiveness, deriveAlertsLiveness } from '../src/archive';
+import { archiveAlertsLiveness, archiveTraceRows, deriveAlertsLiveness } from '../src/archive';
 
 // Minimal in-memory R2 bucket — just the put this helper touches, same
 // convention as state.test.ts's fakeBucket.
@@ -108,5 +108,66 @@ describe('archiveAlertsLiveness: R2 write shape', () => {
     ]);
     expect(JSON.parse(store.get(keys[0]!)!).outcome).toBe('fail');
     expect(JSON.parse(store.get(keys[1]!)!).outcome).toBe('success');
+  });
+});
+
+describe('archiveTraceRows: feed_digest / feed_etag', () => {
+  const row = {
+    trip_id: 't1',
+    route_id: 'A',
+    direction: 'north' as const,
+    stop_id: 'A09N',
+    stop_seq: 1,
+    stopped: true,
+    vehicle_ts: 1_704_067_200,
+  };
+  // 2024-01-01 00:00:00 UTC
+  const at = 1_704_067_200;
+
+  test('includes both feed_digest and feed_etag when provided', async () => {
+    const { bucket, store } = fakeBucket();
+    await archiveTraceRows(bucket, [row], ['nqrw'], at, at, 'abc123', '"etag-1"');
+    const key = `archive/trace/2024-01-01/${at}.json`;
+    const body = JSON.parse(store.get(key)!);
+    expect(body.feed_digest).toBe('abc123');
+    expect(body.feed_etag).toBe('"etag-1"');
+  });
+
+  test('explicit nulls when HEAD failed (not omitted — distinguishes resolution failure from historical absence)', async () => {
+    const { bucket, store } = fakeBucket();
+    await archiveTraceRows(bucket, [row], ['nqrw'], at, at, null, null);
+    const key = `archive/trace/2024-01-01/${at}.json`;
+    const body = JSON.parse(store.get(key)!);
+    expect(body.feed_digest).toBeNull();
+    expect(body.feed_etag).toBeNull();
+    expect(body.observed_at).toBe(at);
+    expect(body.rows).toHaveLength(1);
+  });
+
+  test('feed_etag null while feed_digest is set', async () => {
+    const { bucket, store } = fakeBucket();
+    await archiveTraceRows(bucket, [row], ['nqrw'], at, at, 'abc123', null);
+    const key = `archive/trace/2024-01-01/${at}.json`;
+    const body = JSON.parse(store.get(key)!);
+    expect(body.feed_digest).toBe('abc123');
+    expect(body.feed_etag).toBeNull();
+  });
+
+  test('a HEAD/pointer mismatch tick carries feed_etag with feed_digest null — capture is detached and has not finished yet', async () => {
+    const { bucket, store } = fakeBucket();
+    await archiveTraceRows(bucket, [row], ['nqrw'], at, at, null, '"new-etag"');
+    const key = `archive/trace/2024-01-01/${at}.json`;
+    const body = JSON.parse(store.get(key)!);
+    expect(body.feed_digest).toBeNull();
+    expect(body.feed_etag).toBe('"new-etag"');
+  });
+
+  test('default feedDigest/feedEtag are both null (explicit in body)', async () => {
+    const { bucket, store } = fakeBucket();
+    await archiveTraceRows(bucket, [row], ['nqrw'], at, at);
+    const key = `archive/trace/2024-01-01/${at}.json`;
+    const body = JSON.parse(store.get(key)!);
+    expect(body.feed_digest).toBeNull();
+    expect(body.feed_etag).toBeNull();
   });
 });

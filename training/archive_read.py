@@ -36,7 +36,7 @@ from training.planned_work import (
     windows_from_alerts,
 )
 from training.trace import Traversal, fetch_trace_bodies, traversals_from_trace
-from training.traversal_archive import DayProvenance
+from training.traversal_archive import ComparableKey, DayProvenance
 from training.traversal_archive import key_for as traversal_key
 from training.traversal_archive import read_days as read_traversal_days
 from training.window_archive import key_for as window_key
@@ -55,7 +55,7 @@ class Loaded[T]:
     )
 
     @property
-    def versions(self) -> set[tuple[int, int, str | None, str | None]]:
+    def versions(self) -> set[ComparableKey]:
         return {p.comparable_key for p in self.provenance.values()}
 
     @property

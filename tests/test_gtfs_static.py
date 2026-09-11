@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import zipfile
 from datetime import date, datetime, time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
 from training.gtfs_static import (
@@ -479,3 +481,157 @@ def test_day_for_passes_over_a_day_whose_calendar_never_ran_the_trip():
     assert tt.day_for(_at(date(2026, 8, 16), 0, 10), SATURDAY_TRIP).hops[key] == 300
     assert service_dates(_at(SATURDAY, 0, 5), SATURDAY_TRIP)[0] == date(2026, 8, 14)
     assert tt.day_for(_at(SATURDAY, 0, 5), SATURDAY_TRIP).hops[key] == 300
+
+
+# --- conditional fetch (ETag / Last-Modified) caching --------------------------
+
+_TEST_URL = "https://example.com/feed.zip"
+
+
+def _stem() -> str:
+    """The URL-scoped cache stem for _TEST_URL."""
+    import hashlib as _hl
+
+    return _hl.sha256(_TEST_URL.encode()).hexdigest()[:16]
+
+
+def test_304_returns_cached_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 304 response sends back the bytes already on disk, avoiding a full
+    re-download of the ~5.6 MB zip."""
+    from training.gtfs_static import fetch_gtfs_zip
+
+    cached = b"previously downloaded zip"
+    (tmp_path / f"{_stem()}.zip").write_bytes(cached)
+    (tmp_path / f"{_stem()}.meta.json").write_text('{"etag": "\\"abc123\\""}')
+
+    captured_headers: list[dict[str, str]] = []
+
+    def fake_get(
+        self: object, url: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        captured_headers.append(headers or {})
+        return httpx.Response(304, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    result = fetch_gtfs_zip(_TEST_URL, cache_dir=tmp_path)
+
+    assert result == cached
+    assert captured_headers[0].get("If-None-Match") == '"abc123"'
+
+
+def test_missing_validators_performs_full_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cached zip or metadata -> unconditional GET, no conditional headers."""
+    from training.gtfs_static import fetch_gtfs_zip
+
+    body = b"fresh zip content"
+    captured_headers: list[dict[str, str]] = []
+
+    def fake_get(
+        self: object, url: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        captured_headers.append(headers or {})
+        return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    result = fetch_gtfs_zip(_TEST_URL, cache_dir=tmp_path)
+
+    assert result == body
+    assert "If-None-Match" not in captured_headers[0]
+    assert "If-Modified-Since" not in captured_headers[0]
+    # The downloaded bytes are now cached on disk
+    assert (tmp_path / f"{_stem()}.zip").read_bytes() == body
+
+
+def test_cached_bytes_without_metadata_triggers_full_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cached zip exists but metadata sidecar is missing — the cached bytes
+    must be replaced by the fresh download, not returned on a 304 that was
+    never requested."""
+    from training.gtfs_static import fetch_gtfs_zip
+
+    (tmp_path / f"{_stem()}.zip").write_bytes(b"stale")
+
+    body = b"fresh"
+    captured_headers: list[dict[str, str]] = []
+
+    def fake_get(
+        self: object, url: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        captured_headers.append(headers or {})
+        return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    result = fetch_gtfs_zip(_TEST_URL, cache_dir=tmp_path)
+
+    assert result == body
+    # No conditional headers sent — metadata was absent
+    assert "If-None-Match" not in captured_headers[0]
+    assert "If-Modified-Since" not in captured_headers[0]
+    # Old bytes replaced
+    assert (tmp_path / f"{_stem()}.zip").read_bytes() == body
+
+
+def test_etag_and_last_modified_both_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both validators present in meta -> both conditional headers sent."""
+    from training.gtfs_static import fetch_gtfs_zip
+
+    (tmp_path / f"{_stem()}.zip").write_bytes(b"old")
+    (tmp_path / f"{_stem()}.meta.json").write_text(
+        '{"etag": "\\"e1\\"", "last_modified": "Thu, 01 Aug 2026 00:00:00 GMT"}'
+    )
+
+    body = b"new zip content"
+    sent_headers: dict[str, str] = {}
+
+    def fake_get(
+        self: object, url: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        sent_headers.update(headers or {})
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"ETag": '"e2"', "Last-Modified": "Fri, 08 Aug 2026 00:00:00 GMT"},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    result = fetch_gtfs_zip(_TEST_URL, cache_dir=tmp_path)
+
+    assert result == body
+    assert sent_headers["If-None-Match"] == '"e1"'
+    assert sent_headers["If-Modified-Since"] == "Thu, 01 Aug 2026 00:00:00 GMT"
+    # New validators persisted
+    import json
+
+    meta = json.loads((tmp_path / f"{_stem()}.meta.json").read_text())
+    assert meta["etag"] == '"e2"'
+    assert meta["last_modified"] == "Fri, 08 Aug 2026 00:00:00 GMT"
+
+
+def test_corrupt_meta_falls_through_to_full_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corrupt or unreadable metadata doesn't prevent a successful fetch."""
+    from training.gtfs_static import fetch_gtfs_zip
+
+    (tmp_path / f"{_stem()}.zip").write_bytes(b"old")
+    (tmp_path / f"{_stem()}.meta.json").write_text("not json")
+
+    body = b"fresh"
+
+    def fake_get(
+        self: object, url: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        # Corrupt meta -> no conditional headers
+        assert not (headers or {}).get("If-None-Match")
+        return httpx.Response(200, content=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    assert fetch_gtfs_zip(_TEST_URL, cache_dir=tmp_path) == body

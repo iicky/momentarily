@@ -47,6 +47,7 @@ import {
   fetchJson,
   fetchProtobuf,
 } from './fetch';
+import { resolveFeedIdentity } from './gtfs_feed';
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import {
@@ -211,7 +212,7 @@ export default {
   async scheduled(
     event: ScheduledController,
     env: Env,
-    _ctx: ExecutionContext,
+    ctx: ExecutionContext,
   ): Promise<void> {
     const observedAt = Math.floor(Date.now() / 1000);
     const t0 = Date.now();
@@ -284,12 +285,27 @@ export default {
     let rows: TraceRow[] = [];
     try {
       rows = deriveTrace(vehicles);
+      // This tick's GTFS static feed identity, from a HEAD+ETag compare
+      // against archive/gtfs/latest.json (see gtfs_feed.ts). A pointer match
+      // resolves the digest with no download; a mismatch returns the fresh
+      // etag with a null digest for THIS tick and hands back a `capture`
+      // promise that must run detached via ctx.waitUntil — never inline —
+      // so a ~5.6 MB download can never stall the trace tick's own write.
+      // Both fields are null when the HEAD itself failed; older trace
+      // objects (or bodies missing feed_digest) are already tolerated
+      // downstream.
+      const feed = await resolveFeedIdentity(env.MOMENTARILY);
+      if (feed.capture !== null) {
+        ctx.waitUntil(feed.capture);
+      }
       await archiveTraceRows(
         env.MOMENTARILY,
         rows,
         vehicleFreshFeeds,
         observedAt,
         scheduledAt,
+        feed.identity.digest,
+        feed.identity.etag,
       );
       console.log(`trace: ${rows.length} rows from ${vehicles.length} vehicles`);
     } catch (err) {

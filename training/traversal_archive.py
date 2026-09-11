@@ -53,7 +53,7 @@ import gzip
 import json
 import sys
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
@@ -101,6 +101,31 @@ def _traversal(row: Sequence[Any]) -> Traversal:
 
 
 @dataclass(frozen=True)
+class FeedDigestRange:
+    """One contiguous span of trace ticks that agreed on a single feed digest.
+
+    Exists because a day is not always served by one static feed end to end: a
+    republish can land mid-day, and the Worker stamps whatever digest was
+    actually in force at each tick (see gtfs_feed.ts). When a day's ticks do
+    not all agree, `write_day` records the ranges instead of picking a winner
+    or discarding the information, so a later reader can still tell exactly
+    which artifact priced which part of the day.
+    """
+
+    digest: str
+    first_ts: int
+    last_ts: int
+
+
+# Named type for the hashable identity DayProvenance.comparable_key returns.
+# Used by archive_read.py and window_archive.py so the return annotation is
+# defined once and stays in sync when the provenance shape changes.
+ComparableKey = tuple[
+    int, int, str | None, str | None, tuple[tuple[str, int, int], ...] | None
+]
+
+
+@dataclass(frozen=True)
 class DayProvenance:
     """Everything needed to decide whether two days may be compared."""
 
@@ -115,12 +140,24 @@ class DayProvenance:
     # months, so stamping today's digest on a three-week-old day would assert
     # bytes that may have been published after the trains ran — provenance that
     # is WRONG rather than missing, which is the worse failure because
-    # `homogeneous` would then call the span replayable. Only a job running while
-    # the day is still open can honestly record this; until such a
-    # collection-time writer exists
-    # the field stays None and `feed_version` carries the weaker claim of "a feed
-    # that declares it covers this day".
+    # `homogeneous` would then call the span replayable.
+    #
+    # The Worker now reads archive/gtfs/latest.json (the pointer
+    # gtfs_archive.store() writes) on every trace tick and stamps the digest on
+    # the trace body. write_day extracts the consensus digest from those bodies.
+    # The digest names bytes that exist in archive/gtfs/<digest>.zip, so a day
+    # carrying it is genuinely replayable. Days collected before that change, or
+    # before the first archive run, carry None.
+    #
+    # Set only when every trace body that carried a digest agreed on ONE value
+    # (see `feed_digests` below for the mid-day-republish case).
     feed_digest: str | None
+    # Set instead of `feed_digest` when a day's trace bodies did not all agree
+    # on one digest — a republish landed mid-day and the Worker's HEAD/ETag
+    # check caught it partway through. None in every other case, including the
+    # unanimous one, so old readers that only know `feed_digest` keep working:
+    # a day either has ONE digest for its whole span, or its span here.
+    feed_digests: list[FeedDigestRange] | None = field(default=None, kw_only=True)
     n_rows: int
     n_source_objects: int
     source_manifest: str
@@ -128,13 +165,27 @@ class DayProvenance:
     written_at: int
 
     @property
-    def comparable_key(self) -> tuple[int, int, str | None, str | None]:
+    def comparable_key(self) -> ComparableKey:
         """The identity two days must share to be pooled without comment.
 
         Carries the feed DIGEST as well as its version: two snapshots can share
         a version label, and only the bytes decide what a scheduled time was.
+        A mixed day's ranges are folded in too — two days that both mix the
+        same two digests over different spans of the day are not the same
+        claim and must not pool silently either.
         """
-        return (self.schema, self.extractor, self.feed_version, self.feed_digest)
+        ranges = (
+            tuple((r.digest, r.first_ts, r.last_ts) for r in self.feed_digests)
+            if self.feed_digests is not None
+            else None
+        )
+        return (
+            self.schema,
+            self.extractor,
+            self.feed_version,
+            self.feed_digest,
+            ranges,
+        )
 
 
 def encode_day(
@@ -142,6 +193,7 @@ def encode_day(
     *,
     feed_version: str | None,
     feed_digest: str | None = None,
+    feed_digests: Sequence[FeedDigestRange] | None = None,
     source_keys: Sequence[str],
 ) -> bytes:
     """One day's traversals plus its provenance, gzipped.
@@ -151,18 +203,24 @@ def encode_day(
     the tuple form is chosen for the uncompressed footprint a reader pays to
     parse rather than for the stored bytes.
     """
+    prov: dict[str, Any] = {
+        "schema": SCHEMA_VERSION,
+        "extractor": EXTRACTOR_VERSION,
+        "feed_version": feed_version,
+        "feed_digest": feed_digest,
+        "n_rows": len(traversals),
+        "n_source_objects": len(source_keys),
+        "source_manifest": input_manifest_hash(list(source_keys)),
+        "code_sha": code_provenance()["code_sha"],
+        "written_at": int(datetime.now(UTC).timestamp()),
+    }
+    if feed_digests is not None:
+        prov["feed_digests"] = [
+            {"digest": r.digest, "first_ts": r.first_ts, "last_ts": r.last_ts}
+            for r in feed_digests
+        ]
     doc = {
-        "provenance": {
-            "schema": SCHEMA_VERSION,
-            "extractor": EXTRACTOR_VERSION,
-            "feed_version": feed_version,
-            "feed_digest": feed_digest,
-            "n_rows": len(traversals),
-            "n_source_objects": len(source_keys),
-            "source_manifest": input_manifest_hash(list(source_keys)),
-            "code_sha": code_provenance()["code_sha"],
-            "written_at": int(datetime.now(UTC).timestamp()),
-        },
+        "provenance": prov,
         "fields": list(FIELDS),
         "rows": [_row(t) for t in traversals],
     }
@@ -195,11 +253,25 @@ def decode_day(blob: bytes) -> tuple[list[Traversal], DayProvenance]:
     fields = tuple(cast(list[str], doc.get("fields") or ()))
     if fields != FIELDS:
         raise ValueError(f"traversal archive field order {fields} != {FIELDS}")
+    feed_digests_raw = prov_raw.get("feed_digests")
+    feed_digests = (
+        [
+            FeedDigestRange(
+                digest=str(r["digest"]),
+                first_ts=int(r["first_ts"]),
+                last_ts=int(r["last_ts"]),
+            )
+            for r in cast(list[Any], feed_digests_raw)
+        ]
+        if feed_digests_raw is not None
+        else None
+    )
     prov = DayProvenance(
         schema=schema,
         extractor=int(prov_raw.get("extractor") or 0),
         feed_version=cast(str | None, prov_raw.get("feed_version")),
         feed_digest=cast(str | None, prov_raw.get("feed_digest")),
+        feed_digests=feed_digests,
         n_rows=int(prov_raw.get("n_rows") or 0),
         n_source_objects=int(prov_raw.get("n_source_objects") or 0),
         source_manifest=str(prov_raw.get("source_manifest") or ""),
@@ -236,7 +308,11 @@ class ReadResult:
     provenance: dict[date, DayProvenance]
 
     @property
-    def versions(self) -> set[tuple[int, int, str | None, str | None]]:
+    def versions(
+        self,
+    ) -> set[
+        tuple[int, int, str | None, str | None, tuple[tuple[str, int, int], ...] | None]
+    ]:
         return {p.comparable_key for p in self.provenance.values()}
 
     @property
@@ -295,6 +371,103 @@ def resolve_feed_version(feed: FeedVersion | None, day: date) -> str | None:
     return feed.version
 
 
+def _resolve_etag(etag: str, client: S3Client, bucket: str) -> str | None:
+    """Look up a feed_etag in archive/gtfs/by_etag/ to get the digest.
+
+    Returns None if the etag object doesn't exist (capture failed or hasn't
+    run yet), never raises on a missing key.
+    """
+    from training.gtfs_archive import etag_key
+
+    key = etag_key(etag)
+    try:
+        blob = get_object_bytes(client, bucket, key)
+        doc = json.loads(blob)
+        d = doc.get("digest")
+        return d if isinstance(d, str) else None
+    except Exception:
+        return None
+
+
+def _consensus_digest(
+    bodies: Sequence[dict[str, Any]],
+    client: S3Client,
+    bucket: str,
+) -> tuple[str | None, list[FeedDigestRange] | None]:
+    """Derive the day's feed-digest provenance from its trace bodies.
+
+    A body carries ``feed_digest: <sha256>`` when the Worker's HEAD matched the
+    pointer, ``feed_digest: null`` + ``feed_etag: <etag>`` on a mismatch (the
+    capture ran detached; by_etag/ maps the etag to the digest after the fact),
+    and omits both fields entirely for pre-feature archive objects.
+
+    Resolution order per body:
+    1. ``feed_digest`` if it's a non-null string — the happy path.
+    2. ``feed_etag`` resolved through ``archive/gtfs/by_etag/<etag>.json`` —
+       the mismatch/transition tick whose capture has since completed.
+    3. Neither resolves — body contributes no digest (HEAD failure, pre-feature,
+       or capture that never finished).
+
+    Rules after resolution:
+    * EVERY body resolves to the SAME digest -> ``(that_digest, None)``
+      (the legacy unanimous path; backward-compatible).
+    * Some bodies can't resolve, or bodies disagree -> ``(None, runs)`` where
+      each run is a maximal CONTIGUOUS stretch of resolved ticks, in
+      ``scheduled_at`` order, carrying one digest. A day that goes A -> B -> A
+      yields three runs, never one A range spanning B's ticks, and an
+      unresolved tick breaks a run the same way a digest change does.
+    * No body resolves -> ``(None, None)``.
+    """
+    if not bodies:
+        return None, None
+
+    # Every body in tick order; an unresolved tick keeps its slot as None so a
+    # run can never be stretched across a stretch whose feed is unknown.
+    ticks: list[tuple[int, str | None]] = []
+    for body in bodies:
+        digest = body.get("feed_digest")
+        if not isinstance(digest, str):
+            # Try resolving via the etag mapping (mismatch tick).
+            etag = body.get("feed_etag")
+            if isinstance(etag, str):
+                digest = _resolve_etag(etag, client, bucket)
+        ts = body.get("scheduled_at")
+        ticks.append(
+            (
+                int(ts) if isinstance(ts, int | float) else 0,
+                digest if isinstance(digest, str) else None,
+            )
+        )
+
+    digests = {d for _, d in ticks if d is not None}
+    if not digests:
+        return None, None
+
+    # Unanimous: every body (not just those that resolved) must carry the same
+    # value.  A day where some ticks couldn't resolve is NOT unanimous — the
+    # legacy field must not claim whole-day coverage.
+    if len(digests) == 1 and all(d is not None for _, d in ticks):
+        (only_digest,) = digests
+        return only_digest, None
+
+    # Contiguous runs in tick order: a run closes when the digest changes or a
+    # tick is unresolved, so A -> B -> A yields three runs and an A range never
+    # claims the ticks under B or under a failed HEAD.
+    ticks.sort(key=lambda t: t[0])
+    runs: list[FeedDigestRange] = []
+    open_run = False
+    for ts, d in ticks:
+        if d is None:
+            open_run = False
+            continue
+        if open_run and runs[-1].digest == d:
+            runs[-1] = FeedDigestRange(digest=d, first_ts=runs[-1].first_ts, last_ts=ts)
+        else:
+            runs.append(FeedDigestRange(digest=d, first_ts=ts, last_ts=ts))
+            open_run = True
+    return None, runs
+
+
 def write_day(
     day: date,
     *,
@@ -340,11 +513,20 @@ def write_day(
         for k in trace_keys
     ]
     traversals, _stats = traversals_from_trace(bodies)
+    # Prefer the caller's explicit digest (a proven, in-hand value); it wins
+    # outright and no per-tick ranges are derived from the bodies. When none
+    # was passed, derive it from the collection-time `feed_digest` each trace
+    # body recorded: unanimous agreement stamps one digest for the whole day,
+    # a republish that landed mid-day stamps per-tick ranges instead (see
+    # `_consensus_digest`).
+    feed_digests: list[FeedDigestRange] | None = None
+    if feed_digest is None and bodies:
+        feed_digest, feed_digests = _consensus_digest(bodies, client, cfg.bucket)
     blob = encode_day(
         traversals,
         feed_version=feed_version,
-        # Deliberately NOT the digest fetched by this run: see DayProvenance.
         feed_digest=feed_digest,
+        feed_digests=feed_digests,
         source_keys=trace_keys,
     )
     client.put_object(

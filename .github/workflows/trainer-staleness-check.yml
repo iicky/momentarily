@@ -10,6 +10,9 @@ name: Trainer staleness check
 # separate failure the snapshot-staleness watchdog already covers). A stale
 # trained_at here means the trainer itself did not produce a new model.
 #
+# Three branches: (1) crons = [] → gate skips all; (2) now < first slot after
+# un-pause → grace window, ::notice:: + exit 0; (3) otherwise → 8-day cadence check.
+#
 # COUPLED to the trainer cron. The gate step below reads trainer/wrangler.toml:
 # while crons = [] (paused) this job logs and no-ops, and any non-empty crons
 # both resumes the weekly retrain and activates this check. crons was restored
@@ -40,18 +43,46 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Full history is required: the gate step walks git log over
+          # trainer/wrangler.toml to find the un-pause commit timestamp.
+          fetch-depth: 0
       - name: Gate on the trainer cron being un-paused
         id: gate
         run: |
           set -euo pipefail
           # Matches only the live, uncommented `crons = []` assignment (commented
           # lines start with #). Any non-empty array un-gates the assertion.
+          #
+          # Branch 1: paused — skip all downstream steps.
           if grep -qE '^[[:space:]]*crons[[:space:]]*=[[:space:]]*\[[[:space:]]*\]' trainer/wrangler.toml; then
             echo "Trainer cron is paused (crons = [] in trainer/wrangler.toml): params only move on a deliberate manual retrain, so the weekly-cadence assertion does not apply. Restoring crons both resumes the weekly retrain and activates this check."
             echo "active=false" >> "$GITHUB_OUTPUT"
           else
             echo "Trainer cron is active; asserting the trainer advanced state/params.json trained_at within cadence."
             echo "active=true" >> "$GITHUB_OUTPUT"
+
+            # Determine the un-pause timestamp: the most recent commit to
+            # trainer/wrangler.toml that transitioned crons from empty to
+            # non-empty.  Iterate git log newest-first; keep updating
+            # resume_ts as long as each commit has non-empty crons; stop at
+            # the first commit whose crons was empty — that commit was the
+            # preceding pause, making the last-collected timestamp the un-pause.
+            resume_ts=""
+            while IFS=' ' read -r sha ts; do
+              content=$(git show "${sha}:trainer/wrangler.toml" 2>/dev/null) || continue
+              if echo "$content" | grep -qE '^[[:space:]]*crons[[:space:]]*=[[:space:]]*\[[[:space:]]*\]'; then
+                # This commit had empty crons; resume_ts already holds the
+                # oldest consecutive non-empty commit = the un-pause commit.
+                break
+              fi
+              resume_ts="$ts"
+            done < <(git log --format="%H %ct" -- trainer/wrangler.toml)
+            if [ -z "$resume_ts" ]; then
+              # crons was never paused; use the oldest commit that introduced it.
+              resume_ts=$(git log --format="%ct" -- trainer/wrangler.toml | tail -1)
+            fi
+            echo "resume_ts=${resume_ts}" >> "$GITHUB_OUTPUT"
           fi
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: steps.gate.outputs.active == 'true'
@@ -64,15 +95,29 @@ jobs:
         if: steps.gate.outputs.active == 'true'
         env:
           MURK_KEY: ${{ secrets.MURK_KEY }}
+          RESUME_TS: ${{ steps.gate.outputs.resume_ts }}
         run: |
           set -euo pipefail
           uv run python - <<'PY'
-          import json
-          import sys
-          import time
-
+          import datetime, json, os, sys, time
+          from datetime import timezone
+          from scripts.cron_next_occurrence import next_cron_occurrence, parse_crons
           from training.r2_client import get_object_bytes, load_config, make_client
 
+          # Branch 2: grace window — skip if the first post-resume slot hasn't occurred yet.
+          resume_dt = datetime.datetime.fromtimestamp(int(os.environ["RESUME_TS"]), tz=timezone.utc)
+          cron_exprs = parse_crons(open("trainer/wrangler.toml").read())
+          first_slot = min(next_cron_occurrence(c, resume_dt) for c in cron_exprs)
+          now = datetime.datetime.now(tz=timezone.utc)
+          if now < first_slot:
+              print(
+                  f"::notice::Trainer staleness check: crons resumed at "
+                  f"{resume_dt.isoformat()}, first slot {first_slot.isoformat()}, "
+                  f"now {now.isoformat()} — still in grace window, skipping age assertion."
+              )
+              sys.exit(0)
+
+          # Branch 3: cadence check — first post-resume slot has passed; assert params advanced.
           # state/params.json is the live pointer the trainer writes and the Worker
           # reads (worker/src/params.ts, training/publish_params.write_params); its
           # top-level trained_at is the fit epoch. Reading it from R2 isolates

@@ -223,6 +223,7 @@ class Effect:
     """
 
     alert_type: str
+    service: str  # the route as the trip id declares it: '7X', not the folded '7'
     routes: tuple[str, ...]
     start: int
     end: int
@@ -250,43 +251,50 @@ def _effect_one(
     window: Window,
     rows: Sequence[Traversal],
     blackout: Sequence[Window],
-) -> Effect | None:
-    affected: dict[HopKey, tuple[list[int], list[int]]] = {}
-    control: dict[HopKey, tuple[list[int], list[int]]] = {}
+) -> list[Effect]:
+    affected: dict[str, dict[HopKey, tuple[list[int], list[int]]]] = defaultdict(dict)
+    control: dict[str, dict[HopKey, tuple[list[int], list[int]]]] = defaultdict(dict)
     for t in rows:
         if t.to_stop is None or not window.covers_route(t.route_id):
             continue
+        service = _service_of(t)
         key: HopKey = (t.route_id, t.direction or "", t.from_stop, t.to_stop)
         if window.at_boundary(key):
-            bucket = affected
+            bucket = affected[service]
         elif window.touches(key):
             continue  # inside the closed stretch: it vanishes, it does not slow
         else:
-            bucket = control
+            bucket = control[service]
         inside, outside = bucket.setdefault(key, ([], []))
         if window.contains(t.at):
             inside.append(t.seconds)
         elif not any(w.contains(t.at) and w.covers_route(t.route_id) for w in blackout):
             outside.append(t.seconds)
 
-    got_affected = _lift([(k, i, o) for k, (i, o) in affected.items()])
-    got_control = _lift([(k, i, o) for k, (i, o) in control.items()])
-    if got_affected is None or got_control is None:
-        return None
-    affected_lift, n_affected = got_affected
-    control_lift, n_control = got_control
-    return Effect(
-        alert_type=window.alert_type,
-        routes=tuple(sorted(window.routes)),
-        start=window.start,
-        end=window.end,
-        n_affected_keys=n_affected,
-        n_control_keys=n_control,
-        n_inside=sum(len(i) for i, _o in affected.values()),
-        affected_lift=round(affected_lift, 4),
-        control_lift=round(control_lift, 4),
-        effect=round(affected_lift / control_lift, 4),
-    )
+    out: list[Effect] = []
+    for service in sorted(set(affected) | set(control)):
+        got_affected = _lift([(k, i, o) for k, (i, o) in affected[service].items()])
+        got_control = _lift([(k, i, o) for k, (i, o) in control[service].items()])
+        if got_affected is None or got_control is None:
+            continue
+        affected_lift, n_affected = got_affected
+        control_lift, n_control = got_control
+        out.append(
+            Effect(
+                alert_type=window.alert_type,
+                service=service,
+                routes=tuple(sorted(window.routes)),
+                start=window.start,
+                end=window.end,
+                n_affected_keys=n_affected,
+                n_control_keys=n_control,
+                n_inside=sum(len(i) for i, _o in affected[service].values()),
+                affected_lift=round(affected_lift, 4),
+                control_lift=round(control_lift, 4),
+                effect=round(affected_lift / control_lift, 4),
+            )
+        )
+    return out
 
 
 def measure(
@@ -297,8 +305,8 @@ def measure(
 ) -> list[Effect]:
     """The SECONDARY, weaker grade: did the segments beside the work slow down?
 
-    One Effect per local day the window covers. Not a test of the named segments
-    themselves — a closure or a skip removes their traversals entirely, and that
+    One Effect per (local day, service) the window covers. Not a test of the named
+    segments themselves — a closure or a skip removes their traversals entirely, and that
     absence is what `pattern_shift` measures as the primary claim. What survives
     for a duration test is spillover: a hop with ONE endpoint in the named set
     still runs, and is where single-tracking, merging and reduced frequency show
@@ -342,9 +350,7 @@ def measure(
     blackout = [*(w for w in other_windows if w != window), window]
     out: list[Effect] = []
     for piece in split_by_local_day(window):
-        got = _effect_one(piece, rows, blackout)
-        if got is not None:
-            out.append(got)
+        out.extend(_effect_one(piece, rows, blackout))
     return out
 
 

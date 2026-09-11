@@ -768,3 +768,67 @@ def test_the_band_keeps_its_wall_clock_across_a_daylight_saving_shift():
     reach = control_reach(window, [window, elsewhere], [shift_day, sunday])
     assert reach.day == shift_day
     assert reach.lag_days == -7
+
+
+def test_effect_and_coverage_rows_carry_the_same_service_for_a_7x_trip():
+    """A 7X boundary hop produces an Effect with service='7X'; a local-7 hop
+    produces service='7'. Both agree with the PatternShift for the same trip."""
+    (window,) = windows_from_alerts(
+        [
+            _alert(
+                alert_type="Planned - Part Suspended",
+                routes=["7"],
+                stops=["710"],
+                periods=[(T0, T0 + 4 * HOUR)],
+            )
+        ]
+    )
+    express = "072000_7X..N"
+    local = "072000_7..N01R"
+
+    # Boundary hop: one endpoint named (710N), one not (701N).
+    # Build enough samples for MIN_SIDE_SAMPLES on each arm.
+    outside_base = (
+        T0 - WEEK + HOUR
+    )  # prior week, same clock band — satisfies _is_control
+    inside_base = T0 + HOUR  # inside window
+
+    def _hops(at: int, secs: int, trip: str, n: int = 8) -> list[Traversal]:
+        return [
+            _hop(at + i, secs, frm="701N", to="710N", route="7", trip=trip)
+            for i in range(n)
+        ]
+
+    def _distant(at: int, secs: int, trip: str, n: int = 8) -> list[Traversal]:
+        return [
+            _hop(at + i, secs, frm="720N", to="721N", route="7", trip=trip)
+            for i in range(n)
+        ]
+
+    # 7X: boundary doubles inside, distant stays flat → effect 2.0
+    # 7:  boundary and distant both stay flat → effect 1.0 (same lift both arms)
+    rows: list[Traversal] = []
+    rows += _hops(outside_base, 100, express)
+    rows += _hops(inside_base, 200, express)
+    rows += _distant(outside_base, 100, express)
+    rows += _distant(inside_base, 100, express)
+    rows += _hops(outside_base, 100, local)
+    rows += _hops(inside_base, 100, local)
+    rows += _distant(outside_base, 100, local)
+    rows += _distant(inside_base, 100, local)
+
+    effects = {e.service: e for e in measure(window, rows)}
+    shifts = {s.service: s for s in pattern_shift(window, rows)}
+
+    # Both measures agree on which services appear.
+    assert set(effects) == {"7X", "7"}
+    assert set(shifts) == {"7X", "7"}
+
+    # Effect: 7X slowed at boundary relative to its own distant hops.
+    assert effects["7X"].effect == 2.0
+    # Effect: 7 local unchanged → ratio 1.0.
+    assert effects["7"].effect == 1.0
+
+    # service field matches between the two row types for the same trip.
+    assert effects["7X"].service == shifts["7X"].service == "7X"
+    assert effects["7"].service == shifts["7"].service == "7"

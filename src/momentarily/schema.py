@@ -217,6 +217,12 @@ class Inference(BaseModel):
     carries no fit, and publishes its numbers. The full numeric values still
     flow to the v1/predictions grading stream, which is what a future review
     will graduate the estimate on.
+
+    This block is the alert-HMM SHADOW: as of the 2026-09-14 retirement the
+    published route_status.condition is the severity-graded ALERT read and is no
+    longer derived from this block. `condition`/`is_disrupted`/the probabilities
+    here are the HMM view kept for the grading stream and the forecast surfaces,
+    not the current state consumers are shown.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -313,26 +319,29 @@ class RouteStatus(BaseModel):
 
     route_id: str
     alerts: list[str] = []
-    # Severity axis — the published current state, movement-primary. The Worker
-    # publisher sets it from observed train movement where judgeable, from a
-    # planned "No Scheduled Service" alert where flagged, else "unknown" (an honest
-    # coverage gap — alerts never assert disruption here). The alert-derived read
-    # lives on as the shadow (inference.condition) and cause (category) axes.
+    # Severity axis — the published current state, severity-graded from the alert
+    # feed. The Worker publisher sets it via the canonical severe-only rule
+    # (review.derive_graded_mta_state at CANONICAL_SEVERITY_FLOOR) — the SAME
+    # definition the review grades as truth: normal / disrupted / suspended, plus
+    # "not_scheduled" for a planned "No Scheduled Service" alert and "unknown"
+    # only when the alert feed is stale or unparsed. Movement and the HMM no
+    # longer assert this; the HMM read lives on as the shadow (inference.condition)
+    # and cause (category) axes.
     #   "normal" | "disrupted" | "suspended" | "not_scheduled" | "unknown"
     condition: str = "unknown"
-    # Where `condition` came from. The Worker publisher emits "movement" (observed
-    # from vehicle positions), "schedule" (a planned "No Scheduled Service" alert),
-    # or "unknown" (movement can't judge — never an alert-derived fallback). The
-    # Python alert-only path (derive_route_status) has no movement feed and emits
-    # the default "hmm".
+    # Where `condition` came from. The Worker publisher emits "alerts" (the
+    # severity-graded read), "schedule" (a planned "No Scheduled Service" alert),
+    # or "unknown" (the alert feed was stale/unparsed — the only path to unknown,
+    # never an alert-normal fallback). The Python alert-only path
+    # (derive_route_status) emits the default "hmm".
     condition_source: str = "hmm"
     # When the currently published `condition` began, epoch seconds — the badge's
     # own clock ("how long has it held"), NOT the model's argmax clock in
     # inference.regime_entered_at. Set only on the arm that can honestly time the
-    # badge: the Worker publisher fills it from the movement regime's entered_at
-    # when condition_source == "movement". None whenever no honest start exists —
+    # badge: the Worker publisher fills it from the alert regime's onset when
+    # condition_source == "alerts". None whenever no honest start exists —
     # "schedule" (a planned non-run whose start the Worker doesn't track), "unknown"
-    # (movement declined to judge), and the alert-only Python "hmm" path. A reader
+    # (the feed couldn't be used), and the alert-only Python "hmm" path. A reader
     # must never present inference.regime_entered_at as this clock; that one times
     # the HMM argmax, which flips independently of the badge.
     condition_entered_at: int | None = None
@@ -766,7 +775,9 @@ class SegmentStatus(BaseModel):
 
 class StationFlow(BaseModel):
     """The station-flow surface: per-station verdicts and when they were computed
-    (one tick / ~5 min lagged, like the movement condition)."""
+    (one tick / ~5 min lagged, like the published condition). A descriptive
+    movement surface — it no longer feeds route_status.condition (now
+    alert-graded)."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 

@@ -1364,11 +1364,12 @@ describe('freshness.alerts_parse_degraded: alerts-schema drift abstention', () =
     expect(snapshot.freshness.alerts_parse_degraded).toBe(false);
     // The alert parsed through to the published list.
     expect(snapshot.alerts.map((x) => x.id)).toContain('lmm:alert:1');
-    // Route A keeps its movement-derived condition — the abstention override is
-    // scoped strictly to the degraded tick.
+    // Route A grades 'normal' off the alert feed (ordinary Delays is sub-floor),
+    // source 'alerts'; the abstention override is scoped strictly to a degraded
+    // tick, and this feed parsed cleanly.
     const a = snapshot.route_status['A']!;
     expect(a.condition).toBe('normal');
-    expect(a.condition_source).toBe('movement');
+    expect(a.condition_source).toBe('alerts');
   });
 
   test('mixed recognizable and garbage: NOT degraded, movement condition stands', async () => {

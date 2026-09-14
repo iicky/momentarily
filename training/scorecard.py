@@ -35,6 +35,8 @@ from training.eval import (
     TICK_SECONDS,
     PredictionRecord,
     published_arm,
+    published_arm_label,
+    published_arm_source_composition,
     published_condition_coverage,
     snap_tick,
 )
@@ -428,7 +430,13 @@ def episode_scorecard(
         "n_model_episodes": len(model_eps),
         "n_standing_excluded": len(standing),
         "n_model_episodes_in_standing": len(model_eps) - len(gradeable_model_eps),
-        "graded_arm": MOVEMENT_ARM_LABEL,
+        # The published condition arm this scorecard grades (model_episodes off
+        # published_arm), named from its condition_source mix — 'alerts' post the
+        # 2026-09-14 retirement, 'movement' before. recovery_movement below keeps
+        # MOVEMENT_ARM_LABEL: it is a distinct arm (movement dwell truth), not the
+        # published condition.
+        "graded_arm": published_arm_label(predictions),
+        "source_composition": published_arm_source_composition(predictions),
         "published_coverage": published_condition_coverage(predictions),
         "onset_latency": onset_latency(graded, model_eps),
         # Causal when the caller loaded a pre-window duration population, else

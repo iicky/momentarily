@@ -90,7 +90,7 @@ simplification parameters. Versioned copies live at
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata. The atomic unit; everything else is derived from these.
 - **`observations`** — raw measurements, peer to `alerts`. Populated with the observed subway headway per (route, direction): the seconds between the last two trains to serve that pair's canonical reference stop, measured off the GTFS-RT vehicle feed. Each entry carries the `stop_id` it was measured at and the `direction`. A measurement, not an inference — no baseline, no model, no grade. Absent for a pair that hasn't seen two trains, whose reading is stale, or whose interval spanned a feed gap; empty on a cold start or a vehicle-feed outage, never a fabricated zero. Travel times, ETAs and tolls are still unwired.
 - **`routes`** — static per-route metadata (id, color, name)
-- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, optional HMM-inferred `condition` + recovery block, and the trip-updates supply axis (`service_condition`, `service_ratio`, `service_percentile`). Curve-fitted recovery is withheld pending validation — `recovery_minutes` and its band are null with `recovery_withheld: "pending_validation"`, on `station_flow`/`segment_flow` too — while the deterministic schedule countdowns (`recovery_source: "schedule"`) are published.
+- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, the **severity-graded alert `condition`** (with `condition_source` and `condition_entered_at`), the HMM forecast/recovery block, and the trip-updates supply axis (`service_condition`, `service_ratio`, `service_percentile`). Curve-fitted recovery is withheld pending validation — `recovery_minutes` and its band are null with `recovery_withheld: "pending_validation"`, on `station_flow`/`segment_flow` too — while the deterministic schedule countdowns (`recovery_source: "schedule"`) are published.
 - **`stations`**, **`station_status`** — per-station metadata + derived view (alerts affecting the stop, ADA status, equipment outage counts)
 - **`station_flow`** — per-station movement verdicts derived from the vehicle feed, one tick (~5 min) lagged
 - **`segment_flow`** — per-segment movement verdicts, one tick (~5 min) lagged, keyed by the `route|direction|from_stop` cell id. Carries every judged cell, normal and disrupted alike, so a key absent from it was never judged this tick — never a healthy read by omission.
@@ -105,6 +105,20 @@ Every snapshot also carries its envelope: **`generated_at`** (epoch seconds the 
 
 Full schema in [`src/momentarily/schema.py`](src/momentarily/schema.py).
 
+**What `condition` means now.** As of 2026-09-14, `route_status.condition` is the
+**severity-graded alert read** — the SAME definition the weekly review grades as
+truth: an active non-planned alert of a severe tier (Severe Delays or a
+suspension) reads *disrupted*/*suspended*, a planned "No Scheduled Service" alert
+reads *not_scheduled*, and everything else reads *normal*. It is *unknown* only
+when the alert feed itself is stale or unparsed. `condition_source` is `"alerts"`
+(or `"schedule"`/`"unknown"`), and `condition_entered_at` is the alert regime's
+onset. The train-movement HMM and the vehicle-movement classifiers were retired
+from this field after three vehicle-position primitives and the alert-shadow HMM
+each graded as carrying no disruption signal against the independent supply
+truth; they keep running into `v1/predictions` so they can still be graded, and
+the movement surfaces (`station_flow`, `segment_flow`) stay as descriptive reads.
+The independent supply axis (`service_condition`) is unchanged.
+
 ## Method
 
 Momentarily applies a per-line **Hidden Markov Model** with three regimes (normal / disrupted / suspended) to the GTFS-Realtime Mercury alerts stream, producing a probabilistic estimate of each line's current operational state plus expected recovery time. The forward algorithm filters per cron tick; Baum-Welch re-estimates transition matrices and emission parameters weekly from rolling history.
@@ -113,7 +127,7 @@ User-facing fields graduate from a shadow-logging phase to the published snapsho
 
 The ground truth for regime grading (the confusion matrix, changepoint alignment, and the offline projection backtest) is **severity-graded**: a route-tick counts as disrupted only when an active alert reaches a severe tier — Severe Delays or a service suspension. Chronic minor alerts (ordinary delays, routine reroutes) and planned work read *normal*, so planned windows are a deterministic schedule overlay rather than stochastic disruption episodes. The legacy breadth truth (any active alert = disrupted) is kept only as a labeled sensitivity. Every eval, backtest, and review artifact records a `truth_version` so any metric traces back to the truth definition that produced it.
 
-A field graduates only if it clears its event-based gate: `condition` (the nowcast) graded as classification against the movement truth; `recovery_minutes` and its band graded per episode with positive CRPS skill over a duration-climatology baseline fitted CAUSALLY, on a window before the graded episodes, over enough incidents. That qualifier is load-bearing: scoring against the graded window's own duration CDF is hindsight, a causally-fitted climatology loses to that reference by 0.1157 skill, and a gate stated against it would fail forecasts for being causal rather than for being wrong. The hindsight figure is still reported for comparability with pre-2026-09 numbers, and never decides. Onset latency is reported but not gated — the alert feed is coincident-to-lagging by construction, so the model cannot lead it and isn't penalized for that. Changepoint alignment is likewise reported, not gated: severe-truth changepoints are far sparser than filter transitions, so a low match rate is mostly arithmetic and is read alongside reverse detection recall.
+A field graduates only if it clears its event-based gate: `condition` (the nowcast) — now the severity-graded alert read itself — graded as classification against the severe-alert truth (the review's published-arm graders read it from `v1/predictions`); `recovery_minutes` and its band graded per episode with positive CRPS skill over a duration-climatology baseline fitted CAUSALLY, on a window before the graded episodes, over enough incidents. That qualifier is load-bearing: scoring against the graded window's own duration CDF is hindsight, a causally-fitted climatology loses to that reference by 0.1157 skill, and a gate stated against it would fail forecasts for being causal rather than for being wrong. The hindsight figure is still reported for comparability with pre-2026-09 numbers, and never decides. Onset latency is reported but not gated — the alert feed is coincident-to-lagging by construction, so the model cannot lead it and isn't penalized for that. Changepoint alignment is likewise reported, not gated: severe-truth changepoints are far sparser than filter transitions, so a low match rate is mostly arithmetic and is read alongside reverse detection recall.
 
 `p_normal_in_H` is **shadow-only by decision, not pending one**. The deciding diagnostic — the `normal_now` backtest stratum, graded against fixed severity-graded truth rather than the model's own published condition — returned Brier 0.877 (geometric projection) and 0.886 (KM-residual) at 30 minutes against 0.0009 for persistence over 21,071 route-ticks, and the same shape at 60 and 120 minutes. That persistence score pins the outcome: truth stays *normal* through the next 30 minutes on 99.91% of normal-now ticks. A Brier of 0.877 against an outcome that near-certain is 88% of the worst score attainable on the stratum and roughly 3.5× worse than a flat uninformative 0.5 — confidently wrong, not merely unskilled, and far outside the small negative skill a near-certain base rate produces mechanically. Re-baselining does not rescue it: the per-route climatology of "normal at t+H" on this stratum is ~0.999 by construction, and a forecast that constant scores ~0.0009 arithmetically, the same yardstick persistence sets. The KM-residual normal branch scores slightly worse than the plain geometric projection, so that arm is not the fix either. Re-scoping the field means a different primitive (conditional residual survival, length-bias corrected, with abstention in sparse elapsed-time regimes) cleared against its own stated gate, not another run of this one.
 
@@ -144,8 +158,10 @@ truth the offline HMM validation is graded against. But they are no longer
 only that:
 
 - **vehicle positions** drive `observations` (the observed headway at each
-  route/direction's reference stop), `station_flow`, `segment_flow`,
-  `platform_crowding`, and the movement-observed `condition` in `route_status`.
+  route/direction's reference stop), `station_flow`, `segment_flow`, and
+  `platform_crowding`. They no longer drive `route_status.condition` (now the
+  severity-graded alert read); the movement HMM they feed lives on as the
+  `inference` shadow and the `v1/predictions` grading stream.
 - **trip updates** drive the supply axis in `route_status` —
   `service_condition`, `service_ratio` and `service_percentile`, all derived
   from assigned trips against that cell's own baseline.
@@ -153,8 +169,9 @@ only that:
 Everything else in the snapshot is JSON-derived. The distinction that matters
 is not JSON vs protobuf but measurement vs inference: `observations` entries
 are raw readings, published with the stop they were measured at and no
-baseline applied, while the `condition`/`service_condition`/`inference` fields
-are model output and carry their own provenance and grading.
+baseline applied, while `service_condition` and the `inference` block are model
+output and carry their own provenance and grading, and `condition` is the
+severity-graded read off the alert feed.
 
 ## Running it
 

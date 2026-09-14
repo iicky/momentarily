@@ -37,6 +37,16 @@ with `recovery_withheld: "pending_validation"`) and publishes the schedule
 countdowns; `v1/predictions` keeps the full numbers for grading. The gate is
 the `PUBLISH_FITTED_RECOVERY` constant in [`snapshot.ts`](src/snapshot.ts).
 
+`route_status.condition` is the **severity-graded alert read** (the same
+`derive_graded_mta_state` rule the review grades as truth, ported to
+[`mapping.ts`](src/mapping.ts) and parity-pinned): `disrupted`/`suspended` only
+for a severe-tier alert, `not_scheduled` for a planned no-service alert,
+`unknown` only when the alert feed is stale/unparsed. `condition_source` is
+`"alerts"`/`"schedule"`/`"unknown"`, and `condition_entered_at` is the alert
+regime's onset. The movement HMM and vehicle-movement classifiers no longer
+decide it — they feed the `inference` shadow, `v1/predictions`, and the
+descriptive `station_flow`/`segment_flow` surfaces only.
+
 `deriveArrivals` ([`arrivals.ts`](src/arrivals.ts)) folds the decoded trip-update
 stop times into a per-stop `arrivals` surface, and `buildArrivals`/`publishArrivals`
 ([`snapshot.ts`](src/snapshot.ts), beside `buildTrains`/`publishTrains`) wrap and

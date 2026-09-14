@@ -129,6 +129,13 @@ export interface RouteSnapshot {
    *  planned windows — recomputed each tick, never the max across a recurring
    *  alert's future windows. */
   scheduled_resume_at: number | null;
+  /** The non-planned alert types active on this route this tick (realtime +
+   *  'other' namespaces; planned_work excluded), the SAME list Python's
+   *  training/load_r2.build_tick_observations carries as `disruptive_types` and
+   *  feeds to derive_graded_mta_state. Severity-graded at CANONICAL_SEVERITY_FLOOR
+   *  into the published route_status.condition. Optional only for hand-built test
+   *  snapshots; deriveRouteSnapshots always populates it. */
+  disruptive_types?: string[];
 }
 
 /**
@@ -438,6 +445,9 @@ function buildRouteSnapshot(
     has_realtime_alert: alerts.some((a) => alertNamespace(a.alert_id) === 'realtime'),
     is_not_scheduled: alerts.some((a) => a.alert_type.includes('No Scheduled Service')),
     scheduled_resume_at: scheduledResumeAt(alerts, observedAt),
+    // The non-planned alert types (`types` == counted). Mirrors the Python
+    // truth's disruptive_types exactly (load_r2.build_tick_observations).
+    disruptive_types: types,
   };
 }
 

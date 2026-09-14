@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'vitest';
 
 import type { RouteRoll } from '../src/alpha';
-import { reseedForNewParams } from '../src/alpha';
+import { alertConditionOnset, reseedForNewParams } from '../src/alpha';
 import type { EmissionParams, HMMParams, Observation } from '../src/hmm';
 import { forwardStep } from '../src/hmm';
 
@@ -79,6 +79,18 @@ describe('reseedForNewParams', () => {
     expect(reseeded.published.label).toBe('disrupted');
   });
 
+  test('carries the alert condition clock across the params swap', () => {
+    const reseeded = reseedForNewParams({
+      ...disruptedRoll(),
+      published_condition: 'disrupted',
+      condition_entered_at: REGIME_START,
+    });
+    // The alert regime is observation-derived like the filter clock — a retrain
+    // must not reset condition_entered_at.
+    expect(reseeded.published_condition).toBe('disrupted');
+    expect(reseeded.condition_entered_at).toBe(REGIME_START);
+  });
+
   test('softens the posterior onto the old argmax', () => {
     const reseeded = reseedForNewParams(disruptedRoll());
     const p = reseeded.filter.probabilities;
@@ -116,5 +128,47 @@ describe('reseedForNewParams', () => {
     // Alerts cleared → normal wins and the regime clock advances to now.
     expect(state.probabilities[0]).toBeGreaterThan(state.probabilities[1]);
     expect(state.regime_entered_at).toBe(now);
+  });
+});
+
+describe('alertConditionOnset', () => {
+  const NOW = 1_700_100_000;
+
+  function roll(publishedCondition: string, enteredAt: number | null): RouteRoll {
+    return {
+      ...disruptedRoll(),
+      published_condition: publishedCondition,
+      condition_entered_at: enteredAt,
+    };
+  }
+
+  test('holds the onset while the graded state is unchanged', () => {
+    expect(alertConditionOnset(roll('disrupted', NOW - 3600), 'disrupted', NOW)).toBe(NOW - 3600);
+  });
+
+  test('restarts the onset at now on a state change', () => {
+    expect(alertConditionOnset(roll('normal', NOW - 3600), 'disrupted', NOW)).toBe(NOW);
+  });
+
+  test("first tick (no prior roll) starts the clock at now", () => {
+    expect(alertConditionOnset(undefined, 'disrupted', NOW)).toBe(NOW);
+  });
+
+  test('restarts after a null-clock tick even if the label repeats', () => {
+    // Came back from unknown/schedule (no onset carried) — the clock cannot
+    // claim a continuity it never had.
+    expect(alertConditionOnset(roll('disrupted', null), 'disrupted', NOW)).toBe(NOW);
+  });
+
+  test('schedule (not_scheduled) and unknown carry no honest onset', () => {
+    expect(alertConditionOnset(roll('not_scheduled', NOW - 3600), 'not_scheduled', NOW)).toBeNull();
+    expect(alertConditionOnset(roll('unknown', NOW - 3600), 'unknown', NOW)).toBeNull();
+  });
+
+  test('a legacy roll without the field starts the clock cleanly', () => {
+    // alpha.json written before the onset fields shipped: prev.published_condition
+    // is undefined, so the first usable tick starts at now rather than carrying
+    // undefined into the public contract.
+    expect(alertConditionOnset(disruptedRoll(), 'disrupted', NOW)).toBe(NOW);
   });
 });

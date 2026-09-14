@@ -532,6 +532,7 @@ def test_episode_scorecard_matches_the_verified_oracle() -> None:
         "n_standing_excluded",
         "n_model_episodes_in_standing",
         "graded_arm",
+        "source_composition",
         "published_coverage",
         "onset_latency",
         "recovery",

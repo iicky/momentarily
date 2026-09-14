@@ -121,10 +121,13 @@ class PredictionRecord:
     # schedule adherence elsewhere). None for JSONL written before schedule
     # recovery shipped; treated as "hmm".
     recovery_source: str | None = None
-    # The published movement-primary current-state condition + its source at this
-    # tick (the alert-shadow is `condition` above). None for JSONL written before
-    # escalation-arm grading shipped; the review scores movement escalations —
-    # disrupted where the alert feed read normal — against later alerts.
+    # The published current-state condition + its source at this tick (the
+    # alert-shadow HMM read is `condition` above). As of the 2026-09-14 retirement
+    # this is the severity-graded ALERT read (condition_source 'alerts'); rows
+    # before then are movement-sourced. None for JSONL written before published-arm
+    # grading shipped. The review's published-arm graders read it directly, so they
+    # follow the definition change without a code change; condition_source records
+    # which arm produced each row so a straddling window is never graded as one.
     published_condition: str | None = None
     condition_source: str | None = None
     # When the published movement regime was entered. 0 for JSONL written before
@@ -460,26 +463,28 @@ NOT_NORMAL = ("disrupted", "suspended")
 
 
 def published_arm(p: PredictionRecord) -> str:
-    """The movement-primary condition consumers actually read.
+    """The published condition consumers actually read — the severity-graded
+    alert state as of the 2026-09-14 retirement, movement-sourced before then.
 
     Falls back to the alert-shadow `condition` for rows archived before the
-    published arm shipped. The two arms disagree materially, so which one a
-    metric grades is a load-bearing choice, not a detail.
-    """
+    published field shipped. Which arm a metric grades is a load-bearing choice
+    (the pre/post-cutover arms disagree materially), so every graded_arm block
+    carries its condition_source composition — see published_arm_label."""
     return p.published_condition or p.condition
 
 
-# Conditions the movement arm can actually grade. `unknown` is excluded on
-# purpose: movement had no reading, which is an absence of evidence rather than
-# evidence of calm.
+# Conditions the published arm can actually grade. `unknown` is excluded on
+# purpose: it means the deciding channel had no answer (no movement reading
+# pre-cutover; a stale/unparsed alert feed after), an absence of evidence rather
+# than evidence of calm. `not_scheduled` is likewise off-timetable, not judged.
 GRADEABLE_ARM = ("normal", "disrupted", "suspended")
 
 
 def movement_truth_by_key(
     predictions: list[PredictionRecord],
 ) -> dict[tuple[str, int], str]:
-    """(route, tick) -> published movement condition, over the ticks movement
-    could actually call.
+    """(route, tick) -> the published condition, over the ticks the arm could
+    actually call (GRADEABLE_ARM).
 
     Dense over gradeable ticks rather than sparse-over-disruptions, so pair it
     with `truth_default=None`: an `unknown` tick then drops out of the sample
@@ -516,6 +521,59 @@ def published_condition_coverage(
         "unknown_share": counts.get("unknown", 0) / n if n else None,
         "gradeable_share": gradeable / n if n else None,
     }
+
+
+def published_arm_source_composition(
+    predictions: Sequence[PredictionRecord],
+) -> dict[str, int]:
+    """condition_source mix over the gradeable published-arm rows — the evidence
+    behind `published_arm_label`. 'movement' rows predate the 2026-09-14 retirement
+    of the movement/HMM arms from the published condition; 'alerts' rows are the
+    severity-graded read consumers see after it. Reported beside every graded_arm
+    block so a window straddling the cutover never hides a mixed arm behind one
+    name (mirrors published_condition_coverage's by_condition)."""
+    return dict(
+        Counter(
+            p.condition_source or "unknown"
+            for p in predictions
+            if published_arm(p) in GRADEABLE_ARM
+        )
+    )
+
+
+def published_arm_label(predictions: Sequence[PredictionRecord]) -> str:
+    """Honest name for the published arm, derived from its condition_source mix
+    rather than hard-coded. The published route_status.condition is the
+    severity-graded ALERT read as of the 2026-09-14 retirement; a window
+    straddling that date still carries movement-sourced rows from before it, so a
+    single-arm name over a mixed window would misdescribe the number under it."""
+    sources = {
+        s
+        for s, c in published_arm_source_composition(predictions).items()
+        if c and s in ("alerts", "movement")
+    }
+    if sources == {"alerts"}:
+        return "published_condition (alerts-primary)"
+    if sources == {"movement"}:
+        return "published_condition (movement-primary)"
+    if sources == {"alerts", "movement"}:
+        return (
+            "published_condition (mixed alerts/movement across the 2026-09-14 cutover)"
+        )
+    return "published_condition"
+
+
+def feed_clearance_gradeable(
+    predictions: Sequence[PredictionRecord],
+) -> tuple[list[PredictionRecord], int]:
+    """Rows the alert-feed-clearance recovery grade may use, plus the count it
+    must exclude. On condition_source=='alerts' the published condition IS the
+    alert feed, so grading it against feed clearance is tautological — those rows
+    are dropped and counted. Empty post-2026-09-14 -> the block reports n=0, never
+    a self-graded skill number. (The independent assigned_n confusion grade shares
+    no input with alerts and is not filtered.)"""
+    graded = [p for p in predictions if p.condition_source != "alerts"]
+    return graded, len(predictions) - len(graded)
 
 
 # Fleet-wide movement 'unknown' ceiling for the daily job. The movement arm
@@ -1340,7 +1398,8 @@ def episode_support(
     on_arm = [p for p in predictions if p.published_condition is not None]
     if not on_arm:
         return {
-            "graded_arm": MOVEMENT_ARM_LABEL,
+            "graded_arm": published_arm_label(predictions),
+            "source_composition": published_arm_source_composition(predictions),
             "n_episodes": 0,
             "n_left_censored": 0,
             "n_right_censored": 0,
@@ -1357,7 +1416,8 @@ def episode_support(
     episodes = model_episodes(on_arm, window_start=covered_start, window_end=window_end)
     s = episodes_summary(episodes)
     return {
-        "graded_arm": MOVEMENT_ARM_LABEL,
+        "graded_arm": published_arm_label(on_arm),
+        "source_composition": published_arm_source_composition(on_arm),
         "n_episodes": s["n"],
         # Censored episodes have an unobserved endpoint, so they cannot support a
         # duration or recovery claim even though they are real incidents.
@@ -1526,7 +1586,8 @@ def build_eval(
         "calibration": _calibration_as_dicts(calibrations),
         "calibration_arm": SHADOW_ARM_LABEL,
         "calibration_movement": {
-            "graded_arm": MOVEMENT_ARM_LABEL,
+            "graded_arm": published_arm_label(predictions),
+            "source_composition": published_arm_source_composition(predictions),
             "coverage": published_condition_coverage(predictions),
             "horizons": _calibration_as_dicts(movement_calibrations),
         },
@@ -1739,7 +1800,8 @@ def independent_recovery_report(
     disruptions = derive_actual_recovery(series, baseline, bin_fn=BIN_FN)
     result = independent_recovery_metrics(predictions, disruptions)
     return {
-        **recovery_as_dict(result, graded_arm=MOVEMENT_ARM_LABEL),
+        **recovery_as_dict(result, graded_arm=published_arm_label(predictions)),
+        "source_composition": published_arm_source_composition(predictions),
         "truth_source": "trip_updates_service_level",
         "n_disruptions": len(disruptions),
         "n_baseline_cells": len(baseline),

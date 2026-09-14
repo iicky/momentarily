@@ -19,6 +19,15 @@ export interface RouteRoll {
   // advanced. null when no alert was active then. Threaded into TransitionRecord
   // so the trainer can segment dwell distributions by cause.
   alert_type_at_entry: string | null;
+  // The published route condition this tick and the epoch second it began — the
+  // severity-graded alert read (snapshot.resolveAlertCondition) and its own
+  // regime clock. published_condition is carried so the next tick can detect a
+  // change and back-date condition_entered_at to the onset; condition_entered_at
+  // is what route_status.condition_entered_at publishes on the alerts arm. Both
+  // optional for back-compat with alpha.json written before they shipped and for
+  // hand-built test rolls; the Worker populates them every tick.
+  published_condition?: string;
+  condition_entered_at?: number | null;
 }
 
 export interface AlphaState {
@@ -32,6 +41,27 @@ export interface AlphaState {
 
 export function emptyAlphaState(): AlphaState {
   return { params_version: 0, updated_at: 0, routes: {} };
+}
+
+/**
+ * The alert regime's onset clock for route_status.condition_entered_at:
+ * back-date to when the current graded state began. Only the alerts arm carries
+ * an honest clock — 'not_scheduled' (schedule) and 'unknown' have no onset, so
+ * null there. On the alerts arm the clock holds while the graded state is
+ * unchanged from the previous tick, and restarts at `observedAt` on a state
+ * change, on a route's first tick (no prev roll), or on return from a
+ * null-clock tick. Named because the back-dating rule is not obvious from the
+ * inlined expression, and it is a test seam for the alpha-loop behavior.
+ */
+export function alertConditionOnset(
+  prev: RouteRoll | undefined,
+  condition: string,
+  observedAt: number,
+): number | null {
+  if (condition === 'not_scheduled' || condition === 'unknown') return null;
+  return prev?.published_condition === condition && prev?.condition_entered_at != null
+    ? prev.condition_entered_at
+    : observedAt;
 }
 
 // Posterior weight placed on the old argmax when reseeding across a params
@@ -67,6 +97,16 @@ export function reseedForNewParams(roll: RouteRoll): RouteRoll {
     },
     published: roll.published,
     alert_type_at_entry: roll.alert_type_at_entry,
+    // The alert-derived condition clock is observation-derived, like the regime
+    // clock above — carry it across the params swap rather than resetting onset.
+    // Spread conditionally so an older roll without these fields stays absent
+    // (exactOptionalPropertyTypes forbids an explicit undefined here).
+    ...(roll.published_condition !== undefined
+      ? { published_condition: roll.published_condition }
+      : {}),
+    ...(roll.condition_entered_at !== undefined
+      ? { condition_entered_at: roll.condition_entered_at }
+      : {}),
   };
 }
 

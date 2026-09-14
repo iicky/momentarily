@@ -161,14 +161,15 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     const disruptedInf = disruptedSnap.full.get('A')!;
     const normalInf = normalSnap.full.get('B')!;
 
-    // Both routes read `normal` on the alert-HMM shadow — zero alerts forces
-    // it — yet the PUBLISHED condition (movement) disagrees for A. This is
-    // exactly the anti-correlation: reading recovery off the shadow ignored
-    // that disagreement entirely.
+    // Both routes read `normal` on the alert-HMM shadow AND on the published
+    // condition (zero alerts → alert-graded normal). The recovery arm keys off
+    // the MOVEMENT regime internally (recoveryGateCondition), so it still treats
+    // A as disrupted for the forecast even though the published badge is normal
+    // — that internal disagreement is what the p_normal split below pins.
     expect(disruptedInf.condition).toBe('normal');
     expect(normalInf.condition).toBe('normal');
-    expect(disruptedSnap.route_status.A!.condition).toBe('disrupted');
-    expect(disruptedSnap.route_status.A!.condition_source).toBe('movement');
+    expect(disruptedSnap.route_status.A!.condition).toBe('normal');
+    expect(disruptedSnap.route_status.A!.condition_source).toBe('alerts');
     expect(normalSnap.route_status.B!.condition).toBe('normal');
 
     expect(disruptedInf.recovery_source).toBe('movement');
@@ -199,9 +200,10 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     });
     const a = withMovement.full.get('A')!;
     const b = withoutMovementStates.full.get('A')!;
-    // Published condition still reflects movement (worker/src/snapshot.ts's
-    // own condition read doesn't depend on dwell_movement)...
-    expect(withMovement.route_status.A!.condition).toBe('disrupted');
+    // The published condition is the alert-graded read — no alert here, so it
+    // grades 'normal'; the recovery arm still sees the movement regime
+    // internally (worker/src/snapshot.ts recoveryGateCondition)...
+    expect(withMovement.route_status.A!.condition).toBe('normal');
     // ...but with no curve to read, recovery falls all the way back to the
     // alert-HMM path, and nothing from that path describes the movement
     // regime consumers were shown. The forecast is withheld and the estimate
@@ -211,10 +213,10 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     expect(a.p_normal_in_60min).toBeNull();
     expect(a.recovery_indeterminate).toBe(true);
     expect(a.recovery_minutes).toBeGreaterThan(b.recovery_minutes);
-    // The route with no movement reading at all publishes 'unknown'. Its
-    // forecast is withheld too, but there is no disruption to time, so the
-    // estimate stays 0 rather than going indeterminate.
-    expect(withoutMovementStates.route_status.A!.condition).toBe('unknown');
+    // The route with no movement reading and no alert publishes 'normal' off the
+    // alert feed. Its forecast is withheld too, but there is no disruption to
+    // time, so the estimate stays 0 rather than going indeterminate.
+    expect(withoutMovementStates.route_status.A!.condition).toBe('normal');
     expect(b.p_normal_in_30min).toBeNull();
     expect(b.recovery_indeterminate).toBe(false);
     expect(b.recovery_minutes).toBe(0);
@@ -263,8 +265,8 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       trainedParams: params,
     });
     const inf = suspendedCurve.full.get('A')!;
-    expect(suspendedCurve.route_status.A!.condition).toBe('suspended');
-    expect(suspendedCurve.route_status.A!.condition_source).toBe('movement');
+    expect(suspendedCurve.route_status.A!.condition).toBe('normal');
+    expect(suspendedCurve.route_status.A!.condition_source).toBe('alerts');
     expect(inf.recovery_source).not.toBe('movement');
 
     // Deferring is a real handoff to the alert arm — but the published
@@ -400,11 +402,12 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
     expect(quietInf.p_normal_in_30min).toBeNull();
   });
 
-  test('an announced resume does not speak for a route published unknown', () => {
+  test('an announced resume does not speak for a route the recovery arm cannot judge', () => {
     // A planned-work window carries a resume time whether or not movement can
-    // read the route. With no movement reading the published condition is
-    // 'unknown' — we declined to judge — so counting down to a resume would
-    // assert the disruption we just said we could not see.
+    // read the route. The published condition here is the alert-graded read —
+    // planned work is sub-floor, so it grades 'normal' — but the RECOVERY arm's
+    // internal gate (recoveryGateCondition) reads 'unknown' with no movement, so
+    // counting down to a resume would assert a disruption the arm cannot see.
     const params = trained(['A']);
     const snaps = new Map<string, RouteSnapshot>([
       [
@@ -441,7 +444,7 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
       trainedParams: params,
     });
     const inf = snap.full.get('A')!;
-    expect(snap.route_status.A!.condition).toBe('unknown');
+    expect(snap.route_status.A!.condition).toBe('normal');
     expect(inf.recovery_source).toBe('hmm');
     expect(inf.p_normal_in_30min).toBeNull();
     expect(inf.resumes_at).toBeNull();

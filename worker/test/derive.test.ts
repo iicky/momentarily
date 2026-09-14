@@ -140,6 +140,24 @@ describe('derive: alert-id namespace partition', () => {
     expect(d.observation.alert_count).toBe(2);
     expect(d.has_realtime_alert).toBe(true);
   });
+
+  test('disruptive_types carries the non-planned alert types the condition grades', () => {
+    // route_status.condition is severity-graded off disruptive_types, so this
+    // field must mirror the Python truth's list exactly: every non-planned type
+    // (realtime + 'other'), planned work excluded. A regression that folds
+    // planned work in would lift a scheduled route to disrupted; one that drops
+    // 'other' would silence a real disruption.
+    const snaps = deriveRouteSnapshots(
+      payload(
+        entity({ id: 'lmm:alert:1', alertType: 'Severe Delays', route: 'A', periods: [{ start: NOW - 600 }] }),
+        entity({ id: 'lmm:situation:2', alertType: 'Trains Rerouted', route: 'A', periods: [{ start: NOW - 600 }] }),
+        entity({ id: 'lmm:planned_work:3', alertType: 'Planned - Part Suspended', route: 'A', periods: [{ start: NOW - 3600, end: NOW + 3600 }] }),
+      ),
+      NOW,
+    );
+    const a = snaps.get('A')!;
+    expect([...a.disruptive_types!].sort()).toEqual(['Severe Delays', 'Trains Rerouted']);
+  });
 });
 
 /** A structurally valid MTA alert that names a station, not a subway route —

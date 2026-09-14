@@ -562,13 +562,15 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     });
     const inf = snap.route_status['1']!.inference!;
     // The alert arm still estimates recovery from the empirical cell, but it
-    // publishes neither the estimate nor a forecast: the estimate is fitted
-    // and ungraduated, and with no movement reading the published condition
-    // is 'unknown', so a probability sourced from the alert regime would
-    // describe something else entirely. The schema check above the assertions
-    // is the point — a withheld block is a VALID published document.
+    // publishes neither the estimate nor a forecast: the estimate is fitted and
+    // ungraduated, and the recovery arm's internal gate reads 'unknown' with no
+    // movement, so a probability sourced from the alert regime would describe
+    // something else. The published condition is the alert-graded read — an
+    // ordinary Delays alert is sub-floor, so it grades 'normal'. The schema
+    // check above the assertions is the point — a withheld block is a VALID
+    // published document.
     check(snap);
-    expect(snap.route_status['1']!.condition).toBe('unknown');
+    expect(snap.route_status['1']!.condition).toBe('normal');
     expect(inf.recovery_source).toBe('hmm');
     expect(inf.recovery_minutes).toBeNull();
     expect(inf.recovery_minutes_low).toBeNull();

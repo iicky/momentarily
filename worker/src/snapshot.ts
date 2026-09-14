@@ -47,7 +47,7 @@ import type { HeadwayObservation } from './headway';
 import { conditionalRecovery, pLeaveBy } from './dwell';
 import { HYSTERESIS_TICKS, N_STATES, PUBLISHED_UNKNOWN, STATES } from './hmm';
 import type { PublishedLabel } from './hmm';
-import { NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus } from './mapping';
+import { CANONICAL_SEVERITY_FLOOR, NO_ALERTS_FALLBACK, categoryForLabel, coarseStatus, deriveGradedMtaState } from './mapping';
 import type { DwellQuantiles, RidershipBaselineDoc, ServiceWeightBaselineDoc, TrainedParams } from './params';
 import { dwellForRouteState, movementDwellFor, paramsForRoute, publicProvUrl, versionedParamsKey } from './params';
 import { servicePercentile } from './movement_state';
@@ -135,7 +135,7 @@ export const ATTRIBUTION =
 export const PUBLISH_FITTED_RECOVERY = false;
 
 // The HMM/alert forecast for a route — recovery timing (recovery_minutes,
-// p_normal_in_H) plus the alert-derived regime read. With movement-primary
+// p_normal_in_H) plus the alert-derived regime read. With alerts-primary
 // publishing this is the SHADOW: its `condition`/`is_disrupted`/probabilities are
 // the alert view, not the published current state (route_status.condition).
 //
@@ -161,7 +161,8 @@ export interface Inference {
   // is_disrupted about whether there is a disruption at all.
   recovery_indeterminate: boolean;
   // A forecast about the PUBLISHED condition, or nothing. The condition in
-  // route_status is movement-primary; this number comes from whichever arm
+  // route_status is alerts-primary (severity-graded); this number comes from
+  // whichever arm
   // recovery_source names, and the two are not always the same arm. Graded
   // against the condition actually published 30 minutes later, the
   // movement-sourced rows score AUC 0.856 and the alert-sourced rows 0.261 —
@@ -268,21 +269,26 @@ export function projectInference(
 interface RouteStatusOut {
   route_id: string;
   alerts: string[];
-  // Severity axis — the published current state, movement-primary: observed from
-  // train movement where judgeable, a planned "No Scheduled Service" alert where
-  // flagged, else 'unknown'. Alerts never assert disruption here — that lives on
-  // the shadow (inference) and cause (category / primary_alert_type) axes.
+  // Severity axis — the published current state, severity-graded from the alert
+  // feed (resolveAlertCondition): normal / disrupted / suspended off the SAME
+  // rule training/review.py grades as truth (deriveGradedMtaState at the
+  // canonical severe-only floor), 'not_scheduled' for a planned no-service
+  // alert, else 'unknown' when the alert feed is stale/unparsed. Movement and
+  // the HMM no longer assert this — the HMM read lives on as the shadow
+  // (inference) and cause (category / primary_alert_type) axes.
   condition: string;
-  // Where `condition` came from this tick: 'movement' (observed from train
-  // positions), 'schedule' (a planned "No Scheduled Service" alert), or 'unknown'
-  // (movement can't judge — an honest coverage gap, never an alert fallback).
+  // Where `condition` came from this tick: 'alerts' (the severity-graded read),
+  // 'schedule' (a planned "No Scheduled Service" alert), or 'unknown' (the alert
+  // feed was stale/unparsed — the only path to unknown, never an alert-normal
+  // fallback).
   condition_source: string;
   // When `condition` began (epoch s) — the badge's own clock, how long this
-  // published state has held. Non-null ONLY when condition_source === 'movement'
-  // (the movement regime's entered_at); null for 'schedule' (the Worker tracks a
-  // planned run's announced end, not its start) and 'unknown' (nothing to time).
-  // Deliberately NOT inference.regime_entered_at, which times the HMM argmax and
-  // flips independently of the badge — see resolvePublishedCondition.
+  // published state has held. Non-null ONLY when condition_source === 'alerts'
+  // (the alert regime's onset, tracked per-route in index.ts and carried on the
+  // roll); null for 'schedule' (the Worker tracks a planned run's announced end,
+  // not its start) and 'unknown' (nothing to time). Deliberately NOT
+  // inference.regime_entered_at, which times the HMM argmax and flips
+  // independently of the badge.
   condition_entered_at: number | null;
   // Supply axis — assigned_n against its own hourly baseline, one-tick lagged
   // like `condition`. 'normal' | 'degraded' | 'unknown'. Distinct from
@@ -639,6 +645,10 @@ export function buildSnapshot(args: {
    * recognizable as an MTA alert (MTA alerts-schema drift): the tick abstains
    * rather than assert good service, raising freshness.alerts_parse_degraded. */
   alertsParseDegraded?: boolean;
+  /** Whether the alert feed can decide the published condition this tick — false
+   * only on a fetch gap (no payload) or alerts_parse_degraded, the only routes
+   * to 'unknown'. Omitted by tests; defaults to "usable unless parse-degraded". */
+  alertsFeedUsable?: boolean;
   tickSeconds: number;
   /** Cached station_status, refreshed on hourly E&E fetches. Empty when
    * E&E hasn't been parsed yet (e.g. before the first hourly tick after
@@ -821,6 +831,14 @@ export function buildSnapshot(args: {
     ...Object.keys(movementStates?.regimes ?? {}),
   ]);
 
+  // Whether the alert feed can decide a condition this tick. False only when the
+  // feed was absent (a fetch gap → no routeSnapshots) or unparsed
+  // (alerts_parse_degraded): those are the ONLY route to 'unknown' now. Passed
+  // explicitly by the Worker; defaults to "usable unless parse-degraded" so a
+  // caller that omits it (a test) still abstains under the degraded flag.
+  const alertsUsable =
+    args.alertsFeedUsable ?? !(args.alertsParseDegraded ?? false);
+
   for (const routeId of allRouteIds) {
     const snap = args.routeSnapshots.get(routeId);
     const roll = args.rolls[routeId];
@@ -851,22 +869,21 @@ export function buildSnapshot(args: {
       inference === null ? null : projectInference(inference);
 
     const label = snap?.coarse_label ?? NO_ALERTS_FALLBACK;
-    // Current state is movement-primary: train movement is the published answer to
-    // "is this route disrupted right now". Alerts never assert the condition — the
-    // alert-derived read lives on as the shadow (inference.condition) and the cause
-    // (category / primary_alert_type). A planned "No Scheduled Service" alert is the
-    // one exception: a planned non-run wins. When movement can't judge (cold start,
-    // feed gap, thin/absent signal) the condition is 'unknown' — an honest coverage
-    // gap, never an alert-derived fallback.
-    const {
-      condition,
-      source: condition_source,
-      entered_at: condition_entered_at,
-    } = resolvePublishedCondition(
-      schedule,
-      movementRegime,
-      args.alertsParseDegraded ?? false,
+    // The published current state, severity-graded from the alert feed
+    // (resolveAlertCondition): the SAME rule training/review.py grades as truth.
+    // Movement and the HMM no longer decide it — a route reads disrupted/
+    // suspended only when an active non-planned alert reaches tier 2/3, a planned
+    // "No Scheduled Service" alert wins as not_scheduled, and a stale/unparsed
+    // feed abstains to 'unknown' (the only path to unknown now). The alert regime
+    // onset (condition_entered_at) is tracked per-route in index.ts and carried
+    // on the roll; honest only on the alerts arm, null on schedule/unknown.
+    const { condition, source: condition_source } = resolveAlertCondition(
+      snap?.disruptive_types ?? [],
+      schedule.isNotScheduled,
+      alertsUsable,
     );
+    const condition_entered_at =
+      condition_source === "alerts" ? (roll?.condition_entered_at ?? null) : null;
     const serviceRatio = movementStates?.service_ratios?.[routeId] ?? null;
     const serviceLowRatio =
       movementStates?.service_quantile_ratios?.[routeId]?.low ?? null;
@@ -993,10 +1010,10 @@ function buildSystemStatus(
   let mostRecoveredEnteredAt = -1;
   for (const [routeId, rs] of Object.entries(routeStatuses)) {
     const inf = rs.inference;
-    // Count what's published: `condition` is the movement-primary current state
-    // (a movement-only route has inference null). Ranking within (most degraded /
+    // Count what's published: `condition` is the alert-graded current state
+    // (a route with no HMM inference is null). Ranking within (most degraded /
     // recovered) still uses the HMM's continuous probabilities and regime age when
-    // present — a movement-only disrupted route scores a flat 1.
+    // present — a route disrupted with no inference scores a flat 1.
     const disrupted =
       rs.condition === "disrupted" || rs.condition === "suspended";
     if (disrupted) {
@@ -1093,7 +1110,7 @@ function buildCompat(
     // not_scheduled renders as a scheduled gap so the HomeAssistant integration
     // doesn't choke on an unknown status. Otherwise `status` stays the alert-derived
     // coarse label (shadow) — this legacy compat surface intentionally lags the
-    // movement-primary route_status.condition; a movement-derived status mapping is
+    // alert-graded route_status.condition; a movement-derived status mapping is
     // deferred to the HA integration work so its contract isn't changed blind.
     const notScheduled = rs.condition === "not_scheduled";
     subwaynow_routes[routeId] = {
@@ -1143,55 +1160,68 @@ interface ScheduleFacts {
   scheduledResumeAt: number | null;
 }
 
-// Last known movement-clock reading for a route: the SAME (state, entered_at)
-// buildSnapshot publishes as condition/condition_source === 'movement'. null
-// when movement can't judge (no reading, or the reading fell outside
-// MAX_MOVEMENT_STATE_AGE_SEC upstream).
+// Last known movement-clock reading for a route: the regime the recovery arm is
+// gated on (recoveryGateCondition) and the service/flow surfaces read. It no
+// longer sources the published condition (now alert-graded). null when movement
+// can't judge (no reading, or the reading fell outside MAX_MOVEMENT_STATE_AGE_SEC
+// upstream).
 interface MovementRegime {
   state: string;
   entered_at: number;
 }
 
-// Which arm decides the published condition. buildSnapshot reads the condition
-// off it and buildInference gates the forecast on it, so the precedence lives
-// here once — a second copy that drifted would publish a forecast about a
-// condition nobody was shown.
-type ConditionSource = "schedule" | "movement" | "unknown";
+// Published condition source this tick. 'alerts' — the severity-graded alert
+// read (the canonical current state); 'schedule' — a planned "No Scheduled
+// Service" alert; 'unknown' — the alert feed was stale or unparsed, so the
+// deciding channel could not answer. Movement and the HMM no longer decide the
+// published condition (they feed descriptive surfaces and the grading stream),
+// so 'movement' is gone from this set.
+type ConditionSource = "alerts" | "schedule" | "unknown";
 
-// `entered_at` is the badge's own clock — when the PUBLISHED condition began —
-// and is honest only on the movement arm: it carries the movement regime's
-// entered_at there and null on every other arm. The schedule arm knows a
-// planned run's announced END (scheduledResumeAt), not when the non-run began;
-// the unknown arm has no regime at all. Returning null rather than a fabricated
-// stand-in is the whole point — a consumer must never fall back to the HMM's
-// regime_entered_at to fill this, because that clock times the argmax, not the
-// badge.
-function resolvePublishedCondition(
+// The published route condition, severity-graded from the alert feed. This is
+// the SAME rule training/review.py grades as truth — deriveGradedMtaState at
+// CANONICAL_SEVERITY_FLOOR (mapping.ts, parity-pinned against
+// derive_graded_mta_state): a route reads disrupted/suspended only when an
+// active non-planned alert reaches tier 2 (Severe Delays) / tier 3 (suspension),
+// so chronic minor delays and routine reroutes read normal. Precedence:
+//   1. A stale/unparsed alert feed abstains to 'unknown' — the deciding channel
+//      is down, and reading a route normal off no evidence is the one failure
+//      that actively misleads. This is the ONLY path to 'unknown' now.
+//   2. A planned "No Scheduled Service" alert is off-timetable, not broken, and
+//      wins as not_scheduled (the existing planned-schedule precedence).
+//   3. Otherwise the graded read stands.
+// `condition_entered_at` (the badge's own clock) is tracked separately as the
+// alert regime's onset — see index.ts — and is null on the schedule/unknown arms.
+export function resolveAlertCondition(
+  disruptiveTypes: readonly string[],
+  isNotScheduled: boolean,
+  alertsUsable: boolean,
+): { condition: string; source: ConditionSource } {
+  if (!alertsUsable) return { condition: "unknown", source: "unknown" };
+  if (isNotScheduled) return { condition: "not_scheduled", source: "schedule" };
+  return {
+    condition: deriveGradedMtaState(disruptiveTypes, CANONICAL_SEVERITY_FLOOR),
+    source: "alerts",
+  };
+}
+
+// Movement-based condition for the recovery arm's INTERNAL gate only (the full
+// Inference the grading stream archives). Deliberately NOT the published
+// route_status.condition, which is now alert-graded (resolveAlertCondition):
+// the recovery block still keys its arm selection and withholding on the
+// movement/schedule regime it was fitted against, so this preserves the
+// v1/predictions stream byte-for-byte while the published condition moves to
+// alerts. The recovery sibling owns how recovery relates to the new published
+// condition; until then this keeps today's behavior.
+function recoveryGateCondition(
   schedule: ScheduleFacts,
   movementRegime: MovementRegime | null,
   alertsParseDegraded: boolean,
-): { condition: string; source: ConditionSource; entered_at: number | null } {
-  // The alerts payload carried entities but none were recognizable MTA alerts
-  // (alerts-schema drift): the alerts channel that drives labels, categories and
-  // the not_scheduled arm is untrustworthy this tick, so no route may assert a
-  // condition off it. We
-  // abstain uniformly to 'unknown' rather than let a route read normal — the one
-  // failure that actively misleads riders. Deliberately supersedes even a
-  // movement read: a tick that mixes abstained and asserted routes under a
-  // degraded flag is harder to reason about than a uniform honest abstention,
-  // and the movement channel republishes its regime the moment the feed recovers.
-  if (alertsParseDegraded)
-    return { condition: "unknown", source: "unknown", entered_at: null };
-  if (schedule.isNotScheduled)
-    return { condition: "not_scheduled", source: "schedule", entered_at: null };
-  if (movementRegime !== null) {
-    return {
-      condition: movementRegime.state,
-      source: "movement",
-      entered_at: movementRegime.entered_at,
-    };
-  }
-  return { condition: "unknown", source: "unknown", entered_at: null };
+): string {
+  if (alertsParseDegraded) return "unknown";
+  if (schedule.isNotScheduled) return "not_scheduled";
+  if (movementRegime !== null) return movementRegime.state;
+  return "unknown";
 }
 
 // atom_p/atom_sec activate the mixture closed form in pLeaveBy/conditionalRecovery
@@ -1261,16 +1291,18 @@ function buildInference(
   let resumes_at: number | null = null;
   let overdue = false;
 
-  // What consumers are actually shown. Every arm below is judged against it,
-  // not against the alert-HMM shadow: `condition` above hard-returns normal
-  // whenever there are no disruptive alerts, so a route published
-  // not_scheduled overnight used to look "normal" here and lose its
-  // deterministic countdown to an alert-regime dwell estimate.
-  const publishedCondition = resolvePublishedCondition(
+  // The condition this recovery block is gated against — the movement/schedule
+  // regime the arms were fitted on, NOT the published route_status.condition
+  // (now alert-graded). Kept movement-based so the v1/predictions stream stays
+  // byte-identical while the published condition moves to alerts; the recovery
+  // sibling owns reconciling the two. `condition` above hard-returns normal
+  // whenever there are no disruptive alerts, so a route gated not_scheduled
+  // overnight keeps its deterministic countdown instead of an alert-regime dwell.
+  const publishedCondition = recoveryGateCondition(
     schedule,
     movementRegime,
     alertsParseDegraded,
-  ).condition;
+  );
 
   // Whether "when is it back" is even a question for this route. Published
   // normal: nothing to recover from. Published unknown: we declined to judge,
@@ -1558,8 +1590,8 @@ const MOVEMENT_SPLIT_MEASURED: Record<string, true> = {
 
 /**
  * Recovery + p_normal_in_H off the movement curve, conditioned on the
- * movement clock (elapsed = now - entered_at) — the SAME regime consumers see
- * as condition/condition_source==='movement'. Returns null when there's no
+ * movement clock (elapsed = now - entered_at) — the movement regime the recovery
+ * arm is gated on (recoveryGateCondition). Returns null when there's no
  * usable clock or no trained curve for this (route, state) cell, so the
  * caller falls back to the alert-HMM path.
  *

@@ -32,13 +32,18 @@ function entity(opts: { id: string; alertType: string; route: string; periods?: 
 }
 const payload = (...e: unknown[]): unknown => ({ entity: e });
 
-function roll(state: 'normal' | 'disrupted' | 'suspended'): RouteRoll {
+function roll(
+  state: 'normal' | 'disrupted' | 'suspended',
+  onset?: { publishedCondition?: string; conditionEnteredAt?: number | null },
+): RouteRoll {
   const probs: [number, number, number] =
     state === 'normal' ? [0.95, 0.04, 0.01] : state === 'disrupted' ? [0.04, 0.95, 0.01] : [0.02, 0.03, 0.95];
   return {
     filter: { probabilities: probs, regime_entered_at: NOW, last_updated_at: NOW },
     published: { label: state, pending_state: state, pending_streak: 5, last_updated_at: NOW },
     alert_type_at_entry: null,
+    ...(onset?.publishedCondition !== undefined ? { published_condition: onset.publishedCondition } : {}),
+    ...(onset?.conditionEnteredAt !== undefined ? { condition_entered_at: onset.conditionEnteredAt } : {}),
   };
 }
 
@@ -50,69 +55,108 @@ function settled(states: Record<string, string>): Record<string, { state: string
   );
 }
 
-describe('buildSnapshot: movement-determined condition', () => {
-  test('movement overrides the HMM condition and records the source', () => {
-    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Delays', route: 'A' })), NOW);
+describe('buildSnapshot: alert-graded published condition', () => {
+  test('a severe alert publishes disrupted from the alert feed, clock off the roll', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Severe Delays', route: 'A' })), NOW);
     const snap = buildSnapshot({
       generatedAt: NOW,
       alertsFreshness: NOW,
       routeSnapshots: snaps,
-      rolls: { A: roll('normal') },
+      // index.ts back-dates the onset onto the roll; the snapshot publishes it.
+      rolls: { A: roll('normal', { publishedCondition: 'disrupted', conditionEnteredAt: NOW - 3600 }) },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'disrupted' }) },
+      // A movement 'normal' reading is present and deliberately IGNORED for the
+      // condition — alerts decide it now.
+      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'normal' }) },
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
     const a = snap.route_status.A!;
     expect(a.condition).toBe('disrupted');
-    expect(a.condition_source).toBe('movement');
-    // The badge's own clock is the movement regime's entered_at, NOT the HMM
-    // argmax clock (inference.regime_entered_at === NOW here).
+    expect(a.condition_source).toBe('alerts');
+    // The badge clock is the alert regime's onset carried on the roll, NOT the
+    // HMM argmax clock (inference.regime_entered_at === NOW here).
     expect(a.condition_entered_at).toBe(NOW - 3600);
     expect(a.inference?.regime_entered_at).toBe(NOW);
-    // HMM still recorded under inference for the forecast surfaces.
+    // The HMM read is still recorded under inference for the grading surfaces.
     expect(a.inference?.condition).toBe('normal');
   });
 
-  test('a route with no movement reading has unknown condition', () => {
-    const snaps = deriveRouteSnapshots(payload(entity({ id: 'b', alertType: 'Delays', route: 'B' })), NOW);
+  test('a sub-floor alert (ordinary Delays) grades normal', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Delays', route: 'A' })), NOW);
     const snap = buildSnapshot({
       generatedAt: NOW,
       alertsFreshness: NOW,
       routeSnapshots: snaps,
-      rolls: { B: roll('normal') },
-      trainedParams: null,
-      tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, regimes: settled({}) }, // B absent
-      vehicleFreshFeeds: [],
-      vehicleExpectedFeeds: [],
-    });
-    const b = snap.route_status.B!;
-    expect(b.condition_source).toBe('unknown');
-    expect(b.condition).toBe('unknown');
-    // No movement regime → no honest badge clock; never borrow the HMM's.
-    expect(b.condition_entered_at).toBeNull();
-  });
-
-  test('movement is ignored without a movementStates arg (back-compat)', () => {
-    const snaps = deriveRouteSnapshots(payload(entity({ id: 'c', alertType: 'Delays', route: 'A' })), NOW);
-    const snap = buildSnapshot({
-      generatedAt: NOW,
-      alertsFreshness: NOW,
-      routeSnapshots: snaps,
-      rolls: { A: roll('disrupted') },
+      rolls: { A: roll('disrupted', { publishedCondition: 'normal', conditionEnteredAt: NOW - 1800 }) },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    expect(snap.route_status.A!.condition_source).toBe('unknown');
-    expect(snap.route_status.A!.condition).toBe('unknown');
+    const a = snap.route_status.A!;
+    // Tier-1 alerts are below the canonical severe-only floor → normal.
+    expect(a.condition).toBe('normal');
+    expect(a.condition_source).toBe('alerts');
+    expect(a.condition_entered_at).toBe(NOW - 1800);
   });
 
-  test('not_scheduled is never overridden by movement', () => {
-    // A No Scheduled Service alert with a current gap drives is_not_scheduled.
+  test('a suspension alert grades suspended', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Suspended', route: 'A' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: snaps,
+      rolls: { A: roll('normal', { publishedCondition: 'suspended', conditionEnteredAt: NOW - 600 }) },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
+    });
+    expect(snap.route_status.A!.condition).toBe('suspended');
+    expect(snap.route_status.A!.condition_source).toBe('alerts');
+  });
+
+  test('no active alert grades normal even with a movement-disrupted reading', () => {
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: deriveRouteSnapshots(payload(), NOW),
+      rolls: { A: roll('normal', { publishedCondition: 'normal', conditionEnteredAt: NOW - 7200 }) },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      // Movement says disrupted; the alert feed says nothing. Alerts win.
+      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'disrupted' }) },
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
+    });
+    const a = snap.route_status.A!;
+    expect(a.condition).toBe('normal');
+    expect(a.condition_source).toBe('alerts');
+  });
+
+  test('a stale/unparsed alert feed abstains to unknown', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Severe Delays', route: 'A' })), NOW);
+    const snap = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW - 3600,
+      routeSnapshots: snaps,
+      rolls: { A: roll('normal', { publishedCondition: 'unknown', conditionEnteredAt: null }) },
+      trainedParams: null,
+      tickSeconds: TICK_SECONDS,
+      // The feed could not be used this tick — the only path to unknown now.
+      alertsFeedUsable: false,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
+    });
+    const a = snap.route_status.A!;
+    expect(a.condition).toBe('unknown');
+    expect(a.condition_source).toBe('unknown');
+    expect(a.condition_entered_at).toBeNull();
+  });
+
+  test('not_scheduled wins as schedule with no onset clock', () => {
     const snaps = deriveRouteSnapshots(
       payload(entity({ id: 'z', alertType: 'No Scheduled Service', route: 'Z', periods: [{ start: NOW - 3600, end: NOW + 1800 }] })),
       NOW,
@@ -121,42 +165,40 @@ describe('buildSnapshot: movement-determined condition', () => {
       generatedAt: NOW,
       alertsFreshness: NOW,
       routeSnapshots: snaps,
-      rolls: { Z: roll('normal') },
+      // Even a non-null onset on the roll is withheld on the schedule arm.
+      rolls: { Z: roll('normal', { publishedCondition: 'not_scheduled', conditionEnteredAt: NOW - 900 }) },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, regimes: settled({ Z: 'suspended' }) },
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
     const z = snap.route_status.Z!;
     expect(z.condition).toBe('not_scheduled');
     expect(z.condition_source).toBe('schedule');
-    // Schedule arm wins even though a movement regime is present; it has no
-    // honest start (we track the announced END, not when the non-run began), so
-    // the badge clock is withheld rather than showing the movement regime's.
     expect(z.condition_entered_at).toBeNull();
   });
 
-  test('stale movement state is ignored (condition is unknown)', () => {
-    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Delays', route: 'A' })), NOW);
+  test('the alerts arm withholds the clock when the roll carries no onset', () => {
+    const snaps = deriveRouteSnapshots(payload(entity({ id: 'a', alertType: 'Severe Delays', route: 'A' })), NOW);
     const snap = buildSnapshot({
       generatedAt: NOW,
       alertsFreshness: NOW,
       routeSnapshots: snaps,
-      rolls: { A: roll('normal') },
+      rolls: { A: roll('normal') }, // no condition_entered_at
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 3600, regimes: settled({ A: 'disrupted' }) }, // 1h old
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    expect(snap.route_status.A!.condition_source).toBe('unknown');
-    expect(snap.route_status.A!.condition).toBe('unknown');
+    const a = snap.route_status.A!;
+    expect(a.condition).toBe('disrupted');
+    expect(a.condition_source).toBe('alerts');
+    expect(a.condition_entered_at).toBeNull();
   });
 
-  test('lines_disrupted_count reflects the movement-overridden conditions', () => {
+  test('lines_disrupted_count reflects the alert-graded conditions', () => {
     const snaps = deriveRouteSnapshots(
-      payload(entity({ id: 'a', alertType: 'Delays', route: 'A' }), entity({ id: 'b', alertType: 'Delays', route: 'B' })),
+      payload(entity({ id: 'a', alertType: 'Suspended', route: 'A' }), entity({ id: 'b', alertType: 'Delays', route: 'B' })),
       NOW,
     );
     const snap = buildSnapshot({
@@ -166,15 +208,15 @@ describe('buildSnapshot: movement-determined condition', () => {
       rolls: { A: roll('normal'), B: roll('normal') },
       trainedParams: null,
       tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, regimes: settled({ A: 'suspended', B: 'normal' }) },
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
     expect(snap.route_status.A!.condition).toBe('suspended');
+    expect(snap.route_status.B!.condition).toBe('normal'); // ordinary Delays is sub-floor
     expect(snap.system.lines_disrupted_count).toBe(1); // A counted, B normal
   });
 
-  test('a route present only in movementStates.regimes is published with its movement condition', () => {
+  test('a route present only in movementStates.regimes is not disrupted off movement', () => {
     const snap = buildSnapshot({
       generatedAt: NOW,
       alertsFreshness: NOW,
@@ -187,31 +229,12 @@ describe('buildSnapshot: movement-determined condition', () => {
       vehicleExpectedFeeds: [],
     });
     const q = snap.route_status.Q!;
-    expect(q.condition).toBe('disrupted');
-    expect(q.condition_source).toBe('movement');
+    // No alert and no roll → normal off the alert feed; movement no longer
+    // asserts the condition, so nothing is counted disrupted.
+    expect(q.condition).toBe('normal');
+    expect(q.condition_source).toBe('alerts');
     expect(q.inference).toBeNull();
-  });
-
-  test('a movement-only disrupted route (no HMM inference) is counted in lines_disrupted_count', () => {
-    const snap = buildSnapshot({
-      generatedAt: NOW,
-      alertsFreshness: NOW,
-      routeSnapshots: new Map(),
-      rolls: {},
-      trainedParams: null,
-      tickSeconds: TICK_SECONDS,
-      movementStates: { observed_at: NOW - 300, regimes: settled({ Q: 'disrupted' }) },
-      vehicleFreshFeeds: [],
-      vehicleExpectedFeeds: [],
-    });
-    const q = snap.route_status.Q!;
-    expect(q.inference).toBeNull();
-    expect(q.condition).toBe('disrupted');
-    // The system rollup gates on the published `condition`, not on HMM
-    // inference, so a movement-only route with no roll/snapshot must still
-    // be counted — and score a flat 1 as the most degraded line.
-    expect(snap.system.lines_disrupted_count).toBe(1);
-    expect(snap.system.most_degraded_line).toBe('Q');
+    expect(snap.system.lines_disrupted_count).toBe(0);
   });
 });
 

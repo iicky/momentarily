@@ -23,7 +23,7 @@
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
-import { readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
+import { alertConditionOnset, readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
 import type { WriteFailureCounts } from './archive';
 import {
   archiveAlertsLiveness,
@@ -104,6 +104,7 @@ import {
   TICK_SECONDS,
   buildArrivals,
   buildSnapshot,
+  resolveAlertCondition,
   buildTrains,
   publishArrivals,
   publishSnapshot,
@@ -720,6 +721,12 @@ export default {
     // Tick-local: never folded into AlphaState, which is persisted.
     const movementCounts = new Map<string, { matched_n: number; advanced_n: number }>();
 
+    // Whether the alert feed can decide a condition this tick: false only on a
+    // fetch gap (no payload) or a parse-degraded feed — the only routes to
+    // 'unknown' under alerts-primary publishing. Threaded into buildSnapshot and
+    // used here to clock each route's alert-graded condition.
+    const alertsFeedUsable = alertsPayload !== null && !alertsParseDegraded;
+
     for (const routeId of allRoutes) {
       const prevRoll: RouteRoll | undefined = carriedRoutes[routeId];
       const params = paramsForRoute(trainedParams, routeId);
@@ -776,10 +783,27 @@ export default {
           ? (routeSnap?.primary_alert_type ?? null)
           : (prevRoll.alert_type_at_entry ?? null);
 
+      // The published condition (severity-graded alert read) and its onset —
+      // the alert regime's own clock, back-dated to when this graded state
+      // began (alertConditionOnset), published as route_status.condition_entered_at
+      // on the alerts arm and null on schedule/unknown.
+      const { condition: publishedCondition } = resolveAlertCondition(
+        routeSnap?.disruptive_types ?? [],
+        routeSnap?.is_not_scheduled ?? false,
+        alertsFeedUsable,
+      );
+      const conditionEnteredAt = alertConditionOnset(
+        prevRoll,
+        publishedCondition,
+        observedAt,
+      );
+
       newAlphaState.routes[routeId] = {
         filter: result.state,
         published: result.published,
         alert_type_at_entry: alertTypeAtEntry,
+        published_condition: publishedCondition,
+        condition_entered_at: conditionEnteredAt,
       };
     }
     step(`4b-forward(${allRoutes.size}r)`);
@@ -890,6 +914,9 @@ export default {
           // abstained above via the forced-null quietObs; this raises
           // freshness.alerts_parse_degraded so a consumer can see why.
           alertsParseDegraded,
+          // A fetch gap (no payload) or parse-degraded feed is the only route to
+          // condition 'unknown' now — everything else grades off the alert read.
+          alertsFeedUsable,
           tickSeconds: TICK_SECONDS,
           stationStatuses: lastSeen.station_statuses,
           eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,

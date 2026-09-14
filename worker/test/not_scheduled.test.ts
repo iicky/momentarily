@@ -291,9 +291,11 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     // drives the shadow toward disrupted/suspended.
     expect(inf.condition).toBe('normal');
     expect(inf.is_disrupted).toBe(false);
-    // No movement reading is wired through `build()`, so the published
-    // condition is an honest 'unknown' — movement-primary, not alert-primary.
-    expect(snap.route_status['A']!.condition).toBe('unknown');
+    // The published condition is the severity-graded alert read: a planned-only
+    // route has no non-planned alert, so it grades 'normal' off the feed
+    // (source 'alerts'), while the shadow HMM condition above is also normal.
+    expect(snap.route_status['A']!.condition).toBe('normal');
+    expect(snap.route_status['A']!.condition_source).toBe('alerts');
     expect(snap.system.lines_disrupted_count).toBe(0);
   });
 
@@ -330,10 +332,12 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     expect(inf.resumes_at).toBeNull();
     // A live real-time disruption counts, even with planned work also active.
     expect(inf.is_disrupted).toBe(true);
-    // No movement reading is wired through `build()`, so the published
-    // condition is an honest 'unknown' — the alert-derived read lives on
-    // the shadow above.
-    expect(snap.route_status['N']!.condition).toBe('unknown');
+    // Ordinary real-time Delays is tier 1 — below the canonical severe-only
+    // floor — so the published condition grades 'normal' (source 'alerts') even
+    // as the shadow HMM condition above reads disrupted. That divergence is the
+    // point: published = severe alert grade, shadow = HMM.
+    expect(snap.route_status['N']!.condition).toBe('normal');
+    expect(snap.route_status['N']!.condition_source).toBe('alerts');
   });
 
   test('overdue: resume already passed but alert still active → recovery clamped to 0', () => {

@@ -163,11 +163,12 @@ describe('inference: arms that disagree must not compose into a confident zero',
     const status = snap.route_status.J!;
     const inf = status.inference!;
 
-    // Preconditions: the published badge is movement-primary and reads normal,
-    // while the alert shadow reads a confident disruption. This is the
-    // disagreement, reproduced.
+    // Preconditions: the published condition is the alert-graded read — an
+    // ordinary Delays alert is sub-floor, so it grades 'normal' (source
+    // 'alerts') — while the alert shadow reads a confident disruption. The
+    // recovery arm keys off the movement regime internally.
     expect(status.condition).toBe('normal');
-    expect(status.condition_source).toBe('movement');
+    expect(status.condition_source).toBe('alerts');
     expect(inf.condition).toBe('disrupted');
     expect(inf.is_disrupted).toBe(true);
     expect(inf.p_disrupted).toBeGreaterThan(0.999);
@@ -235,7 +236,9 @@ describe('inference: arms that disagree must not compose into a confident zero',
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.overdue).toBe(true);
     expect(inf.resumes_at).toBe(NOW);
-    expect(status.condition).toBe('disrupted');
+    // Published is the alert-graded read; the situation Delays is sub-floor, so
+    // 'normal', while the recovery arm's schedule countdown fires internally.
+    expect(status.condition).toBe('normal');
 
     // Same invariant as the J row: no determinate zero-width zero under a
     // live disruption claim.
@@ -378,7 +381,9 @@ describe('inference: arms that disagree must not compose into a confident zero',
       movement: { state: 'disrupted', entered_at: NOW - 30 * MIN },
     });
     const inf = snap.route_status.J!.inference!;
-    expect(snap.route_status.J!.condition).toBe('disrupted');
+    // Published is alert-graded — ordinary Delays is sub-floor → 'normal'; the
+    // recovery arm sees the movement 'disrupted' regime internally.
+    expect(snap.route_status.J!.condition).toBe('normal');
     expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('movement');
     // A real movement-curve estimate, not the withheld ceiling — read off the
@@ -410,10 +415,10 @@ describe('inference: arms that disagree must not compose into a confident zero',
   });
 
   test('H-style row (no movement read, alert-arm dwell estimate) keeps its estimate', () => {
-    // No movement state this tick, so the published condition is an honest
-    // 'unknown' and the recovery block falls to the alert-HMM arm — the arm
-    // is_disrupted itself comes from, so the arms agree and nothing is
-    // withheld. Live H published 80 [55,100] this way.
+    // No movement state this tick; the published condition is the alert-graded
+    // read (ordinary Delays is sub-floor → 'normal'), while the recovery block
+    // falls to the alert-HMM arm — the arm is_disrupted itself comes from, so
+    // the arms agree and nothing is withheld. Live H published 80 [55,100] this way.
     const snap = build({
       routeId: 'H',
       roll: roll('disrupted'),
@@ -429,7 +434,7 @@ describe('inference: arms that disagree must not compose into a confident zero',
     });
     const status = snap.route_status.H!;
     const inf = status.inference!;
-    expect(status.condition).toBe('unknown');
+    expect(status.condition).toBe('normal');
     expect(inf.condition).toBe('disrupted');
     expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('hmm');

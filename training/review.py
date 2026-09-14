@@ -50,18 +50,20 @@ from training.escalation import (
     corroborate_episodes,
 )
 from training.eval import (
-    MOVEMENT_ARM_LABEL,
     PARAMS_KEY,
     TICK_SECONDS,
     PredictionRecord,
     TransitionRecord,
     build_eval,
+    feed_clearance_gradeable,
     independent_recovery_metrics,
     independent_recovery_report,
     load_predictions,
     load_transitions,
     prequential_calibration,
     published_arm,
+    published_arm_label,
+    published_arm_source_composition,
     recovery_as_dict,
 )
 from training.eval_common import snap_tick
@@ -755,19 +757,29 @@ def main(argv: Iterable[str] | None = None) -> int:
     conf_movement = confusion(preds, movement_truth)
     # The independent assigned_n truth — the one truth sharing no input with the
     # model — graded against BOTH published axes. `condition` is the alert-shadow;
-    # `published_arm` is the movement-primary state consumers actually read and the
-    # one a movement-first nowcast lives or dies on. Grading only the shadow would
-    # answer the less interesting question.
+    # `published_arm` is the published condition consumers actually read (the
+    # alerts-graded state as of 2026-09-14) and the arm the review grades. Grading
+    # only the shadow would answer the less interesting question.
     conf_degradation = confusion(preds, degradation_state)
     conf_degradation_published = confusion(preds, degradation_state, arm=published_arm)
     deltas = changepoint_alignment(
         trans, truth, window_start=window_start, window_end=window_end
     )
     clearance = clearance_disruptions(preds)
-    recovery_clearance = independent_recovery_metrics(preds, clearance)
+    # Circularity guard: recovery_clearance grades the published arm's episodes
+    # against alert-feed clearance. On condition_source=='alerts' rows the
+    # published condition IS the alert feed, so that grade is tautological — a
+    # skill number there measures the feed against itself. Grade only the
+    # pre-cutover, movement-sourced published rows and count the excluded ones;
+    # post-2026-09-14 this is empty by construction and the block reports n=0
+    # rather than a self-graded number. (confusion_degradation_published against
+    # the independent assigned_n truth stays valid and is untouched.)
+    clearance_graded, n_excluded_alerts = feed_clearance_gradeable(preds)
+    recovery_clearance = independent_recovery_metrics(clearance_graded, clearance)
     print(
         f"  recovery vs feed-clearance: {len(clearance)} disruptions, "
-        f"n={recovery_clearance.overall.n} graded ticks"
+        f"n={recovery_clearance.overall.n} graded ticks "
+        f"({n_excluded_alerts} alerts-sourced rows excluded as tautological)"
     )
     # True service recovery: recovery_minutes graded against disruptions derived
     # from the trip-updates assigned_n series — the truth sharing no input with
@@ -935,7 +947,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         conf_degradation_published,
         out_dir / "confusion_degradation_published.png",
         truth_label="assigned_n degraded-now (trip-updates)",
-        title="Regime confusion: movement-primary published condition vs "
+        title=f"Regime confusion: {published_arm_label(preds)} vs "
         "independent assigned_n truth (row-normalized)",
     )
     plot_changepoint_alignment(deltas, out_dir / "changepoint_alignment.png")
@@ -972,9 +984,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         # argmax-based `recovery`. A feed-clearance proxy, not true service
         # recovery (that's the trip-updates signal).
         "recovery_clearance": {
-            **recovery_as_dict(recovery_clearance, graded_arm=MOVEMENT_ARM_LABEL),
+            **recovery_as_dict(
+                recovery_clearance, graded_arm=published_arm_label(clearance_graded)
+            ),
+            "source_composition": published_arm_source_composition(clearance_graded),
             "truth_source": "alert_feed_clearance",
             "n_disruptions": len(clearance),
+            "excluded_alerts_sourced_rows": n_excluded_alerts,
+            "circularity_note": (
+                "graded only on condition_source != 'alerts' (pre-2026-09-14, "
+                "movement-sourced published) rows: on 'alerts' rows the published "
+                "condition is the alert feed, so grading it against alert-feed "
+                "clearance is tautological. Empty post-cutover -> n=0, not a "
+                "self-graded skill number."
+            ),
         },
         "recovery_independent": recovery_independent,
         "current_params": eval_doc["current_params"],
@@ -1003,8 +1026,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         # no input with the model, and unlike the severe-alert truth not dominated
         # by chronic standing advisories, so it can actually grade a movement
         # signal. Graded against both published axes: `_shadow` is the alert-driven
-        # `condition`; `_published` is the movement-primary state consumers read,
-        # the arm a movement-first nowcast is judged on.
+        # `condition`; `_published` is the published condition consumers read (the
+        # alerts-graded state as of 2026-09-14), graded against the independent
+        # assigned_n truth — orthogonal to alerts, so not a self-grade.
         "confusion_degradation": {
             "matrix_shadow": conf_degradation,
             "matrix_published": conf_degradation_published,

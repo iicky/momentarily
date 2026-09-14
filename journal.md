@@ -9874,3 +9874,42 @@ score window resolved to 2026-09-07..09-14) is historical-shadow-HMM based, so i
 scorecard (onset 2/46, 15 false alarms) is unchanged and cannot itself show the floor's
 effect. Net: a structural guard against a future sustained degenerate-baseline freeze,
 with no disruption removals — and so no detection change — observed on this calm window.
+
+## 2026-09-14 — retiring the movement/HMM arms from the published condition drops the 'unknown' share from 29% to the alert feed's own downtime; a carry-forward caveat on the after disrupted count
+
+origin: agent
+
+The published route_status.condition moves from movement-primary to the
+severity-graded alert read (derive_graded_mta_state at the canonical severe-only
+floor, ported to worker/src/mapping.ts and parity-pinned against the Python rule).
+Replayed one archived UTC day, 2026-09-13 (8,352 route-ticks over 278 ticks; before
+= the movement-primary condition from v1/predictions, after-unknown from
+archive/alerts_liveness). BEFORE unknown 2,422/8,352 = 29.0% — dominated by
+low-data shuttle/limited routes (FS/H/SI/GS/7X/6X/FX all day, plus movement-null
+ticks on 5/M/3/L/7/C) where train movement could not judge. AFTER unknown 0.0%:
+alerts_liveness recorded 288/288 successful fetches (0 fetch failures), and no tick
+showed the feed-wide all-routes-unknown signature of a parse-degraded payload (a
+state liveness does not record) — so under the new resolver, which yields unknown
+only on a fetch failure or an unparsed payload, the day carries none. The 0.0% is
+exact on the fetch-failure axis (liveness) and heuristic-clean on the parse-degrade
+axis (no all-unknown tick). Where the 2,422 before-unknown route-ticks land depends
+on the after method: the live-primary cross-check (the Worker's own per-tick
+primary) grades all 2,422 normal; the canonical archive reconstruction grades 2,370
+normal, 35 disrupted, 17 suspended (the open-ended carry-forward discussed below).
+The unknown share itself is invariant to that split — it is purely alert-feed
+liveness.
+
+Unresolved divergence on the after DISRUPTED count, worth pinning. The Worker's own
+per-tick primary_alert_type (what the live resolver actually grades) shows ZERO
+tier>=2 primaries on 2026-09-13 — the highest primary tier all day is 1 (Delays,
+Reduced Service, Stops Skipped) — so the live-faithful after is all normal /
+not_scheduled, 0 disrupted. But the canonical review reconstruction
+(build_tick_observations + presence mask + derive_graded_mta_state, which
+deliberately carries open-ended active periods forward) grades 2,726 route-ticks
+disrupted: 69 of 70 Severe Delays versions in the 35-day archive are open-ended and
+0 were posted on 2026-09-13, so they extend into the day on cells the presence mask
+keeps active (the route carried a lower-tier alert, so the mask cannot drop them).
+Whether those severe alerts were still active or had silently dropped from the live
+feed the archive cannot distinguish; the live primary (Delays) implies dropped. Any
+severe-episode count taken off the archive must account for this carry-forward; the
+live per-tick feed the Worker publishes from does not have it.

@@ -147,7 +147,7 @@ function pNormal(
   const status = snap.route_status.A!;
   const inf = full.get('A')!;
   expect(status.condition).toBe('normal');
-  expect(status.condition_source).toBe('movement');
+  expect(status.condition_source).toBe('alerts');
   expect(inf.condition).toBe('normal');
   expect(inf.recovery_source).toBe('movement');
   return {
@@ -247,9 +247,10 @@ describe('p_normal_in_H for a route whose published condition is movement-normal
     });
     const status = snap.route_status.A!;
     const inf = full.get('A')!;
-    // The published condition is still movement-sourced...
+    // The published condition is the alert-graded read — no alert here, so it
+    // grades 'normal' (source 'alerts'); movement no longer sources it.
     expect(status.condition).toBe('normal');
-    expect(status.condition_source).toBe('movement');
+    expect(status.condition_source).toBe('alerts');
     // ...but with no dwell_movement cell for this route, the forecast is
     // withheld outright, and recovery_source falls back to the untouched
     // alert-HMM default rather than claiming 'movement'.

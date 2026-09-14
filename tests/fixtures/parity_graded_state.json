@@ -1,0 +1,441 @@
+{
+  "canonical_floor": 2,
+  "severity": [
+    {
+      "alert_type": "Suspended",
+      "tier": 3
+    },
+    {
+      "alert_type": "No Trains",
+      "tier": 3
+    },
+    {
+      "alert_type": "No Uptown Service",
+      "tier": 3
+    },
+    {
+      "alert_type": "No Northbound Service",
+      "tier": 3
+    },
+    {
+      "alert_type": "Part Suspended",
+      "tier": 1
+    },
+    {
+      "alert_type": "Severe Delays",
+      "tier": 2
+    },
+    {
+      "alert_type": "Delays",
+      "tier": 1
+    },
+    {
+      "alert_type": "Some Delays",
+      "tier": 1
+    },
+    {
+      "alert_type": "Slow Speeds",
+      "tier": 1
+    },
+    {
+      "alert_type": "Service Change",
+      "tier": 1
+    },
+    {
+      "alert_type": "Trains Rerouted",
+      "tier": 1
+    },
+    {
+      "alert_type": "Reroute",
+      "tier": 1
+    },
+    {
+      "alert_type": "Stops Skipped",
+      "tier": 1
+    },
+    {
+      "alert_type": "Stations Skipped",
+      "tier": 1
+    },
+    {
+      "alert_type": "Local to Express",
+      "tier": 1
+    },
+    {
+      "alert_type": "Express to Local",
+      "tier": 1
+    },
+    {
+      "alert_type": "Reduced Service",
+      "tier": 1
+    },
+    {
+      "alert_type": "Boarding Change",
+      "tier": 1
+    },
+    {
+      "alert_type": "Cancellations",
+      "tier": 1
+    },
+    {
+      "alert_type": "Track Change",
+      "tier": 1
+    },
+    {
+      "alert_type": "Weather",
+      "tier": 1
+    },
+    {
+      "alert_type": "Station Notice",
+      "tier": 0
+    },
+    {
+      "alert_type": "Special Schedule",
+      "tier": 0
+    },
+    {
+      "alert_type": "Information",
+      "tier": 0
+    },
+    {
+      "alert_type": "Other",
+      "tier": 0
+    },
+    {
+      "alert_type": "Planned - Track Maintenance",
+      "tier": 0
+    },
+    {
+      "alert_type": "Planned Work",
+      "tier": 0
+    },
+    {
+      "alert_type": "Brand New Mystery Type",
+      "tier": 0
+    }
+  ],
+  "graded": [
+    {
+      "alert_types": [],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Delays"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Some Delays"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Slow Speeds"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Severe Delays"
+      ],
+      "floor": 2,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Suspended"
+      ],
+      "floor": 2,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "No Trains"
+      ],
+      "floor": 2,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "No Uptown Service"
+      ],
+      "floor": 2,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "Part Suspended"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Trains Rerouted"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Delays",
+        "Severe Delays"
+      ],
+      "floor": 2,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Delays",
+        "Slow Speeds"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Suspended",
+        "Delays"
+      ],
+      "floor": 2,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "Suspended",
+        "Severe Delays"
+      ],
+      "floor": 2,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "Severe Delays",
+        "Trains Rerouted"
+      ],
+      "floor": 2,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Planned - Track Maintenance"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Planned - Track Maintenance",
+        "Delays"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Planned - Track Maintenance",
+        "Severe Delays"
+      ],
+      "floor": 2,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Station Notice"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Information",
+        "Station Notice"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Brand New Mystery Type"
+      ],
+      "floor": 2,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Brand New Mystery Type",
+        "Severe Delays"
+      ],
+      "floor": 2,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [],
+      "floor": 1,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Some Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Slow Speeds"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Severe Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Suspended"
+      ],
+      "floor": 1,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "No Trains"
+      ],
+      "floor": 1,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "No Uptown Service"
+      ],
+      "floor": 1,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "Part Suspended"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Trains Rerouted"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Delays",
+        "Severe Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Delays",
+        "Slow Speeds"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Suspended",
+        "Delays"
+      ],
+      "floor": 1,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "Suspended",
+        "Severe Delays"
+      ],
+      "floor": 1,
+      "expected": "suspended"
+    },
+    {
+      "alert_types": [
+        "Severe Delays",
+        "Trains Rerouted"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Planned - Track Maintenance"
+      ],
+      "floor": 1,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Planned - Track Maintenance",
+        "Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Planned - Track Maintenance",
+        "Severe Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    },
+    {
+      "alert_types": [
+        "Station Notice"
+      ],
+      "floor": 1,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Information",
+        "Station Notice"
+      ],
+      "floor": 1,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Brand New Mystery Type"
+      ],
+      "floor": 1,
+      "expected": "normal"
+    },
+    {
+      "alert_types": [
+        "Brand New Mystery Type",
+        "Severe Delays"
+      ],
+      "floor": 1,
+      "expected": "disrupted"
+    }
+  ]
+}

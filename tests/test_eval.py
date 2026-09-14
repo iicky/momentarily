@@ -26,6 +26,7 @@ from training.eval import (
     build_independent_recovery,
     calibrate,
     episode_support,
+    feed_clearance_gradeable,
     independent_recovery_metrics,
     load_movement_transitions,
     load_transition_matrices,
@@ -33,6 +34,8 @@ from training.eval import (
     movement_truth_by_key,
     open_regimes_from_predictions,
     prequential_calibration,
+    published_arm_label,
+    published_arm_source_composition,
     published_condition_coverage,
     recovery_metrics,
     snap_tick,
@@ -1014,6 +1017,8 @@ def test_episode_support_never_mixes_in_the_shadow_arm() -> None:
         replace(
             _pred(ts=on_arm_start + i * 300, condition="normal"),
             published_condition="disrupted" if i < 3 else "normal",
+            # Pre-cutover rows: the published condition was movement-sourced.
+            condition_source="movement",
         )
         for i in range(10)
     ]
@@ -1022,7 +1027,10 @@ def test_episode_support_never_mixes_in_the_shadow_arm() -> None:
 
     # The 20 flapping shadow episodes must not appear; only the one real incident.
     assert s["n_episodes"] == 1
+    # An all-movement window reports the honest movement-primary label and its
+    # condition_source composition — never a single-arm name over a mixed window.
     assert s["graded_arm"] == MOVEMENT_ARM_LABEL
+    assert s["source_composition"] == {"movement": len(on_arm)}
     assert s["excluded_pre_arm_rows"] == len(legacy)
     assert s["tick_rows"] == len(on_arm)
     # Covered span starts where the arm does, not where the window was asked to.
@@ -1038,6 +1046,60 @@ def test_episode_support_with_no_published_arm_reports_zero_not_shadow() -> None
     assert s["tick_rows"] == 0
     assert s["excluded_pre_arm_rows"] == 20
     assert s["covered"] is None
+
+
+def test_published_arm_label_reflects_condition_source_mix() -> None:
+    """The published-arm label is derived from the rows' condition_source, so a
+    window straddling the 2026-09-14 cutover is never named for one arm. Only
+    gradeable rows (normal/disrupted/suspended) count toward the composition."""
+    t0 = 1_700_000_000
+
+    def row(i: int, source: str, cond: str = "disrupted") -> PredictionRecord:
+        return replace(
+            _pred(ts=t0 + i * 300, condition="normal"),
+            published_condition=cond,
+            condition_source=source,
+        )
+
+    alerts_only = [row(i, "alerts") for i in range(3)]
+    movement_only = [row(i, "movement") for i in range(3)]
+    mixed = alerts_only + movement_only
+
+    assert published_arm_label(alerts_only) == "published_condition (alerts-primary)"
+    assert published_arm_label(movement_only) == MOVEMENT_ARM_LABEL
+    assert "mixed" in published_arm_label(mixed)
+    assert published_arm_source_composition(mixed) == {"alerts": 3, "movement": 3}
+    # not_scheduled/unknown rows are not gradeable, so they never enter the mix.
+    off = [row(0, "schedule", cond="not_scheduled"), row(1, "unknown", cond="unknown")]
+    assert published_arm_source_composition(off) == {}
+
+
+def test_feed_clearance_gradeable_excludes_alerts_sourced_rows() -> None:
+    """recovery_clearance grades the published arm against alert-feed clearance;
+    on condition_source=='alerts' rows the published condition IS the alert feed,
+    so that grade is tautological. The gradeable set must drop those rows and
+    count them, and be empty (n=0, no self-graded number) post-cutover."""
+    t0 = 1_700_000_000
+
+    def row(i: int, source: str) -> PredictionRecord:
+        return replace(
+            _pred(ts=t0 + i * 300, condition="disrupted"),
+            published_condition="disrupted",
+            condition_source=source,
+        )
+
+    movement = [row(0, "movement"), row(1, "movement")]
+    alerts = [row(2, "alerts"), row(3, "alerts"), row(4, "alerts")]
+
+    graded, excluded = feed_clearance_gradeable(movement + alerts)
+    assert graded == movement
+    assert excluded == len(alerts)
+
+    # Post-cutover (all alerts-sourced): nothing to grade, so the block reports
+    # n=0 rather than the alert feed graded against itself.
+    graded_post, excluded_post = feed_clearance_gradeable(alerts)
+    assert graded_post == []
+    assert excluded_post == len(alerts)
 
 
 def test_build_by_line_support_is_route_scoped() -> None:

@@ -45,6 +45,8 @@ function stationsCatalog(): Record<string, StationOut> {
       ada: 0,
       ada_northbound: false,
       ada_southbound: false,
+      lat: null,
+      lon: null,
     };
   }
   // Direct-match stations (all simple gtfs_stop_ids from the fixture)

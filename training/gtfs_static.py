@@ -31,6 +31,7 @@ import hashlib
 import io
 import itertools
 import json
+import math
 import statistics
 import zipfile
 from collections import Counter, defaultdict
@@ -933,6 +934,181 @@ def patterns_to_json(
             {"stops": list(p.stops), "n_trips": p.n_trips} for p in pats
         ]
         for (route, direction), pats in sorted(patterns.items())
+    }
+
+
+# --- route shape polylines from shapes.txt ----------------------------------
+
+# Ramer-Douglas-Peucker tolerance in degrees.  At NYC latitudes (~40.7°N)
+# 1° latitude ≈ 111 km, 1° longitude ≈ 85 km, so 0.0001° ≈ 8-11 m.
+# This keeps the visual fidelity well within one city block while cutting
+# the point count roughly 5-10×.
+RDP_TOLERANCE = 0.0001
+
+
+def _perpendicular_distance(
+    pt: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    """Perpendicular distance of *pt* from the line segment *start*→*end*,
+    in the same coordinate units (degrees). Good enough for the small
+    distances RDP operates on at city scale."""
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    denom = dx * dx + dy * dy
+    if denom == 0.0:
+        return ((pt[0] - start[0]) ** 2 + (pt[1] - start[1]) ** 2) ** 0.5
+    t = ((pt[0] - start[0]) * dx + (pt[1] - start[1]) * dy) / denom
+    t = max(0.0, min(1.0, t))
+    proj_x = start[0] + t * dx
+    proj_y = start[1] + t * dy
+    return ((pt[0] - proj_x) ** 2 + (pt[1] - proj_y) ** 2) ** 0.5
+
+
+def rdp(
+    points: list[tuple[float, float]], tolerance: float
+) -> list[tuple[float, float]]:
+    """Ramer-Douglas-Peucker polyline simplification (iterative stack)."""
+    if len(points) <= 2:
+        return points
+    stack: list[tuple[int, int]] = [(0, len(points) - 1)]
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    while stack:
+        lo, hi = stack.pop()
+        max_dist = 0.0
+        max_idx = lo
+        for i in range(lo + 1, hi):
+            d = _perpendicular_distance(points[i], points[lo], points[hi])
+            if d > max_dist:
+                max_dist = d
+                max_idx = i
+        if max_dist > tolerance:
+            keep[max_idx] = True
+            if max_idx - lo > 1:
+                stack.append((lo, max_idx))
+            if hi - max_idx > 1:
+                stack.append((max_idx, hi))
+    return [p for p, k in zip(points, keep, strict=True) if k]
+
+
+def read_shapes(zf: zipfile.ZipFile) -> dict[str, list[tuple[float, float]]]:
+    """shape_id → ordered [(lat, lon), ...] from shapes.txt."""
+    rows = _rows(zf, "shapes.txt")
+    if not rows:
+        return {}
+    by_shape: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
+    for r in rows:
+        try:
+            lat = float(r["shape_pt_lat"])
+            lon = float(r["shape_pt_lon"])
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            by_shape[r["shape_id"]].append((int(r["shape_pt_sequence"]), lat, lon))
+        except (KeyError, ValueError):
+            continue
+    return {
+        sid: [(lat, lon) for _, lat, lon in sorted(pts)]
+        for sid, pts in by_shape.items()
+    }
+
+
+def _trip_shape_direction(
+    zf: zipfile.ZipFile,
+) -> dict[str, tuple[str, str]]:
+    """shape_id → (base_route, direction) via trips.txt + stop_times.txt.
+
+    Direction is derived from the first stop's N/S suffix (the same
+    ``direction_of`` convention the rest of the codebase uses), NOT from
+    ``direction_id``, which GTFS defines only as opposite pairs with no
+    compass semantics.
+
+    When multiple trips share a shape, the majority-vote direction wins.
+    """
+    with zf.open("trips.txt") as raw:
+        meta = _trip_meta(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+
+    # trip_id → shape_id from trips.txt
+    trip_shape: dict[str, str] = {}
+    with zf.open("trips.txt") as raw:
+        reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+        for row in reader:
+            sid = row.get("shape_id", "").strip()
+            if sid:
+                trip_shape[row["trip_id"]] = sid
+
+    # trip_id → first stop_id (by stop_sequence) for direction derivation
+    trip_first_stop: dict[str, tuple[int, str]] = {}
+    with zf.open("stop_times.txt") as raw:
+        reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+        header = next(reader)
+        trip_col = header.index("trip_id")
+        stop_col = header.index("stop_id")
+        seq_col = header.index("stop_sequence")
+        for row in reader:
+            tid = row[trip_col]
+            seq = int(row[seq_col])
+            prev = trip_first_stop.get(tid)
+            if prev is None or seq < prev[0]:
+                trip_first_stop[tid] = (seq, row[stop_col])
+
+    # Accumulate (route, direction) votes per shape_id
+    shape_votes: dict[str, Counter[tuple[str, str]]] = defaultdict(Counter)
+    for tid, sid in trip_shape.items():
+        route_info = meta.get(tid)
+        if route_info is None:
+            continue
+        route = route_info[0]
+        first = trip_first_stop.get(tid)
+        if first is None:
+            continue
+        d = direction_of(first[1], tid)
+        if d is not None:
+            shape_votes[sid][(route, d)] += 1
+
+    return {
+        sid: votes.most_common(1)[0][0] for sid, votes in shape_votes.items() if votes
+    }
+
+
+def route_shapes(
+    zf: zipfile.ZipFile,
+    tolerance: float = RDP_TOLERANCE,
+) -> dict[tuple[str, str], list[tuple[float, float]]]:
+    """(route, direction) → simplified polyline [(lat, lon), ...].
+
+    When multiple shapes map to the same (route, direction), the longest
+    (most points) wins — it is the primary trunk, not a short-turn variant.
+    """
+    raw_shapes = read_shapes(zf)
+    if not raw_shapes:
+        return {}
+    mapping = _trip_shape_direction(zf)
+
+    # Pick the longest shape per (route, direction).
+    best: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for sid, pts in raw_shapes.items():
+        rd = mapping.get(sid)
+        if rd is None:
+            continue
+        existing = best.get(rd)
+        if existing is None or len(pts) > len(existing):
+            best[rd] = pts
+
+    return {key: rdp(pts, tolerance) for key, pts in sorted(best.items())}
+
+
+def shapes_to_json(
+    shapes: Mapping[tuple[str, str], list[tuple[float, float]]],
+) -> dict[str, dict[str, Any]]:
+    """Serialize for segment_params.json / the snapshot surface:
+    'route|direction' → {coordinates: [[lat, lon], ...]}."""
+    return {
+        f"{route}|{direction}": {
+            "coordinates": [[round(lat, 6), round(lon, 6)] for lat, lon in pts],
+        }
+        for (route, direction), pts in sorted(shapes.items())
     }
 
 

@@ -26,6 +26,7 @@ def make_gtfs_bytes(
     calendar_rows: list[str] | None = None,
     calendar_dates_rows: list[str] | None = None,
     feed_info_row: str | None = None,
+    shapes_rows: list[str] | None = None,
 ) -> bytes:
     """A synthetic static-GTFS zip, so the parsers can be exercised without the
     5 MB network fetch. Rows are raw CSV lines in the column order the headers
@@ -70,6 +71,14 @@ def make_gtfs_bytes(
                 [feed_info_row or f"Test,EN,20260101,20261231,{FEED_VERSION}"],
             ),
         )
+        if shapes_rows is not None:
+            zf.writestr(
+                "shapes.txt",
+                _csv(
+                    "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence",
+                    shapes_rows,
+                ),
+            )
     return buf.getvalue()
 
 
@@ -80,6 +89,7 @@ def make_gtfs_zip(
     calendar_rows: list[str] | None = None,
     calendar_dates_rows: list[str] | None = None,
     feed_info_row: str | None = None,
+    shapes_rows: list[str] | None = None,
 ) -> zipfile.ZipFile:
     """make_gtfs_bytes, opened for the parsers that take a zip directly."""
     return zipfile.ZipFile(
@@ -90,6 +100,7 @@ def make_gtfs_zip(
                 calendar_rows=calendar_rows,
                 calendar_dates_rows=calendar_dates_rows,
                 feed_info_row=feed_info_row,
+                shapes_rows=shapes_rows,
             )
         )
     )

@@ -127,6 +127,8 @@ function stationFixture(parentId: string, complexId: string | null): StationOut 
     station_complex_id: complexId,
     name: `Station ${parentId}`,
     borough: 'Manhattan',
+    lat: 40.75,
+    lon: -73.99,
     routes_served: ['A'],
     ada: 0,
     ada_northbound: false,

@@ -598,7 +598,8 @@ def _run_diagnostic(
 
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
-        "training.train_em.static_topology", lambda: (None, None, "observed")
+        "training.train_em.static_topology",
+        lambda: (None, None, None, None, "observed"),
     )
 
     def _fake_movement_baseline(*a: object, **k: object) -> MovementInputs:

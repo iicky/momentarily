@@ -68,6 +68,22 @@ match a single station — a consumer joins these via `Station.station_complex_i
 The `coverage` block reports both `station_coverage` (direct only) and
 `station_coverage_effective` (including the complex fallback) so a consumer can
 see completeness without computing the join.
+## Route shapes URL
+
+Per-(route, direction) geographic polylines from GTFS static `shapes.txt`,
+simplified with Ramer-Douglas-Peucker at 0.0001° (~8–11 m at NYC latitude).
+Published by the weekly trainer, not the Worker:
+
+```
+https://feed.momentarily.nyc/v1/route_shapes.json
+```
+
+52 (route, direction) keys, ~70 KB. Keyed as `route|direction` (same
+convention as `segment_flow` / `route_stops`). Each entry is a `[lat, lon]`
+coordinate array. The envelope carries its own `provenance`, `tolerance_degrees`,
+and `feed_version` so a consumer can trace the GTFS timetable and the
+simplification parameters. Versioned copies live at
+`v1/route_shapes/<feed_version>.json`.
 
 ## What's in the snapshot
 

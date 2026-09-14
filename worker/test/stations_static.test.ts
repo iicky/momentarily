@@ -27,6 +27,8 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
     ada: '1',
     ada_northbound: '1',
     ada_southbound: '1',
+    gtfs_latitude: '40.770258',
+    gtfs_longitude: '-73.917843',
     ...over,
   };
 }
@@ -55,6 +57,8 @@ describe('parseStationsFeed', () => {
       station_complex_id: '2',
       name: 'Astoria Blvd',
       borough: 'Queens',
+      lat: 40.770258,
+      lon: -73.917843,
       routes_served: ['N', 'W'],
       ada: 1,
       ada_northbound: true,
@@ -76,6 +80,15 @@ describe('parseStationsFeed', () => {
   test('an unknown borough code passes through unchanged', () => {
     const [s] = parseStationsFeed([row({ borough: 'XX' })]);
     expect(s?.borough).toBe('XX');
+  });
+
+  test('missing or non-numeric lat/lon coerce to null', () => {
+    const [a] = parseStationsFeed([row({ gtfs_latitude: undefined, gtfs_longitude: undefined })]);
+    expect(a?.lat).toBeNull();
+    expect(a?.lon).toBeNull();
+    const [b] = parseStationsFeed([row({ gtfs_latitude: 'bad', gtfs_longitude: '' })]);
+    expect(b?.lat).toBeNull();
+    expect(b?.lon).toBeNull();
   });
 });
 

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import pytest
+from botocore.exceptions import ClientError
 
 from momentarily.hmm import EmissionParams, HMMParams, Observation, schedule_bin
 from training.dwell import DwellQuantiles
@@ -1082,7 +1083,7 @@ def test_main_passes_movement_baseline_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1196,7 +1197,7 @@ def test_main_threads_service_baselines_to_their_writers(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1308,7 +1309,7 @@ def test_main_passes_advance_priors_through_to_train(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1385,7 +1386,7 @@ def test_main_refuses_empty_movement_baseline(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1477,7 +1478,7 @@ def test_main_passes_dwell_by_cause_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1591,7 +1592,7 @@ def test_main_fits_dwell_quantiles_and_by_cause_on_the_wider_window(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -1794,6 +1795,126 @@ def test_write_segment_params_stamps_provenance_and_route_stops(
     assert doc["route_stops"]["A|north"] == [
         {"stops": ["A01N", "A02N", "A03N"], "n_trips": 5}
     ]
+    assert "route_shapes" not in doc
+
+
+def test_write_route_shapes_publishes_live_and_versioned_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """write_route_shapes writes v1/route_shapes.json (live) and
+    v1/route_shapes/<feed_version>.json (immutable) with the conductor-
+    specified cache policy and a schema-valid envelope."""
+    from training.publish_params import (
+        ROUTE_SHAPES_CACHE,
+        ROUTE_SHAPES_KEY,
+        ROUTE_SHAPES_PREFIX,
+        write_route_shapes,
+    )
+
+    monkeypatch.setattr(
+        "training.publish_params.code_provenance",
+        lambda: {"code_sha": "abc", "dirty": False, "producer": "test"},
+    )
+    fake = _FakeS3()
+    shapes = {("A", "north"): [(40.7, -74.0), (40.73, -73.985)]}
+    n, versioned_written = write_route_shapes(
+        cast("S3Client", fake),
+        "test-bucket",
+        shapes,
+        tolerance=0.0001,
+        feed_version="TEST-20260807",
+    )
+    assert n == 1
+    assert versioned_written is True
+
+    # Both keys written
+    assert ROUTE_SHAPES_KEY in fake.objects
+    versioned_key = f"{ROUTE_SHAPES_PREFIX}TEST-20260807.json"
+    assert versioned_key in fake.objects
+    assert fake.objects[ROUTE_SHAPES_KEY] == fake.objects[versioned_key]
+
+    # Cache policy matches conductor spec
+    assert fake.cache_control[ROUTE_SHAPES_KEY] == ROUTE_SHAPES_CACHE
+    assert fake.cache_control[versioned_key] == ROUTE_SHAPES_CACHE
+
+    # Envelope is schema-valid
+    doc = json.loads(fake.objects[ROUTE_SHAPES_KEY])
+    assert doc["provenance"]["code_sha"] == "abc"
+    assert doc["tolerance_degrees"] == 0.0001
+    assert doc["feed_version"] == "TEST-20260807"
+    assert doc["shapes"]["A|north"]["coordinates"] == [
+        [40.7, -74.0],
+        [40.73, -73.985],
+    ]
+    # Validate against Pydantic contract
+    from momentarily.schema import PublishedRouteShapes
+
+    PublishedRouteShapes.model_validate(doc)
+
+
+def test_write_route_shapes_immutable_versioned_key_not_overwritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The versioned v1/route_shapes/<feed_version>.json is immutable: a
+    second write with the same feed_version must not overwrite it (412
+    PreconditionFailed from IfNoneMatch='*')."""
+    from training.publish_params import (
+        ROUTE_SHAPES_PREFIX,
+        write_route_shapes,
+    )
+
+    monkeypatch.setattr(
+        "training.publish_params.code_provenance",
+        lambda: {"code_sha": "abc", "dirty": False, "producer": "test"},
+    )
+
+    class _ConditionalFakeS3(_FakeS3):
+        def put_object(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            Body: bytes,
+            CacheControl: str | None = None,
+            **kwargs: object,
+        ) -> None:
+            if kwargs.get("IfNoneMatch") == "*" and Key in self.objects:
+                raise ClientError(
+                    {"Error": {"Code": "PreconditionFailed"}},
+                    "PutObject",
+                )
+            self.objects[Key] = Body
+            self.cache_control[Key] = CacheControl
+
+    fake = _ConditionalFakeS3()
+    shapes = {("A", "north"): [(40.7, -74.0), (40.73, -73.985)]}
+    # First write succeeds
+    _n1, written1 = write_route_shapes(
+        cast("S3Client", fake),
+        "test-bucket",
+        shapes,
+        tolerance=0.0001,
+        feed_version="V1",
+    )
+    assert written1 is True
+    versioned_key = f"{ROUTE_SHAPES_PREFIX}V1.json"
+    first_body = fake.objects[versioned_key]
+
+    # Second write with same feed_version: versioned key untouched, live updated
+    shapes2 = {("A", "north"): [(40.71, -74.01), (40.74, -73.99)]}
+    _n2, written2 = write_route_shapes(
+        cast("S3Client", fake),
+        "test-bucket",
+        shapes2,
+        tolerance=0.0001,
+        feed_version="V1",
+    )
+    assert written2 is False
+    # Versioned key was NOT overwritten (immutable)
+    assert fake.objects[versioned_key] == first_body
+    # Live pointer WAS updated
+    live_doc = json.loads(fake.objects["v1/route_shapes.json"])
+    assert live_doc["shapes"]["A|north"]["coordinates"][0] == [40.71, -74.01]
 
 
 def test_write_segment_dwell_reconstructs_from_through_stops_only(
@@ -1987,7 +2108,7 @@ def test_main_passes_movement_dwell_through_to_write_params(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(
@@ -2249,7 +2370,7 @@ def test_main_publishes_prov_sidecar_and_threads_prov_ref(
     monkeypatch.setattr("training.train_em.load_config", _fake_load_config)
     monkeypatch.setattr(
         "training.train_em.static_topology",
-        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, "gtfs_static"),
+        lambda: (_STATIC_SUCCESSORS, _STATIC_PATTERNS, None, None, "gtfs_static"),
     )
     monkeypatch.setattr("training.train_em.make_client", _fake_make_client)
     monkeypatch.setattr(

@@ -558,6 +558,7 @@ interface PlatformCrowdingOut {
   abstained: Record<string, number>;
 }
 
+
 export interface Snapshot {
   schema_version: string;
   generated_at: number;
@@ -960,6 +961,7 @@ export function buildSnapshot(args: {
     compat,
   };
 }
+
 
 function buildSystemStatus(
   routeStatuses: Record<string, RouteStatusOut>,

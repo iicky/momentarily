@@ -55,7 +55,7 @@ from training.dwell import (
     compute_dwell_quantiles_by_alert,
     compute_dwell_quantiles_by_cause,
 )
-from training.gtfs_static import stops_to_json, through_stops
+from training.gtfs_static import RDP_TOLERANCE, stops_to_json, through_stops
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     SERVICE_MIN_NIGHTS,
@@ -88,6 +88,7 @@ from training.prov import ArtifactFacts
 from training.publish_params import (
     DWELL_WINDOW_DAYS,
     PARAMS_KEY,
+    ROUTE_SHAPES_PREFIX,
     SERVICE_SIDECAR_WINDOW_DAYS,
     VERSIONED_PROV_PREFIX,
     VERSIONED_SCHEDULED_HEADWAY_PREFIX,
@@ -104,6 +105,7 @@ from training.publish_params import (
     static_topology,
     write_params,
     write_prov,
+    write_route_shapes,
     write_scheduled_headway,
     write_segment_dwell,
     write_segment_params,
@@ -1081,7 +1083,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     # One static-timetable fetch for the whole run: it decides which stops the
     # advance baseline is fitted on, which set ships to the Worker, and the
     # published segment topology.
-    static_successors, static_patterns, topology_source = static_topology()
+    (
+        static_successors,
+        static_patterns,
+        static_shapes,
+        gtfs_feed_version,
+        topology_source,
+    ) = static_topology()
     through = None if static_successors is None else through_stops(static_successors)
     # Movement advance-rate baseline + raw per-tick counts over the window. The
     # baseline ships to the Worker and seeds each route's normal-state prior; the
@@ -1533,6 +1541,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         prov_ref=prov_ref,
         pending=pending,
     )
+    n_route_shape_keys = 0
+    route_shapes_versioned = False
+    if static_shapes:
+        n_route_shape_keys, route_shapes_versioned = write_route_shapes(
+            client,
+            cfg.bucket,
+            static_shapes,
+            RDP_TOLERANCE,
+            gtfs_feed_version,
+            pending=pending,
+        )
     n_segment_dwell_cells, segment_dwell_stats = write_segment_dwell(
         client, cfg.bucket, start_date, end_date, trained_at, through, pending=pending
     )
@@ -1566,6 +1585,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                 f"{VERSIONED_SEGMENT_PREFIX}v{trained_at}.json",
                 derived_from_feed=(topology_source == "gtfs_static"),
                 derived_from_manifest=True,
+            )
+        )
+    if route_shapes_versioned:
+        prov_artifacts.append(
+            ArtifactFacts(
+                "route_shapes",
+                f"{ROUTE_SHAPES_PREFIX}{gtfs_feed_version or 'unknown'}.json",
+                derived_from_feed=True,
             )
         )
     if n_scheduled_headway_cells:
@@ -1626,7 +1653,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"[own={segment_dwell_stats.n_cells_own}, "
         f"route={segment_dwell_stats.n_cells_route}, "
         f"system={segment_dwell_stats.n_cells_system}], "
-        f"scheduled_headway_cells={n_scheduled_headway_cells})"
+        f"scheduled_headway_cells={n_scheduled_headway_cells}, "
+        f"route_shape_keys={n_route_shape_keys})"
     )
     return 0
 

@@ -27,9 +27,10 @@ from training.gtfs_static import (
     SegmentKey,
     dominant_successor,
     fetch_gtfs_zip,
-    load_topology,
     patterns_to_json,
     read_version,
+    route_shapes,
+    shapes_to_json,
 )
 from training.headway import (
     SCHEDULED_HEADWAY_NOTE,
@@ -401,10 +402,13 @@ VERSIONED_SEGMENT_PREFIX = "state/segment_params/"
 def static_topology() -> tuple[
     dict[SegmentKey, list[tuple[str, int]]] | None,
     dict[tuple[str, str], list[RoutePattern]] | None,
+    dict[tuple[str, str], list[tuple[float, float]]] | None,
+    str | None,
     str,
 ]:
-    """The static successor skeleton and stopping patterns for this run, or
-    (None, None, "observed") with the reason printed.
+    """The static successor skeleton, stopping patterns, route shapes, and
+    feed_version for this run, or (None, None, None, None, "observed") with
+    the reason printed.
 
     Fetched once and shared: the advance baseline, the through-stop set it is
     fitted against and the published segment topology all have to describe the
@@ -412,14 +416,21 @@ def static_topology() -> tuple[
     fitted with would judge layovers against a through-stop normal.
     """
     try:
-        successors, patterns = load_topology()
-        return successors, patterns, "gtfs_static"
+        data = fetch_gtfs_zip()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            from training.gtfs_static import read_version, route_patterns, successors
+
+            succ = successors(zf)
+            pats = route_patterns(zf)
+            shapes = route_shapes(zf)
+            version = read_version(zf).version
+        return succ, pats, shapes, version, "gtfs_static"
     except Exception as exc:
         print(
             f"gtfs static topology unavailable, using observed adjacency ({exc})",
             file=sys.stderr,
         )
-        return None, None, "observed"
+        return None, None, None, None, "observed"
 
 
 def _stop_filter(
@@ -572,6 +583,75 @@ def write_segment_params(
     except Exception as exc:
         print(f"segment params skipped ({exc})", file=sys.stderr)
         return 0
+
+
+ROUTE_SHAPES_KEY = "v1/route_shapes.json"
+ROUTE_SHAPES_PREFIX = "v1/route_shapes/"
+# Cache policy per conductor: both the live pointer and the versioned copy
+# use the same 1-day cache.
+ROUTE_SHAPES_CACHE = "public, max-age=86400, s-maxage=86400"
+
+
+def write_route_shapes(
+    client: S3Client,
+    bucket: str,
+    static_shapes: dict[tuple[str, str], list[tuple[float, float]]],
+    tolerance: float,
+    feed_version: str | None,
+    pending: list[DeferredPointer] | None = None,
+) -> tuple[int, bool]:
+    """Publish route shape polylines as a standalone v1/ artifact.
+
+    Writes v1/route_shapes.json (live pointer) and an immutable per-feed-
+    version copy under v1/route_shapes/<feed_version>.json via IfNoneMatch.
+
+    Returns (n_keys, versioned_written): n_keys is the number of published
+    (route, direction) entries; versioned_written is True only when this run
+    created the immutable copy (False on a 412 collision, meaning a prior run
+    already published that feed_version).
+    """
+    shapes_doc = shapes_to_json(static_shapes)
+    if not shapes_doc:
+        return 0, False
+    doc = {
+        "provenance": code_provenance(),
+        "tolerance_degrees": tolerance,
+        "feed_version": feed_version,
+        "shapes": shapes_doc,
+    }
+    body = json.dumps(doc).encode()
+    version_tag = feed_version or "unknown"
+    versioned = f"{ROUTE_SHAPES_PREFIX}{version_tag}.json"
+    # Per-feed-version copy: immutable — atomic create-if-absent via
+    # IfNoneMatch='*'. A concurrent or later run with the same feed_version
+    # gets 412 PreconditionFailed and skips; the live pointer always carries
+    # the latest geometry regardless.
+    versioned_written = True
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=versioned,
+            Body=body,
+            ContentType="application/json",
+            CacheControl=ROUTE_SHAPES_CACHE,
+            IfNoneMatch="*",
+        )
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code not in ("412", "PreconditionFailed"):
+            raise
+        versioned_written = False
+    if pending is None:
+        client.put_object(
+            Bucket=bucket,
+            Key=ROUTE_SHAPES_KEY,
+            Body=body,
+            ContentType="application/json",
+            CacheControl=ROUTE_SHAPES_CACHE,
+        )
+    else:
+        pending.append(DeferredPointer(ROUTE_SHAPES_KEY, body, ROUTE_SHAPES_CACHE))
+    return len(shapes_doc), versioned_written
 
 
 SERVICE_BASELINE_KEY = "state/service_baseline.json"

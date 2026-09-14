@@ -31,6 +31,12 @@ from momentarily.hmm import (
     initial_published_state,
     project_forward,
 )
+from scripts.export_route_shapes_schema import (
+    SCHEMA_PATH as ROUTE_SHAPES_SCHEMA_PATH,
+)
+from scripts.export_route_shapes_schema import (
+    render_schema as render_route_shapes_schema,
+)
 from scripts.export_schema import SCHEMA_PATH, render_schema
 from scripts.gen_parity_fixture import FIXTURE_PATH
 
@@ -54,6 +60,17 @@ def test_committed_schema_matches_pydantic() -> None:
     assert committed == render_schema(), (
         "schema/snapshot.schema.json is stale — "
         "run `uv run python -m scripts.export_schema`"
+    )
+
+
+def test_committed_route_shapes_schema_matches_pydantic() -> None:
+    """schema/route_shapes.schema.json must be regenerated when the Pydantic
+    model changes. If this fails, run:
+    uv run python -m scripts.export_route_shapes_schema"""
+    committed = ROUTE_SHAPES_SCHEMA_PATH.read_text()
+    assert committed == render_route_shapes_schema(), (
+        "schema/route_shapes.schema.json is stale — "
+        "run `uv run python -m scripts.export_route_shapes_schema`"
     )
 
 

@@ -17,6 +17,8 @@ export interface StationOut {
   station_complex_id: string | null;
   name: string;
   borough: string | null;
+  lat: number | null;
+  lon: number | null;
   routes_served: string[];
   ada: 0 | 1 | 2;
   ada_northbound: boolean;
@@ -60,11 +62,17 @@ export function parseStationsFeed(payload: unknown): StationOut[] {
     const name = asString(r.stop_name);
     if (!gtfs_stop_id || !name) continue;
     const boroughCode = asString(r.borough);
+    const latStr = asString(r.gtfs_latitude)?.trim() || null;
+    const lonStr = asString(r.gtfs_longitude)?.trim() || null;
+    const rawLat = latStr !== null ? Number(latStr) : NaN;
+    const rawLon = lonStr !== null ? Number(lonStr) : NaN;
     out.push({
       gtfs_stop_id,
       station_complex_id: asString(r.complex_id),
       name,
       borough: boroughCode ? (BOROUGH_NAMES[boroughCode] ?? boroughCode) : null,
+      lat: Number.isFinite(rawLat) ? rawLat : null,
+      lon: Number.isFinite(rawLon) ? rawLon : null,
       routes_served: asString(r.daytime_routes)?.split(/\s+/).filter(Boolean) ?? [],
       ada: parseAda(r.ada),
       ada_northbound: r.ada_northbound === '1',

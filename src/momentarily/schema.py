@@ -381,6 +381,8 @@ class Station(BaseModel):
     station_complex_id: str | None = None
     name: str
     borough: str | None = None
+    lat: float | None = None
+    lon: float | None = None
     routes_served: list[str] = []
     ada: Literal[0, 1, 2] = 0
     ada_northbound: bool = False
@@ -1031,6 +1033,35 @@ class ArrivalsDoc(BaseModel):
     fresh_feeds: list[str] = []
     expected_feeds: list[str] = []
     arrivals: dict[str, list[Arrival]] = Field(default_factory=dict)
+
+
+class RouteShape(BaseModel):
+    """Geographic polyline for one (route, direction) pair, sourced from GTFS
+    static shapes.txt. Coordinates are [lat, lon] pairs in WGS-84, matching the
+    station lat/lon convention. Simplified from the raw GTFS points to keep
+    the published object compact."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    coordinates: list[tuple[float, float]]
+
+
+class PublishedRouteShapes(BaseModel):
+    """Standalone published artifact at v1/route_shapes.json. Per-(route,
+    direction) geographic polylines from GTFS static shapes.txt, keyed as
+    'route|direction' (same convention as segment_flow / route_stops).
+    Carries its own provenance so a consumer can trace the GTFS version."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    provenance: Provenance = Field(default_factory=Provenance)
+    # RDP simplification tolerance in degrees. At NYC latitudes (~40.7°N)
+    # 0.0001° ≈ 8-11 m.
+    tolerance_degrees: float
+    # GTFS feed_version from feed_info.txt, so a consumer knows which
+    # timetable the geometry was extracted from.
+    feed_version: str | None = None
+    shapes: dict[str, RouteShape] = Field(default_factory=dict)
 
 
 class Snapshot(BaseModel):

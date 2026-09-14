@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "ParamsProvenance": {
+      "description": "Identity of the trained params.json behind this snapshot's inference \u2014 the\none thing code_sha can't say, since the model version moves independently of\nthe deployed Worker. trained_at is the trainer's own version stamp; key is the\nimmutable versioned R2 object it maps to (state/params/v<trained_at>.json), so\na consumer can pin the exact params without a LIST. Both null means the Worker\nis on BOOTSTRAP params (no params.json published yet), not that identity was\nunavailable.",
+      "properties": {
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "trained_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trained At"
+        }
+      },
+      "title": "ParamsProvenance",
+      "type": "object"
+    },
+    "Provenance": {
+      "description": "Which code produced this snapshot. code_sha is the git commit verbatim;\ndirty is null when it couldn't be determined (e.g. a clean-checkout build).",
+      "properties": {
+        "code_sha": {
+          "default": "unknown",
+          "title": "Code Sha",
+          "type": "string"
+        },
+        "dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dirty"
+        },
+        "params": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParamsProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer": {
+          "default": "unknown",
+          "title": "Producer",
+          "type": "string"
+        },
+        "prov_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prov Ref"
+        }
+      },
+      "title": "Provenance",
+      "type": "object"
+    },
+    "RouteShape": {
+      "description": "Geographic polyline for one (route, direction) pair, sourced from GTFS\nstatic shapes.txt. Coordinates are [lat, lon] pairs in WGS-84, matching the\nstation lat/lon convention. Simplified from the raw GTFS points to keep\nthe published object compact.",
+      "properties": {
+        "coordinates": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Coordinates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "coordinates"
+      ],
+      "title": "RouteShape",
+      "type": "object"
+    }
+  },
+  "description": "Standalone published artifact at v1/route_shapes.json. Per-(route,\ndirection) geographic polylines from GTFS static shapes.txt, keyed as\n'route|direction' (same convention as segment_flow / route_stops).\nCarries its own provenance so a consumer can trace the GTFS version.",
+  "properties": {
+    "feed_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Feed Version"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "shapes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RouteShape"
+      },
+      "title": "Shapes",
+      "type": "object"
+    },
+    "tolerance_degrees": {
+      "title": "Tolerance Degrees",
+      "type": "number"
+    }
+  },
+  "required": [
+    "tolerance_degrees"
+  ],
+  "title": "PublishedRouteShapes",
+  "type": "object"
+}

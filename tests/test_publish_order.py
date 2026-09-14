@@ -196,8 +196,8 @@ def _install_publish_stubs(
     def _make_client(config: R2Config | None = None) -> S3Client:
         return cast("S3Client", client)
 
-    def static_topology() -> tuple[None, None, str]:
-        return None, None, "observed"
+    def static_topology() -> tuple[None, None, None, None, str]:
+        return None, None, None, None, "observed"
 
     def _load_series(
         cfg_arg: R2Config, start: date, end: date, **_: object

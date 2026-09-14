@@ -29,6 +29,8 @@ streams accumulate one object per write.
 | `v1/regime_transitions/<date>/<observed_at>.jsonl` | [`grading.ts`](src/grading.ts) `writeTransitions` | every 5-min tick (only on a regime change) |
 | `v1/movement_transitions/<date>/<observed_at>-<scope>.jsonl` | [`grading.ts`](src/grading.ts) `writeMovementTransitions` | every 5-min tick (only on a movement-regime change) |
 | `v1/entrances.json` | [`entrances_static.ts`](src/entrances_static.ts) `publishEntrances` | daily |
+| `v1/route_shapes.json` | weekly Python trainer ([`publish_params.py`](../training/publish_params.py) `write_route_shapes`) | weekly (on GTFS timetable change) |
+| `v1/route_shapes/<feed_version>.json` | weekly Python trainer (immutable per feed_version) | once per feed_version |
 
 `v1/snapshot.json` withholds curve-fitted recovery pending validation (nulled,
 with `recovery_withheld: "pending_validation"`) and publishes the schedule
@@ -48,6 +50,9 @@ absolute `eta_epoch` a consumer recomputes against, with a short
 `Cache-Control: public, max-age=30, s-maxage=30`. `buildSnapshot` can still
 attach the same surface inline when passed, but the cron leaves it off
 `v1/snapshot.json` and publishes the dedicated object instead.
+
+`stations` now carries `lat`/`lon` (nullable, from NYS Open Data 39hk-dx4f
+`gtfs_latitude`/`gtfs_longitude`).
 
 `v1/prov/v<trained_at>.json` also lives under the public prefix but is written by
 the weekly Python trainer, not the Worker; the Worker only derives its public URL

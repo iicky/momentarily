@@ -244,6 +244,8 @@ describe('platform_crowding validates against schema/snapshot.schema.json', () =
         station_complex_id: 'C1',
         name: 'Times Sq-42 St',
         borough: 'Manhattan',
+        lat: 40.7557,
+        lon: -73.9870,
         routes_served: ['1', '2', '3'],
         ada: 1,
         ada_northbound: true,

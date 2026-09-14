@@ -9942,3 +9942,21 @@ layout, and the self-describing cells were kept — a no-store state object off 
 ## 2026-09-14 — recovery climatology keys on the ONSET alert type on both sides, because the serve-time primary drifts mid-incident
 
 The recovery climatology keys cells (route, alert_type). The trainer keys each episode by the primary_alert_type at its onset tick (read from the prediction stream). The Worker must serve on the SAME key — but the naive serve read (the current tick's primary_alert_type) is the wrong one: the primary is chosen by alert sort_order, not severity tier, and it drifts while an incident holds. On the trailing 35d the onset primary is "Delays" on 530 of 735 severe episodes (only 1 "Severe Delays"), because a co-active "Delays" outranks the "Severe Delays" that actually drove the severe-truth condition; as the "Delays" alert clears mid-incident the served primary would flip to "Severe Delays" and jump to a different (often system-pooled) cell with a different duration. So the onset primary is now persisted on the alpha roll (condition_alert_type_at_entry), captured at the moment the condition clock (condition_entered_at) restarts and carried while the condition holds — the same restart predicate as the onset clock, so the type and the clock move together — and the climatology is served on it. Fit and serve now agree on the cell by construction.
+
+## 2026-09-14 — fetch_alert_versions(client=...) still reads the vault: it reloads config to find the bucket
+
+origin: artifact
+
+Landing the recovery-climatology publisher turned 10 previously green trainer tests red
+(tests/test_train_em.py x8, tests/test_publish_order.py x2) with "integrity check failed:
+vault may have been tampered with" — a murk error, in tests that inject a fake S3 client
+and a fake config and never touch R2. The path: train_em.main -> write_recovery_baseline
+-> build_recovery_population -> load_truth_observations, which did `del bucket` and called
+fetch_alert_versions(client=client). That helper takes an optional config and, absent one,
+calls load_config() to learn the bucket — so passing only a client still opens the vault.
+The pattern was inherited verbatim from review.py, where it only ever ran as a CLI with
+real credentials, and went unnoticed until the same function landed in a path unit tests
+exercise. Fixed at the source: load_truth_observations now calls list_alert_keys +
+fetch_objects with the bucket it was given. Rule worth keeping: a function that accepts a
+client and a bucket must never reload config to rediscover either; the four remaining
+fetch_alert_versions call sites all pass a config explicitly.

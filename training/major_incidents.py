@@ -288,7 +288,7 @@ def severe_route_days(start: date, end: date) -> dict[str, int]:
     two must not be subtracted, only read side by side. R2 read; not unit-tested.
     """
     from training.r2_client import load_config, make_client
-    from training.review import load_truth_observations, mta_truth
+    from training.recovery_baseline import load_truth_observations, mta_truth
 
     cfg = load_config()
     client = make_client(cfg)

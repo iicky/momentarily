@@ -60,6 +60,10 @@ from training.r2_client import (
     R2Config,
     get_object_bytes,
 )
+from training.recovery_baseline import (
+    build_climatology_cells,
+    build_recovery_population,
+)
 from training.reliability import MIN_SHARE
 from training.segment_dwell import SegmentDwellStats, build_segment_dwell
 from training.segments import canonical_adjacency
@@ -1030,6 +1034,70 @@ def write_segment_dwell(
     except Exception as exc:
         print(f"segment dwell skipped ({exc})", file=sys.stderr)
         return 0, empty_stats
+
+
+RECOVERY_BASELINE_KEY = "state/recovery_baseline.json"
+VERSIONED_RECOVERY_BASELINE_PREFIX = "state/recovery_baseline/"
+# RETENTION: the versioned state/recovery_baseline/ snapshots are kept forever.
+# Same absence of a training.prune rule as the other publish_params sidecars
+# above (only DATED_PREFIXES and PARAMS_PREFIX are policed) and the same
+# reasoning: one small per-run duration-climatology doc, versioned by
+# `trained_at` like state/params/, so a rollback of a given params.json
+# (docs/params-rollback.md) always has this sidecar's matching version still
+# available to pair with it.
+
+
+def write_recovery_baseline(
+    client: S3Client,
+    bucket: str,
+    start_date: date,
+    end_date: date,
+    trained_at: int,
+    *,
+    prov_ref: str | None = None,
+    pending: list[DeferredPointer] | None = None,
+) -> int:
+    """Publish the causal recovery-duration climatology as its OWN versioned R2
+    object: the empirical distribution of how long severe-truth incidents have
+    actually lasted over the trailing dwell window, keyed (route, alert_type)
+    with pooling, so the Worker can serve the REMAINING duration conditioned on
+    how long a live disruption has already run.
+
+    Recovery is the product's differentiator and every fitted dwell curve has
+    lost to this population (causal_skill still negative), so it is published
+    honestly, from the floor up, as the reference every future conditioner must
+    beat — NOT a fitted curve, and so NOT subject to PUBLISH_FITTED_RECOVERY.
+
+    Built from training.recovery_baseline.build_recovery_population, the ONE
+    population builder the review also grades against, so the served number and
+    the graded number cannot drift.
+
+    NOT fail-soft, unlike write_segment_dwell: the climatology IS the recovery
+    product now, so on each fit it is rebuilt and republished. A real archive
+    read failure propagates and aborts the transactional pointer flip (the
+    previous run stays live consistently) rather than silently serving a stale
+    climatology — the same non-catching contract write_service_baseline keeps.
+    An empty window still publishes an honest empty-cells doc (the Worker then
+    serves no climatology) rather than leaving a stale one live. Returns the
+    observed (route, alert_type) cell count."""
+    # severity_floor defaults to CANONICAL_SEVERITY_FLOOR (severe-only, floor 2)
+    # inside build_recovery_population — the one published climatology's floor.
+    population = build_recovery_population(client, bucket, start_date, end_date)
+    cells = build_climatology_cells(population)
+    n_cells = sum(len(by_at) for by_at in cells["cells"].values())
+    doc: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "trained_at": trained_at,
+        **cells,
+    }
+    if prov_ref is not None:
+        doc["prov_ref"] = prov_ref
+    body = json.dumps(doc).encode()
+    versioned = f"{VERSIONED_RECOVERY_BASELINE_PREFIX}v{trained_at}.json"
+    _publish(
+        client, bucket, RECOVERY_BASELINE_KEY, versioned, body, "no-store", pending
+    )
+    return n_cells
 
 
 # --- publish plausibility gate -------------------------------------------

@@ -9913,3 +9913,32 @@ Whether those severe alerts were still active or had silently dropped from the l
 feed the archive cannot distinguish; the live primary (Delays) implies dropped. Any
 severe-episode count taken off the archive must account for this carry-forward; the
 live per-tick feed the Worker publishes from does not have it.
+## 2026-09-14 — the first published recovery numbers: the causal duration climatology, served straight
+
+Every fitted recovery curve has lost to the empirical duration climatology (causal_skill
+-1.70 -> -0.17, still negative), so recovery is now published from the floor up: the
+empirical distribution of how long severe-truth incidents have actually lasted, keyed
+(route, alert_type) with pooling, conditioned at serve time on how long the live
+disruption has already run (D - t | D > t), served straight — NOT a fitted curve, NOT
+subject to PUBLISH_FITTED_RECOVERY. It is the yardstick every future conditioner must beat.
+
+First real numbers, trailing 35d (2026-08-11..09-14, floor=2, one shared population builder
+the review also grades against): 818 severe-truth episodes, 776 kept (uncensored,
+non-standing), 735 with an onset primary_alert_type, over 15 routes. System-wide median
+45 min, IQR [25, 120]. Busiest routes: 2 (n=133, 45 [25,100]); A (n=99, 45 [30,92.5]);
+D (n=85, 40 [20,85]). Of 76 observed (route, alert_type) pairs at MIN=8: 16 stand alone at
+route level, 47 pool to their alert type, 13 pool system-wide.
+
+Non-obvious finding worth the number: the onset primary_alert_type is dominated by "Delays"
+(530 of 735), with "Severe Delays" appearing once and "Suspended" once — even though every
+kept episode is severe-truth (a tier>=2 alert triggered it). The Worker picks primary by
+sort_order, not by severity tier, so the served label at onset is usually "Delays" while a
+co-active "Severe Delays" drove the truth. Cells therefore key on "Delays", and — critically
+— the trainer reads the cell key off the SAME prediction-stream primary_alert_type the Worker
+serves on, so the two cannot disagree about which cell backs a route. Sidecar is ~101 KiB
+(per-pair self-contained inline samples; measured against ~14 KiB for a pooled-by-reference
+layout, and the self-describing cells were kept — a no-store state object off the hot path).
+
+## 2026-09-14 — recovery climatology keys on the ONSET alert type on both sides, because the serve-time primary drifts mid-incident
+
+The recovery climatology keys cells (route, alert_type). The trainer keys each episode by the primary_alert_type at its onset tick (read from the prediction stream). The Worker must serve on the SAME key — but the naive serve read (the current tick's primary_alert_type) is the wrong one: the primary is chosen by alert sort_order, not severity tier, and it drifts while an incident holds. On the trailing 35d the onset primary is "Delays" on 530 of 735 severe episodes (only 1 "Severe Delays"), because a co-active "Delays" outranks the "Severe Delays" that actually drove the severe-truth condition; as the "Delays" alert clears mid-incident the served primary would flip to "Severe Delays" and jump to a different (often system-pooled) cell with a different duration. So the onset primary is now persisted on the alpha roll (condition_alert_type_at_entry), captured at the moment the condition clock (condition_entered_at) restarts and carried while the condition holds — the same restart predicate as the onset clock, so the type and the clock move together — and the climatology is served on it. Fit and serve now agree on the cell by construction.

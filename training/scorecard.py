@@ -279,6 +279,15 @@ def episode_recovery(
         "n_scored": len(samples),
         "n_censored_excluded": n_censored,
         "n_no_curve": n_no_curve,
+        # The causal duration climatology's OWN per-EPISODE CRPS — the reference
+        # a future recovery conditioner (alert type, time of day, supply ratio)
+        # is read against: it must score BELOW this to have earned its place. The
+        # per_regime weighting (each incident equal, matching the scorecard's
+        # incident-level framing) of report.causal_baseline_crps, surfaced beside
+        # the counts so the bar a conditioner must beat is one field, not buried
+        # in the report. None when no causal baseline was supplied (e.g. the
+        # movement arm), exactly as causal_skill is.
+        "climatology_crps": report.per_regime.causal_baseline_crps,
         "report": report_as_dict(report),
         "verdict": verdict_as_dict(recovery_verdict(report)),
     }

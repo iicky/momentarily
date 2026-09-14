@@ -1,0 +1,282 @@
+{
+  "cases": [
+    {
+      "label": "single element",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          5.0
+        ],
+        "q": 0.5
+      },
+      "expected": 5.0
+    },
+    {
+      "label": "uniform q0",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          10.0,
+          20.0,
+          30.0,
+          40.0
+        ],
+        "q": 0.0
+      },
+      "expected": 10.0
+    },
+    {
+      "label": "uniform q25 interpolated",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          10.0,
+          20.0,
+          30.0,
+          40.0
+        ],
+        "q": 0.25
+      },
+      "expected": 17.5
+    },
+    {
+      "label": "uniform q50",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          10.0,
+          20.0,
+          30.0,
+          40.0
+        ],
+        "q": 0.5
+      },
+      "expected": 25.0
+    },
+    {
+      "label": "uniform q75 interpolated",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          10.0,
+          20.0,
+          30.0,
+          40.0
+        ],
+        "q": 0.75
+      },
+      "expected": 32.5
+    },
+    {
+      "label": "uniform q1",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          10.0,
+          20.0,
+          30.0,
+          40.0
+        ],
+        "q": 1.0
+      },
+      "expected": 40.0
+    },
+    {
+      "label": "nonuniform median lands on a knot",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          1.0,
+          2.0,
+          4.0,
+          8.0,
+          16.0
+        ],
+        "q": 0.5
+      },
+      "expected": 4.0
+    },
+    {
+      "label": "nonuniform interpolated",
+      "fn": "empirical_quantile",
+      "inputs": {
+        "sorted": [
+          1.0,
+          2.0,
+          4.0,
+          8.0,
+          16.0
+        ],
+        "q": 0.3
+      },
+      "expected": 2.4
+    },
+    {
+      "label": "elapsed 0 keeps every sample",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 0.0,
+        "min_samples": 5
+      },
+      "expected": {
+        "p25": 16.25,
+        "p50": 27.5,
+        "p75": 56.25,
+        "n": 10
+      }
+    },
+    {
+      "label": "fractional elapse conditions the tail",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 12.5,
+        "min_samples": 5
+      },
+      "expected": {
+        "p25": 11.25,
+        "p50": 25.0,
+        "p75": 55.0,
+        "n": 8
+      }
+    },
+    {
+      "label": "boundary: exactly min_samples remain",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 25.0,
+        "min_samples": 5
+      },
+      "expected": {
+        "p25": 20.0,
+        "p50": 35.0,
+        "p75": 65.0,
+        "n": 5
+      }
+    },
+    {
+      "label": "outlived: fewer than min_samples remain",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 90.0,
+        "min_samples": 5
+      },
+      "expected": null
+    },
+    {
+      "label": "outlived: elapsed past the longest sample",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 200.0,
+        "min_samples": 3
+      },
+      "expected": null
+    },
+    {
+      "label": "min_samples 8 with a large elapsed abstains",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 45.0,
+        "min_samples": 8
+      },
+      "expected": null
+    },
+    {
+      "label": "min_samples 1 keeps a lone survivor",
+      "fn": "conditional_remaining_quantiles",
+      "inputs": {
+        "samples_min": [
+          5.0,
+          10.0,
+          15.0,
+          20.0,
+          25.0,
+          30.0,
+          45.0,
+          60.0,
+          90.0,
+          120.0
+        ],
+        "elapsed_min": 90.0,
+        "min_samples": 1
+      },
+      "expected": {
+        "p25": 30.0,
+        "p50": 30.0,
+        "p75": 30.0,
+        "n": 1
+      }
+    }
+  ]
+}

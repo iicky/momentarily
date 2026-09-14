@@ -139,7 +139,7 @@ export function severityTier(alertType: string | null): number {
  * suspended if any suspension alert (tier 3); disrupted if any alert reaches
  * `floor`; otherwise normal — so sub-floor alerts (minor delays, routine
  * reroutes) read normal. floor=1 reproduces the breadth truth; floor=2 is
- * severe-only. A 1:1 port of training/review.py derive_graded_mta_state, and
+ * severe-only. A 1:1 port of training/recovery_baseline.py derive_graded_mta_state, and
  * the SAME definition the review uses as canonical truth. Pinned by
  * tests/fixtures/parity_graded_state.json.
  */

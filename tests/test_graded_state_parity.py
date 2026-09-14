@@ -1,6 +1,6 @@
 """Cross-language contract guard for the severity-graded published condition.
 
-src/momentarily/mapping.py severity_tier and training/review.py
+src/momentarily/mapping.py severity_tier and training/recovery_baseline.py
 derive_graded_mta_state are the source of truth for the alert-derived
 route_status.condition the Worker publishes. worker/src/mapping.ts
 (severityTier / deriveGradedMtaState) is a hand-port pinned against the same
@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from momentarily.mapping import severity_tier
 from scripts.gen_graded_state_parity_fixture import FIXTURE_PATH
-from training.review import derive_graded_mta_state
+from training.recovery_baseline import derive_graded_mta_state
 
 
 def _fixture() -> dict[str, Any]:

@@ -91,6 +91,7 @@ from training.publish_params import (
     ROUTE_SHAPES_PREFIX,
     SERVICE_SIDECAR_WINDOW_DAYS,
     VERSIONED_PROV_PREFIX,
+    VERSIONED_RECOVERY_BASELINE_PREFIX,
     VERSIONED_SCHEDULED_HEADWAY_PREFIX,
     VERSIONED_SEGMENT_PREFIX,
     VERSIONED_SERVICE_PREFIX,
@@ -105,6 +106,7 @@ from training.publish_params import (
     static_topology,
     write_params,
     write_prov,
+    write_recovery_baseline,
     write_route_shapes,
     write_scheduled_headway,
     write_segment_dwell,
@@ -1563,6 +1565,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         prov_ref=prov_ref,
         pending=pending,
     )
+    n_recovery_cells = write_recovery_baseline(
+        client,
+        cfg.bucket,
+        dwell_start_date,
+        end_date,
+        trained_at,
+        prov_ref=prov_ref,
+        pending=pending,
+    )
     # PROV-JSON sidecar: only artifacts actually published this run become
     # entities (an entity is named by its immutable bucket key, a recorded fact),
     # and a derivation edge is claimed only where the input it derives from is
@@ -1571,6 +1582,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     prov_artifacts: list[ArtifactFacts] = [
         ArtifactFacts("params", versioned_key, derived_from_manifest=True),
     ]
+    prov_artifacts.append(
+        ArtifactFacts(
+            "recovery_baseline",
+            f"{VERSIONED_RECOVERY_BASELINE_PREFIX}v{trained_at}.json",
+            derived_from_manifest=True,
+        )
+    )
     if n_service_sidecar_cells:
         prov_artifacts.append(
             ArtifactFacts(
@@ -1654,6 +1672,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         f"route={segment_dwell_stats.n_cells_route}, "
         f"system={segment_dwell_stats.n_cells_system}], "
         f"scheduled_headway_cells={n_scheduled_headway_cells}, "
+        f"recovery_baseline_cells={n_recovery_cells}, "
         f"route_shape_keys={n_route_shape_keys})"
     )
     return 0

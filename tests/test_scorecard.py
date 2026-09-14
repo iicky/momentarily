@@ -576,6 +576,8 @@ def test_episode_scorecard_forwards_a_causal_baseline_to_the_shadow_recovery_arm
     assert bare["recovery"]["n_scored"] == 2
     assert bare["recovery"]["report"]["causal_skill"] is None
     assert bare["recovery"]["report"]["causal_baseline_crps"] is None
+    # The reference row a conditioner is read against: None with no causal baseline.
+    assert bare["recovery"]["climatology_crps"] is None
     assert math.isfinite(bare["recovery"]["report"]["oracle_skill"])
 
     causal = episode_scorecard(
@@ -589,6 +591,11 @@ def test_episode_scorecard_forwards_a_causal_baseline_to_the_shadow_recovery_arm
     )
     assert causal["recovery"]["report"]["causal_skill"] is not None
     assert causal["recovery"]["report"]["causal_baseline_crps"] is not None
+    # The reference row surfaces the causal baseline's own per-episode CRPS.
+    assert (
+        causal["recovery"]["climatology_crps"]
+        == causal["recovery"]["report"]["per_regime"]["causal_baseline_crps"]
+    )
     # The oracle column is unaffected — same graded population, same hindsight CDF.
     assert (
         causal["recovery"]["report"]["oracle_skill"]

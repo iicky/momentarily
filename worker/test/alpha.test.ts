@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'vitest';
 
 import type { RouteRoll } from '../src/alpha';
-import { alertConditionOnset, reseedForNewParams } from '../src/alpha';
+import { alertConditionOnset, alertConditionTypeAtOnset, reseedForNewParams } from '../src/alpha';
 import type { EmissionParams, HMMParams, Observation } from '../src/hmm';
 import { forwardStep } from '../src/hmm';
 
@@ -170,5 +170,75 @@ describe('alertConditionOnset', () => {
     // is undefined, so the first usable tick starts at now rather than carrying
     // undefined into the public contract.
     expect(alertConditionOnset(disruptedRoll(), 'disrupted', NOW)).toBe(NOW);
+  });
+});
+
+describe('alertConditionTypeAtOnset', () => {
+  const NOW = 1_700_100_000;
+
+  function roll(
+    publishedCondition: string,
+    enteredAt: number | null,
+    onsetType: string | null,
+  ): RouteRoll {
+    return {
+      ...disruptedRoll(),
+      published_condition: publishedCondition,
+      condition_entered_at: enteredAt,
+      condition_alert_type_at_entry: onsetType,
+    };
+  }
+
+  test('carries the ONSET type while the condition holds, ignoring a drifting current primary', () => {
+    // The incident began under "Delays"; a "Severe Delays" alert is now primary,
+    // but the climatology must stay keyed on the onset "Delays" cell.
+    expect(
+      alertConditionTypeAtOnset(roll('disrupted', NOW - 3600, 'Delays'), 'disrupted', 'Severe Delays'),
+    ).toBe('Delays');
+  });
+
+  test('captures the current primary when the condition clock restarts', () => {
+    expect(
+      alertConditionTypeAtOnset(roll('normal', NOW - 3600, null), 'disrupted', 'Severe Delays'),
+    ).toBe('Severe Delays');
+  });
+
+  test('first tick (no prior roll) captures the current primary', () => {
+    expect(alertConditionTypeAtOnset(undefined, 'disrupted', 'Delays')).toBe('Delays');
+  });
+
+  test('restarts (recaptures) after a null-clock tick even if the label repeats', () => {
+    expect(
+      alertConditionTypeAtOnset(roll('disrupted', null, 'Delays'), 'disrupted', 'Severe Delays'),
+    ).toBe('Severe Delays');
+  });
+
+  test('schedule (not_scheduled) and unknown carry no onset type', () => {
+    expect(
+      alertConditionTypeAtOnset(roll('not_scheduled', NOW - 3600, 'Delays'), 'not_scheduled', 'X'),
+    ).toBeNull();
+    expect(alertConditionTypeAtOnset(roll('unknown', NOW - 3600, 'Delays'), 'unknown', 'X')).toBeNull();
+  });
+
+  test('a legacy roll without the field recaptures the current primary', () => {
+    expect(alertConditionTypeAtOnset(disruptedRoll(), 'disrupted', 'Delays')).toBe('Delays');
+  });
+
+  test('a legacy IN-FLIGHT roll (condition clock present, no onset type) withholds, not guesses', () => {
+    // A roll written after condition_entered_at shipped but before the onset-type
+    // field did: the condition holds, so the carry branch is taken, but the true
+    // onset type was never recorded — return null (climatology withholds) rather
+    // than the drifting current primary. Self-heals on the next clock restart.
+    const legacy: RouteRoll = {
+      ...disruptedRoll(),
+      published_condition: 'disrupted',
+      condition_entered_at: NOW - 3600,
+    };
+    expect(alertConditionTypeAtOnset(legacy, 'disrupted', 'Severe Delays')).toBeNull();
+  });
+
+  test('the onset type is carried through a params reseed', () => {
+    const reseeded = reseedForNewParams(roll('disrupted', NOW - 3600, 'Delays'));
+    expect(reseeded.condition_alert_type_at_entry).toBe('Delays');
   });
 });

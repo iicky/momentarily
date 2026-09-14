@@ -23,7 +23,7 @@
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
-import { alertConditionOnset, readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
+import { alertConditionOnset, alertConditionTypeAtOnset, readAlphaState, reseedForNewParams, writeAlphaState } from './alpha';
 import type { WriteFailureCounts } from './archive';
 import {
   archiveAlertsLiveness,
@@ -97,7 +97,7 @@ import {
   movementChannelActive,
   stationaryDistribution,
 } from './hmm';
-import { loadParams, loadRidershipBaseline, loadServiceWeightBaseline, paramsForRoute } from './params';
+import { loadParams, loadRecoveryBaseline, loadRidershipBaseline, loadServiceWeightBaseline, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
 import {
@@ -558,6 +558,7 @@ export default {
       prevServiceMetric,
       ridershipBaseline,
       serviceWeightBaseline,
+      recoveryBaseline,
     ] = await Promise.all([
       readLastSeen(env.MOMENTARILY),
       readAlphaState(env.MOMENTARILY),
@@ -566,6 +567,7 @@ export default {
       readServiceMetric(env.MOMENTARILY),
       loadRidershipBaseline(env.MOMENTARILY),
       loadServiceWeightBaseline(env.MOMENTARILY),
+      loadRecoveryBaseline(env.MOMENTARILY),
     ]);
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
@@ -797,6 +799,14 @@ export default {
         publishedCondition,
         observedAt,
       );
+      // The primary alert type at that same onset — carried while the condition
+      // holds so the recovery climatology serves on the onset key, not the
+      // current tick's primary (which drifts as alert types change mid-incident).
+      const conditionAlertTypeAtEntry = alertConditionTypeAtOnset(
+        prevRoll,
+        publishedCondition,
+        routeSnap?.primary_alert_type ?? null,
+      );
 
       newAlphaState.routes[routeId] = {
         filter: result.state,
@@ -804,6 +814,7 @@ export default {
         alert_type_at_entry: alertTypeAtEntry,
         published_condition: publishedCondition,
         condition_entered_at: conditionEnteredAt,
+        condition_alert_type_at_entry: conditionAlertTypeAtEntry,
       };
     }
     step(`4b-forward(${allRoutes.size}r)`);
@@ -933,6 +944,7 @@ export default {
           stationWait: stationWaitDoc,
           ridershipBaseline,
           serviceWeightBaseline,
+          recoveryBaseline,
           headway: headwayDoc,
           scheduledHeadway,
           // At least one vehicle-position feed round-tripped this poll, else

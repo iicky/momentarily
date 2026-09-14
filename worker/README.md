@@ -32,10 +32,22 @@ streams accumulate one object per write.
 | `v1/route_shapes.json` | weekly Python trainer ([`publish_params.py`](../training/publish_params.py) `write_route_shapes`) | weekly (on GTFS timetable change) |
 | `v1/route_shapes/<feed_version>.json` | weekly Python trainer (immutable per feed_version) | once per feed_version |
 
-`v1/snapshot.json` withholds curve-fitted recovery pending validation (nulled,
-with `recovery_withheld: "pending_validation"`) and publishes the schedule
-countdowns; `v1/predictions` keeps the full numbers for grading. The gate is
-the `PUBLISH_FITTED_RECOVERY` constant in [`snapshot.ts`](src/snapshot.ts).
+For a disrupted/suspended route **with a known onset (`condition_entered_at`) and
+a primary alert type**, `v1/snapshot.json` publishes the **causal
+recovery-duration climatology** (`recovery_source: "climatology"`): how long
+incidents like this one have lasted, conditioned on how long this one already
+has, read from `state/recovery_baseline.json` — not a fitted curve, so the
+`PUBLISH_FITTED_RECOVERY` gate does not apply to it (it is the yardstick fitted
+curves must beat). When the disruption has outlived its population the estimate
+is withheld (`recovery_indeterminate`, `recovery_minutes` null) rather than
+extrapolated. Where no climatology cell describes the route, curve-fitted
+recovery is subject to the `PUBLISH_FITTED_RECOVERY` gate — withheld while it is
+closed (today: nulled, with `recovery_withheld: "pending_validation"`), and
+republished only if a fitted arm graduates — while the deterministic schedule
+countdowns always publish; `v1/predictions` keeps the full fitted numbers for
+grading. The gate is the `PUBLISH_FITTED_RECOVERY` constant in
+[`snapshot.ts`](src/snapshot.ts); the climatology arm lives in
+[`recovery.ts`](src/recovery.ts).
 
 `route_status.condition` is the **severity-graded alert read** (the same
 `derive_graded_mta_state` rule the review grades as truth, ported to

@@ -20,7 +20,7 @@ import schema from '../../schema/snapshot.schema.json';
 import type { RouteRoll } from '../src/alpha';
 import { deriveRouteSnapshots } from '../src/derive';
 import { buildPredictionRows, writePredictions } from '../src/grading';
-import type { TrainedParams } from '../src/params';
+import type { RecoveryBaselineDoc, TrainedParams } from '../src/params';
 import { parseTrainedParams } from '../src/params';
 import type { Inference, Snapshot } from '../src/snapshot';
 import { TICK_SECONDS, buildSnapshot, projectInference } from '../src/snapshot';
@@ -230,32 +230,43 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
     expect(jRow.published_condition).toBe(snapshot.route_status.J!.condition);
   });
 
-  test('graduation restores the previous document byte for byte', () => {
+  test('graduation republishes the fitted numbers; withholding nulls them', () => {
     const { snapshot, full } = tick();
     const graded = full.get('J')!;
-    // What buildSnapshot would attach with PUBLISH_FITTED_RECOVERY flipped.
-    const graduated = projectInference(graded, true);
-
-    // Not "the same values plus a marker" — the same serialized bytes as the
-    // object the Worker published before the gate existed. That is what makes
-    // graduation a one-line flip with no contract negotiation.
-    expect(JSON.stringify(graduated)).toBe(JSON.stringify(graded));
+    // What buildSnapshot attaches with PUBLISH_FITTED_RECOVERY flipped on: the
+    // fitted recovery numbers come back verbatim.
+    const graduated = projectInference(graded, null, true);
+    expect(graduated.recovery_minutes).toBe(graded.recovery_minutes);
+    expect(graduated.recovery_minutes_low).toBe(graded.recovery_minutes_low);
+    expect(graduated.recovery_minutes_high).toBe(graded.recovery_minutes_high);
+    expect(graduated.recovery_source).toBe(graded.recovery_source);
+    // No withheld marker once the numbers publish.
     expect('recovery_withheld' in graduated).toBe(false);
+    // p_normal_in_30min is nulled on EVERY public row regardless of the gate:
+    // the published condition is alert-graded, so the horizon no longer
+    // forecasts the arm that produced it. The full/grading object keeps it (the
+    // JSONL-row test above pins that), so v1/predictions is unchanged.
+    expect(graduated.p_normal_in_30min).toBeNull();
+    // The climatology fields are null on a non-climatology row.
+    expect(graduated.recovery_baseline_n).toBeNull();
+    expect(graduated.recovery_baseline_level).toBeNull();
 
-    // Withholding is the only difference between the two projections.
-    const withheld = projectInference(graded, false);
-    expect(withheld).not.toEqual(graduated);
+    // Withholding is the difference: the fitted numbers go null and the marker
+    // says why.
+    const withheld = projectInference(graded, null, false);
+    expect(withheld.recovery_minutes).toBeNull();
+    expect(withheld.recovery_withheld).toBe('pending_validation');
     expect(withheld.condition).toBe(graduated.condition);
 
-    // A schedule row keeps every number either way — it had no fit to withhold.
-    // The gate only decides whether it carries the marker saying so.
+    // A schedule row keeps every recovery number either way — it had no fit to
+    // withhold; the gate only decides whether it carries the marker.
     const scheduleGraded = full.get('M')!;
-    const scheduleWithheld = projectInference(scheduleGraded, false);
-    expect(JSON.stringify(projectInference(scheduleGraded, true))).toBe(
-      JSON.stringify(scheduleGraded),
-    );
+    const scheduleWithheld = projectInference(scheduleGraded, null, false);
     expect(scheduleWithheld.recovery_minutes).toBe(scheduleGraded.recovery_minutes);
     expect(scheduleWithheld.recovery_withheld).toBeNull();
+    expect(projectInference(scheduleGraded, null, true).recovery_minutes).toBe(
+      scheduleGraded.recovery_minutes,
+    );
     expect(snapshot.route_status.M!.inference!.recovery_withheld).toBeNull();
   });
 
@@ -274,5 +285,79 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
     });
     expect(rows.map((r) => r.route)).not.toContain('J');
     expect(rows.map((r) => r.route)).toContain('M');
+  });
+});
+
+describe('recovery climatology is served on the ONSET alert type, not the drifting current primary', () => {
+  test('a route whose primary changed mid-incident still serves its onset cell', () => {
+    const ENTERED = NOW - 5 * MIN;
+    const win = { window_start: NOW - 100_000, window_end: NOW };
+    // Two route cells with deliberately far-apart durations: the onset "Delays"
+    // cell clears in tens of minutes; the current-primary "Severe Delays" cell
+    // would say hours. Serving the wrong key is therefore observable.
+    const baseline: RecoveryBaselineDoc = {
+      schema_version: '1',
+      trained_at: NOW,
+      min_samples: 5,
+      ...win,
+      severity_floor: 2,
+      n_episodes: 20,
+      cells: {
+        R: {
+          Delays: { n: 10, level: 'route', ...win, samples_min: [10, 15, 20, 25, 30, 35, 40, 45, 50, 55] },
+          'Severe Delays': { n: 10, level: 'route', ...win, samples_min: [200, 210, 220, 230, 240, 250, 260, 270, 280, 290] },
+        },
+      },
+      by_alert_type: {},
+      system: { n: 20, level: 'system', ...win, samples_min: [10, 55, 200, 290, 20, 30, 40, 50, 210, 250, 15, 25, 35, 45, 220, 240, 260, 270, 280, 230] },
+    };
+    // The onset key is the SORT_ORDER primary at onset, not the tier — so
+    // "Delays" is a real onset key on a disrupted route whenever a co-active
+    // "Severe Delays" drove the condition while "Delays" outranked it (the
+    // measured-common case: onset primary is "Delays" on most severe episodes).
+    // Here that "Delays" has since cleared, leaving "Severe Delays" as the
+    // current primary — a mid-incident primary drift with the condition held.
+    const roll: RouteRoll = {
+      ...disruptedRoll(),
+      published_condition: 'disrupted',
+      condition_entered_at: ENTERED,
+      condition_alert_type_at_entry: 'Delays',
+    };
+    const full = new Map<string, Inference>();
+    const snapshot = buildSnapshot({
+      generatedAt: NOW,
+      alertsFreshness: NOW,
+      routeSnapshots: deriveRouteSnapshots(
+        {
+          entity: [
+            alertEntity({
+              id: 'lmm:alert:99',
+              alertType: 'Severe Delays',
+              route: 'R',
+              periods: [{ start: ENTERED }],
+            }),
+          ],
+        },
+        NOW,
+      ),
+      rolls: { R: roll },
+      trainedParams: trained(['R']),
+      tickSeconds: TICK_SECONDS,
+      recoveryBaseline: baseline,
+      vehicleFreshFeeds: [],
+      vehicleExpectedFeeds: [],
+      fullInferences: full,
+    });
+    const rs = snapshot.route_status.R!;
+    // The published current primary drifted to "Severe Delays"…
+    expect(rs.primary_alert_type).toBe('Severe Delays');
+    const inf = rs.inference!;
+    // …but recovery is served off the ONSET "Delays" cell: tens of minutes, not
+    // the "Severe Delays" cell's hundreds.
+    expect(inf.recovery_source).toBe('climatology');
+    expect(inf.recovery_baseline_level).toBe('route');
+    expect(inf.recovery_baseline_n).toBe(10);
+    expect(inf.recovery_minutes).not.toBeNull();
+    expect(inf.recovery_minutes!).toBeLessThan(100);
   });
 });

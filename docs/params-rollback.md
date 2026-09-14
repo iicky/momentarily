@@ -56,18 +56,20 @@ object at write time; a rollback that uses `copy_object` with
 | service_baseline | `state/service_baseline.json` | `state/service_baseline/` | `generated_at` (own stamp; equals `trained_at` on a full retrain, independent on a standalone `backfill_service_baseline`/refresh) | `no-store` |
 | scheduled_headway | `state/scheduled_headway.json` | `state/scheduled_headway/` | `trained_at` | `no-store` |
 | segment_dwell | `state/segment_dwell.json` | `state/segment_dwell/` | `trained_at` | `no-store` |
+| recovery_baseline | `state/recovery_baseline.json` | `state/recovery_baseline/` | `trained_at` | `no-store` |
 | ridership_baseline | `state/ridership_baseline.json` | `state/ridership_baseline/` | `generated_at` (own weekly stamp, independent of `trained_at`) | `public, max-age=300, s-maxage=900` |
 | service_weight_baseline | `state/service_weight_baseline.json` | `state/service_weight_baseline/` | `generated_at` (own weekly stamp, independent of `trained_at`) | `public, max-age=300, s-maxage=900` |
 | prov (private) | `state/prov/latest.json` | `state/prov/` | `trained_at` | `no-store` — audit trail; never rolled back |
 | prov (public mirror) | `v1/prov/latest.json` | `v1/prov/` | `trained_at` | `public, max-age=31536000, immutable` — audit trail; never rolled back |
 
 `segment_params`, `service_baseline` (on a full retrain), `scheduled_headway`,
-and `segment_dwell` share `params.json`'s `trained_at` because
-`training.train_em.main` publishes all four in the same run
+`segment_dwell`, and `recovery_baseline` share `params.json`'s `trained_at`
+because `training.train_em.main` publishes all of them in the same run
 (`write_params`/`write_service_baseline`/`write_segment_params`/
-`write_segment_dwell`/`write_scheduled_headway` all take the one `trained_at`
-computed for that run). `ridership_baseline` and `service_weight_baseline`
-are refreshed on their own weekly schedule and version by their own
+`write_segment_dwell`/`write_scheduled_headway`/`write_recovery_baseline` all
+take the one `trained_at` computed for that run). `ridership_baseline` and
+`service_weight_baseline` are refreshed on their own weekly schedule and
+version by their own
 `generated_at` — check the sidecar's own JSON body for the value, don't
 assume it matches `params.json`'s `trained_at`.
 
@@ -161,7 +163,8 @@ step 1.
 
 For every sidecar in the table above that the bad run touched, copy its
 `v<version>.json` (same `trained_at` for `segment_params`,
-`scheduled_headway`, `segment_dwell`, and a full-retrain `service_baseline`;
+`scheduled_headway`, `segment_dwell`, `recovery_baseline`, and a full-retrain
+`service_baseline`;
 its own `generated_at` for a standalone `service_baseline` refresh,
 `ridership_baseline`, or `service_weight_baseline`) over its live key,
 repeating that sidecar's exact `Cache-Control` from the table:

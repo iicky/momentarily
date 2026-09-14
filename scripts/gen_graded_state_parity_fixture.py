@@ -1,7 +1,7 @@
 """Generate the Python<->TypeScript severity-graded-condition parity fixture.
 
 worker/src/mapping.ts severityTier / deriveGradedMtaState are hand-ports of
-src/momentarily/mapping.py severity_tier and training/review.py
+src/momentarily/mapping.py severity_tier and training/recovery_baseline.py
 derive_graded_mta_state. That rule is the SAME definition the weekly review
 grades the published condition against, and the Worker now publishes it as
 route_status.condition — so a drift between the two languages would publish a
@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 
 from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, severity_tier
-from training.review import derive_graded_mta_state
+from training.recovery_baseline import derive_graded_mta_state
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent

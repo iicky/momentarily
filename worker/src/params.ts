@@ -817,3 +817,105 @@ export function serviceWeightFor(
   const hour = parseInt(bin.slice(2), 10);
   return stop[cls][hour] ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Recovery-duration climatology: the empirical distribution of how long
+// severe-truth incidents have actually lasted, keyed (route, alert_type) with
+// pooling, written each fit by training/publish_params.py write_recovery_baseline
+// from the SAME population the review grades recovery skill against. Its own R2
+// object like the other baselines — never folded into params.json, so a failed
+// recovery build can never perturb the HMM filter's params version. Read fresh
+// each tick; feeds the published recovery_minutes climatology arm (snapshot.ts).
+//
+// Recovery is the product's differentiator and every fitted dwell curve has lost
+// to this population, so the climatology is served straight — NOT a fitted curve,
+// NOT subject to PUBLISH_FITTED_RECOVERY. See worker/src/recovery.ts for the
+// serve-time conditional (remaining duration given elapsed time).
+// ---------------------------------------------------------------------------
+
+const RECOVERY_BASELINE_KEY = 'state/recovery_baseline.json';
+
+// One pooled, self-contained cell: its n, the pooling level it resolved to, the
+// fit window it was measured over, and the sorted incident durations in minutes
+// (ascending). The Worker reads samples_min straight off the resolved cell —
+// no cell is a reference. A short/empty samples_min is not malformed (a live
+// cell can be thin); a NEGATIVE duration is, and fails the bound.
+const RecoveryCellSchema = z
+  .object({
+    n: z.number().int().nonnegative(),
+    level: z.enum(['route', 'alert_type', 'system']),
+    window_start: z.number(),
+    window_end: z.number(),
+    samples_min: z.array(nonNeg),
+  })
+  // `n` is published to consumers as recovery_baseline_n ("how thin is this?"),
+  // so a cell whose n disagrees with its own sample count is a lie, not merely
+  // sparse — reject it rather than serve a false support.
+  .refine((c) => c.n === c.samples_min.length, {
+    message: 'recovery cell n must equal samples_min.length',
+  });
+export type RecoveryCell = z.infer<typeof RecoveryCellSchema>;
+
+const RecoveryBaselineSchema = z.object({
+  schema_version: z.string(),
+  trained_at: z.number(),
+  // The pooling gate AND the serve-time conditional floor: fewer than this many
+  // durations outlasting the elapsed time and recovery publishes indeterminate.
+  min_samples: z.number().int().positive(),
+  window_start: z.number(),
+  window_end: z.number(),
+  severity_floor: z.number().int(),
+  n_episodes: z.number().int().nonnegative(),
+  // route -> alert_type -> resolved cell (every observed pair).
+  cells: z.record(z.string(), z.record(z.string(), RecoveryCellSchema)),
+  // alert_type -> pool cell (n >= min_samples), the fallback for a live
+  // (route, alert_type) the window never saw.
+  by_alert_type: z.record(z.string(), RecoveryCellSchema),
+  // System-wide pool — the last fallback. Absent only for an empty window.
+  system: RecoveryCellSchema.optional(),
+});
+export type RecoveryBaselineDoc = z.infer<typeof RecoveryBaselineSchema>;
+
+/**
+ * Load the recovery climatology from R2. Null when absent (before the first
+ * trainer run that ships it) or malformed — a negative duration or a bad level
+ * fails semantic bounds, not just shape. A null here is not fatal: recovery
+ * simply stays null (no climatology), the way it already is for a fitted arm.
+ * The whole read is inside the catch, like loadServiceWeightBaseline: this
+ * sidecar is optional, so an R2 read that rejects must degrade to "no
+ * climatology", never reject the tick's Promise.all and block the snapshot.
+ */
+export async function loadRecoveryBaseline(
+  bucket: R2Bucket,
+): Promise<RecoveryBaselineDoc | null> {
+  try {
+    const obj = await bucket.get(RECOVERY_BASELINE_KEY);
+    if (!obj) return null;
+    return RecoveryBaselineSchema.parse(await obj.json());
+  } catch (err) {
+    console.error('recovery_baseline.json unavailable or invalid; recovery climatology off:', err);
+    return null;
+  }
+}
+
+/**
+ * The cell a Worker serves for (route, alertType): the resolved route cell,
+ * else the alert_type pool, else the system pool. Null when alertType is null —
+ * the climatology requires a primary alert type (the published condition alone
+ * does not key a cell), so a disrupted route with no active alert gets no
+ * climatology and recovery stays withheld. Mirrors
+ * training/recovery_baseline.py resolve_climatology_cell exactly, so the served
+ * cell and the graded population cannot disagree about which samples back a route.
+ */
+export function resolveRecoveryCell(
+  doc: RecoveryBaselineDoc | null,
+  routeId: string,
+  alertType: string | null,
+): RecoveryCell | null {
+  if (!doc || alertType === null) return null;
+  const routeCell = doc.cells[routeId]?.[alertType];
+  if (routeCell) return routeCell;
+  const alertCell = doc.by_alert_type[alertType];
+  if (alertCell) return alertCell;
+  return doc.system ?? null;
+}

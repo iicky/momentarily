@@ -746,6 +746,30 @@
           "title": "P Suspended",
           "type": "number"
         },
+        "recovery_baseline_level": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Baseline Level"
+        },
+        "recovery_baseline_n": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Baseline N"
+        },
         "recovery_indeterminate": {
           "default": false,
           "title": "Recovery Indeterminate",

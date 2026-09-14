@@ -2422,6 +2422,7 @@ def test_main_publishes_prov_sidecar_and_threads_prov_ref(
         "service_baseline",
         "segment_params",
         "scheduled_headway",
+        "recovery_baseline",
     }
     # The prov_ref the artifacts carry names the versioned key write_prov writes.
     assert prov_ref == f"{VERSIONED_PROV_PREFIX}v{captured_prov['trained_at']}.json"

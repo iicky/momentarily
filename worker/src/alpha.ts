@@ -28,6 +28,15 @@ export interface RouteRoll {
   // hand-built test rolls; the Worker populates them every tick.
   published_condition?: string;
   condition_entered_at?: number | null;
+  // The primary_alert_type captured when the condition_entered_at clock last
+  // restarted — the ONSET primary alert type of the current graded condition.
+  // The recovery climatology is keyed (route, alert_type) at onset on BOTH
+  // sides (the trainer keys each episode by its onset primary; the Worker must
+  // serve on the same key, not the current tick's primary which drifts as alert
+  // types change mid-incident). Restarts with the clock, carried while the
+  // condition holds, null on schedule/unknown. Optional for the same back-compat
+  // reason as published_condition/condition_entered_at above.
+  condition_alert_type_at_entry?: string | null;
 }
 
 export interface AlphaState {
@@ -62,6 +71,33 @@ export function alertConditionOnset(
   return prev?.published_condition === condition && prev?.condition_entered_at != null
     ? prev.condition_entered_at
     : observedAt;
+}
+
+/**
+ * The primary alert type at the moment the alert-condition clock
+ * (condition_entered_at) last restarted — the ONSET primary alert type. Keyed
+ * to the SAME restart predicate as alertConditionOnset so the type and the clock
+ * move together: captured when a new graded condition begins (or there is no
+ * prior clock), carried while the condition holds, null on schedule/unknown.
+ * This is what the recovery climatology serves on, matching the (route,
+ * alert_type) key the trainer fit each episode's duration under at its onset.
+ *
+ * A LEGACY in-flight roll — condition_entered_at present (from an earlier
+ * deploy) but no condition_alert_type_at_entry yet — hits the carry branch and
+ * returns null: the true onset type was never recorded, so the climatology
+ * withholds (correct-or-nothing, its ethos everywhere) rather than guess the
+ * drifting current primary. It self-heals on the next clock restart, which
+ * captures the current primary as the new onset type.
+ */
+export function alertConditionTypeAtOnset(
+  prev: RouteRoll | undefined,
+  condition: string,
+  primaryAlertType: string | null,
+): string | null {
+  if (condition === 'not_scheduled' || condition === 'unknown') return null;
+  return prev?.published_condition === condition && prev?.condition_entered_at != null
+    ? (prev.condition_alert_type_at_entry ?? null)
+    : primaryAlertType;
 }
 
 // Posterior weight placed on the old argmax when reseeding across a params
@@ -106,6 +142,9 @@ export function reseedForNewParams(roll: RouteRoll): RouteRoll {
       : {}),
     ...(roll.condition_entered_at !== undefined
       ? { condition_entered_at: roll.condition_entered_at }
+      : {}),
+    ...(roll.condition_alert_type_at_entry !== undefined
+      ? { condition_alert_type_at_entry: roll.condition_alert_type_at_entry }
       : {}),
   };
 }

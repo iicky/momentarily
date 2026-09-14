@@ -811,7 +811,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Imported lazily so the pure half above needs no R2 / alert-truth deps.
     from training.r2_client import load_config, make_client
-    from training.review import build_mta_truth
+    from training.recovery_baseline import build_mta_truth
 
     today = datetime.now(UTC).date()
     end = args.end_date or today

@@ -31,13 +31,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from momentarily.hmm import Observation
 from momentarily.mapping import (
     CANONICAL_SEVERITY_FLOOR,
     TRUTH_VERSION,
     category_for_label,
     coarse_status,
-    severity_tier,
 )
 from training.degradation_label import BIN_FN, degraded_now_truth
 from training.episodes import (
@@ -67,19 +65,15 @@ from training.eval import (
     recovery_as_dict,
 )
 from training.eval_common import snap_tick
-from training.load import TickObservation
 from training.load_r2 import (
     Disruption,
-    PresenceMask,
     build_movement_series_by_direction,
     build_movement_truth,
     build_segment_baseline,
     build_segment_series,
     build_service_series,
-    build_tick_observations,
     compute_advance_baseline,
     compute_baseline,
-    fetch_alert_versions,
     fetch_trip_update_metrics,
     fetch_vehicle_metrics,
     presence_mask_from_predictions,
@@ -87,95 +81,22 @@ from training.load_r2 import (
 from training.movement_backfill import resolve_stop_filter
 from training.movement_validation import build_validation_report
 from training.r2_client import load_config, make_client
+from training.recovery_baseline import (
+    build_recovery_population,
+    load_truth_observations,
+    mta_truth,
+)
 from training.reliability import direction_reliability, segment_reliability
 from training.scorecard import dwell_lookup_from_params, episode_scorecard
 from training.segments import canonical_adjacency
 from training.station_flow import station_flow_json
 
 if TYPE_CHECKING:
-    from mypy_boto3_s3 import S3Client
+    pass
 
 HMM_STATES = ("normal", "disrupted", "suspended")
 MTA_STATES = ("normal", "disrupted", "suspended")
 CHANGEPOINT_WINDOW_MIN = 30
-
-
-def derive_mta_state(obs: Observation) -> str:
-    """MTA-derived ground-truth state for a tick — mirrors the HMM training
-    flags (planned-work explicitly excluded upstream in build_tick_observations)."""
-    if obs.has_suspended_alert:
-        return "suspended"
-    if obs.has_delays or obs.has_service_change:
-        return "disrupted"
-    return "normal"
-
-
-def derive_graded_mta_state(alert_types: tuple[str, ...], *, floor: int) -> str:
-    """Severity-graded ground-truth state from a route-tick's active alert_types.
-
-    suspended if any suspension alert (tier 3); disrupted if any alert reaches
-    `floor`; otherwise normal — so sub-floor alerts (minor delays, routine
-    reroutes) read normal and the HMM filtering them is scored as correct, not a
-    miss. floor=1 reproduces the breadth-dominated truth; floor=2 is severe-only.
-    """
-    tiers = [severity_tier(at) for at in alert_types]
-    if any(t == 3 for t in tiers):
-        return "suspended"
-    if any(t >= floor for t in tiers):
-        return "disrupted"
-    return "normal"
-
-
-def load_truth_observations(
-    client: S3Client,
-    bucket: str,
-    start_date: Any,
-    end_date: Any,
-    *,
-    mask: PresenceMask | None = None,
-) -> list[TickObservation]:
-    """Per-(route, tick) observations from the alerts archive, with the active
-    alert_types retained for severity grading. Fetched once; both the broad and
-    graded truths derive from it. With `mask` (built from the predictions
-    stream), over-extended open-ended alert tails are dropped so severe episodes
-    actually close -- otherwise every open alert runs to corpus end. See 06j."""
-    del bucket  # client carries its own configured bucket via load_config
-    bodies = fetch_alert_versions(
-        start_date=start_date, end_date=end_date, client=client
-    )
-    return build_tick_observations(bodies, active_mask=mask)
-
-
-def mta_truth(
-    obs_list: list[TickObservation], *, severity_floor: int = CANONICAL_SEVERITY_FLOOR
-) -> dict[tuple[str, int], str]:
-    """(route, tick) → MTA-derived state. Defaults to the canonical severe-only
-    truth (severity_floor >= 2: only Severe Delays / suspension count as
-    disrupted). severity_floor <= 1 is the legacy breadth truth (any
-    delays/service-change = disrupted), kept as a sensitivity. Ticks not in the
-    dict had no active alerts → 'normal'."""
-    if severity_floor <= 1:
-        return {(o.route_id, o.tick): derive_mta_state(o.observation) for o in obs_list}
-    return {
-        (o.route_id, o.tick): derive_graded_mta_state(
-            o.disruptive_types, floor=severity_floor
-        )
-        for o in obs_list
-    }
-
-
-def build_mta_truth(
-    client: S3Client,
-    bucket: str,
-    start_date: Any,
-    end_date: Any,
-    *,
-    severity_floor: int = CANONICAL_SEVERITY_FLOOR,
-    mask: PresenceMask | None = None,
-) -> dict[tuple[str, int], str]:
-    """Convenience: fetch + derive the truth in one call."""
-    obs_list = load_truth_observations(client, bucket, start_date, end_date, mask=mask)
-    return mta_truth(obs_list, severity_floor=severity_floor)
 
 
 # Alert categories that put the HMM in a disrupted condition — the others
@@ -801,45 +722,26 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     # Causal recovery-duration climatology for the §1 episode scorecard: realized
     # severe-truth incident durations from a window that CLOSES before the graded
-    # one, so recovery CRPS skill is read against a forecast rather than the
-    # graded window's own hindsight CDF (recovery_dist's required-argument design
-    # refuses to let the graded population reach its own baseline). Reuses the
-    # advance baseline's pre-window [baseline_start, baseline_end]. Its own
-    # presence mask needs that window's predictions — severe alert tails otherwise
-    # never close and inflate every duration — so they are loaded here purely to
-    # close episodes and never mixed into `preds` or current_params.
-    pre_window_start = int(
-        datetime(
-            baseline_start.year, baseline_start.month, baseline_start.day, tzinfo=UTC
-        ).timestamp()
+    # one — the advance baseline's pre-window [baseline_start, baseline_end] — so
+    # recovery CRPS skill is read against a forecast rather than the graded
+    # window's own hindsight CDF. build_recovery_population is the ONE population
+    # builder the trainer also fits the published climatology on, so the durations
+    # graded here and the durations served cannot drift apart. Pinned to the
+    # canonical severe-only floor (NOT args.severity_floor): the published
+    # climatology is the floor-2 reference a conditioner is scored against, so a
+    # --severity-floor 1 sensitivity run still grades causal skill against it.
+    pre_population = build_recovery_population(
+        client,
+        cfg.bucket,
+        baseline_start,
+        baseline_end,
+        severity_floor=CANONICAL_SEVERITY_FLOOR,
     )
-    pre_window_end = int(
-        (
-            datetime(
-                baseline_end.year, baseline_end.month, baseline_end.day, tzinfo=UTC
-            )
-            + timedelta(days=1)
-        ).timestamp()
-    )
-    pre_preds = load_predictions(client, cfg.bucket, baseline_start, baseline_end)
-    pre_mask = presence_mask_from_predictions(pre_preds)
-    pre_truth_obs = load_truth_observations(
-        client, cfg.bucket, baseline_start, baseline_end, mask=pre_mask
-    )
-    pre_truth = mta_truth(pre_truth_obs, severity_floor=args.severity_floor)
-    pre_types = disruptive_types_by_key(pre_truth_obs)
-    pre_episodes = extract_episodes(
-        pre_truth, pre_types, window_start=pre_window_start, window_end=pre_window_end
-    )
-    recovery_baseline_min = [
-        e.duration_sec / 60.0
-        for e in pre_episodes
-        if not (e.left_censored or e.right_censored or e.standing)
-    ]
+    recovery_baseline_min = pre_population.durations_min()
     recovery_causal_baseline = {
         "start": baseline_start.isoformat(),
         "end": baseline_end.isoformat(),
-        "severity_floor": args.severity_floor,
+        "severity_floor": pre_population.severity_floor,
         "n_durations": len(recovery_baseline_min),
         "source": "severe_truth_incident_durations (pre-window, presence-masked)",
     }

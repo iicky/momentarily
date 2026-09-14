@@ -259,8 +259,13 @@ class Inference(BaseModel):
     # recovery block disagrees with is_disrupted about whether there is a
     # disruption at all.
     #
-    # Meaningful ONLY when recovery_minutes is non-null: it qualifies a number,
-    # and a withheld block has no number to qualify.
+    # Meaningful when recovery_minutes is non-null (it qualifies the number), AND
+    # in exactly one null case: a "climatology" row whose disruption has OUTLIVED
+    # its population — fewer than the cell's min_samples durations run past the
+    # elapsed time — publishes recovery_minutes null with recovery_indeterminate
+    # true, the honest "it has already lasted longer than almost anything we've
+    # seen" rather than an extrapolated tail. A withheld fitted block (null with
+    # recovery_withheld set) has no number and is not indeterminate.
     recovery_indeterminate: bool = False
 
     # Forward predictions.
@@ -295,9 +300,26 @@ class Inference(BaseModel):
     # Where recovery_minutes comes from: "schedule" is a deterministic lookup of
     # the planned-work resume time (no model uncertainty); "movement" is the
     # movement-clock dwell curve; "hmm" is the alert-regime dwell estimate, the
-    # fallback. Only the first two also decide the published condition, so only
-    # they carry a forecast. Graders exclude "schedule" rows from HMM calibration.
-    recovery_source: str = "hmm"  # "hmm" | "schedule" | "movement"
+    # fitted fallback. "climatology" is the empirical recovery-duration
+    # climatology conditioned on elapsed time (state/recovery_baseline.json) —
+    # the causal duration distribution itself, NOT a fitted curve, so it is
+    # served on a disrupted route in place of the withheld fitted arms and is the
+    # yardstick fitted curves must beat. Graders exclude "schedule" rows from HMM
+    # calibration; a "climatology" row carries recovery_baseline_n / _level below.
+    # Deliberately an OPEN str, not a Literal (see the recovery_withheld contrast
+    # below): a new recovery arm is additive on this path-versioned contract, the
+    # same way condition_source gains new sources. "climatology" is the newest.
+    recovery_source: str = "hmm"  # "hmm" | "schedule" | "movement" | "climatology"
+    # For a "climatology" row only: the sample count (n) and pooling level
+    # ("route" | "alert_type" | "system") of the cell the estimate was read from,
+    # so a consumer sees how thin it is. None on every other row — the fitted and
+    # schedule arms key no climatology cell. The cell is keyed (route, alert_type)
+    # at the disruption's ONSET on BOTH sides: the trainer keys each episode by
+    # its onset primary_alert_type, and the Worker serves on the primary captured
+    # when the condition clock began (condition_entered_at), NOT the current
+    # tick's primary_alert_type (which drifts as alert types change mid-incident).
+    recovery_baseline_n: int | None = None
+    recovery_baseline_level: str | None = None
     # Announced resume time (epoch s) for schedule recovery; None for "hmm".
     resumes_at: int | None = None
     # now has passed resumes_at but the planned alert is still active — recovery

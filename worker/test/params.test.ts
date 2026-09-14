@@ -27,7 +27,6 @@ function wellFormedEmissions(): Record<string, unknown> {
     bernoulli_p: [0.001, 0.05, 0.95],
     bernoulli_p_delays: [0.02, 0.6, 0.35],
     bernoulli_p_service_change: [0.02, 0.6, 0.4],
-    bernoulli_p_planned: [0.05, 0.6, 0.35],
   };
 }
 
@@ -80,6 +79,23 @@ describe('parseTrainedParams', () => {
     const result = parseTrainedParams(wrapper({ 'BAD': bad }));
     warn.mockRestore();
     expect(result!.routes).toEqual({});
+  });
+
+  test('older params.json carrying bernoulli_p_planned still parses (back-compat)', () => {
+    const route = wellFormedRoute();
+    (route.emissions as Record<string, unknown>).bernoulli_p_planned = [0.05, 0.6, 0.35];
+    // Also test emissions_by_bin, which uses the same schema.
+    const binEmissions = { ...wellFormedEmissions(), bernoulli_p_planned: [0.05, 0.6, 0.35] };
+    route.emissions_by_bin = Array.from({ length: 5 }, () => ({ ...binEmissions }));
+    const result = parseTrainedParams(wrapper({ '1': route }));
+    expect(Object.keys(result!.routes)).toEqual(['1']);
+    // The field must be stripped — EmissionParams no longer carries it.
+    const em = result!.routes['1']!.emissions;
+    expect('bernoulli_p_planned' in em).toBe(false);
+    // Also stripped from every bin emission.
+    for (const binEm of result!.routes['1']!.emissions_by_bin!) {
+      expect('bernoulli_p_planned' in binEm).toBe(false);
+    }
   });
 
   test('drops a route whose transition row does not sum to 1', () => {

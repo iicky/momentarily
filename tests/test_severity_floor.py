@@ -232,21 +232,7 @@ def test_planned_work_stays_out_under_every_floor() -> None:
         for o in obs:
             assert o.observation.alert_count == 0
             assert not o.observation.has_suspended_alert
-            assert not o.observation.has_planned
             assert not o.observation.has_minor_alert
-
-
-def test_has_planned_reads_the_unfiltered_list() -> None:
-    """A 'Planned -' TYPE arriving under a non-planned id is tier 0, so the
-    floor drops it from the scored channels — but has_planned reports whether
-    planned work is up, not how severe it is, and must still fire."""
-    obs = alert_observation(
-        [(20, "Planned - Stops Skipped")],
-        T0,
-        severity_floor=CANONICAL_SEVERITY_FLOOR,
-    )
-    assert obs.has_planned
-    assert obs.alert_count == 0
 
 
 # --- both builders, one transform -------------------------------------------
@@ -450,10 +436,17 @@ def test_self_loop_excess_never_goes_negative() -> None:
 
 def test_train_records_the_diagonal_em_wanted_before_the_clamp() -> None:
     """The pre-clamp diagonal is the whole primary gate, and it had been
-    hand-patched in twice because nothing recorded it. A long quiet series drives
-    the normal self-loop past its ceiling, so the sink must show the excess while
+    hand-patched in twice because nothing recorded it. A mostly-quiet series
+    with a brief disruption burst gives EM enough state diversity to drive the
+    normal self-loop past its ceiling, so the sink must show the excess while
     the returned params show the clamped value."""
-    series = {"R1": _quiet(600)}
+    quiet = _quiet(580)
+    burst = [
+        Observation(
+            alert_count=5, severity_sum=30, has_suspended_alert=False, has_delays=True
+        )
+    ] * 10
+    series = {"R1": quiet + burst + _quiet(10)}
     pre_clamp: dict[str | None, tuple[float, float, float]] = {}
     global_prior, per_route = train(
         series, min_ticks=100, prior_strength=10.0, pre_clamp_diagonals=pre_clamp

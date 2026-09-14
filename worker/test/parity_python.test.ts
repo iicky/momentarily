@@ -41,7 +41,6 @@ function toParams(p: (typeof fixture)['params']): HMMParams {
     bernoulli_p: vec3(e.bernoulli_p),
     bernoulli_p_delays: vec3(e.bernoulli_p_delays),
     bernoulli_p_service_change: vec3(e.bernoulli_p_service_change),
-    bernoulli_p_planned: vec3(e.bernoulli_p_planned),
     advance_rate: vec3(e.advance_rate),
     service_mu: vec3(e.service_mu),
     service_sigma: vec3(e.service_sigma),
@@ -59,7 +58,6 @@ type RawObs = {
   has_suspended_alert: boolean;
   has_delays: boolean;
   has_service_change: boolean;
-  has_planned: boolean;
   tod_bin: number;
   advanced_n?: number;
   matched_n?: number;

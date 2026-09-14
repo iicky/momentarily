@@ -77,7 +77,6 @@ export function quietObservation(observedAt: number): Observation {
     has_suspended_alert: false,
     has_delays: false,
     has_service_change: false,
-    has_planned: false,
     tod_bin: tod_bin(observedAt),
   };
 }
@@ -422,7 +421,6 @@ function buildRouteSnapshot(
       ],
       'Planned -',
     ),
-    has_planned: types.some((t) => t.startsWith('Planned -')),
     tod_bin: todBinValue,
   };
 

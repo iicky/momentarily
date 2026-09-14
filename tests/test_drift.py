@@ -102,7 +102,6 @@ def _tick(
     susp: bool = False,
     delays: bool = False,
     sc: bool = False,
-    planned: bool = False,
 ) -> TickObservation:
     return TickObservation(
         route_id=route,
@@ -113,7 +112,6 @@ def _tick(
             has_suspended_alert=susp,
             has_delays=delays,
             has_service_change=sc,
-            has_planned=planned,
             tod_bin=tod,
         ),
     )
@@ -131,7 +129,6 @@ def test_build_input_profile_bins_and_rates():
     assert cell["hist"] == [1, 0, 1, 0, 1, 1]
     assert cell["flags"]["delays"] == 0.25
     assert cell["flags"]["suspended"] == 0.25
-    assert cell["flags"]["planned"] == 0.0
 
 
 def test_emission_drift_identical_is_zero():

@@ -81,7 +81,6 @@ const EmissionParamsSchema = z.object({
   bernoulli_p: ProbVec3,
   bernoulli_p_delays: ProbVec3,
   bernoulli_p_service_change: ProbVec3,
-  bernoulli_p_planned: ProbVec3,
   // Per-state matched-trip advance rate. Optional for back-compat with
   // params.json written before the movement channel.
   advance_rate: ProbVec3.optional(),
@@ -260,11 +259,10 @@ const TrainedParamsWrapperSchema = z.object({
   prov_ref: z.string().optional(),
 });
 
-// The three "kind of disruption" flags (delays/service_change/planned) all
-// indicate `disrupted`, not `suspended` — only has_suspended_alert
-// (bernoulli_p) should pull hard toward suspended. Before this, all three
-// leaned suspended, so any persistent planned-work/delay alert drifted routes
-// into `suspended`.
+// The two "kind of disruption" flags (delays/service_change) both indicate
+// `disrupted`, not `suspended` — only has_suspended_alert (bernoulli_p) should
+// pull hard toward suspended. Before this, both leaned suspended, so any
+// persistent delay alert drifted routes into `suspended`.
 const BOOTSTRAP_EMISSIONS: EmissionParams = {
   poisson_lambda: [0.3, 4.0, 12.0],
   gamma_alpha: [1.0, 3.0, 6.0],
@@ -272,7 +270,6 @@ const BOOTSTRAP_EMISSIONS: EmissionParams = {
   bernoulli_p: [0.001, 0.05, 0.95],
   bernoulli_p_delays: [0.02, 0.6, 0.35],
   bernoulli_p_service_change: [0.02, 0.6, 0.4],
-  bernoulli_p_planned: [0.05, 0.6, 0.35],
 };
 
 export const BOOTSTRAP_PARAMS: HMMParams = {

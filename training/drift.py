@@ -84,7 +84,7 @@ def unmapped_alert_type_drift(predictions: Sequence[_Typed]) -> dict[str, Any]:
 # alert_count is long-tailed and mostly small — fixed bins keep the PSI stable
 # and the stored profile tiny.
 _AC_BIN_LABELS = ("0", "1", "2", "3", "4-5", "6+")
-_FLAGS = ("suspended", "delays", "service_change", "planned")
+_FLAGS = ("suspended", "delays", "service_change")
 # PSI convention: <0.1 no shift, 0.1-0.25 moderate, >0.25 significant.
 PSI_SIGNIFICANT = 0.25
 # Cells thinner than this in either window are too noisy to score.
@@ -99,7 +99,7 @@ def _ac_bin(count: int) -> int:
 
 def build_input_profile(ticks: Iterable[TickObservation]) -> dict[str, Any]:
     """Per-(route, tod_bin) profile of the emission channels: an alert_count
-    histogram (counts over fixed bins) and the four flag rates. Compact and
+    histogram (counts over fixed bins) and the three flag rates. Compact and
     JSON-able — the same builder runs at train time (reference, stored in
     params.json) and at eval time (current window)."""
     acc: dict[str, dict[str, dict[str, Any]]] = {}
@@ -118,7 +118,6 @@ def build_input_profile(ticks: Iterable[TickObservation]) -> dict[str, Any]:
         cell["flags"]["suspended"] += int(o.has_suspended_alert)
         cell["flags"]["delays"] += int(o.has_delays)
         cell["flags"]["service_change"] += int(o.has_service_change)
-        cell["flags"]["planned"] += int(o.has_planned)
 
     # Flag counts -> rates; histogram stays as counts (PSI normalizes itself).
     for by_bin in acc.values():

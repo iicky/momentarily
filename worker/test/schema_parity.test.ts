@@ -39,7 +39,6 @@ function snapMapWithAlerts(routeId: string, n: number): Map<string, RouteSnapsho
       has_suspended_alert: false,
       has_delays: n > 0,
       has_service_change: false,
-      has_planned: false,
       tod_bin: 0,
     },
     active_alert_ids: ids,

@@ -6,7 +6,6 @@ Three hidden states (normal, disrupted, suspended). Observations at each cron ti
   - has_delays           (Bernoulli per state) — any "Delays" / "Severe Delays"
   - has_service_change   (Bernoulli per state) — any non-planned "Service Change" /
                                                  "Trains Rerouted" / "Stops Skipped"
-  - has_planned          (Bernoulli per state) — any alert_type starting "Planned -"
   - advanced_n of matched_n (Binomial per state) - of the trips seen both this
                             tick and last, how many advanced a stop. Per-state
                             advance rate (normal~baseline, disrupted<baseline,
@@ -109,7 +108,6 @@ class Observation:
     has_suspended_alert: bool
     has_delays: bool = False
     has_service_change: bool = False
-    has_planned: bool = False
     tod_bin: int = 0  # TOD bin index; if HMMParams.emissions_by_bin unset, ignored
     # Train-movement channel: of matched_n trips seen both this tick and last,
     # advanced_n moved up a stop. has_movement gates the channel out (no
@@ -150,7 +148,6 @@ class EmissionParams:
     bernoulli_p: tuple[float, float, float]
     bernoulli_p_delays: tuple[float, float, float] = (0.01, 0.3, 0.5)
     bernoulli_p_service_change: tuple[float, float, float] = (0.01, 0.4, 0.6)
-    bernoulli_p_planned: tuple[float, float, float] = (0.05, 0.3, 0.5)
     # Per-state probability a matched trip advances a stop in one tick. Normal
     # sits near the route-direction baseline; disrupted below it; suspended ~0.
     advance_rate: tuple[float, float, float] = (0.6, 0.3, 0.02)
@@ -214,7 +211,6 @@ def _reorder_emissions(
         bernoulli_p=r(em.bernoulli_p),
         bernoulli_p_delays=r(em.bernoulli_p_delays),
         bernoulli_p_service_change=r(em.bernoulli_p_service_change),
-        bernoulli_p_planned=r(em.bernoulli_p_planned),
         advance_rate=maybe(CHANNEL_MOVEMENT, em.advance_rate),
         service_mu=maybe(CHANNEL_SERVICE, em.service_mu),
         service_sigma=maybe(CHANNEL_SERVICE, em.service_sigma),
@@ -427,11 +423,9 @@ def _log_emission(
 ) -> tuple[float, float, float]:
     """Per-state log P(obs | state).
 
-    Channels treated as conditionally independent given state. Real-world
-    independence is imperfect (planned + delays correlate), but with 3 states
-    the bias is small relative to the signal gain from the extra channels.
-    severity_sum is deliberately absent — see the module docstring. The movement channel
-    drops out (contributes 0) when has_movement is False or no trips matched; the
+    Channels treated as conditionally independent given state. severity_sum is
+    deliberately absent — see the module docstring. The movement channel drops
+    out (contributes 0) when has_movement is False or no trips matched; the
     service channel drops out when has_service is False or the ratio is unavailable.
     """
     has_movement = obs.has_movement and obs.matched_n > 0
@@ -445,7 +439,6 @@ def _log_emission(
             + _log_bernoulli(
                 obs.has_service_change, params.bernoulli_p_service_change[i]
             )
-            + _log_bernoulli(obs.has_planned, params.bernoulli_p_planned[i])
         )
         if has_movement:
             log_lik += _log_binomial(
@@ -740,7 +733,6 @@ def _estimate_emissions(
     bernoulli_p: list[float] = []
     bernoulli_p_delays: list[float] = []
     bernoulli_p_service_change: list[float] = []
-    bernoulli_p_planned: list[float] = []
     advance_rate: list[float] = []
     gamma_alpha: list[float] = []
     gamma_beta: list[float] = []
@@ -780,7 +772,6 @@ def _estimate_emissions(
             bernoulli_p.append(fallback.bernoulli_p[s])
             bernoulli_p_delays.append(fallback.bernoulli_p_delays[s])
             bernoulli_p_service_change.append(fallback.bernoulli_p_service_change[s])
-            bernoulli_p_planned.append(fallback.bernoulli_p_planned[s])
             advance_rate.append(fallback.advance_rate[s])
             gamma_alpha.append(fallback.gamma_alpha[s])
             gamma_beta.append(fallback.gamma_beta[s])
@@ -817,11 +808,6 @@ def _estimate_emissions(
                     prior.bernoulli_p_service_change[s],
                 )
             )
-            bernoulli_p_planned.append(
-                posterior_bernoulli(
-                    s, w, lambda o: o.has_planned, prior.bernoulli_p_planned[s]
-                )
-            )
         else:
             bernoulli_p.append(
                 posterior_bernoulli(s, w, lambda o: o.has_suspended_alert, 0.0)
@@ -831,9 +817,6 @@ def _estimate_emissions(
             )
             bernoulli_p_service_change.append(
                 posterior_bernoulli(s, w, lambda o: o.has_service_change, 0.0)
-            )
-            bernoulli_p_planned.append(
-                posterior_bernoulli(s, w, lambda o: o.has_planned, 0.0)
             )
 
         # Advance rate: responsibility-weighted pooled Binomial rate over ticks
@@ -915,11 +898,6 @@ def _estimate_emissions(
             bernoulli_p_service_change[0],
             bernoulli_p_service_change[1],
             bernoulli_p_service_change[2],
-        ),
-        bernoulli_p_planned=(
-            bernoulli_p_planned[0],
-            bernoulli_p_planned[1],
-            bernoulli_p_planned[2],
         ),
         advance_rate=(advance_rate[0], advance_rate[1], advance_rate[2]),
         service_mu=(service_mu[0], service_mu[1], service_mu[2]),

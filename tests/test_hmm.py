@@ -57,7 +57,6 @@ def _default_params() -> HMMParams:
             bernoulli_p=(0.001, 0.05, 0.95),
             bernoulli_p_delays=(0.01, 0.45, 0.5),
             bernoulli_p_service_change=(0.01, 0.5, 0.6),
-            bernoulli_p_planned=(0.05, 0.3, 0.4),
         ),
     )
 
@@ -441,7 +440,6 @@ def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
         has_suspended_alert=False,
         has_delays=False,
         has_service_change=False,
-        has_planned=False,
     )
     burst = Observation(
         alert_count=5,
@@ -449,7 +447,6 @@ def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
         has_suspended_alert=True,
         has_delays=True,
         has_service_change=False,
-        has_planned=False,
     )
     obs = [quiet] * 280 + [burst] * 8 + [quiet] * 280
     fitted, _ = fit_em(obs, _default_params(), max_iterations=30)
@@ -459,7 +456,6 @@ def test_em_quiet_corpus_does_not_collapse_normal_emission() -> None:
         em.bernoulli_p,
         em.bernoulli_p_delays,
         em.bernoulli_p_service_change,
-        em.bernoulli_p_planned,
     ):
         assert min(p) >= 1e-3 - 1e-9, f"Bernoulli below floor: {p}"
         assert max(p) <= 1.0 - 1e-3 + 1e-9, f"Bernoulli above ceiling: {p}"
@@ -687,41 +683,6 @@ def test_published_state_type_safety() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_planned_alerts_can_distinguish_overnight_from_real_disruption() -> None:
-    """Two routes with identical alert_count and severity but different alert
-    types — one planned, one real disruption — should produce different posteriors."""
-    params = _default_params()
-    state = _flat_state()
-
-    # Overnight planned work: lots of alerts but all Planned
-    planned = Observation(
-        alert_count=8,
-        severity_sum=60,
-        has_suspended_alert=False,
-        has_delays=False,
-        has_service_change=False,
-        has_planned=True,
-    )
-    p_state = forward_update(state, planned, params, now=300)
-
-    # Real-time disruption: same shape but no planned flag, with delays + suspension
-    real = Observation(
-        alert_count=8,
-        severity_sum=60,
-        has_suspended_alert=True,
-        has_delays=True,
-        has_service_change=True,
-        has_planned=False,
-    )
-    r_state = forward_update(state, real, params, now=300)
-
-    # Posteriors should differ — the channels carry signal
-    assert p_state.probabilities != r_state.probabilities
-
-    # Real disruption should pull harder toward suspended than planned does
-    assert r_state.probabilities[2] > p_state.probabilities[2]
-
-
 def test_em_recovers_distinct_alert_type_profiles() -> None:
     """EM should learn distinct Bernoulli p's per state when synthetic data
     encodes the asymmetry."""
@@ -739,7 +700,6 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
             bernoulli_p=(0.01, 0.10, 0.80),  # suspended-alert
             bernoulli_p_delays=(0.05, 0.60, 0.30),  # delays peak in disrupted
             bernoulli_p_service_change=(0.02, 0.40, 0.20),
-            bernoulli_p_planned=(0.10, 0.20, 0.10),
         ),
     )
     obs = _generate_synthetic_sequence(true_params, length=1500, seed=11)
@@ -757,7 +717,6 @@ def test_em_recovers_distinct_alert_type_profiles() -> None:
             bernoulli_p=(0.1, 0.3, 0.7),
             bernoulli_p_delays=(0.1, 0.4, 0.4),
             bernoulli_p_service_change=(0.1, 0.4, 0.4),
-            bernoulli_p_planned=(0.1, 0.2, 0.2),
         ),
     )
     fitted, _ = fit_em(obs, init, max_iterations=40, tolerance=1e-5)
@@ -953,7 +912,6 @@ def test_em_learns_per_bin_emissions() -> None:
                     alert_count=rng.randint(8, 15),
                     severity_sum=rng.randint(50, 150),
                     has_suspended_alert=True,
-                    has_planned=True,
                     tod_bin=0,
                 )
             )
@@ -998,7 +956,6 @@ def test_observation_defaults_back_compat() -> None:
     obs = Observation(alert_count=3, severity_sum=20, has_suspended_alert=False)
     assert obs.has_delays is False
     assert obs.has_service_change is False
-    assert obs.has_planned is False
     # forward_update accepts it
     params = _default_params()
     state = _flat_state()
@@ -1146,7 +1103,6 @@ def test_log_emission_service_term_gated_off() -> None:
         bernoulli_p=(0.001, 0.05, 0.95),
         bernoulli_p_delays=(0.01, 0.45, 0.5),
         bernoulli_p_service_change=(0.01, 0.5, 0.6),
-        bernoulli_p_planned=(0.05, 0.3, 0.4),
     )
     baseline = Observation(alert_count=3, severity_sum=0, has_suspended_alert=False)
     off_no_flag = Observation(
@@ -1178,7 +1134,6 @@ def test_log_emission_service_ratio_favors_matching_state() -> None:
         bernoulli_p=(0.1, 0.1, 0.1),
         bernoulli_p_delays=(0.2, 0.2, 0.2),
         bernoulli_p_service_change=(0.2, 0.2, 0.2),
-        bernoulli_p_planned=(0.2, 0.2, 0.2),
         advance_rate=(0.5, 0.5, 0.5),
         service_mu=(1.0, 0.6, 0.05),
         service_sigma=(0.3, 0.3, 0.15),

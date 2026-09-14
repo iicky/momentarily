@@ -54,7 +54,6 @@ function trained(routeIds: string[]): TrainedParams | null {
         bernoulli_p: [0.001, 0.05, 0.95],
         bernoulli_p_delays: [0.02, 0.6, 0.35],
         bernoulli_p_service_change: [0.02, 0.6, 0.4],
-        bernoulli_p_planned: [0.05, 0.6, 0.35],
       },
     };
     dwell_movement[id] = {

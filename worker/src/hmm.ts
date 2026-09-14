@@ -10,7 +10,6 @@
  *   - has_suspended_alert    (Bernoulli per state)
  *   - has_delays             (Bernoulli per state)
  *   - has_service_change     (Bernoulli per state)
- *   - has_planned            (Bernoulli per state)
  *   - advanced_n of matched_n (Binomial per state) — gated off via has_movement
  *
  * Emissions can be conditioned on TOD bin via `HMMParams.emissionsByBin`.
@@ -96,7 +95,6 @@ export interface Observation {
   has_suspended_alert: boolean;
   has_delays: boolean;
   has_service_change: boolean;
-  has_planned: boolean;
   tod_bin: number;
   // Train-movement channel: advanced_n of matched_n trips advanced a stop.
   // Optional + has_movement gate it out (no baseline, feed gap, matched_n==0).
@@ -117,7 +115,6 @@ export interface EmissionParams {
   bernoulli_p: Vec3;
   bernoulli_p_delays: Vec3;
   bernoulli_p_service_change: Vec3;
-  bernoulli_p_planned: Vec3;
   // Per-state matched-trip advance rate. Optional for back-compat with
   // params.json written before the movement channel.
   advance_rate?: Vec3 | undefined;
@@ -181,7 +178,6 @@ function logEmission(obs: Observation, em: EmissionParams): Vec3 {
       + logBernoulli(obs.has_suspended_alert, em.bernoulli_p[s]!)
       + logBernoulli(obs.has_delays, em.bernoulli_p_delays[s]!)
       + logBernoulli(obs.has_service_change, em.bernoulli_p_service_change[s]!)
-      + logBernoulli(obs.has_planned, em.bernoulli_p_planned[s]!)
       + (hasMovement
         ? logBinomial(obs.advanced_n ?? 0, obs.matched_n ?? 0, em.advance_rate![s]!)
         : 0)

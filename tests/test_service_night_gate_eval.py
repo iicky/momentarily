@@ -118,15 +118,6 @@ def test_night_labels_own_acute_alert_beats_alert_free_augmentation():
     assert labels[("2", date(2026, 8, 15))] == "disrupted"
 
 
-def test_night_labels_routine_planned_advisory_stays_normal():
-    """A routine "Planned -" advisory does NOT disqualify a night: planned notices
-    blanket weekend nights whether or not service ran reduced, so gating on them
-    would silence the full-service nights whose surplus is the false alarm. Only
-    acute alerts (delays/suspension/unplanned service-change) mark a night."""
-    obs = [TickObservation("1", _tick(2026, 8, 15, 22), _obs(has_planned=True))]
-    assert night_labels(obs)[("1", date(2026, 8, 15))] == "normal"
-
-
 def test_night_counts_only_weekend_late_night_cells():
     # Two distinct Saturdays at 23:00 ET (we23) plus a weekday tick that must not
     # count toward any weekend cell.

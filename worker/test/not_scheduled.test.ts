@@ -123,7 +123,7 @@ describe('derive: namespace split + scheduled resume', () => {
     expect(n.observation.alert_count).toBe(1);
   });
 
-  test('planned-only route → quiet observation (all flags false, incl. has_planned)', () => {
+  test('planned-only route → quiet observation (all flags false)', () => {
     const snaps = deriveRouteSnapshots(
       payload(
         entity({
@@ -142,7 +142,6 @@ describe('derive: namespace split + scheduled resume', () => {
     expect(a.observation.has_suspended_alert).toBe(false);
     expect(a.observation.has_delays).toBe(false);
     expect(a.observation.has_service_change).toBe(false);
-    expect(a.observation.has_planned).toBe(false);
   });
 
   test('real-time disruption still counts and sets its flag', () => {
@@ -199,7 +198,6 @@ function routeSnap(overrides: Partial<RouteSnapshot> & { route_id: string }): Ro
       has_suspended_alert: false,
       has_delays: false,
       has_service_change: false,
-      has_planned: false,
       tod_bin: 0,
     },
     active_alert_ids: [],
@@ -307,13 +305,12 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
           route_id: 'N',
           observation: {
             // Only the real-time Delays counts; the planned Part Suspended
-            // drops out of alert_count/severity_sum/has_planned entirely.
+            // drops out of alert_count/severity_sum entirely.
             alert_count: 1,
             severity_sum: 32,
             has_suspended_alert: false,
             has_delays: true,
             has_service_change: false,
-            has_planned: false,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:alert:535417', 'lmm:planned_work:20534'],

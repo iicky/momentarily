@@ -38,7 +38,6 @@ function emissions(): Record<string, unknown> {
     bernoulli_p: [0.001, 0.05, 0.95],
     bernoulli_p_delays: [0.02, 0.6, 0.35],
     bernoulli_p_service_change: [0.02, 0.6, 0.4],
-    bernoulli_p_planned: [0.05, 0.6, 0.35],
   };
 }
 
@@ -299,7 +298,6 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
             has_suspended_alert: false,
             has_delays: false,
             has_service_change: false,
-            has_planned: false,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:planned_work:1'],
@@ -355,7 +353,6 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
             has_suspended_alert: false,
             has_delays: false,
             has_service_change: false,
-            has_planned: true,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:planned_work:1'],
@@ -420,7 +417,6 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
             has_suspended_alert: false,
             has_delays: false,
             has_service_change: false,
-            has_planned: true,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:planned_work:2'],
@@ -473,7 +469,6 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
             has_suspended_alert: false,
             has_delays: true,
             has_service_change: false,
-            has_planned: false,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:alert:1'],
@@ -533,7 +528,6 @@ describe('movement recovery: p_normal_in_H off the movement curve + clock', () =
             has_suspended_alert: false,
             has_delays: true,
             has_service_change: false,
-            has_planned: false,
             tod_bin: 0,
           },
           active_alert_ids: ['lmm:alert:1'],

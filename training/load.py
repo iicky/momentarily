@@ -74,13 +74,8 @@ def alert_observation(
         point — the latent disrupted regime stops being defined by chronic
         ordinary Delays, which is what it was 94% made of.
 
-    has_planned is the exception: it reads the unfiltered list under every floor.
-    It reports whether planned work is up rather than how severe the disruption
-    is, and a "Planned -" alert_type arriving under a non-planned id is tier 0,
-    so a floor that silenced it would lose the flag entirely.
     """
     tiers = [severity_tier(at) for at in (at for _so, at in counted)]
-    all_types = [at for _so, at in counted]
     if severity_floor <= LEGACY_SEVERITY_FLOOR:
         scored = list(counted)
     else:
@@ -111,7 +106,6 @@ def alert_observation(
             ),
             exclude_prefix="Planned -",
         ),
-        has_planned=any(at.startswith("Planned -") for at in all_types),
         tod_bin=tod_bin(tick),
         max_severity_tier=max(tiers, default=0),
         severity_floor=severity_floor,
@@ -228,8 +222,7 @@ def _match(
     """Whether any alert_type in `types` contains one of the needles.
 
     If exclude_prefix is set, alert_types starting with that prefix are skipped
-    so that "Planned - Stops Skipped" doesn't double-count as a service change
-    when has_planned already captures it.
+    so that "Planned - Stops Skipped" doesn't double-count as a service change.
     """
     for at in types:
         if exclude_prefix and at.startswith(exclude_prefix):

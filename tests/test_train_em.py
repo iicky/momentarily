@@ -99,7 +99,6 @@ def _quiet(n: int) -> list[Observation]:
             has_suspended_alert=False,
             has_delays=False,
             has_service_change=False,
-            has_planned=False,
             tod_bin=0,
         )
     ] * n
@@ -113,7 +112,6 @@ def _noisy(n: int) -> list[Observation]:
             has_suspended_alert=False,
             has_delays=True,
             has_service_change=False,
-            has_planned=False,
             tod_bin=0,
         )
     ] * n

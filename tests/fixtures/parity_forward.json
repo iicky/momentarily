@@ -56,11 +56,6 @@
         0.6,
         0.4
       ],
-      "bernoulli_p_planned": [
-        0.05,
-        0.6,
-        0.35
-      ],
       "advance_rate": [
         0.7,
         0.3,
@@ -94,13 +89,15 @@
       "has_suspended_alert": false,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 10,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 1.05,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 0,
@@ -108,13 +105,15 @@
       "has_suspended_alert": false,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 10,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 1.05,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 6,
@@ -122,13 +121,15 @@
       "has_suspended_alert": false,
       "has_delays": true,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 3,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 0.6,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 6,
@@ -136,13 +137,15 @@
       "has_suspended_alert": false,
       "has_delays": true,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 3,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 0.6,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 6,
@@ -150,13 +153,15 @@
       "has_suspended_alert": false,
       "has_delays": true,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 3,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 0.6,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 14,
@@ -164,13 +169,15 @@
       "has_suspended_alert": true,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 2,
       "advanced_n": 0,
       "matched_n": 8,
       "has_movement": true,
       "service_ratio": 0.02,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 14,
@@ -178,13 +185,15 @@
       "has_suspended_alert": true,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 2,
       "advanced_n": 0,
       "matched_n": 8,
       "has_movement": true,
       "service_ratio": 0.02,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     null,
     {
@@ -193,13 +202,15 @@
       "has_suspended_alert": true,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 2,
       "advanced_n": 0,
       "matched_n": 8,
       "has_movement": true,
       "service_ratio": 0.02,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 0,
@@ -207,13 +218,15 @@
       "has_suspended_alert": false,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 10,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 1.05,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 0,
@@ -221,13 +234,15 @@
       "has_suspended_alert": false,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 0,
       "matched_n": 0,
       "has_movement": false,
       "service_ratio": null,
-      "has_service": false
+      "has_service": false,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     },
     {
       "alert_count": 0,
@@ -235,22 +250,24 @@
       "has_suspended_alert": false,
       "has_delays": false,
       "has_service_change": false,
-      "has_planned": false,
       "tod_bin": 1,
       "advanced_n": 10,
       "matched_n": 12,
       "has_movement": true,
       "service_ratio": 1.05,
-      "has_service": true
+      "has_service": true,
+      "max_severity_tier": 0,
+      "severity_floor": 1,
+      "has_minor_alert": false
     }
   ],
   "expected_steps": [
     {
       "filter": {
         "probabilities": [
-          0.9999999488282587,
-          5.117174134832465e-08,
-          5.948328981104326e-33
+          0.9999998784671228,
+          1.215328771510791e-07,
+          8.693710976068549e-33
         ],
         "regime_entered_at": 1700000000,
         "last_updated_at": 1700000300
@@ -265,9 +282,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999999798428181,
-          2.0157181919181068e-08,
-          1.8026394957029264e-33
+          0.9999999521266375,
+          4.787336263594952e-08,
+          2.6346277893921883e-33
         ],
         "regime_entered_at": 1700000000,
         "last_updated_at": 1700000600
@@ -282,9 +299,9 @@
     {
       "filter": {
         "probabilities": [
-          4.755623916830461e-08,
-          0.9999999074851776,
-          4.495858325868951e-08
+          2.002367117174909e-08,
+          0.9999999523095162,
+          2.7666812505217108e-08
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700000900
@@ -299,9 +316,9 @@
     {
       "filter": {
         "probabilities": [
-          2.975987520947275e-10,
-          0.9999999864792741,
-          1.322312707740452e-08
+          1.2530470581214717e-10,
+          0.9999999917373886,
+          8.137306609690102e-09
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700001200
@@ -316,9 +333,9 @@
     {
       "filter": {
         "probabilities": [
-          2.9759861921942346e-10,
-          0.9999999864792815,
-          1.3223119914517255e-08
+          1.2530468213258203e-10,
+          0.9999999917373915,
+          8.137303907668657e-09
         ],
         "regime_entered_at": 1700000900,
         "last_updated_at": 1700001500
@@ -333,9 +350,9 @@
     {
       "filter": {
         "probabilities": [
-          7.398380872836837e-28,
-          3.959085638397405e-07,
-          0.9999996040914363
+          5.062049240232002e-28,
+          6.43351312224012e-07,
+          0.9999993566486878
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700001800
@@ -350,9 +367,9 @@
     {
       "filter": {
         "probabilities": [
-          1.3055991145436767e-29,
-          3.2878331510430694e-09,
-          0.9999999967121669
+          8.933053792868704e-30,
+          5.34273814598847e-09,
+          0.9999999946572617
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700002100
@@ -367,9 +384,9 @@
     {
       "filter": {
         "probabilities": [
-          1.3055991145436767e-29,
-          3.2878331510430694e-09,
-          0.9999999967121669
+          8.933053792868704e-30,
+          5.34273814598847e-09,
+          0.9999999946572617
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700002100
@@ -384,9 +401,9 @@
     {
       "filter": {
         "probabilities": [
-          1.3055974360142157e-29,
-          3.2878240833257275e-09,
-          0.999999996712176
+          8.933035130270599e-30,
+          5.342714201546083e-09,
+          0.9999999946572857
         ],
         "regime_entered_at": 1700001800,
         "last_updated_at": 1700002700
@@ -401,9 +418,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999984841834786,
-          1.5158165214741778e-06,
-          4.8010214222482396e-30
+          0.9999963999432372,
+          3.600056762832499e-06,
+          7.01686279119061e-30
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003000
@@ -418,9 +435,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999122809337925,
-          8.771783933754412e-05,
-          1.226870023036355e-09
+          0.9997916861300272,
+          0.000208312077053013,
+          1.7929197529248124e-09
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003300
@@ -435,9 +452,9 @@
     {
       "filter": {
         "probabilities": [
-          0.9999999798129628,
-          2.0187037222675075e-08,
-          1.803413089182994e-33
+          0.9999999519582311,
+          4.8041768841246316e-08,
+          2.6373128602520375e-33
         ],
         "regime_entered_at": 1700003000,
         "last_updated_at": 1700003600
@@ -452,14 +469,14 @@
   ],
   "expected_projections": {
     "10": [
-      0.6703589817420088,
-      0.24159151927942868,
-      0.08804949897856224
+      0.6703589760875506,
+      0.24159152295856265,
+      0.08804950095388606
     ],
     "50": [
-      0.5655910339349908,
-      0.2976955199336562,
-      0.13671344613135092
+      0.5655910339089986,
+      0.2976955199460899,
+      0.13671344614490946
     ],
     "200": [
       0.565068493152048,

@@ -85,13 +85,12 @@ def test_planned_suspension_excluded_from_suspended_flag():
         assert not o.observation.has_suspended_alert
         # Planned work is excluded from the observation entirely now, not just
         # the suspended flag — it never contributes to any channel.
-        assert not o.observation.has_planned
 
 
 def test_planned_only_route_is_quiet_observation():
     """A route whose only active alert is planned/scheduled work drops out of
-    the HMM observation entirely: count, severity, and every flag (including
-    has_planned) read as if nothing were active."""
+    the HMM observation entirely: count, severity, and every flag read as if
+    nothing were active."""
     planned_types = (
         "Planned - Part Suspended",
         "Planned - Stops Skipped",
@@ -107,7 +106,6 @@ def test_planned_only_route_is_quiet_observation():
             assert not o.observation.has_suspended_alert
             assert not o.observation.has_delays
             assert not o.observation.has_service_change
-            assert not o.observation.has_planned
 
 
 def test_realtime_disruption_counts_and_sets_flag():

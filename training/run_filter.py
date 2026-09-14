@@ -43,11 +43,10 @@ BOOTSTRAP_PARAMS = HMMParams(
         gamma_alpha=(1.0, 3.0, 6.0),
         gamma_beta=(2.0, 0.4, 0.2),
         # has_suspended_alert is the only flag that should pull toward
-        # suspended; delays/service_change/planned all indicate disrupted.
+        # suspended; delays/service_change indicate disrupted.
         bernoulli_p=(0.001, 0.05, 0.95),
         bernoulli_p_delays=(0.02, 0.6, 0.35),
         bernoulli_p_service_change=(0.02, 0.6, 0.4),
-        bernoulli_p_planned=(0.05, 0.6, 0.35),
     ),
 )
 
@@ -75,7 +74,6 @@ def _fmt_params(params: HMMParams) -> str:
         f"  p(suspended)        = {t(em.bernoulli_p)}\n"
         f"  p(delays)           = {t(em.bernoulli_p_delays)}\n"
         f"  p(service_change)   = {t(em.bernoulli_p_service_change)}\n"
-        f"  p(planned)          = {t(em.bernoulli_p_planned)}\n"
         f"  self-loop diag      = ({a[0][0]:.3f}, {a[1][1]:.3f}, {a[2][2]:.3f})"
     )
 

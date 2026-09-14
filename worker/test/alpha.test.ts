@@ -18,7 +18,6 @@ const EMISSIONS: EmissionParams = {
   bernoulli_p: [0.001, 0.05, 0.95],
   bernoulli_p_delays: [0.01, 0.45, 0.5],
   bernoulli_p_service_change: [0.01, 0.5, 0.6],
-  bernoulli_p_planned: [0.05, 0.3, 0.4],
 };
 
 const PARAMS: HMMParams = {
@@ -57,7 +56,6 @@ function delaysObs(): Observation {
     has_suspended_alert: false,
     has_delays: true,
     has_service_change: false,
-    has_planned: false,
     tod_bin: 0,
   };
 }
@@ -69,7 +67,6 @@ function quietObs(): Observation {
     has_suspended_alert: false,
     has_delays: false,
     has_service_change: false,
-    has_planned: false,
     tod_bin: 0,
   };
 }

@@ -641,6 +641,53 @@ class Provenance(BaseModel):
     prov_ref: str | None = None
 
 
+class Entrance(BaseModel):
+    """A single subway entrance/exit from NYS Open Data i9wp-a4ja."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    gtfs_stop_id: str
+    complex_id: str | None = None
+    station_id: str | None = None
+    entrance_type: str
+    entry_allowed: bool
+    exit_allowed: bool
+    lat: float
+    lon: float
+
+
+class EntrancesCoverage(BaseModel):
+    """Coverage statistics for the entrances surface."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    row_count: int
+    station_keys: int
+    complex_keys: int
+    direct_match: int
+    complex_fallback: int
+    unresolved: int
+    unresolved_ids: list[str] = []
+    catalog_stations: int
+    stations_with_entrances: int
+    station_coverage: float
+    stations_resolved: int
+    station_coverage_effective: float
+
+
+class PublishedEntrances(BaseModel):
+    """The v1/entrances.json artifact. Direct matches keyed by gtfs_stop_id;
+    complex fallbacks keyed by complex_id."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    fetched_at: int
+    provenance: Provenance = Field(default_factory=Provenance)
+    coverage: EntrancesCoverage
+    entrances: dict[str, list[Entrance]] = Field(default_factory=dict)
+    complex_entrances: dict[str, list[Entrance]] = Field(default_factory=dict)
+
+
 class SegmentRecovery(BaseModel):
     """Expected recovery off a dwell curve conditioned on a regime clock — same
     field names as Inference's recovery block, so a segment's recovery is

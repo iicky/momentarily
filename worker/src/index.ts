@@ -42,6 +42,7 @@ import { parseEquipmentFeed, parseOutageFeed } from './ene';
 import {
   FEEDS,
   STATIONS_FEED,
+  ENTRANCES_FEED,
   TRIP_UPDATE_FEEDS,
   TRIP_UPDATE_FEED_NAMES,
   fetchJson,
@@ -111,6 +112,8 @@ import {
 import type { Inference, Snapshot } from './snapshot';
 import { buildEquipmentList, deriveStationStatuses } from './stations';
 import { parseStationsFeed, readStationsCache, writeStationsCache } from './stations_static';
+import type { StationOut } from './stations_static';
+import { parseEntrancesFeed, buildEntrances, publishEntrances } from './entrances_static';
 import {
   readHeadway,
   readLastSeen,
@@ -1272,6 +1275,9 @@ export default {
     // --- Step 8c: stations static (daily) ---
     // Writes the parsed metadata to its own R2 object; stations_at advances only
     // on a successful, non-empty fetch so a transient failure retries next tick.
+    // freshStations is hoisted so step 8d (entrances) can resolve against the
+    // just-fetched catalog rather than a potentially stale cache read.
+    let freshStations: Record<string, StationOut> | undefined;
     if (alphaWritten && observedAt - lastSeen.stations_at >= STATIONS_INTERVAL_SECONDS) {
       try {
         const stations = parseStationsFeed(await fetchJson(STATIONS_FEED));
@@ -1279,6 +1285,7 @@ export default {
           try {
             await writeStationsCache(env.MOMENTARILY, stations, observedAt);
             lastSeen.stations_at = observedAt;
+            freshStations = Object.fromEntries(stations.map(s => [s.gtfs_stop_id, s]));
             console.log(`stations: ${stations.length} static records cached`);
           } catch (err) {
             console.error('stations cache write failed:', err);
@@ -1291,6 +1298,54 @@ export default {
         console.error('stations fetch failed; freshness held:', err);
       }
       step('8c-stations');
+    }
+
+    // --- Step 8d: entrances static (daily) ---
+    // Resolves each entrance against the stations catalog (direct gtfs_stop_id
+    // then complex_id fallback) and publishes v1/entrances.json. Prefers the
+    // just-fetched stations from step 8c; falls back to the R2 cache. Skips
+    // when no catalog is available (cold deploy before first stations fetch).
+    if (alphaWritten && observedAt - lastSeen.entrances_at >= STATIONS_INTERVAL_SECONDS) {
+      let entranceStations: Record<string, StationOut> | undefined = freshStations;
+      if (!entranceStations) {
+        try {
+          const cached = await readStationsCache(env.MOMENTARILY);
+          if (cached && Object.keys(cached.stations).length > 0) {
+            entranceStations = cached.stations;
+          }
+        } catch (err) {
+          console.error('entrances: stations cache read failed, skipping:', err);
+        }
+      }
+      if (entranceStations) {
+        try {
+          const rawEntrances = parseEntrancesFeed(await fetchJson(ENTRANCES_FEED));
+          if (rawEntrances.length > 0) {
+            try {
+              const published = buildEntrances(observedAt, rawEntrances, entranceStations);
+              await publishEntrances(env.MOMENTARILY, published);
+              lastSeen.entrances_at = observedAt;
+              console.log(
+                `entrances: ${published.coverage.row_count} rows, ` +
+                `${published.coverage.station_keys} station keys ` +
+                `(${published.coverage.direct_match} direct, ` +
+                `${published.coverage.complex_fallback} complex fallback, ` +
+                `${published.coverage.unresolved} unresolved)`,
+              );
+            } catch (err) {
+              console.error('entrances publish failed:', err);
+              failWrite('entrances_publish');
+            }
+          } else {
+            console.warn('entrances: feed parsed to zero rows, freshness held');
+          }
+        } catch (err) {
+          console.error('entrances fetch failed; freshness held:', err);
+        }
+      } else {
+        console.log('entrances: stations cache empty, skipping entrances resolution');
+      }
+      step('8d-entrances');
     }
 
     // Only the alpha CAS winner commits last_seen — a losing run's outputs

@@ -73,6 +73,9 @@ export const LastSeenSchema = z.object({
   // refresh; the heavy station payload itself lives in its own R2 object, not
   // here, to keep this per-tick state file small.
   stations_at: z.number().default(0),
+  // Epoch of the last successful daily entrances-static fetch. Same daily
+  // cadence as stations_at; the published v1/entrances.json object stands alone.
+  entrances_at: z.number().default(0),
 });
 export type LastSeen = z.infer<typeof LastSeenSchema>;
 
@@ -86,6 +89,7 @@ export function emptyLastSeen(): LastSeen {
     station_statuses: {},
     equipment: [],
     stations_at: 0,
+    entrances_at: 0,
   };
 }
 

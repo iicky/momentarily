@@ -1,0 +1,261 @@
+{
+  "$defs": {
+    "Entrance": {
+      "description": "A single subway entrance/exit from NYS Open Data i9wp-a4ja.",
+      "properties": {
+        "complex_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Complex Id"
+        },
+        "entrance_type": {
+          "title": "Entrance Type",
+          "type": "string"
+        },
+        "entry_allowed": {
+          "title": "Entry Allowed",
+          "type": "boolean"
+        },
+        "exit_allowed": {
+          "title": "Exit Allowed",
+          "type": "boolean"
+        },
+        "gtfs_stop_id": {
+          "title": "Gtfs Stop Id",
+          "type": "string"
+        },
+        "lat": {
+          "title": "Lat",
+          "type": "number"
+        },
+        "lon": {
+          "title": "Lon",
+          "type": "number"
+        },
+        "station_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Station Id"
+        }
+      },
+      "required": [
+        "gtfs_stop_id",
+        "entrance_type",
+        "entry_allowed",
+        "exit_allowed",
+        "lat",
+        "lon"
+      ],
+      "title": "Entrance",
+      "type": "object"
+    },
+    "EntrancesCoverage": {
+      "description": "Coverage statistics for the entrances surface.",
+      "properties": {
+        "catalog_stations": {
+          "title": "Catalog Stations",
+          "type": "integer"
+        },
+        "complex_fallback": {
+          "title": "Complex Fallback",
+          "type": "integer"
+        },
+        "complex_keys": {
+          "title": "Complex Keys",
+          "type": "integer"
+        },
+        "direct_match": {
+          "title": "Direct Match",
+          "type": "integer"
+        },
+        "row_count": {
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "station_coverage": {
+          "title": "Station Coverage",
+          "type": "number"
+        },
+        "station_coverage_effective": {
+          "title": "Station Coverage Effective",
+          "type": "number"
+        },
+        "station_keys": {
+          "title": "Station Keys",
+          "type": "integer"
+        },
+        "stations_resolved": {
+          "title": "Stations Resolved",
+          "type": "integer"
+        },
+        "stations_with_entrances": {
+          "title": "Stations With Entrances",
+          "type": "integer"
+        },
+        "unresolved": {
+          "title": "Unresolved",
+          "type": "integer"
+        },
+        "unresolved_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "row_count",
+        "station_keys",
+        "complex_keys",
+        "direct_match",
+        "complex_fallback",
+        "unresolved",
+        "catalog_stations",
+        "stations_with_entrances",
+        "station_coverage",
+        "stations_resolved",
+        "station_coverage_effective"
+      ],
+      "title": "EntrancesCoverage",
+      "type": "object"
+    },
+    "ParamsProvenance": {
+      "description": "Identity of the trained params.json behind this snapshot's inference \u2014 the\none thing code_sha can't say, since the model version moves independently of\nthe deployed Worker. trained_at is the trainer's own version stamp; key is the\nimmutable versioned R2 object it maps to (state/params/v<trained_at>.json), so\na consumer can pin the exact params without a LIST. Both null means the Worker\nis on BOOTSTRAP params (no params.json published yet), not that identity was\nunavailable.",
+      "properties": {
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "trained_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trained At"
+        }
+      },
+      "title": "ParamsProvenance",
+      "type": "object"
+    },
+    "Provenance": {
+      "description": "Which code produced this snapshot. code_sha is the git commit verbatim;\ndirty is null when it couldn't be determined (e.g. a clean-checkout build).",
+      "properties": {
+        "code_sha": {
+          "default": "unknown",
+          "title": "Code Sha",
+          "type": "string"
+        },
+        "dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dirty"
+        },
+        "params": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParamsProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "producer": {
+          "default": "unknown",
+          "title": "Producer",
+          "type": "string"
+        },
+        "prov_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prov Ref"
+        }
+      },
+      "title": "Provenance",
+      "type": "object"
+    }
+  },
+  "description": "The v1/entrances.json artifact. Direct matches keyed by gtfs_stop_id;\ncomplex fallbacks keyed by complex_id.",
+  "properties": {
+    "complex_entrances": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/Entrance"
+        },
+        "type": "array"
+      },
+      "title": "Complex Entrances",
+      "type": "object"
+    },
+    "coverage": {
+      "$ref": "#/$defs/EntrancesCoverage"
+    },
+    "entrances": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/Entrance"
+        },
+        "type": "array"
+      },
+      "title": "Entrances",
+      "type": "object"
+    },
+    "fetched_at": {
+      "title": "Fetched At",
+      "type": "integer"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    }
+  },
+  "required": [
+    "fetched_at",
+    "coverage"
+  ],
+  "title": "PublishedEntrances",
+  "type": "object"
+}

@@ -53,6 +53,21 @@ line-group feed can fail or fail to decode independently of the others, so
 `fresh_feeds` shorter than `expected_feeds` means the arrivals are a PARTIAL
 read and must be treated as such. When every feed fails, the object is left
 un-rewritten rather than published as a false "no trains due" read.
+## Entrances URL
+
+Every subway entrance and exit, refreshed daily from NYS Open Data i9wp-a4ja:
+
+```
+https://feed.momentarily.nyc/v1/entrances.json
+```
+
+`entrances` maps each `gtfs_stop_id` to its entrance list (~97% of stations).
+`complex_entrances` maps by `complex_id` for shared entrances in large
+complexes (Times Sq, W 4 St, Queensboro Plaza) whose compound stop id doesn't
+match a single station — a consumer joins these via `Station.station_complex_id`.
+The `coverage` block reports both `station_coverage` (direct only) and
+`station_coverage_effective` (including the complex fallback) so a consumer can
+see completeness without computing the join.
 
 ## What's in the snapshot
 

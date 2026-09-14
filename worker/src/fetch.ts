@@ -22,6 +22,11 @@ export type FeedName = keyof typeof FEEDS;
 // explicit limit so a future row-count bump can't silently truncate the set.
 export const STATIONS_FEED = 'https://data.ny.gov/resource/39hk-dx4f.json?$limit=2000';
 
+// NYS Open Data — MTA Subway Entrances and Exits (i9wp-a4ja). Same Socrata
+// JSON endpoint. ~2120 rows; pin a limit above real count to guard against
+// silent truncation.
+export const ENTRANCES_FEED = 'https://data.ny.gov/resource/i9wp-a4ja.json?$limit=5000';
+
 /**
  * GTFS-realtime trip-update feeds, one per NYCT line group. Protobuf, not JSON.
  * Archived (derived) for offline recovery validation — see trip_updates.ts.

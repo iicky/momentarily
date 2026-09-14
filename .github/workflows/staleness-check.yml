@@ -178,6 +178,36 @@ jobs:
             echo "::error::freshness.vehicle_feeds.stale: line group(s) [$groups] failed to round-trip across two consecutive checks — a partial trip-update outage hidden behind a fresh vehicle_positions stamp"
             exit 1
           fi
+      # v1/arrivals.json rides the 1-MINUTE cron (the snapshot is every five),
+      # so its own observed_at should always be within a minute or two of now.
+      # This is a WALL-CLOCK check (now - observed_at), not measured against the
+      # snapshot's generated_at like the sub-fields above: a Worker that keeps
+      # publishing snapshot.json while the 1-minute arrivals path throws on every
+      # group leaves this object un-rewritten with an ageing observed_at, and
+      # nothing else in this job would catch it (the health record counts the
+      # failure but is archived, not alarmed). Runs after the snapshot checks and
+      # can exit non-zero independently; the always() save below and the
+      # failure() issue step both still fire. Placed so an arrivals-only outage
+      # still pages via the tracking issue.
+      - name: Check arrivals freshness (v1/arrivals.json)
+        run: |
+          set -euo pipefail
+          # Cache-bust past the CDN (s-maxage=30) so we measure the origin.
+          url="https://feed.momentarily.nyc/v1/arrivals.json?cb=$(date +%s)"
+          curl -fsS --max-time 30 -o /tmp/arrivals.json "$url"
+          observed_at=$(jq -r '.observed_at // empty' /tmp/arrivals.json)
+          if [ -z "$observed_at" ]; then
+            echo "::error::could not parse observed_at from arrivals"
+            exit 1
+          fi
+          now=$(date +%s)
+          age=$(( now - observed_at ))
+          echo "arrivals observed_at=$observed_at now=$now age=${age}s"
+          # Cron runs every minute; 3 missed minutes = the countdown has stopped.
+          if [ "$age" -gt 180 ]; then
+            echo "::error::arrivals: v1/arrivals.json observed_at is ${age}s stale (threshold 180s = 3 missed minutes); the 1-minute countdown publish has stopped while snapshot.json may still be fresh"
+            exit 1
+          fi
       # Persist THIS attempt's stale set (tagged with its run_id) for the next
       # run's two-consecutive compare. always() so a run that fails any assertion
       # above still records the observation. The key includes run_attempt, so a

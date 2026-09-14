@@ -24,6 +24,7 @@ streams accumulate one object per write.
 | --- | --- | --- |
 | `v1/snapshot.json` | [`snapshot.ts`](src/snapshot.ts) `publishSnapshot` | every 5-min tick |
 | `v1/trains.json` | [`snapshot.ts`](src/snapshot.ts) `publishTrains` | every 5-min tick |
+| `v1/arrivals.json` | [`snapshot.ts`](src/snapshot.ts) `publishArrivals` | every minute |
 | `v1/predictions/<date>/<observed_at>.jsonl` | [`grading.ts`](src/grading.ts) `writePredictions` | every 5-min tick (skipped when no records) |
 | `v1/regime_transitions/<date>/<observed_at>.jsonl` | [`grading.ts`](src/grading.ts) `writeTransitions` | every 5-min tick (only on a regime change) |
 | `v1/movement_transitions/<date>/<observed_at>-<scope>.jsonl` | [`grading.ts`](src/grading.ts) `writeMovementTransitions` | every 5-min tick (only on a movement-regime change) |
@@ -34,10 +35,18 @@ countdowns; `v1/predictions` keeps the full numbers for grading. The gate is
 the `PUBLISH_FITTED_RECOVERY` constant in [`snapshot.ts`](src/snapshot.ts).
 
 `deriveArrivals` ([`arrivals.ts`](src/arrivals.ts)) folds the decoded trip-update
-stop times into a per-stop `arrivals` surface (`buildSnapshot` attaches it when
-passed, `freshness.trip_updates` dates the decode), but the cron does not derive
-or attach it yet — it is absent from the published `v1/snapshot.json`. Wiring and
-cadence are a separate task.
+stop times into a per-stop `arrivals` surface, and `buildArrivals`/`publishArrivals`
+([`snapshot.ts`](src/snapshot.ts), beside `buildTrains`/`publishTrains`) wrap and
+write it. It is published on its own `v1/arrivals.json` object every minute — a
+countdown up to 5 min stale is not a countdown, so it rides the 1-minute cron
+(built from the trip-updates the tick already decodes for the trace, no second
+fetch or decode) rather than the 5-minute snapshot. Self-describing like
+`trains.json`: its own `observed_at`,
+`provenance`, and `fresh_feeds`/`expected_feeds` per-feed liveness, each row an
+absolute `eta_epoch` a consumer recomputes against, with a short
+`Cache-Control: public, max-age=30, s-maxage=30`. `buildSnapshot` can still
+attach the same surface inline when passed, but the cron leaves it off
+`v1/snapshot.json` and publishes the dedicated object instead.
 
 `v1/prov/v<trained_at>.json` also lives under the public prefix but is written by
 the weekly Python trainer, not the Worker; the Worker only derives its public URL

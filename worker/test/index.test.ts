@@ -59,6 +59,7 @@ vi.mock('../src/snapshot', async (importOriginal) => {
 });
 
 import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, TRIP_UPDATE_FEED_NAMES } from '../src/fetch';
+import { entity as tuEntity, tripDescriptor, tripUpdate } from './gtfsrt_fixture';
 import { tod_bin } from '../src/hmm';
 import worker, { tickMinute } from '../src/index';
 import type { Env } from '../src/index';
@@ -121,6 +122,11 @@ interface StoredObject {
 
 function fakeBucket() {
   const store = new Map<string, StoredObject>();
+  // How many times each key was written this run — a Map keyed by object key
+  // can't tell one put from an overwrite, so tests that need "published exactly
+  // once" (arrivals must not be re-written by a later step on a boundary tick)
+  // assert against this instead of the final key set.
+  const putCounts = new Map<string, number>();
   let seq = 0;
   const bucket = {
     async get(key: string) {
@@ -152,6 +158,7 @@ function fakeBucket() {
         }
       }
       const etag = `etag-${++seq}`;
+      putCounts.set(key, (putCounts.get(key) ?? 0) + 1);
       store.set(key, { body, etag, ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}) });
       return { etag };
     },
@@ -159,7 +166,7 @@ function fakeBucket() {
       return store.has(key) ? { etag: store.get(key)!.etag } : null;
     },
   };
-  return { bucket: bucket as unknown as R2Bucket, store };
+  return { bucket: bucket as unknown as R2Bucket, store, putCounts };
 }
 
 function keysWithPrefix(store: Map<string, StoredObject>, prefix: string): string[] {
@@ -249,24 +256,29 @@ describe('scheduled: the 5-minute pipeline gate', () => {
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: false }),
     ]);
 
-    // Nothing else did — with two deliberate exceptions, both per-minute by
-    // design and both allowed off the 5-minute boundary for the same reason
-    // the trace itself is: the platform-wait carry
-    // (state/station_wait.json), which needs 1-minute resolution on when a
-    // train cleared a platform, and the observed-headway carry
-    // (state/headway.json), which needs it on when a train cleared a
-    // reference stop. headway.json is absent HERE only because this fixture
-    // publishes no state/segment_params.json, so there are no scheduled
-    // stopping patterns to pick a reference stop from and the surface
-    // abstains — see the off-boundary headway test below for the case where
-    // it does write. No other state/ object moves: no 5-minute pipeline
-    // state (vehicle_stops.json included), no snapshot, no
-    // vehicles/trip-updates archive.
+    // Nothing from the 5-MINUTE pipeline did — with four deliberate per-minute
+    // exceptions, all allowed off the boundary for the same reason the trace
+    // itself is. Two carries: the platform-wait carry (state/station_wait.json),
+    // which needs 1-minute resolution on when a train cleared a platform, and
+    // the observed-headway carry (state/headway.json), which needs it on when a
+    // train cleared a reference stop. headway.json is absent HERE only because
+    // this fixture publishes no state/segment_params.json, so there are no
+    // scheduled stopping patterns to pick a reference stop from and the surface
+    // abstains — see the off-boundary headway test below for the case where it
+    // does write. And two per-minute PUBLISHES: v1/arrivals.json (the countdown
+    // rides the 1-minute cron, built from this tick's trip-updates) and this
+    // tick's archive/health/ record (the arrivals publish is a fail-soft write
+    // whose failures must be counted even off the boundary). No other state/
+    // object moves: no 5-minute pipeline state (vehicle_stops.json included), no
+    // snapshot, no vehicles/trip-updates archive.
     expect(keysWithPrefix(store, 'state/')).toEqual(['state/station_wait.json']);
     expect(store.has('v1/snapshot.json')).toBe(false);
     expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(0);
     expect(keysWithPrefix(store, 'archive/trip_updates/')).toHaveLength(0);
-    expect(keysWithPrefix(store, 'v1/')).toHaveLength(0);
+    // The only v1/ write off the boundary is the per-minute arrivals object.
+    expect(keysWithPrefix(store, 'v1/')).toEqual(['v1/arrivals.json']);
+    // The health record is archived every minute now, not just on the boundary.
+    expect(keysWithPrefix(store, 'archive/health/')).toHaveLength(1);
   });
 
   test('a tick with no trace rows leaves the platform-wait carry untouched', async () => {
@@ -1485,5 +1497,156 @@ describe('feed identity: end-to-end through scheduled()', () => {
     // latest.json was NOT updated (capture failed).
     const latestAfter = store.get('archive/gtfs/latest.json');
     expect(latestAfter?.body).toBe(oldPointer);
+  });
+});
+
+describe('v1/arrivals.json: the per-minute countdown publish', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+  const NON_BOUNDARY_AT = 1_704_067_380; // +3 minutes, minute 3
+
+  interface PublishedArrivals {
+    observed_at: number;
+    provenance: { code_sha: string; producer: string };
+    fresh_feeds: string[];
+    expected_feeds: string[];
+    arrivals: Record<string, { route: string; eta_epoch: number; seconds_away: number }[]>;
+  }
+
+  /** A trip-update feed with one future arrival at `stopId` on `routeId` — the
+   * arrivals path reads StopTimeUpdate rows, which the vehicleFeed encoder above
+   * does not emit. `at` is absolute POSIX seconds. */
+  function tripUpdateFeed(routeId: string, tripId: string, stopId: string, at: number): Uint8Array {
+    return new Uint8Array(
+      tuEntity(
+        tripUpdate(tripDescriptor({ routeId, tripId, isAssigned: true, direction: 3 }), [
+          { stopId, arrival: at },
+        ]),
+      ),
+    );
+  }
+
+  async function runAt(env: Env, at: number): Promise<void> {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(at * 1000);
+    try {
+      await worker.scheduled(scheduledAt(at), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
+
+  test('an off-boundary minute publishes arrivals from the trip-updates, with no snapshot', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      tripUpdateFeed('Q', 'q1', 'Q05S', NON_BOUNDARY_AT + 120),
+    );
+
+    await runAt(env, NON_BOUNDARY_AT);
+
+    // The 5-minute pipeline stayed off, but the countdown published anyway —
+    // that is the whole reason it rides the 1-minute cron.
+    expect(store.has('v1/snapshot.json')).toBe(false);
+    const arr = jsonAt(store, 'v1/arrivals.json') as PublishedArrivals;
+    expect(arr.observed_at).toBe(NON_BOUNDARY_AT);
+    expect(arr.provenance.producer).toBe('worker');
+    expect(arr.arrivals['Q05S']).toEqual([
+      { route: 'Q', eta_epoch: NON_BOUNDARY_AT + 120, seconds_away: 120, trip_id: 'q1' },
+    ]);
+    // All eight groups round-tripped (seven empty-but-successful), so this is a
+    // complete read, not a partial one.
+    expect(arr.fresh_feeds).toEqual([...TRIP_UPDATE_FEED_NAMES]);
+    expect(arr.expected_feeds).toEqual([...TRIP_UPDATE_FEED_NAMES]);
+  });
+
+  test('a boundary minute publishes BOTH arrivals.json and snapshot.json, once, on the same tick clock', async () => {
+    const { bucket, store, putCounts } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    // One feed carries a vehicle position (drives the 5-minute pipeline) AND a
+    // trip-update with a future stop (drives the countdown) — the two decoders
+    // read disjoint entities from the one fetched buffer.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      new Uint8Array([
+        ...vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+        ...tuEntity(
+          tripUpdate(tripDescriptor({ routeId: 'A', tripId: 'a', isAssigned: true, direction: 1 }), [
+            { stopId: 'A02N', arrival: BOUNDARY_AT + 90 },
+          ]),
+        ),
+      ]),
+    );
+
+    await runAt(env, BOUNDARY_AT);
+
+    // Both public objects were written EXACTLY once this tick — arrivals only
+    // ever publishes in the step-0b path and is never re-written by step 8b, so
+    // a Map's final key set (which can't tell a put from an overwrite) is not
+    // enough: assert the put counts directly.
+    expect(putCounts.get('v1/arrivals.json')).toBe(1);
+    expect(putCounts.get('v1/snapshot.json')).toBe(1);
+    const snapshot = jsonAt(store, 'v1/snapshot.json') as { generated_at: number };
+    const arr = jsonAt(store, 'v1/arrivals.json') as PublishedArrivals;
+    expect(snapshot.generated_at).toBe(BOUNDARY_AT);
+    expect(arr.observed_at).toBe(BOUNDARY_AT);
+    expect(arr.arrivals['A02N']).toEqual([
+      { route: 'A', eta_epoch: BOUNDARY_AT + 90, seconds_away: 90, trip_id: 'a' },
+    ]);
+    // The fetch happened once per line-group — the boundary decodes the shared
+    // buffer's trip-update side once (step 0), reused by step 8b, never twice.
+    expect(fetchState.protobufCalls).toHaveLength(TRIP_UPDATE_FEEDS.length);
+  });
+
+  test('an unfresh feed is named in fresh_feeds rather than silently publishing its stops as current', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    // The 'ace' group decodes with a real arrival; the 'si' group REJECTS every
+    // tick — a partial trip-update outage the object must self-report.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      tripUpdateFeed('A', 'a1', 'A01N', NON_BOUNDARY_AT + 60),
+    );
+    const siFeed = TRIP_UPDATE_FEEDS.find(([name]) => name === 'si')![1];
+    fetchState.protobufFailUrls.add(siFeed);
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runAt(env, NON_BOUNDARY_AT);
+    } finally {
+      err.mockRestore();
+    }
+
+    const arr = jsonAt(store, 'v1/arrivals.json') as PublishedArrivals;
+    // Seven of eight groups round-tripped; 'si' is absent from fresh_feeds while
+    // expected_feeds stays the full set — fresh_feeds shorter than expected_feeds
+    // marks the whole surface a PARTIAL read, the honest signal a consumer needs.
+    expect(arr.fresh_feeds).not.toContain('si');
+    expect(arr.fresh_feeds).toHaveLength(TRIP_UPDATE_FEED_NAMES.length - 1);
+    expect(arr.expected_feeds).toEqual([...TRIP_UPDATE_FEED_NAMES]);
+    expect(arr.arrivals['A01N']).toHaveLength(1);
+  });
+
+  test('a total trip-update outage leaves v1/arrivals.json un-rewritten, never an empty countdown', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    // Every line-group feed rejects: publishing {arrivals: {}} as fresh would be
+    // indistinguishable from "no trains due anywhere", the fabrication the gate
+    // exists to avoid. Seed a last-good object to prove it survives untouched.
+    const prior = JSON.stringify({ observed_at: NON_BOUNDARY_AT - 60, arrivals: { Q05S: [] } });
+    store.set('v1/arrivals.json', { body: prior, etag: 'a0' });
+    for (const [, url] of TRIP_UPDATE_FEEDS) fetchState.protobufFailUrls.add(url);
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runAt(env, NON_BOUNDARY_AT);
+    } finally {
+      err.mockRestore();
+    }
+
+    // The last-good object is still there, byte-for-byte — never overwritten
+    // with a fabricated empty read.
+    expect(store.get('v1/arrivals.json')?.body).toBe(prior);
   });
 });

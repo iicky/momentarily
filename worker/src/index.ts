@@ -101,8 +101,10 @@ import { advanceRegimes, pruneIdleRegimes } from './regime';
 import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
 import {
   TICK_SECONDS,
+  buildArrivals,
   buildSnapshot,
   buildTrains,
+  publishArrivals,
   publishSnapshot,
   publishTrains,
 } from './snapshot';
@@ -273,13 +275,36 @@ export default {
       TRIP_UPDATE_FEEDS.map(([, url]) => fetchProtobuf(url)),
     );
     const vehicles: VehicleLite[] = [];
+    // Decode the TripUpdate side of the SAME buffers here too, once per tick.
+    // The per-minute arrivals publish (step 0b) needs it every minute, and a
+    // 5-minute boundary's step 8b reuses this exact array — so the feeds are
+    // fetched once (above) and each side decoded once, never twice in a tick.
+    const trips: TripLite[] = [];
+    // Which line groups round-tripped at all (fetch fulfilled) — the vehicle-
+    // side liveness, unchanged: it still gates the movement metrics and dates
+    // freshness.vehicle_positions/vehicle_feeds on a boundary tick.
     const vehicleFreshFeeds: string[] = [];
+    // Which line groups' TRIP-UPDATE side actually DECODED — the arrivals-side
+    // liveness. A separate list because the trip decode is caught independently:
+    // a malformed protobuf that throws must not abort the whole tick (the
+    // per-minute trace + the 5-minute pipeline both live past this point), and a
+    // group whose trips failed to decode must NOT be advertised fresh in
+    // arrivals just because its bytes arrived. Kept distinct from
+    // vehicleFreshFeeds so this never perturbs the vehicle/movement side.
+    const tripUpdateFreshFeeds: string[] = [];
     for (let i = 0; i < feedResults.length; i++) {
       const r = feedResults[i]!;
       const name = TRIP_UPDATE_FEEDS[i]![0];
       if (r.status === 'fulfilled') {
         vehicleFreshFeeds.push(name);
         vehicles.push(...decodeVehicles(r.value));
+        try {
+          const decoded = decodeTripUpdates(r.value);
+          trips.push(...decoded);
+          tripUpdateFreshFeeds.push(name);
+        } catch (err) {
+          console.error(`trip-updates ${name} decode failed; excluded from arrivals this tick:`, err);
+        }
       } else {
         console.error(`trip-updates ${name} failed:`, r.reason);
       }
@@ -464,11 +489,57 @@ export default {
     }
     step('0-trace');
 
+    // --- Step 0b: publish the per-minute arrivals countdown surface ---
+    // A countdown that can be up to 5 min stale is not a countdown, so
+    // v1/arrivals.json rides THIS 1-minute cron, not the 5-minute pipeline
+    // below. Built from the trip-updates already decoded this tick (`trips`,
+    // step 0), so it costs no extra fetch and no second decode. Self-describing
+    // like trains.json: its own observed_at + provenance + fresh_feeds/
+    // expected_feeds, and a per-row eta_epoch. Fully independent of, and never
+    // gating, the snapshot publish — a failure here is fail-soft and counted in
+    // the health record, exactly like every other publish.
+    //
+    // Same all-feeds-failed gate as trains, but on the arrivals-side liveness:
+    // with NO trip-update feed decoded (tripUpdateFreshFeeds empty) the object
+    // is left un-rewritten rather than publishing an empty countdown as a real
+    // "no trains due" reading; a PARTIAL read (some groups decoded) publishes
+    // flagged via fresh_feeds/expected_feeds.
+    if (tripUpdateFreshFeeds.length > 0) {
+      try {
+        await publishArrivals(
+          env.MOMENTARILY,
+          buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES),
+        );
+      } catch (err) {
+        console.error(
+          'arrivals publish failed; leaving v1/arrivals.json unrewritten this tick:',
+          err,
+        );
+        failWrite('arrivals_publish');
+      }
+    } else {
+      console.warn(
+        'arrivals: no trip-update feed decoded this tick, leaving v1/arrivals.json unrewritten',
+      );
+    }
+    step('0b-arrivals');
+
     if (!isFiveMinuteBoundary) {
       console.log(
         `tick ${observedAt}: minute=${minute}, off the 5-minute boundary — `
-        + '5-minute pipeline skipped, trace only',
+        + '5-minute pipeline skipped, trace + arrivals only',
       );
+      // Archive this tick's write-failure counts before returning: the arrivals
+      // publish above is a fail-soft write on EVERY tick, so its failures must
+      // be recorded even on the 4-of-5 ticks that skip the pipeline below — the
+      // same unconditional health record step 10 writes on a boundary tick.
+      // Otherwise a persistent 1-minute publish failure would be invisible here.
+      try {
+        await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
+      } catch (err) {
+        console.error('health archive failed:', err);
+      }
+      step('10-health');
       return;
     }
 
@@ -1003,21 +1074,16 @@ export default {
     }
 
     // --- Step 8b: trip-updates + vehicle metrics (every 5-minute tick) ---
-    // The protobuf feeds were already fetched and their VehiclePosition side
-    // already decoded at step 0 above (shared with the per-minute trace, so a
-    // boundary tick never fetches twice) — decode the TripUpdate side from
-    // those same buffers (`feedResults`) and reuse `vehicles`/
-    // `vehicleFreshFeeds` as-is. Derive each compact per-route metric and
-    // archive both for offline validation. Gated on the alpha CAS winner like
-    // E&E so losing runs don't double-write. A failed/slow feed is non-fatal —
-    // its routes are simply absent this tick, recorded via fresh_feeds.
+    // The protobuf feeds were already fetched AND both their VehiclePosition
+    // and TripUpdate sides decoded at step 0 above (the trip-updates for the
+    // per-minute arrivals publish, shared so a boundary tick decodes each side
+    // once, never twice) — reuse `trips`/`vehicles`/`vehicleFreshFeeds` as-is.
+    // Derive each compact per-route metric and archive both for offline
+    // validation. Gated on the alpha CAS winner like E&E so losing runs don't
+    // double-write. A failed/slow feed is non-fatal — its routes are simply
+    // absent this tick, recorded via fresh_feeds.
     if (alphaWritten) {
       try {
-        const trips: TripLite[] = [];
-        for (const r of feedResults) {
-          if (r.status === 'fulfilled') trips.push(...decodeTripUpdates(r.value));
-          // Fetch failures for this tick were already logged at step 0.
-        }
         const freshFeeds = vehicleFreshFeeds;
         if (freshFeeds.length > 0) {
           const rows = deriveRouteServiceMetric(trips);

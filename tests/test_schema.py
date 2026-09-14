@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from momentarily.schema import (
     SCHEMA_VERSION,
     Arrival,
+    ArrivalsDoc,
     Bridge,
     Compat,
     Crossing,
@@ -490,3 +491,61 @@ def test_train_position_direction_optional() -> None:
     assert pos.direction is None
     payload = json.loads(pos.model_dump_json())
     assert payload["direction"] is None
+
+
+def test_arrivals_doc_is_self_describing_like_snapshot() -> None:
+    """ArrivalsDoc (the v1/arrivals.json shape) carries its own observed_at and
+    the same provenance block Snapshot does — the countdown rides the 1-minute
+    cron, so a consumer holding only this object can still say which build
+    produced it and how stale each row is off eta_epoch."""
+    doc = ArrivalsDoc(observed_at=1_700_000_000)
+    payload = json.loads(doc.model_dump_json())
+    assert payload["observed_at"] == 1_700_000_000
+    assert payload["provenance"] == {
+        "code_sha": "unknown",
+        "dirty": None,
+        "producer": "unknown",
+        "params": None,
+        "prov_ref": None,
+    }
+    assert payload["arrivals"] == {}
+
+
+def test_arrivals_doc_carries_per_stop_rows() -> None:
+    """The per-stop map keys by GTFS stop id incl. direction suffix and reuses
+    schema.Arrival, the same row type Snapshot.arrivals carries, so the
+    dedicated object and the inline surface never drift."""
+    doc = ArrivalsDoc(
+        observed_at=1_700_000_000,
+        fresh_feeds=["ace", "nqrw"],
+        expected_feeds=["ace", "nqrw"],
+        arrivals={
+            "Q05S": [
+                Arrival(
+                    route="Q", eta_epoch=1_700_000_120, seconds_away=120, trip_id="q1"
+                ),
+            ],
+        },
+    )
+    payload = json.loads(doc.model_dump_json())
+    assert payload["arrivals"]["Q05S"][0] == {
+        "route": "Q",
+        "eta_epoch": 1_700_000_120,
+        "seconds_away": 120,
+        "trip_id": "q1",
+    }
+
+
+def test_arrivals_doc_fresh_feeds_shorter_than_expected_flags_a_partial_read() -> None:
+    """Same per-feed liveness contract as Trains: a rejected trip-update group
+    is a silent skip, so fresh_feeds shorter than expected_feeds is how a
+    consumer tells "no trains due" from "some line groups are missing" without
+    treating stale ETAs as fresh."""
+    doc = ArrivalsDoc(
+        observed_at=1_700_000_000,
+        fresh_feeds=["ace", "nqrw"],
+        expected_feeds=["ace", "nqrw", "si"],
+    )
+    payload = json.loads(doc.model_dump_json())
+    assert len(payload["fresh_feeds"]) < len(payload["expected_feeds"])
+    assert "si" not in payload["fresh_feeds"]

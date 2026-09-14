@@ -236,4 +236,31 @@ describe('scheduled: write-failure counter (archive/health/)', () => {
     };
     expect(health.write_failures.stations_cache_write).toBe(1);
   });
+
+  test('an OFF-BOUNDARY arrivals publish failure is still counted — the per-minute path archives its own health record before returning', async () => {
+    const { bucket, store, failPrefixes } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    // Minute 3: the 5-minute pipeline (and its step-10 health archive) is
+    // skipped. v1/arrivals.json still publishes every minute, so its failure
+    // must reach a health record via the early-return epilogue — otherwise a
+    // persistent 1-minute publish failure is invisible on 4 of every 5 ticks.
+    const NON_BOUNDARY_AT = BOUNDARY_AT + 180;
+    failPrefixes.add('v1/arrivals.json');
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runTick(env, NON_BOUNDARY_AT);
+    } finally {
+      err.mockRestore();
+    }
+
+    // The 5-minute pipeline did not run this tick...
+    expect(store.has('v1/snapshot.json')).toBe(false);
+    // ...but the off-boundary tick still archived its health record, and the
+    // arrivals publish failure is counted in it.
+    expect(jsonAt(store, healthKey(NON_BOUNDARY_AT))).toEqual({
+      observed_at: NON_BOUNDARY_AT,
+      write_failures: { arrivals_publish: 1 },
+    });
+  });
 });

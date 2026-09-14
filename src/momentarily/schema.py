@@ -940,6 +940,52 @@ class Arrival(BaseModel):
     trip_id: str | None
 
 
+class ArrivalsDoc(BaseModel):
+    """The published sibling artifact to Snapshot, served at
+    https://feed.momentarily.nyc/v1/arrivals.json — the per-stop upcoming
+    arrivals countdown, kept OUT of snapshot.json and published on the
+    1-MINUTE cron rather than the 5-minute pipeline. A countdown that can be
+    up to five minutes stale is not a countdown; the 1-minute tick already
+    decodes the trip-update feeds for the trace path, so the surface is built
+    from that same decode at no extra fetch cost and published with a short
+    cache (max-age=30, s-maxage=30) so an edge holds it ~30s, no longer.
+
+    Self-describing like Snapshot itself: carries its own `observed_at` and the
+    same `provenance` block (code_sha/dirty/producer), so a consumer holding
+    only this object can still say which build produced it and how stale it is.
+    Every `arrivals` row also carries an absolute `eta_epoch`, so a consumer
+    recomputes seconds_away against its own clock rather than trusting the
+    publish-time value.
+
+    Same precedent as Trains: there is no schema.py convention for a second
+    published root distinct from Snapshot (scripts/export_schema.py hardcodes
+    Snapshot as the JSON Schema root), so this model is not wired into the
+    generated schema/snapshot.schema.json; it documents the v1/arrivals.json
+    shape directly. The per-stop map itself reuses schema.Arrival, the exact
+    row type Snapshot.arrivals carries, so the two never drift.
+
+    fresh_feeds/expected_feeds carry the per-feed trip-update liveness, the
+    same convention Trains uses for the vehicle feeds: `arrivals` alone cannot
+    tell "no trains due right now" from "some NYCT line-group feeds failed to
+    decode, so those stops are silently missing". fresh_feeds names the groups
+    that decoded this tick; expected_feeds is the full constant set, same
+    order. fresh_feeds shorter than expected_feeds means `arrivals` is a
+    PARTIAL read — the object says so per feed rather than publish stale ETAs
+    as fresh. On a tick where NO feed decodes (fresh_feeds empty), the Worker
+    skips publishing entirely rather than write an empty countdown as a real
+    "no trains due" reading — the object is left un-rewritten in R2, never a
+    failed tick, never a false empty read.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    observed_at: int
+    provenance: Provenance = Field(default_factory=Provenance)
+    fresh_feeds: list[str] = []
+    expected_feeds: list[str] = []
+    arrivals: dict[str, list[Arrival]] = Field(default_factory=dict)
+
+
 class Snapshot(BaseModel):
     """The full published snapshot. The contract."""
 

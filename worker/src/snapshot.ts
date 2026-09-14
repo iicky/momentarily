@@ -31,6 +31,7 @@
 
 import type { RouteRoll } from './alpha';
 import type { Arrivals } from './arrivals';
+import { deriveArrivals } from './arrivals';
 import type { ParamsProvenance, Provenance } from './buildinfo';
 import { codeProvenance } from './buildinfo';
 import { CROWDING_MAX_GAP_MINUTES, CROWDING_SERVED_WINDOW_MINUTES, derivePlatformCrowding } from './crowding';
@@ -62,6 +63,7 @@ import type {
   StationFlowDoc,
   StationWaitDoc,
 } from './state';
+import type { TripLite } from './gtfsrt';
 import type { TrainPosition } from './vehicles';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
@@ -84,11 +86,19 @@ const MAX_MOVEMENT_STATE_AGE_SEC = 1800;
 
 const SNAPSHOT_KEY = "v1/snapshot.json";
 const TRAINS_KEY = "v1/trains.json";
+const ARRIVALS_KEY = "v1/arrivals.json";
 
-// Shared by publishSnapshot and publishTrains so the two public artifacts
-// can never drift on cache policy — see the ADR reference in the file
+// Shared by publishSnapshot and publishTrains so the two 5-minute public
+// artifacts can never drift on cache policy — see the ADR reference in the file
 // header comment for where these numbers come from.
 const PUBLIC_CACHE_CONTROL = "public, max-age=60, s-maxage=300";
+
+// arrivals.json rides the 1-minute cron, not the 5-minute pipeline, so it takes
+// a deliberately shorter cache than the two artifacts above: a countdown up to
+// five minutes stale is not a countdown, and an edge should hold this ~30s, no
+// longer. Its own constant so a change to one policy can never silently move the
+// other.
+const ARRIVALS_CACHE_CONTROL = "public, max-age=30, s-maxage=30";
 
 export const SCHEMA_VERSION = "1";
 
@@ -2086,6 +2096,72 @@ export async function publishTrains(
     httpMetadata: {
       contentType: "application/json",
       cacheControl: PUBLIC_CACHE_CONTROL,
+    },
+  });
+}
+
+// The v1/arrivals.json artifact's shape — the published per-stop countdown
+// surface, a sibling of trains.json (above) rather than a field on
+// snapshot.json, and defined right beside buildTrains/publishTrains because it
+// is the same kind of self-describing published root. Its own `observed_at`,
+// the same `provenance` block (code_sha/dirty/producer) via codeProvenance(),
+// and its own eta_epoch per row a consumer recomputes seconds_away against.
+//
+// fresh_feeds/expected_feeds carry the per-feed trip-update liveness — same
+// convention as trains.json and the vehicle/trip-update archives — because
+// `arrivals` alone cannot distinguish "no trains due right now" from "some
+// NYCT line-group feeds failed to fetch or decode, so those stops are silently
+// missing". fresh_feeds names the groups that decoded this tick (index.ts adds
+// a group only after its trip-update decode actually succeeds); expected_feeds
+// is the full constant set, same order — fresh_feeds.length < expected_feeds
+// .length marks `arrivals` a PARTIAL read, and only equal lengths make an empty
+// `arrivals` a genuine "no upcoming trains". On a tick where NO feed decodes,
+// index.ts skips the publish entirely rather than write that fabrication,
+// exactly as it does for trains.json.
+export interface PublishedArrivals {
+  observed_at: number;
+  provenance: Provenance;
+  fresh_feeds: string[];
+  expected_feeds: string[];
+  arrivals: Arrivals;
+}
+
+export function buildArrivals(
+  observedAt: number,
+  trips: TripLite[],
+  freshFeeds: readonly string[],
+  expectedFeeds: readonly string[],
+): PublishedArrivals {
+  return {
+    observed_at: observedAt,
+    provenance: codeProvenance(),
+    fresh_feeds: [...freshFeeds],
+    expected_feeds: [...expectedFeeds],
+    arrivals: deriveArrivals(trips, observedAt),
+  };
+}
+
+/**
+ * Publish arrivals.json alongside (never gating, never gated on) snapshot.json,
+ * on the 1-minute cron. index.ts owns the fail-soft contract and its two
+ * failure shapes, identical to publishTrains:
+ *   - NO trip-update feed decoded this tick (freshFeeds empty): index.ts must
+ *     NOT call this. An empty `arrivals` published as fresh is indistinguishable
+ *     from "no trains due anywhere", the exact fabrication this surface avoids.
+ *     The object is left un-rewritten; a consumer keeps reading the last-good
+ *     one with its own observed_at, never a fabricated empty countdown.
+ *   - SOME feeds decoded (a strict subset): publish normally, flagged partial
+ *     via fresh_feeds/expected_feeds — a partial countdown is still useful, as
+ *     long as it says which groups are missing.
+ */
+export async function publishArrivals(
+  bucket: R2Bucket,
+  arrivals: PublishedArrivals,
+): Promise<void> {
+  await bucket.put(ARRIVALS_KEY, JSON.stringify(arrivals), {
+    httpMetadata: {
+      contentType: "application/json",
+      cacheControl: ARRIVALS_CACHE_CONTROL,
     },
   });
 }

@@ -34,6 +34,26 @@ and a consumer needs to tell "zero trains on that line" from "that line's
 feed didn't decode this tick" apart. When every feed fails, the object is
 left un-rewritten rather than published as a false empty read.
 
+## Arrivals URL
+
+Per-stop upcoming-train countdowns, keyed by GTFS stop id incl. direction
+suffix (e.g. `Q05S`) — published separately from the snapshot and on a faster
+clock, because a countdown up to five minutes stale is not a countdown:
+
+```
+https://feed.momentarily.nyc/v1/arrivals.json
+```
+
+Written every minute (the snapshot is every five), with a short
+`Cache-Control: public, max-age=30, s-maxage=30` so an edge holds it ~30s at
+most. Each row carries an absolute `eta_epoch`, and a consumer recomputes
+`seconds_away` against its own clock rather than trusting the publish-time
+value. `fresh_feeds`/`expected_feeds` say whether the read is complete — a NYCT
+line-group feed can fail or fail to decode independently of the others, so
+`fresh_feeds` shorter than `expected_feeds` means the arrivals are a PARTIAL
+read and must be treated as such. When every feed fails, the object is left
+un-rewritten rather than published as a false "no trains due" read.
+
 ## What's in the snapshot
 
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata. The atomic unit; everything else is derived from these.

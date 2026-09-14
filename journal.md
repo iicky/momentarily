@@ -9611,3 +9611,240 @@ the Python form: the deleted viz copies are byte-identical to shared (parity gri
 128,861 checks, 0 mismatches) and the worker moved ≤1e-16 toward Python, inside
 its own 1e-9 dwell parity and invisible in minute-rounded published output (all
 132 worker dwell/movement tests unchanged).
+
+## 2026-09-13 — the movement advance classifier carries no disruption signal at any prior strength: peak recall 1.8% against either independent truth
+
+origin: agent
+
+The published movement-primary `condition` called `disrupted` 25 times in
+2026-09-07..09-13 (59,363 ticks) and never inside the supply truth's 83
+disruption episodes, so the recovery gate against that truth read n = 0 for the
+second review running. The suspected causes were ruled out with numbers before
+the real one was found:
+
+- Baseline `p0` is sound: the live params' advance baselines match a fresh causal
+  recompute at a median ratio 0.999–1.006 (210 through-filtered cells).
+- Non-revenue dispatch is not the stall driver: of 355,356 stalled transitions,
+  77.2% are at a terminal/relay from_stop and 1.0% coincide with
+  `assigned_n == 0`.
+- The disrupted rule `posterior <= 0.5 * p0` with
+  `posterior = (S*p0 + advanced) / (S + matched)` reduces, at zero advances, to
+  `matched >= S` regardless of `p0`. At `S = CLASSIFY_PRIOR_STRENGTH = 8` and
+  `MIN_MATCHED_TRIPS = 3`, 43.1% of live cells (median matched 5) are admitted
+  as judgeable and can never read disrupted. That is a real power bottleneck.
+
+Unlocking it does not help. Replaying every tick of the week at
+S ∈ {8, 5, 3} × α ∈ {0.05, 0.02, 0.01} against the deployed baseline:
+
+| truth | S | recall | precision | normal-tick false alarms |
+| --- | --- | --- | --- | --- |
+| supply degradation (assigned_n) | 8 | 0.0% | — | 0.056% (1×) |
+| | 5 | 0.2% | 3.9% | 5.2× |
+| | 3 | 1.7% | 6.7% | 22× |
+| severe alerts (floor 2, independent of the classifier's inputs; same MTA GTFS-RT upstream) | 8 | 0.16% | 20.0% | 0.046% (1×) |
+| | 5 | 0.90% | 22% | 5.2× |
+| | 3 | 1.80% | ~20% | 26× |
+
+Peak recall anywhere is 1.8%, at a 22–26× false-alarm cost. Alerts and vehicle positions share the MTA upstream, so this is independence
+from the classifier's feature path, not of source. Precision against
+severe alerts (~20%) is materially better than against supply (6.7%), which says
+the advance rate and `assigned_n` are near-orthogonal — stalled trains and
+trains pulled from service are different events — but the firing volume is far
+too low to be a detector against either. α barely moves any cell.
+
+Read: the movement-disrupted arm has no disruption signal at any setting of its
+two constants on this week; the S = 8 floor is real but not the reason. The
+recovery gate that grades this arm against the supply truth is unpassable by
+construction. Recommendation recorded: do not lower S; demote the arm from the
+published `condition`; grade recovery per arm against a truth for its own
+phenomenon; publish the causal duration baseline as the recovery estimate until
+a curve beats it.
+
+## 2026-09-14 — the continuous per-hop traversal signal is not a disruption detector either: 15% peak severe-episode recall and +0.06 AUC over the retired arm, both short of the bar
+
+The route-level advance-rate binary was retired after a full sweep peaked at 1.8%
+recall against either independent truth. The open claim was that a CONTINUOUS
+per-hop traversal-time signal (thousands of observations/hour off the 1-minute
+trace, not a binomial on ~5 trains) would do what the binary could not. Graded it
+with the retirement's rigour over the derived traversal archive, 2026-08-12..09-14,
+5.44M reconstructed traversals (5.04M exact single hops, 24.9k right-censored).
+
+Three rolling baseline14d/graded7d pairs, baselines fitted ONLY on the preceding
+window: A base 08-12..08-25 grade 08-26..09-01; B base 08-19..09-01 grade
+09-02..09-08; C base 08-26..09-08 grade 09-09..09-13 (edge exposure: A's archive
+baseline starts 08-12 16:20Z, ~13.3d not 14; C has 5 graded days, not 7). Per
+(route,direction,tick)
+three deviation statistics off each hop's OWN loglogistic baseline: (i) median
+observed/baseline ratio, (ii) share of hops over the baseline p90, (iii) survival
+overdue = median 1-S(elapsed) on in-progress hops, with and without right-censored
+spans folded in via a from-stop-pooled fit. Completed-hop statistics are keyed to
+the ARRIVAL tick snap(at+seconds), never the departure tick, so a resolved hop
+cannot leak its own future arrival; at an interior tick only the censored
+elapsed contributes. Truths exactly as the review builds them: severe = floor-2
+mta_truth off presence-masked alert versions; supply = degraded_now_truth on the
+assigned_n series against a preceding-window baseline.
+
+Detection, at a false-alarm rate capped at 2x the retired arm's 0.046% (episode =
+any in-episode flag; the retired arm's own numbers on the last two rows):
+
+| truth  | statistic        | AUC        | severe-episode recall @2xFAR | first-flag |
+|--------|------------------|------------|------------------------------|------------|
+| severe | (i) med ratio    | 0.52-0.56  | 2.0-10.3%                    | +25..+118m |
+| severe | (ii) p90 share   | 0.53-0.55  | 0%                           | —          |
+| severe | (iii) surv overdue| 0.51-0.61 | 7.8-14.6%                    | +10..+43m  |
+| supply | (i) med ratio    | 0.44-0.55  | 3.0-7.5%                     | —          |
+| supply | (iii) surv overdue| 0.41-0.43 | 0-6.7%                       | —          |
+| retired arm S>=8 (floor)      | — | 0.16% (FAR 1x = 0.046%)      | —          |
+| retired arm S>=3              | — | 1.8%  (FAR 26x)              | —          |
+
+Lead/lag used a 30-min PRE-onset allowance through episode end (a flag from 30 min
+before onset up to the episode's last tick counts; a leading signal would show as
+negative minutes): every median still comes out POSITIVE, +10 to +118 min after
+onset, so on the episodes it does catch the traversal flag lags rather than leads.
+Peak severe-episode recall is 14.6% (statistic iii with censored spans, pair B) —
+better than the retired binary's 0.16-1.8% but well under the 20% viability bar, on
+every pair. Against the supply truth the statistics are largely INVERTED (AUC
+0.41-0.55): severe alerts and supply collapses correlate with suspended/thinned
+service where few hops complete, and the hops that do complete are the healthy ones
+still running. Folding right-censored spans into (iii) changed AUC by <0.001 and
+episode recall by at most one episode (pair B 6/48 excl vs 7/48 incl); the "2.2x
+tighter censored spans" buy nothing here.
+
+The product question — does the departure-time network statistic predict a trip
+running >1.5x its SCHEDULED time — graded on every contiguous run (split by service
+date; trip_ids recur daily) with full scheduled-hop coverage, scheduled from the
+historical feed keyed to each day's provenance digest (09-11..13 observed, earlier
+inferred by feed_version). Predictor read at the prior published tick, strictly
+before departure, for both arms. All-run cohort: pair A 106,722 runs (6.7%
+positive) best traversal AUC 0.562; B 100,844 (7.1%) 0.545; C 71,254 (8.1%) 0.547.
+On the provenance-confirmed (observed-digest) subset 09-11..13 alone, C is 36,631
+runs (9.0% positive), best traversal AUC 0.545, retired arm 0.500, gain +0.045 —
+the inferred-feed and observed-digest slices agree.
+The retired route-level classifyAdvance arm (null preserved as mute) is near-silent
+(fires disrupted on only tens of tick cells) and scores AUC 0.500 on every pair;
+its ungated 1-tail precursor 0.43-0.49. Best AUC gain over the actual arm is +0.045
+to +0.061 — a fifth of the +0.30 the rule demands.
+
+Coverage is the one thing the continuous signal wins outright: on the retired arm's
+own (route,direction,tick) in-service grid it carries a statistic on 90.8-91.9% of
+cells (8-9% mute) against the binary's 25.6-27.1% mute on the same grid (the
+43%-mute figure is from the earlier, sparser window), and given any hop resolves in
+a cell it is baselined 99.9% of the time. The signal sees the network; it just does
+not separate disruption from normal.
+
+Decision rule: viable if >=20% severe-episode recall at <=2x FAR, OR >=0.3 AUC
+gain over the retired arm on the trip-delay question. Both fail on all three
+pairs. VERDICT: not viable. No classifier change; the definition stays offline.
+
+## 2026-09-14 — observed-headway-vs-scheduled graded as a disruption detector: NO-GO, the third vehicle-derived primitive to fail the same bar
+
+origin: agent
+
+Headway was the next candidate after advance-rate and per-hop traversal time,
+and it differs in one way that should have mattered: it is anchored outside the
+vehicle stream by the timetable (scheduled median headway per hour-of-week at
+each route/direction's canonical reference stop, from stop_times). It is legible
+in exactly the way the vehicle primitives were not — "trains every 14 min,
+scheduled 6". Graded read-only with the same discipline as the traversal grade:
+three rolling baseline/graded pairs (A base 08-12..25 / grade 08-26..09-01; B
+08-19..09-01 / 09-02..08; C 08-26..09-08 / 09-09..13), severe-alert (floor 2,
+build_tick_observations under the prediction presence mask -> mta_truth) and
+supply-degradation (degraded_now on the trip-updates assigned_n series) truths,
+per-(route,direction,tick) FAR capped at 2x the retired movement arm's 0.046%,
+severe-episode recall and lead/lag at that cap, and the trip-delay product AUC.
+
+Seven statistics per cell, each scored so higher = worse: (i) the PUBLISHED
+observed/scheduled ratio — mirroring worker/src/headway.ts cellHeadway exactly
+(distinctPassings' 30 s cross-trip collapse, the two most-recent distinct trains
+only with no fallback to an older valid pair, MAX_HEADWAY 7200 s, carried
+forward up to MAX_READING_AGE 1800 s, gap-excluded); (ii) tick AWT over the own-
+cell typical_actual_baseline p90; twice-typical over 2*p50; (iii) the sustained
+forms at runs of >=2 and >=3 above-p90 ticks; (iv) the DEFINED TickWait (the
+trailing-hour AWT, >=3 clean headways) normalised by scheduled headway; and,
+graded separately and NOT conflated with TickWait, an every-minute elapsed-
+since-last-train / scheduled signal.
+
+Feed-provenance sensitivity, measured rather than assumed: the two window feeds
+(056d1fc8 / 20260807-H covering <= 08-26, 2c9e69b8 / 20260826-X covering >=
+08-27) select IDENTICAL reference stops (50/50, zero stop_id differences) and
+BYTE-IDENTICAL scheduled headway (7,642/7,642 hour-of-week cells, zero differ).
+The inferred-feed choice does not move this detector's inputs at all.
+
+Coverage of the (route,dir,tick) movement-census grid is good for the published
+arm: (i) 89-91%, the elapsed signal 89-91%, TickWait 83-85%; the own-cell
+baselined arms (ii)/twice-typical are 53-60% (the min-nights/min-samples gate);
+the sustained arms are 6-10% by construction.
+
+It fails the bar on both axes, and the same way the vehicle primitives did.
+Severe-episode recall at <=2x FAR, best arm (i): A 10.3% (6/58), B 8.3% (4/48),
+C 25.5% (13/51). Only the most recent pair clears 20%; A and B sit near 9%, so
+the C number is a one-pair excursion, not a robust clearance — the exact reason
+the grade runs three rolling pairs. Every severe detection LAGS onset (+60 s to
++242 s at the firing tick) at tick-recall ~0.1-0.5% and precision 0.17-0.36: it
+catches an episode only through a sparse late-firing tick, after the alert it
+would supposedly anticipate. Severe AUC tops out at 0.58-0.615 (the TickWait
+arm). Supply-truth AUC spikes on B alone (i 0.767, twice-typical 0.802) but does
+not generalise (A 0.669, C 0.565) and its episode recall at the FAR cap is
+10.8%. The product question — does the statistic at the prior tick predict a
+trip running >1.5x its scheduled time at departure — is flat: best AUC gain over
+the 0.50 movement arm is -0.003 (A), +0.021 (B), +0.033 (C), against the +0.30
+bar and below the traversal grade's 0.56. Decision rule (>=20% severe-episode
+recall at <=2x FAR, or >=0.30 AUC gain): neither clears, so it stops here with
+the numbers and no classifier change. Anchoring in the timetable made the signal
+legible without making it predictive: a wide observed headway is real, but it
+arrives with or after the disruption, not before it, and against the own-cell
+baseline it is no better separated from normal service than the retired arm.
+
+## 2026-09-14 — correction to the headway grade above: units, conditioning, and baseline gating tightened; verdict unchanged (NO-GO)
+
+origin: agent
+
+Four methodology corrections to the entry above, applied before the grade was
+treated as final. None moves the verdict — headway-vs-scheduled still fails both
+arms of the rule on every pair — but the numbers below supersede the first
+entry's where they differ.
+
+1. Lead/lag is in MINUTES, not seconds. The published-ratio arm (i) LAGS onset by
+   a median +242 min (A), +60 min (B), +65 min (C) on the episodes it catches at
+   all; the elapsed arm +52..+695 min. Every arm lags; none leads. This is the
+   same finding as the first entry, stated in the right unit.
+2. Each statistic is now graded on its OWN present grid, so an AWT arm that
+   abstains (<3 clean headways in the trailing hour) is out of the denominator
+   rather than counted as a miss just because the published ratio (i) was present.
+3. The trip-delay product AUC gain is now measured against the retired arm on the
+   SAME rows each candidate is scored on (paired cohort), not by subtracting two
+   AUCs computed over different row sets.
+4. The own-cell typical_actual_baseline is now normal-gated on an independent
+   axis (the severe alert truth over the BASELINE window, not the graded window),
+   per its contract; base cells 802 / 851 / 795 for A / B / C.
+
+Severe (floor 2), (route,dir,tick), FAR capped at 2x the retired arm's 0.046%
+(= 0.092%), each statistic on its own present grid:
+
+| pair | (i) ratio eps-recall | (i) AUC | own-cell p90 / twice AUC | (iv) TickWait AUC |
+|------|----------------------|---------|--------------------------|-------------------|
+| A    | 10.3% (6/58) +242m   | 0.512   | 0.657 / 0.702            | 0.582             |
+| B    | 8.3%  (4/48) +60m    | 0.520   | 0.544 / 0.604            | 0.602             |
+| C    | 25.5% (13/51) +65m   | 0.563   | 0.659 / 0.714            | 0.625             |
+
+Only pair C's published ratio clears 20% severe-episode recall; A and B sit near
+9%, so C is a one-pair excursion, not a clearance — exactly what three rolling
+pairs exist to catch. The own-cell arms (p90, twice-typical) show the highest
+separation AUC (0.60-0.71) but fire on ~0 episodes at the strict FAR cap
+(eps-recall 0-1.7%): they rank disruption above normal in the bulk, yet the tail
+the cap admits is not where the severe episodes live. Every arm still lags onset.
+
+Supply (degraded_now): pair B is the one strong cell (AUC (i) 0.774, twice 0.847,
+TickWait 0.800) but its episode recall at the cap is 2.5-10.8%; A is 0.57-0.68 and
+C is 0.44-0.57. It does not generalise across the three pairs.
+
+Product (trip > 1.5x scheduled at departure), paired gain over the retired arm
+(arm AUC 0.500 on every pair): best gain +0.013 (A), +0.043 (B), +0.007 (C) —
+about a seventh of the +0.30 the rule wants, and below the traversal grade's 0.56
+all-run AUC. Coverage on the movement-census in-service grid: the published ratio
+carries a value on 89-91% of cells and the elapsed arm 89-91%, the defined
+TickWait AWT 83-85%, and the own-cell-baselined arms 42-50% (the min-nights /
+min-samples gate, now also normal-gated). Feed-provenance sensitivity is nil
+(measured, entry above). Decision rule: neither >=20% severe-episode recall at
+<=2x FAR nor >=0.30 product-AUC gain clears on any robust basis. VERDICT stands:
+not viable, no classifier or shared-definition change.

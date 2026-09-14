@@ -247,6 +247,51 @@ def test_build_recovery_population_keeps_uncensored_nonstanding(
     assert kept.alert_type == "Delays"
 
 
+class _ArchiveClient:
+    """A fake S3 client that records which bucket every call names and serves
+    one archived alert-version body."""
+
+    def __init__(self, key: str, body: bytes) -> None:
+        self.key = key
+        self.body = body
+        self.buckets: list[str] = []
+
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
+        self.buckets.append(kwargs["Bucket"])
+        if self.key.startswith(kwargs["Prefix"]):
+            return {"Contents": [{"Key": self.key}], "IsTruncated": False}
+        return {"Contents": [], "IsTruncated": False}
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        self.buckets.append(kwargs["Bucket"])
+        assert kwargs["Key"] == self.key
+        return {"Body": SimpleNamespace(read=lambda: self.body)}
+
+
+def test_load_truth_observations_uses_only_the_given_client_and_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The trainer's publish path reaches this with an injected client and the
+    bucket it already holds; it must never reload R2 config (which opens the
+    secrets vault) to rediscover either. Regression: the publisher once routed
+    through fetch_alert_versions(client=...), which calls load_config() for the
+    bucket, and ten trainer tests failed on a vault integrity check."""
+
+    def _no_config() -> Any:
+        raise AssertionError("load_config must not be called with a client in hand")
+
+    monkeypatch.setattr("training.load_r2.load_config", _no_config)
+    monkeypatch.setattr("training.r2_client.load_config", _no_config)
+
+    day = date(2026, 1, 10)
+    client = _ArchiveClient(f"archive/alerts/{day.isoformat()}/x.json", b"{}")
+    obs = rb.load_truth_observations(cast(Any, client), "the-bucket", day, day)
+
+    assert obs == []  # an empty alert body yields no route-ticks
+    assert client.buckets
+    assert set(client.buckets) == {"the-bucket"}
+
+
 # --- the transactional writer ------------------------------------------------
 
 

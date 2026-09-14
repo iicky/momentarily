@@ -308,6 +308,26 @@ describe('deriveSegmentStates', () => {
     };
     expect(deriveSegmentStates(state, degenerate)).toEqual({ 'F|south|A09S': 'normal' });
   });
+
+  test('a degenerate-baseline terminal segment abstains instead of over-flagging disrupted', () => {
+    // p0 just under CLASSIFY_P0_FLOOR (0.2): a terminal/relay stop advances ~0
+    // even when healthy. Pre-floor a sustained zero-advance window (a=0/m=25)
+    // cleared the binomial (0.81**25 ~= 0.0047 <= alpha) and published
+    // 'disrupted'; now the advance branch abstains on the degenerate baseline,
+    // so the throughput branch's own read (here 'quiet', no expected traversals)
+    // surfaces and the terminal no longer over-flags.
+    const terminal: SegmentParamsDoc = {
+      ...fitted,
+      cells: { 'F|south|A09S': { p0: 0.19, n: 1000 } },
+    };
+    const state: SegmentFlowDoc = {
+      observed_at: NOW,
+      cells: { 'F|south|A09S': { a: 0, m: 25, e: 0 } },
+      vehicles: { F: 5 },
+      regimes: {},
+    };
+    expect(deriveSegmentStates(state, terminal)['F|south|A09S']).toBe('quiet');
+  });
 });
 
 describe('pruneSegmentRegimes', () => {

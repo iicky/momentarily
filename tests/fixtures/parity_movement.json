@@ -11,14 +11,14 @@
       "expected": null
     },
     {
-      "label": "case2_sustained_shuttle_freeze_still_fires",
+      "label": "case2_sustained_shuttle_freeze_now_abstains",
       "fn": "classify_direction",
       "inputs": {
         "advanced": 0,
         "stalled": 25,
         "p0": 0.125
       },
-      "expected": "disrupted"
+      "expected": null
     },
     {
       "label": "case3_trunk_freeze_still_fires",
@@ -79,6 +79,26 @@
         "p0": 0.1
       },
       "expected": "normal"
+    },
+    {
+      "label": "edge_p0_floor_below_abstains",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 25,
+        "p0": 0.19
+      },
+      "expected": null
+    },
+    {
+      "label": "edge_p0_floor_at_still_fires",
+      "fn": "classify_direction",
+      "inputs": {
+        "advanced": 0,
+        "stalled": 25,
+        "p0": 0.2
+      },
+      "expected": "disrupted"
     },
     {
       "label": "edge_degenerate_baseline_abstains",

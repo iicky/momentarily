@@ -9848,3 +9848,29 @@ min-samples gate, now also normal-gated). Feed-provenance sensitivity is nil
 (measured, entry above). Decision rule: neither >=20% severe-episode recall at
 <=2x FAR nor >=0.30 product-AUC gain clears on any robust basis. VERDICT stands:
 not viable, no classifier or shared-definition change.
+## 2026-09-13 — the degenerate-baseline advance floor (p0<0.2) removes 0 disrupted ticks on the current fit
+
+Added a baseline-p0 floor to the movement/segment advance classifier: below it the
+relative-drop disrupted test is abstained (the cell can still read normal), keyed on
+the cell's own p0 and shared by the direction and segment calls. Measured against the
+deployed advance baseline it is a no-op on today's data, which is the finding.
+
+The live baseline (state/params.json movement_baseline) holds 211 (route, direction,
+tod_bin) cells; median p0 0.9388, p10 0.7293. Only 2 sit under 0.2, both Rockaway (H)
+shuttle south: p0 0.1127 (tod0) and 0.1446 (tod1). The next cell up is 0.224, so 0.2
+lands in the 0.145→0.224 gap. The Franklin (FS) shuttle that motivated the fix is
+*absent from the live baseline* (observed; likely the through-stop advance filter
+leaving a 2-stop shuttle under min_samples, not separately re-measured this session).
+
+Direct counterfactual over 2026-09-07..09-13 (re-classify every tick at floor 0 vs 0.2
+against the deployed baseline, through-stop counts): 0 disrupted route-ticks removed on
+any route — so 0 escalations removed by construction (escalations are debounced runs of
+disrupted ticks; identical tick streams → identical episodes). 25 pre-floor disrupted
+route-ticks exist, all high-p0 trunk cells, untouched. H south had 1857 dir-ticks but
+max matched = 10, where a p0≈0.11 cell needs ~26 zero-advance matched trips to clear the
+binomial, so it produced 0 disrupted ticks even with the floor off — the result is
+driven by raw match counts, not the baseline choice. The `training.review` run (its
+score window resolved to 2026-09-07..09-14) is historical-shadow-HMM based, so its
+scorecard (onset 2/46, 15 false alarms) is unchanged and cannot itself show the floor's
+effect. Net: a structural guard against a future sustained degenerate-baseline freeze,
+with no disruption removals — and so no detection change — observed on this calm window.

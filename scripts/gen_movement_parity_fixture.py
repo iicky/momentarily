@@ -77,26 +77,26 @@ def _case(label: str, advanced: int, stalled: int, p0: float | None) -> Case:
 
 
 def _shared_table_cases() -> list[Case]:
-    """The exact (advanced, stalled, p0) -> label table that was hand-copied
-    into tests/test_load_r2.py, worker/test/movement_state.test.ts and
-    viz/tests/movement.test.ts. Case math (prior_strength=8,
-    disrupted_ratio=0.5, alpha=0.05):
+    """The core (advanced, stalled, p0) -> label table shared across the three
+    languages. Case math (prior_strength=8, disrupted_ratio=0.5, alpha=0.05,
+    p0_floor=0.2):
 
-      case1 p0=0.125 advanced=0 matched=8:  post=0.0625==0.5*p0 (<=);
-            tail=0.875**8~=0.3436>alpha -> None. THE FIX: a short shuttle's
-            degenerate baseline no longer misfires disrupted on an ordinary
-            zero-advance tick.
-      case2 p0=0.125 advanced=0 matched=25: post~=0.0303<=0.0625;
-            tail=0.875**25~=0.0356<=alpha -> disrupted. The same degenerate
-            baseline still fires once there's enough evidence.
-      case3 p0=0.55  advanced=0 matched=17: post=0.176<=0.275;
+      case1 p0=0.125 advanced=0 matched=8:  post=0.0625==0.5*p0 (<=); p0=0.125
+            < p0_floor -> None. A short shuttle's degenerate baseline abstains
+            rather than misfire disrupted on an ordinary zero-advance tick.
+      case2 p0=0.125 advanced=0 matched=25: post~=0.0303<=0.0625, and even this
+            much evidence would clear the binomial tail (0.875**25~=0.0356) — but
+            p0=0.125 < p0_floor, so a degenerate shuttle baseline abstains no
+            matter how sustained the freeze. THE FIX: the disrupted determination
+            is not run below the floor.
+      case3 p0=0.55  advanced=0 matched=17: post=0.176<=0.275; p0>=floor;
             tail=0.45**17~=1.2e-6<=alpha -> disrupted (a healthy trunk frozen).
       case4 p0=0.55  advanced=8 matched=17: post=0.496>0.275 -> normal
             (posterior clears the cutoff outright, no significance test needed).
     """
     return [
         _case("case1_shuttle_false_positive_now_abstains", 0, 8, 0.125),
-        _case("case2_sustained_shuttle_freeze_still_fires", 0, 25, 0.125),
+        _case("case2_sustained_shuttle_freeze_now_abstains", 0, 25, 0.125),
         _case("case3_trunk_freeze_still_fires", 0, 17, 0.55),
         _case("case4_normal_above_ratio", 8, 9, 0.55),
     ]
@@ -112,13 +112,19 @@ def _edge_cases() -> list[Case]:
                    =0.6545>0.45 -> normal. Three observations can't outvote
                    the prior, so a decisive stall is still called normal —
                    the prior-strength knob's whole job.
-    shuttle_normal p0=0.1, advanced=1/10: post=1.8/18=0.10>0.05 -> normal.
-                   Raw frac 0.10 would trip a single global 0.25 cutoff; the
-                   baseline-relative rule doesn't.
-    degenerate     p0 at the P0_FLOOR floor (1e-3): even 10 straight stalls
-                   can't reach significance (tail=0.999**10~=0.99>alpha), so
-                   the near-zero baseline abstains rather than firing on its
-                   own normal zero-advance noise.
+    shuttle_normal p0=0.1, advanced=1/10: post=1.8/18=0.10>0.05 -> normal, and
+                   the normal branch is reached before the p0 floor, so a
+                   visibly-advancing low-baseline cell still reads normal.
+    floor_below    p0=0.19, advanced=0/25: post=0.0461<=0.095 (would-be
+                   disrupted, tail=0.81**25~=0.0047<=alpha) but p0=0.19 <
+                   p0_floor(0.2) -> None. The floor abstains a sustained freeze
+                   whose baseline is just under the floor.
+    floor_at       p0=0.20, advanced=0/25: post=0.0485<=0.10, p0=0.20 NOT <
+                   p0_floor -> tail=0.8**25~=0.0038<=alpha -> disrupted. Pins
+                   the floor as exclusive (< abstains, == still fires).
+    degenerate     p0 near zero (1e-3): p0 < p0_floor short-circuits to None
+                   before the binomial even runs; the near-zero baseline
+                   abstains rather than firing on its own zero-advance noise.
     no_baseline    p0 null -> no cell to judge against. Python/viz return
                    None; the Worker replay skips it (classifyAdvance has no
                    null-baseline path).
@@ -128,6 +134,8 @@ def _edge_cases() -> list[Case]:
         _case("edge_below_min_matched", 1, 1, 0.9),
         _case("edge_prior_only_stall_stays_normal", 0, 3, 0.9),
         _case("edge_shuttle_normal_debiased", 1, 9, 0.1),
+        _case("edge_p0_floor_below_abstains", 0, 25, 0.19),
+        _case("edge_p0_floor_at_still_fires", 0, 25, 0.20),
         _case("edge_degenerate_baseline_abstains", 0, 10, 0.001),
         _case("edge_no_baseline_cell", 8, 1, None),
     ]

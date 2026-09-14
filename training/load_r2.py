@@ -1107,6 +1107,26 @@ DISRUPTED_RATIO = 0.5
 # when healthy, so a normal zero-advance tick would otherwise flip disrupted.
 CLASSIFY_ALPHA = 0.05
 
+# A cell whose baseline advance rate p0 sits under this floor is degenerate: it
+# advances ~0 even in healthy operation (short shuttles, terminal/relay stops that
+# dwell and reverse), so its 'normal' is near-zero advance and a zero-advance tick
+# carries no disruption signal. Below the floor the disrupted determination is
+# abstained (None / 'unknown') rather than run — a tail that would read
+# 'significant' against that untrustworthy p0 is deliberately not credited. The
+# cell can still read 'normal' when it is visibly advancing. Chosen from the live
+# advance-baseline distribution (state/params.json movement_baseline, 211
+# (route, direction, tod_bin) cells): median p0 0.94, p10 0.73 — trunk lines sit
+# high. Only the H (Rockaway) shuttle's south cells fall low: p0 0.113 (tod0) and
+# 0.145 (tod1), the lowest two in the fit; the next real cell up is M south
+# overnight at 0.224. 0.15 and 0.2 abstain the same 2 cells and nothing else
+# (0.9%); 0.25 wrongly pulls in M's overnight cell. 0.2 over 0.15 for headroom:
+# it sits in the upper 0.145->0.224 gap (0.055 above H's 0.145 cell vs 0.005 at
+# 0.15, robust to retrain drift; still 0.024 below M). One number shared by the
+# direction call and the segment call (classify_segment reuses classify_direction);
+# mirrors shared/classify.ts CLASSIFY_P0_FLOOR. Distinct from P0_FLOOR (1e-3),
+# which only keeps the Beta shapes off the degenerate endpoints.
+CLASSIFY_P0_FLOOR = 0.2
+
 
 # Pseudo-trials behind a baseline Beta prior — how much a cell's history outvotes
 # the live tick when forming the posterior advance rate. ~50 trips is a few ticks
@@ -1397,14 +1417,16 @@ def classify_direction(
       normal    — posterior advance rate above `disrupted_ratio * p0`.
       disrupted — posterior at/under `disrupted_ratio * p0` AND the low advance
                   count is significant against p0 (binomial lower tail <= alpha).
-      None      — can't judge: fewer than `min_matched` matches, no baseline, OR a
-                  point-estimate drop not distinguishable from a low-p0 normal
-                  fluctuation (a degenerate-baseline shuttle's zero-advance tick,
-                  not a stall).
+      None      — can't judge: fewer than `min_matched` matches, no baseline, a
+                  degenerate baseline (p0 < CLASSIFY_P0_FLOOR) whose 'normal' is
+                  already near-zero advance, OR a point-estimate drop not
+                  distinguishable from a low-p0 normal fluctuation (a
+                  degenerate-baseline shuttle's zero-advance tick, not a stall).
 
-    Baseline-relative, so low-baseline lines aren't pinned disrupted; the
-    significance gate additionally keeps a degenerate baseline from firing on its
-    own normal zero-advance noise."""
+    Baseline-relative, so low-baseline lines aren't pinned disrupted; the p0 floor
+    additionally abstains a degenerate baseline outright — its advance rate is too
+    low for a zero-advance tick to mean anything, so a tail that would read
+    'significant' against that untrustworthy p0 is deliberately not credited."""
     matched = advanced_n + stalled_n
     if matched < min_matched:
         return None
@@ -1413,6 +1435,13 @@ def classify_direction(
     post = (prior_strength * baseline.p0 + advanced_n) / (prior_strength + matched)
     if post > disrupted_ratio * baseline.p0:
         return "normal"
+    # Degenerate baseline: a cell that advances ~0 even when healthy (shuttles,
+    # terminals) has no trustworthy 'normal' to fall from, so a zero-advance tick
+    # carries no disruption signal. Abstain the disrupted determination outright
+    # rather than credit a tail computed against that degenerate p0. One shared
+    # constant with shared/classify.ts classifyAdvance (no per-call override).
+    if baseline.p0 < CLASSIFY_P0_FLOOR:
+        return None
     if _binom_lower_tail(advanced_n, matched, baseline.p0) <= alpha:
         return "disrupted"
     return None

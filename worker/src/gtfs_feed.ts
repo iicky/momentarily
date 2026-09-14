@@ -132,7 +132,11 @@ async function doCapture(bucket: R2Bucket, headEtag: string): Promise<void> {
       );
       return;
     }
-    if (getEtag !== headEtag) {
+    // Log a genuine rollover, but strip the W/ prefix from both sides so a
+    // weak HEAD (W/"x") vs strong GET ("x") for the same opaque-tag does not
+    // trigger a false "feed rolled over" message. Only the log decision is
+    // relaxed — keying/identity logic above and below uses the raw values.
+    if (getEtag.replace(WEAK_ETAG, '') !== headEtag.replace(WEAK_ETAG, '')) {
       console.log(
         `gtfs_feed: GET ETag (${getEtag}) differs from HEAD ETag (${headEtag}); ` +
         'feed rolled over between HEAD and GET — keying on the GET ETag',

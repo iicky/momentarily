@@ -79,9 +79,11 @@ import {
 } from './movement_state';
 import type { PredictionRecord } from './grading';
 import {
+  buildMovementCensus,
   buildPredictionRows,
   detectTransitions,
   movementTransitions,
+  writeMovementCensus,
   writeMovementTransitions,
   writePredictions,
   writeTransitions,
@@ -1076,9 +1078,10 @@ export default {
             // Per-cell p10/p90 spread. Sidecar-only — no params.json fallback,
             // since the legacy field never carried a spread.
             const serviceQuantiles = serviceBaselineDoc?.quantiles ?? null;
+            const observed = deriveMovementStates(moveRows, rows, trainedParams, observedAt);
             const { entries, changes } = advanceRegimes(
               prevMovement?.regimes,
-              deriveMovementStates(moveRows, rows, trainedParams, observedAt),
+              observed,
               observedAt,
             );
             // Service-level regime, the SUPPLY axis (assigned_n vs its hourly
@@ -1136,6 +1139,14 @@ export default {
             } catch (err) {
               console.error('movement transitions write failed:', err);
               failWrite('movement_transitions_write');
+            }
+            try {
+              const feedKeys = new Set([...moveRows.keys(), ...rows.keys()]);
+              const census = buildMovementCensus(observed, feedKeys, entries, observedAt);
+              await writeMovementCensus(env.MOMENTARILY, census);
+            } catch (err) {
+              console.error('movement census write failed:', err);
+              failWrite('movement_census_write');
             }
           }
 

@@ -141,6 +141,45 @@ describe('resolveFeedIdentity', () => {
     expect(jsonAt(store, 'archive/gtfs/latest.json')).toMatchObject({ digest: expectedDigest, etag: '"etag-2"' });
   });
 
+  test('weak HEAD, strong GET with the SAME opaque tag does not log a false rollover', async () => {
+    // Regression: before the W/-stripping fix, `W/"etag-1"` !== `"etag-1"`
+    // made doCapture log "feed rolled over between HEAD and GET" even though
+    // the opaque tag is identical — the HEAD was just delivered weak.
+    const { bucket, store } = fakeBucket();
+    seedLatest(store, {
+      digest: 'c'.repeat(64),
+      version: '20240101',
+      etag: '"etag-1"',
+      last_modified: null,
+      stored_at: 1_700_000_000,
+    });
+    const zipBytes = new TextEncoder().encode('same feed, weak HEAD');
+    const expectedDigest = createHash('sha256').update(zipBytes).digest('hex');
+    stubFetch((_url, init) => {
+      // HEAD returns weak form of the SAME opaque tag the GET returns strong.
+      if (init?.method === 'HEAD') return { ok: true, headers: { etag: 'W/"etag-1"' } };
+      return { ok: true, headers: { etag: '"etag-1"' }, body: zipBytes };
+    });
+
+    const logSpy = vi.spyOn(console, 'log');
+    try {
+      const resolution = await resolveFeedIdentity(bucket);
+      await resolution.capture;
+
+      // No "feed rolled over" message — the opaque tags match once W/ is stripped.
+      // Assert BEFORE mockRestore, which clears spy state.
+      const rolloverCalls = logSpy.mock.calls.filter(
+        (args) => typeof args[0] === 'string' && args[0].includes('rolled over'),
+      );
+      expect(rolloverCalls).toHaveLength(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    // The capture succeeded: by_etag/ keyed on the strong GET ETag.
+    expect(jsonAt(store, 'archive/gtfs/by_etag/etag-1.json')).toEqual({ digest: expectedDigest });
+  });
+
   test('a weak GET ETag aborts the capture with nothing written', async () => {
     const { bucket, store } = fakeBucket();
     seedLatest(store, {

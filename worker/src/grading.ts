@@ -31,7 +31,7 @@
 import type { RouteRoll } from './alpha';
 import { STATES } from './hmm';
 import type { State } from './hmm';
-import type { RegimeChange } from './regime';
+import type { RegimeChange, RegimeEntry } from './regime';
 import type { Inference } from './snapshot';
 
 export interface PredictionRecord {
@@ -271,6 +271,93 @@ export async function writeMovementTransitions(
       ),
     ),
   );
+}
+
+/**
+ * Per-tick census of every route the movement classifier evaluated this tick.
+ * One JSON object per tick, compact enough to keep permanently. Unlike the
+ * transition stream, routes that hold one state all window appear every tick,
+ * so a dwell fit off the census never loses a cell that never transitioned.
+ *
+ * The route universe is keys(feedKeys) ∪ keys(observed):
+ *   - feedKeys (moveRows ∪ svcRows): routes in the live feeds this tick,
+ *     including ones the classifier saw but abstained on (returned null from
+ *     deriveMovementState). These read state 'unknown'.
+ *   - keys(observed): every route deriveMovementStates emitted a non-null
+ *     result for, which includes schedule-derived not_scheduled routes that
+ *     passed the rate gate.
+ *
+ * Feed-absent schedule routes whose rate is ABOVE the gate are deliberately
+ * excluded: they were never classified, and recording them as 'unknown' would
+ * misstate a feed absence as a classifier abstention.
+ *
+ * Each row carries three fields:
+ *   `state`      — raw classification this tick ('unknown' on abstention).
+ *   `open_state` — the debounced regime's committed state, or null when no
+ *                   regime is open (first tick, or expired by idle grace).
+ *   `open_since` — epoch when the open regime was entered, or null.
+ *
+ * `open_state` and `open_since` always pair: both non-null or both null.
+ * A pending transition (e.g. raw 'disrupted' while regime is still 'normal')
+ * is visible because `state !== open_state`, so a downstream reader can
+ * distinguish a confirmed regime from an in-flight flip.
+ *
+ * Prefix: archive/movement_census/YYYY-MM-DD/<observed_at>.json
+ */
+export interface MovementCensusRow {
+  state: string;
+  open_state: string | null;
+  open_since: number | null;
+}
+
+export interface MovementCensusRecord {
+  observed_at: number;
+  regimes: Record<string, MovementCensusRow>;
+}
+
+/**
+ * Build the census keyed by this tick's evaluated routes.
+ *
+ * `observed`: the non-null results from deriveMovementStates (route → state).
+ * `feedKeys`: union of moveRows and svcRows keys — routes in the live feeds,
+ *   including ones where deriveMovementState returned null (abstentions).
+ * `entries`: the regime map after advanceRegimes — consulted for the open
+ *   regime's own state and entered_at; never expands the route universe.
+ *
+ * The census universe is feedKeys ∪ keys(observed), computed here so the
+ * caller does not need to duplicate the union logic.
+ */
+export function buildMovementCensus(
+  observed: Record<string, string>,
+  feedKeys: Iterable<string>,
+  entries: Record<string, RegimeEntry>,
+  observedAt: number,
+): MovementCensusRecord {
+  const universe = new Set(feedKeys);
+  for (const key of Object.keys(observed)) {
+    universe.add(key);
+  }
+  const regimes: Record<string, MovementCensusRow> = {};
+  for (const key of universe) {
+    const entry = entries[key];
+    regimes[key] = {
+      state: observed[key] ?? 'unknown',
+      open_state: entry?.state ?? null,
+      open_since: entry?.entered_at ?? null,
+    };
+  }
+  return { observed_at: observedAt, regimes };
+}
+
+export async function writeMovementCensus(
+  bucket: R2Bucket,
+  census: MovementCensusRecord,
+): Promise<void> {
+  const date = utcDate(census.observed_at);
+  const key = `archive/movement_census/${date}/${census.observed_at}.json`;
+  await bucket.put(key, JSON.stringify(census), {
+    httpMetadata: { contentType: 'application/json' },
+  });
 }
 
 /**

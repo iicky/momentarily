@@ -352,6 +352,69 @@ def load_movement_transitions(
     return [r for r in out if scope is None or r.scope == scope]
 
 
+@dataclass(frozen=True)
+class MovementCensusRow:
+    """One route's per-tick census entry."""
+
+    state: str
+    open_state: str | None
+    open_since: int | None
+
+    @classmethod
+    def from_json(cls, raw: dict[str, Any]) -> MovementCensusRow:
+        return cls(
+            state=str(raw["state"]),
+            open_state=raw.get("open_state"),
+            open_since=(
+                int(raw["open_since"]) if raw.get("open_since") is not None else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MovementCensusRecord:
+    """One tick's census: observed_at plus a per-route row."""
+
+    observed_at: int
+    regimes: dict[str, MovementCensusRow]
+
+    @classmethod
+    def from_json(cls, raw: dict[str, Any]) -> MovementCensusRecord:
+        return cls(
+            observed_at=int(raw["observed_at"]),
+            regimes={
+                k: MovementCensusRow.from_json(v)
+                for k, v in raw.get("regimes", {}).items()
+            },
+        )
+
+
+def load_movement_census(
+    client: S3Client,
+    bucket: str,
+    start_date: date,
+    end_date: date,
+) -> list[MovementCensusRecord]:
+    """Per-tick movement census over the window.
+
+    Each R2 object is a single JSON document (not JSONL) under
+    ``archive/movement_census/YYYY-MM-DD/<observed_at>.json``. Days before the
+    feature was deployed simply have no keys and are silently skipped.
+    """
+    keys: list[str] = []
+    for d in _date_range(start_date, end_date):
+        keys.extend(
+            _list_keys(client, bucket, f"archive/movement_census/{d.isoformat()}/")
+        )
+
+    def fetch(key: str) -> MovementCensusRecord:
+        body = get_object_bytes(client, bucket, key).decode()
+        return MovementCensusRecord.from_json(json.loads(body))
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return list(pool.map(fetch, keys))
+
+
 def open_regimes_from_predictions(
     predictions: list[PredictionRecord],
     *,

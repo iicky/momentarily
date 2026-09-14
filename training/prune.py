@@ -93,6 +93,14 @@ DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     # operational health record, not a raw stream capped by size, so it gets
     # the same effectively-keep window and stays explicitly policed.
     ("archive/health/", 3650),
+    # Per-tick movement census (archive/movement_census/), written by worker/
+    # src/grading.ts's writeMovementCensus every 5-minute tick. One JSON body
+    # per tick (~2.4 KB at 30 routes, measured from test fixture; 257 bytes at
+    # 3 routes), 288 ticks/day: ~681 KB/day. Same treatment as archive/health/:
+    # a tiny permanent evaluation input keyed by the route regime state at each
+    # tick, so a dwell fit can see routes that never transitioned. Effectively-
+    # keep window, explicitly policed.
+    ("archive/movement_census/", 3650),
     # NOT date-partitioned: archive/gtfs/ is content-addressed by sha256, so the
     # date matcher below never matches it and it is intentionally absent from
     # this table. Deleting a feed artifact by age would break replay of exactly

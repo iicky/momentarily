@@ -83,9 +83,10 @@ def test_shipped_policy_is_the_worker_constants() -> None:
     assert SHIPPED.min_eff_matched == MIN_EFF_MATCHED
     assert SHIPPED.prune_matched == PRUNE_MATCHED
     assert SHIPPED.eff_count_scale == EFF_COUNT_SCALE
-    # ~83 minutes at a 5-minute tick, the retuned window.
-    assert math.isclose(SHIPPED.window_ticks, 1 / (1 - 0.94))
-    assert 80 < SHIPPED.window_ticks * 5 < 85
+    # ~50 minutes at the 1-minute segment tick, the operating point the
+    # both-clocks sweep chose.
+    assert math.isclose(SHIPPED.window_ticks, 1 / (1 - 0.98))
+    assert 48 < SHIPPED.window_ticks * 1 < 52
 
 
 def test_the_narrow_window_judges_fewer_cells_on_the_same_data() -> None:

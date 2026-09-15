@@ -39,14 +39,15 @@ FIXTURE_PATH = (
     / "parity_segment_flow.json"
 )
 
-TICK_SECONDS = 300
+TICK_SECONDS = 60
 
-# Wed 2026-08-19 09:15 ET. Ticks 0-8 sit in schedule_bin wd09 and ticks 9-18 in
-# wd10, so the run crosses exactly one bin edge, at tick 9, and the decayed
-# expectation has to carry wd09's rate across it. A fixed epoch, not a computed
-# "now": the fixture has to be stable, and both its weekday and its hour are
-# load-bearing for the bin labels below.
-START = 1787145300
+# Wed 2026-08-19 09:51 ET. At the 1-minute segment cadence, ticks 0-8 sit in
+# schedule_bin wd09 (09:51..09:59) and ticks 9-18 in wd10 (10:00..10:09), so the
+# run crosses exactly one bin edge, at tick 9, and the decayed expectation has
+# to carry wd09's rate across it. A fixed epoch, not a computed "now": the
+# fixture has to be stable, and both its weekday and its hour are load-bearing
+# for the bin labels below.
+START = 1787147460
 
 BUSY = "F|south|A09S"  # scheduled, and the cell every branch is exercised on
 SPARSE = "F|south|A10S"  # scheduled at the first bin only
@@ -60,6 +61,7 @@ BIN_B = "wd10"
 
 PARAMS: dict[str, Any] = {
     "schema_version": "1",
+    "cadence_seconds": TICK_SECONDS,
     "trained_at": START,
     "min_share": 0.5,
     "topology_source": "gtfs_static",

@@ -45,7 +45,6 @@ from training.load_r2 import (
     StopFilter,
     build_segment_baseline,
     build_segment_throughput,
-    fetch_vehicle_metrics,
     throughput_to_json,
 )
 from training.prov import (
@@ -66,7 +65,10 @@ from training.recovery_baseline import (
 )
 from training.reliability import MIN_SHARE
 from training.segment_dwell import SegmentDwellStats, build_segment_dwell
+from training.segment_replay import SEGMENT_CADENCE_SECONDS
+from training.segment_trace_replay import trace_to_movement_bodies
 from training.segments import canonical_adjacency
+from training.trace import fetch_trace_bodies
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -501,13 +503,28 @@ def write_segment_params(
     one; the station-flow surface just goes stale, never blocks the params run.
     """
     try:
-        bodies = fetch_vehicle_metrics(
+        # Fit on the 1-MINUTE trace clock the Worker now judges on, not the
+        # 5-minute vehicle metric: segment judging moved onto the per-minute
+        # trace, and `lam`/`p0` are cadence-defined (per-tick rate, advance
+        # fraction over one cross-tick gap), so they must be fit at the same
+        # cadence the accumulator runs on. trace_to_movement_bodies reconstructs
+        # the same by_direction.transitions shape the fit stack reads, one body
+        # per snapped minute, from archive/trace. Heavier than the 5-minute pull
+        # (~5x objects) but off the publish path.
+        trace_bodies = fetch_trace_bodies(
             cfg, start_date=start_date, end_date=end_date, client=client
         )
+        bodies = trace_to_movement_bodies(
+            trace_bodies, tick_seconds=SEGMENT_CADENCE_SECONDS
+        )
         stop_filter = _stop_filter(through)
-        baseline = build_segment_baseline(bodies, counts_from_stop=stop_filter)
+        baseline = build_segment_baseline(
+            bodies, counts_from_stop=stop_filter, tick_seconds=SEGMENT_CADENCE_SECONDS
+        )
         observed_adjacency = canonical_adjacency(bodies)
-        rates, exposure = build_segment_throughput(bodies, counts_from_stop=stop_filter)
+        rates, exposure = build_segment_throughput(
+            bodies, counts_from_stop=stop_filter, tick_seconds=SEGMENT_CADENCE_SECONDS
+        )
         lam = throughput_to_json(rates)
 
         cells: dict[str, dict[str, Any]] = {}
@@ -549,6 +566,12 @@ def write_segment_params(
         doc = {
             "schema_version": SCHEMA_VERSION,
             "trained_at": trained_at,
+            # The tick length the WHOLE fit was made on (`lam` per-tick, `p0`
+            # advance fraction over one cross-tick gap). The Worker gates ALL
+            # segment judging on this matching the cadence it accumulates on
+            # (segment_flow.segmentCadenceOk), so an old 5-minute fit cannot be
+            # read at the 1-minute ticks segment judging now runs on.
+            "cadence_seconds": SEGMENT_CADENCE_SECONDS,
             # Which code produced this doc, matching params.json/eval.json — the
             # off-Worker consumers (viz) read the topology and its ordering, so
             # they can name the tree that built it. See training/provenance.py.

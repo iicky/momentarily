@@ -59,8 +59,8 @@ class PredictionLike(Protocol):
 _SORT_ORDER_RE = re.compile(r":(\d+)$")
 
 
-def _snap_tick(epoch: int) -> int:
-    return (epoch // TICK_SECONDS) * TICK_SECONDS
+def _snap_tick(epoch: int, tick_seconds: int = TICK_SECONDS) -> int:
+    return (epoch // tick_seconds) * tick_seconds
 
 
 def date_range(start: date, end: date) -> Iterator[date]:
@@ -900,6 +900,8 @@ def build_movement_series_by_direction(
 
 def build_segment_series(
     bodies: list[dict[str, Any]],
+    *,
+    tick_seconds: int = TICK_SECONDS,
 ) -> dict[tuple[str, str, str, str, int], int]:
     """(route, direction, from_stop, to_stop, tick) -> cross-tick transition count,
     from the by_direction.transitions the Worker archives. The raw segment leaf for
@@ -908,7 +910,7 @@ def build_segment_series(
     canonical segment mapping (needs static GTFS stop ordering) is layered on top."""
     series: dict[tuple[str, str, str, str, int], int] = {}
     for body in bodies:
-        tick = _snap_tick(int(body.get("observed_at") or 0))
+        tick = _snap_tick(int(body.get("observed_at") or 0), tick_seconds)
         rows = cast(dict[str, Any], body.get("rows") or {})
         for route, row in rows.items():
             if not isinstance(row, dict):
@@ -939,6 +941,7 @@ def build_segment_baseline(
     bodies: list[dict[str, Any]],
     *,
     counts_from_stop: StopFilter | None = None,
+    tick_seconds: int = TICK_SECONDS,
 ) -> dict[tuple[str, str, str], PooledCell]:
     """Hierarchical partial-pooling advance-rate baseline per (route, direction,
     from_stop) segment leaf, from the archived cross-tick transitions.
@@ -954,9 +957,18 @@ def build_segment_baseline(
     `counts_from_stop` drops leaves the caller won't judge. Restricted to through
     stops, every held-out leaf has training data (measured 2026-08-12: 177 leaves
     with none, down to 0) and pooling stops losing to each leaf's own raw rate,
-    because a layover and a mid-line stop are no longer pooled as if exchangeable."""
+    because a layover and a mid-line stop are no longer pooled as if exchangeable.
+
+    `tick_seconds` snaps build_segment_series' per-tick buckets; the per-leaf
+    advanced/stalled totals are a sum over every bucket, so the p0 it yields is
+    invariant to the snap value for a given `bodies`. It is threaded through
+    anyway so the whole segment fit (p0 with lam) is visibly one cadence: p0 is
+    the advance fraction over ONE cross-tick gap, which is genuinely shorter at
+    60s than at 300s, and it is the 60s bodies (not the snap) that make it so."""
     leaves: dict[tuple[str, str, str], list[int]] = {}
-    for (route, direction, frm, to, _tick), n in build_segment_series(bodies).items():
+    for (route, direction, frm, to, _tick), n in build_segment_series(
+        bodies, tick_seconds=tick_seconds
+    ).items():
         if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
             continue
         cell = leaves.setdefault((route, direction, frm), [0, 0])
@@ -997,6 +1009,7 @@ def throughput_exposure[BinKey: (int, str)](
     bodies: list[dict[str, Any]],
     *,
     bin_fn: Callable[[int], BinKey] = THROUGHPUT_BIN_FN,
+    tick_seconds: int = TICK_SECONDS,
 ) -> dict[BinKey, int]:
     """Observed ticks per time bin — the exposure a per-tick traversal rate
     divides by.
@@ -1011,7 +1024,7 @@ def throughput_exposure[BinKey: (int, str)](
     for body in bodies:
         if not cast(dict[str, Any], body.get("rows") or {}):
             continue
-        tick = _snap_tick(int(body.get("observed_at") or 0))
+        tick = _snap_tick(int(body.get("observed_at") or 0), tick_seconds)
         seen[tick] = bin_fn(tick)
     out: dict[BinKey, int] = {}
     for bin_key in seen.values():
@@ -1025,6 +1038,7 @@ def build_segment_throughput[BinKey: (int, str)](
     counts_from_stop: StopFilter | None = None,
     bin_fn: Callable[[int], BinKey] = THROUGHPUT_BIN_FN,
     min_ticks: int = MIN_THROUGHPUT_TICKS,
+    tick_seconds: int = TICK_SECONDS,
 ) -> tuple[dict[tuple[str, str, str], dict[BinKey, float]], dict[BinKey, int]]:
     """Expected matched traversals per tick for each (route, direction,
     from_stop) cell at each time bin, plus the exposure it was fitted over.
@@ -1046,11 +1060,15 @@ def build_segment_throughput[BinKey: (int, str)](
     """
     exposure = {
         bin_key: ticks
-        for bin_key, ticks in throughput_exposure(bodies, bin_fn=bin_fn).items()
+        for bin_key, ticks in throughput_exposure(
+            bodies, bin_fn=bin_fn, tick_seconds=tick_seconds
+        ).items()
         if ticks >= min_ticks
     }
     matched: dict[tuple[str, str, str], dict[BinKey, int]] = {}
-    for (route, direction, frm, _to, tick), n in build_segment_series(bodies).items():
+    for (route, direction, frm, _to, tick), n in build_segment_series(
+        bodies, tick_seconds=tick_seconds
+    ).items():
         if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
             continue
         bin_key = bin_fn(tick)

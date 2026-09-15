@@ -10063,3 +10063,60 @@ $0.36/M) and ~+84MB/day read bandwidth (free egress); it does NOT reload params.
 because the severity-graded condition is a pure alert read, not an HMM step. Net R2 delta ~+3456
 writes + ~+2304 reads per day, << $1/mo; the design constraint is the param-cadence hazard
 index.ts documents, not cost.
+## 2026-09-14 — grading segment judging on the 1-minute clock: latency halves and discrimination rises at every window <=125min, on hundreds of per-cell detections
+
+origin: agent
+
+The segment classifier is judged on the 5-minute vehicle cross-tick metric; the
+1-minute trace archive it could read instead was never graded. New instrument
+training/segment_trace_replay.trace_to_movement_bodies reconstructs one
+per-minute vehicle-movement body from archive/trace by diffing each trip's
+stop_id against the immediately preceding minute (strict adjacency, so no
+transition is assembled across a feed gap), in the exact shape the fit/replay
+stack reads; segment_coverage.py --sweep-decay --clock {5min,1min} threads a
+cadence-defined tick_seconds through the baseline fit (lam is per-tick), the
+accumulator snap and the grade's latency/exposure stepping. Same graded window
+for both clocks: fit 2026-08-25..09-07 (14d), score 09-08..09-14 (7d, 96
+assigned_n episodes, 142 normal runs), truth baseline fit causally on the fit
+window only. The 1-minute sweep prices decays that reproduce the 5-minute
+sweep's window MINUTES (25/50/83/125/250), so the two clocks read
+window-for-window.
+
+Discrimination (episode disrupted-share / normal disrupted-share, off the raw
+calls) at matched windows, 5min -> 1min: 25min 4.96 -> 7.26, 50min 5.24 -> 8.72,
+83min 5.89 -> 7.91, 125min 6.07 -> 6.65; only the 250min arm regresses
+(6.13 -> 5.82). Coverage is flat 100% on both under throughput judging, so the
+case rests on latency and discrimination, not coverage.
+
+Latency needed the per-CELL cut to have power. Route-scoped onset latency (one
+measurement per episode, the metric that already shipped) rests on 12-21
+detections per arm and cannot rank neighbouring decays. Reading each baselined
+cell's first-crossing against the SAME route onset — not a per-segment truth,
+which would be circular; only the response is read per cell — multiplies the
+detection count ~10x and finally gives the median power. Per-cell median latency
+(published surface), 5min -> 1min at matched windows: 25min 35.0 (n=121) -> 22.0
+(n=424), 50min 55.0 (n=251) -> 12.0 (n=263), 83min 55.0 (n=263) -> 15.0 (n=255),
+125min 55.0 (n=273) -> 18.0 (n=406). Latency is halved to quartered on the
+1-minute clock at every window, on hundreds of detections apiece.
+
+The dropped-evidence number, with the sampling artifact removed. Over the score
+window the 1-minute reconstruction credits 2,895,167 matched transitions against
+the 5-minute metric's 551,284 — a 5.25x raw multiplier, but that is dominated by
+the 5x poll frequency (a train reports a transition every minute, mostly stalls),
+NOT by intermediate hops, so it is the wrong number to quote as hop credit.
+Restricted to ADVANCES (frm != to, a real station change) it is 1,239,325 vs
+495,252 = x2.50, reproducing the 2.30x the earlier trip-pattern inference
+measured: 60.0% of the 1-minute advance credits are hops the 5-minute
+accumulator dropped, and it observes them instead of inferring them, without the
+published implied-hops map the inference route needed. Distinct from_stop cells
+credited saturate on both clocks over a 7-day window (1650 vs 1658), so the
+multiplier, not the cell count, is where the dropped evidence shows.
+
+Decision: the 1-minute clock beats the 5-minute clock on latency and
+discrimination with adequate n at every window <=125min, so the paired migration
+is warranted. Recommended operating point decay 0.98 (50-minute window at 60s
+ticks): best discrimination (8.72), route latency 3min / per-cell 12min, most
+detections among the wide-window arms, lowest quiet-route false-alarm tick rate.
+The migration must version segment_params.json with its fit cadence
+(throughput.cadence_seconds) so the Worker cannot read a 5-minute fit at
+1-minute ticks — lam is per-tick and silently wrong at the other cadence.

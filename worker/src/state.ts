@@ -156,6 +156,54 @@ export async function writeVehicleStops(
   });
 }
 
+// The 1-MINUTE sibling of vehicle_stops.json, for segment judging after it
+// moved onto the per-minute trace clock. Segment judging diffs each trip's
+// stop_id against the IMMEDIATELY preceding minute, so the carry is stamped with
+// the minute it was written: a diff is only valid against a carry from exactly
+// observedAt - SEGMENT_CADENCE_SECONDS. Any other gap — a feed-outage minute
+// that skipped judging, a missed cron, a read/write failure, a fresh deploy —
+// leaves an older stamp, and the caller then diffs from {} instead, so a train
+// that moved several stops across the gap is NOT booked as one multi-station
+// jump (the artifact the 1-minute clock exists to remove). This matches the
+// offline reconstruction, which keys strictly on tick - tick_seconds
+// (training/segment_trace_replay.trace_to_movement_bodies). Its own key, never
+// vehicle_stops.json (the untouched 5-minute carry).
+export const SEGMENT_VEHICLE_STOPS_KEY = "state/segment_vehicle_stops.json";
+
+const SegmentVehicleStopsSchema = z.object({
+  observed_at: z.number(),
+  stops: z.record(z.string(), z.string()),
+});
+export type SegmentVehicleStops = z.infer<typeof SegmentVehicleStopsSchema>;
+
+/** Read the segment stop carry with the minute it was stamped. observed_at 0
+ * (absent or corrupt) never equals a real preceding minute, so the caller
+ * diffs from {} — the safe no-transition start. */
+export async function readSegmentVehicleStops(
+  bucket: R2Bucket,
+): Promise<SegmentVehicleStops> {
+  const obj = await bucket.get(SEGMENT_VEHICLE_STOPS_KEY);
+  if (!obj) return { observed_at: 0, stops: {} };
+  try {
+    return SegmentVehicleStopsSchema.parse(await obj.json());
+  } catch (err) {
+    console.error("segment_vehicle_stops.json corrupt; resetting:", err);
+    return { observed_at: 0, stops: {} };
+  }
+}
+
+export async function writeSegmentVehicleStops(
+  bucket: R2Bucket,
+  observedAt: number,
+  stops: Record<string, string>,
+): Promise<void> {
+  await bucket.put(
+    SEGMENT_VEHICLE_STOPS_KEY,
+    JSON.stringify({ observed_at: observedAt, stops }),
+    { httpMetadata: { contentType: "application/json", cacheControl: "no-store" } },
+  );
+}
+
 // Per-route movement-derived condition, computed at step 8b (post-publish) and
 // read by the next tick's snapshot build (pre-publish). Carrying it forward this
 // way keeps the vehicle fetch off the time-to-publish path; the route's current
@@ -354,6 +402,15 @@ export const SEGMENT_PARAMS_KEY = "state/segment_params.json";
 const SegmentParamsSchema = z.object({
   schema_version: z.literal("1"),
   trained_at: z.number(),
+  // The tick length (seconds) the WHOLE fit was made on — both `cells[].lam`
+  // (expected traversals per tick) and `cells[].p0` (advance fraction over one
+  // cross-tick gap) are cadence-defined, so a fit from one clock read on
+  // another mis-judges both branches. The Worker gates ALL segment judging on
+  // this matching the cadence it accumulates on (segment_flow.segmentCadenceOk),
+  // so an old 5-minute fit cannot be read at 1-minute ticks. Absent on docs
+  // written before the 1-minute migration, which are by definition the legacy
+  // 5-minute (300s) fit.
+  cadence_seconds: z.number().int().positive().optional(),
   min_share: z.number().min(0).max(1),
   // Absent on segment_params.json written before the static-GTFS switchover;
   // those docs are entirely observed-adjacency, hence that default.
@@ -597,6 +654,12 @@ const SegmentFlowSchema = z.object({
   // Absent on a live doc written before the regime clock landed; defaults to
   // {} so it still parses instead of resetting the decayed cell state too.
   regimes: z.record(z.string(), SegmentRegimeSchema).default({}),
+  // The tick length (seconds) this accumulator was built on. The decayed sums
+  // (`a`/`m`/`e`) and the regime debounce are both per-tick, so a carry from the
+  // 5-minute clock is meaningless on the 1-minute clock — segment_flow.ts
+  // discards a mismatched carry and warms up fresh. Absent on a doc written
+  // before the 1-minute migration (the legacy 5-minute accumulator).
+  cadence_seconds: z.number().int().positive().optional(),
 });
 export type SegmentFlowDoc = z.infer<typeof SegmentFlowSchema>;
 

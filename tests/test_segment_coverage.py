@@ -14,6 +14,7 @@ from training.segment_coverage import (
     MIN_NORMAL_RUN_TICKS,
     Unit,
     _boot_rates,  # pyright: ignore[reportPrivateUsage]
+    _per_cell_latency,  # pyright: ignore[reportPrivateUsage]
     grade,
     normal_runs,
     sweep_row,
@@ -311,6 +312,14 @@ def test_sweep_row_reads_latency_and_false_alarms_off_the_published_surface() ->
                 "median_latency_min": 0.0,
                 "p90_latency_min": 0.0,
             },
+            "onset_latency_per_cell": {
+                "n_cell_episodes_offered": 40,
+                "n_already_at_onset": 0,
+                "n_detected": 40,
+                "detection_rate": 1.0,
+                "median_latency_min": 0.0,
+                "p90_latency_min": 0.0,
+            },
             "normal_run_false_alarms": {"tick_rate": 0.0},
         },
         "published": {
@@ -323,6 +332,14 @@ def test_sweep_row_reads_latency_and_false_alarms_off_the_published_surface() ->
                 "median_latency_min": 10.0,
                 "p90_latency_min": 35.0,
             },
+            "onset_latency_per_cell": {
+                "n_cell_episodes_offered": 380,
+                "n_already_at_onset": 12,
+                "n_detected": 214,
+                "detection_rate": 0.581,
+                "median_latency_min": 5.0,
+                "p90_latency_min": 20.0,
+            },
             "normal_run_false_alarms": {"tick_rate": 0.064},
         },
     }
@@ -332,6 +349,12 @@ def test_sweep_row_reads_latency_and_false_alarms_off_the_published_surface() ->
     assert row["onset"]["n_measurable"] == 8
     assert row["onset"]["n_alarming_at_onset"] == 1
     assert row["quiet_route_fa_tick_rate"] == 0.064
+    # per-cell latency rides off the published surface too, with its own n
+    assert (
+        row["onset_per_cell"]["median_latency_min"] == 5.0
+    )  # published, not calls' 0.0
+    assert row["onset_per_cell"]["n_detected"] == 214
+    assert row["onset_per_cell"]["n_cell_episodes_offered"] == 380
     assert row["coverage_pct"] == 42.28
     assert row["decay"] == 0.94
     assert row["window_minutes"] == 83.0
@@ -370,3 +393,57 @@ def test_sweep_row_projects_a_real_graded_arm() -> None:
     assert row["quiet_route_fa_tick_rate"] == (
         pub["normal_run_false_alarms"].get("tick_rate")
     )
+
+
+def test_per_cell_latency_measures_each_cell_independently() -> None:
+    """The cut that gives latency its power: one route episode contributes one
+    measurement PER cell, not one for the whole route. Two cells firing at
+    different lags give two latencies; a cell that stays normal is an offered
+    miss, not a detection."""
+    onset = _t(5)
+    per_tick: dict[int, dict[str, str]] = {}
+    for i in range(12):
+        row: dict[str, str] = {}
+        row["A|south|A09S"] = "disrupted" if i >= 6 else "normal"  # +1 tick -> 5 min
+        row["A|south|A10S"] = "disrupted" if i >= 8 else "normal"  # +3 ticks -> 15 min
+        row["A|south|A11S"] = "normal"  # testable, never fires: a miss
+        per_tick[_t(i)] = row
+    out = _per_cell_latency(_calls(per_tick), [Disruption("A", onset, _t(11))])
+    assert out["n_cell_episodes_offered"] == 3
+    assert out["n_detected"] == 2
+    assert out["median_latency_min"] == 10.0  # median of {5, 15}
+    assert out["detection_rate"] == 2 / 3
+
+
+def test_per_cell_latency_excludes_a_cell_already_disrupted_at_onset() -> None:
+    """A cell already firing at the onset tick has a zero that says nothing about
+    detection speed, so it is counted separately and kept out of the median —
+    the same discipline the route metric applies."""
+    onset = _t(5)
+    per_tick = {
+        _t(i): {
+            "A|south|A09S": "disrupted",  # disrupted from before the onset
+            "A|south|A10S": "disrupted" if i >= 7 else "normal",  # +2 -> 10 min
+        }
+        for i in range(12)
+    }
+    out = _per_cell_latency(_calls(per_tick), [Disruption("A", onset, _t(11))])
+    assert out["n_already_at_onset"] == 1
+    assert out["n_detected"] == 1
+    assert out["median_latency_min"] == 10.0
+
+
+def test_per_cell_latency_ignores_cells_on_other_routes() -> None:
+    """The onset is route A's; a disrupted cell on route B is not a detection of
+    A's episode."""
+    onset = _t(5)
+    per_tick = {
+        _t(i): {
+            "A|south|A09S": "normal",
+            "B|south|B01S": "disrupted",
+        }
+        for i in range(12)
+    }
+    out = _per_cell_latency(_calls(per_tick), [Disruption("A", onset, _t(11))])
+    assert out["n_cell_episodes_offered"] == 1  # only A's cell
+    assert out["n_detected"] == 0

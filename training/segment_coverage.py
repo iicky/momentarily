@@ -58,6 +58,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import random
 import statistics
@@ -94,6 +95,11 @@ from training.segment_replay import (
     tick_inputs,
     without_throughput,
 )
+from training.segment_trace_replay import (
+    matched_credit_stats,
+    trace_to_movement_bodies,
+)
+from training.trace import fetch_trace_bodies
 
 # Bootstrap resamples for the episode-level CIs. 2000 is enough for a stable
 # 95% percentile interval at the episode counts this label produces (tens),
@@ -123,6 +129,22 @@ NARROW = Policy(decay=NARROW_DECAY, min_eff_matched=NARROW_FLOOR)
 # 0.96 bracket the shipped value; 0.98 is the mechanical rule's own pick, priced
 # here on latency rather than on the route-level recall proxy that chose it.
 SWEEP_DECAYS = (0.80, 0.90, 0.94, 0.96, 0.98)
+
+# The 1-minute-clock equivalent of SWEEP_DECAYS: a per-tick decay's effective
+# window is 1/(1-decay) ticks, so at 60-second ticks these reproduce the SAME
+# window MINUTES the 5-minute sweep prices (25/50/83/125/250 min), letting the
+# two clocks be read against each other window-for-window instead of
+# decay-for-decay. 1 - 1/window_min: 25->0.96, 50->0.98, 83->0.988, 125->0.992,
+# 250->0.996.
+SWEEP_DECAYS_1MIN = (0.96, 0.98, 0.988, 0.992, 0.996)
+
+# The segment-classifier clocks this grade can replay. The 5-minute clock reads
+# the archive/vehicles/ movement metric as shipped; the 1-minute clock
+# reconstructs the same cross-tick transitions from archive/trace/ at 1-minute
+# resolution (segment_trace_replay.trace_to_movement_bodies), so intermediate
+# hops are observed rather than dropped. Baselines are refit at the clock's
+# cadence in either case — lam is per-tick and cadence-defined.
+CLOCK_SECONDS = {"5min": 300, "1min": 60}
 
 
 @dataclass(frozen=True)
@@ -293,6 +315,7 @@ def _onset_latency(
     *,
     lead_sec: int = 0,
     clean_lookback_ticks: int = AT_BASELINE_LOOKBACK_TICKS,
+    clock_seconds: int = TICK_SECONDS,
 ) -> dict[str, Any]:
     """Time from a real onset to the surface's first disrupted call on that route,
     in minutes — the metric that prices the accumulator's window.
@@ -319,17 +342,22 @@ def _onset_latency(
     the arm's base rate, so a quiet arm gets a big one for free — the cohorts are
     not comparable populations and the rates within them are not a head-to-head.
     """
-    lookback = clean_lookback_ticks * TICK_SECONDS
+    # Sized on the GRADED clock: the fresh-cohort lookback is a span of the
+    # segment surface's own calls, so it must scale with clock_seconds (a no-op
+    # at 5min where clock_seconds == TICK_SECONDS). normal_runs and the
+    # episode-tick medians deliberately stay on TICK_SECONDS — they live on the
+    # 5-minute assigned_n truth series, whatever clock the segment calls run on.
+    lookback = clean_lookback_ticks * clock_seconds
 
     def first_alarm(route: str, onset: int, recovered: int) -> int | None:
-        for tick in range(onset - lead_sec, recovered, TICK_SECONDS):
+        for tick in range(onset - lead_sec, recovered, clock_seconds):
             if shares_at.get(tick, {}).get(route, 0.0) > 0:
                 return tick
         return None
 
     def was_clean(route: str, onset: int) -> bool:
         seen = False
-        for tick in range(onset - lookback, onset, TICK_SECONDS):
+        for tick in range(onset - lookback, onset, clock_seconds):
             share = shares_at.get(tick, {}).get(route)
             if share is None:
                 continue
@@ -374,6 +402,94 @@ def _onset_latency(
     }
 
 
+def _per_cell_latency(
+    calls: Sequence[tuple[int, Mapping[str, str]]],
+    disruptions: Sequence[Disruption],
+    *,
+    clock_seconds: int = TICK_SECONDS,
+) -> dict[str, Any]:
+    """Onset latency measured per SEGMENT CELL rather than per route — the cut
+    that gives the estimate its power.
+
+    The truth is unchanged and stays independent: a real onset is still the
+    route-scoped assigned_n degradation episode. What changes is the DETECTION
+    UNIT. `_onset_latency` asks 'when did ANY cell on this route first fire',
+    one measurement per episode, so a 7-day window yields only tens of
+    detections and the medians cannot rank neighbouring decays (the 8-15
+    problem). This asks the same question of EACH baselined cell on the route
+    independently — 'when did THIS cell first read disrupted after the route's
+    onset' — so one episode contributes as many measurements as it has testable
+    cells, and the latency median rests on hundreds of detections instead.
+
+    This is NOT a per-segment truth (that would be circular — grading the
+    movement classifier against a movement-derived relabelling of its own input,
+    see main's scope_note). The onset is the route's; only the surface's
+    response is read at cell granularity.
+
+    A (cell, episode) pair is OFFERED when the cell was testable (read normal or
+    disrupted) at least once during the episode; DETECTED when it read disrupted
+    on some tick in [onset, recovered); ALREADY when it was disrupted at the
+    onset tick itself, which is excluded from the latency distribution for the
+    same reason the route metric excludes it — that zero says nothing about
+    detection speed.
+    """
+    disrupted_ticks: dict[str, list[int]] = {}
+    testable_ticks: dict[str, list[int]] = {}
+    for tick, per_cell in calls:
+        for key, call in per_cell.items():
+            if call == "disrupted":
+                disrupted_ticks.setdefault(key, []).append(tick)
+                testable_ticks.setdefault(key, []).append(tick)
+            elif call == "normal":
+                testable_ticks.setdefault(key, []).append(tick)
+    # `calls` is in tick order, so the per-cell lists are already sorted.
+
+    latencies: list[float] = []
+    n_offered = 0
+    n_detected = 0
+    n_already = 0
+    for d in disruptions:
+        prefix = f"{d.route}|"
+        for key, tt in testable_ticks.items():
+            if not key.startswith(prefix):
+                continue
+            lo = bisect.bisect_left(tt, d.start_tick)
+            hi = bisect.bisect_left(tt, d.recovered_tick)
+            if hi <= lo:
+                continue  # cell never testable during the episode
+            n_offered += 1
+            dts = disrupted_ticks.get(key)
+            if not dts:
+                continue  # offered but never fired: a miss, not a latency
+            i = bisect.bisect_left(dts, d.start_tick)
+            if i >= len(dts) or dts[i] >= d.recovered_tick:
+                continue  # no disrupted tick inside the episode
+            first = dts[i]
+            if first == d.start_tick:
+                n_already += 1
+                continue  # already alarming at the onset tick
+            n_detected += 1
+            latencies.append((first - d.start_tick) / 60.0)
+    latencies.sort()
+    return {
+        "unit": "segment_cell",
+        "n_cell_episodes_offered": n_offered,
+        "n_already_at_onset": n_already,
+        "n_detected": n_detected,
+        "detection_rate": (
+            n_detected / (n_offered - n_already)
+            if (n_offered - n_already) > 0
+            else None
+        ),
+        "median_latency_min": statistics.median(latencies) if latencies else None,
+        "p90_latency_min": (
+            latencies[min(len(latencies) - 1, int(0.9 * len(latencies)))]
+            if latencies
+            else None
+        ),
+    }
+
+
 def _coverage(
     calls: Sequence[tuple[int, Mapping[str, str]]],
     n_baselined: int,
@@ -408,6 +524,7 @@ def _score(
     *,
     bootstrap: int,
     seed: int,
+    clock_seconds: int = TICK_SECONDS,
 ) -> dict[str, Any]:
     """Separation, false alarms and onset latency for one per-tick call stream.
 
@@ -421,7 +538,7 @@ def _score(
     def unit(route: str, start: int, end: int) -> Unit:
         shares = [
             shares_at[t][route]
-            for t in range(start, end, TICK_SECONDS)
+            for t in range(start, end, clock_seconds)
             if t in shares_at and route in shares_at[t]
         ]
         return Unit(
@@ -446,7 +563,12 @@ def _score(
         "normal_run_false_alarms": _boot_rates(
             gradeable_runs, n=bootstrap, seed=seed + 1
         ),
-        "onset_latency": _onset_latency(shares_at, disruptions),
+        "onset_latency": _onset_latency(
+            shares_at, disruptions, clock_seconds=clock_seconds
+        ),
+        "onset_latency_per_cell": _per_cell_latency(
+            calls, disruptions, clock_seconds=clock_seconds
+        ),
     }
 
 
@@ -458,6 +580,7 @@ def grade(
     *,
     bootstrap: int = BOOTSTRAP_N,
     seed: int = 0,
+    clock_seconds: int = TICK_SECONDS,
 ) -> dict[str, Any]:
     """One arm's report. Pure — every R2 read lives in `main`, so this is
     unit-testable on synthetic calls.
@@ -477,13 +600,21 @@ def grade(
     """
     return {
         "coverage": _coverage(calls, n_baselined),
-        "calls": _score(calls, disruptions, runs, bootstrap=bootstrap, seed=seed),
+        "calls": _score(
+            calls,
+            disruptions,
+            runs,
+            bootstrap=bootstrap,
+            seed=seed,
+            clock_seconds=clock_seconds,
+        ),
         "published": _score(
             published_states(calls),
             disruptions,
             runs,
             bootstrap=bootstrap,
             seed=seed + 100,
+            clock_seconds=clock_seconds,
         ),
     }
 
@@ -498,12 +629,16 @@ def sweep_row(name: str, arm: Mapping[str, Any]) -> dict[str, Any]:
     snapshot actually flips on, so first-crossing on it is what a rider's wait
     measures. Coverage is a property of the calls, so it comes off `coverage`.
 
-    Every number here grades the segment surface against ROUTE onsets — the
-    coarser read this slice's truth-scope block documents. The row carries no
-    per-segment latency because no independent segment-scope onset truth exists to
-    grade against (see main's `truth.scope_note`)."""
+    The `onset` block grades against ROUTE onsets one measurement per episode;
+    `onset_per_cell` grades the SAME route onsets but reads each cell's
+    first-crossing independently, so its median rests on cell-episode detections
+    (hundreds) rather than episodes (tens) — the cut that finally has the power
+    to rank neighbouring decays. Neither uses a per-segment truth: no
+    independent segment-scope onset truth exists (see main's `truth.scope_note`),
+    so the onset is always the route's and only the response is read per cell."""
     cov = arm["coverage"]
     lat = arm["published"]["onset_latency"]
+    pcl = arm["published"]["onset_latency_per_cell"]
     fa = arm["published"]["normal_run_false_alarms"]
     pol = arm["policy"]
     return {
@@ -523,6 +658,14 @@ def sweep_row(name: str, arm: Mapping[str, Any]) -> dict[str, Any]:
             "median_latency_min": lat["median_latency_min"],
             "p90_latency_min": lat["p90_latency_min"],
         },
+        "onset_per_cell": {
+            "n_cell_episodes_offered": pcl["n_cell_episodes_offered"],
+            "n_already_at_onset": pcl["n_already_at_onset"],
+            "n_detected": pcl["n_detected"],
+            "detection_rate": pcl["detection_rate"],
+            "median_latency_min": pcl["median_latency_min"],
+            "p90_latency_min": pcl["p90_latency_min"],
+        },
         "quiet_route_fa_tick_rate": fa.get("tick_rate"),
     }
 
@@ -538,6 +681,8 @@ def _stop_filter(through: frozenset[tuple[str, str, str]] | None) -> StopFilter 
 def fit_params(
     bodies: list[dict[str, Any]],
     through: frozenset[tuple[str, str, str]] | None,
+    *,
+    tick_seconds: int = TICK_SECONDS,
 ) -> dict[str, Any]:
     """A segment_params-shaped doc fitted on `bodies` — the same p0 baseline,
     adjacency and `lam` rates write_segment_params publishes, minus the parts the
@@ -549,8 +694,12 @@ def fit_params(
     two arms scoring the same cells.
     """
     stop_filter = _stop_filter(through)
-    baseline = build_segment_baseline(bodies, counts_from_stop=stop_filter)
-    rates, exposure = build_segment_throughput(bodies, counts_from_stop=stop_filter)
+    baseline = build_segment_baseline(
+        bodies, counts_from_stop=stop_filter, tick_seconds=tick_seconds
+    )
+    rates, exposure = build_segment_throughput(
+        bodies, counts_from_stop=stop_filter, tick_seconds=tick_seconds
+    )
     lam = throughput_to_json(rates)
     cells: dict[str, Any] = {}
     for key, cell in baseline.items():
@@ -562,6 +711,7 @@ def fit_params(
         cells[joined] = entry
     return {
         "schema_version": "1",
+        "cadence_seconds": tick_seconds,
         "cells": cells,
         "adjacency": {key: {"to": "", "source": "gtfs_static"} for key in cells},
         "throughput": {
@@ -590,6 +740,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP_N)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--clock",
+        choices=sorted(CLOCK_SECONDS),
+        default="5min",
+        help="segment-classifier cadence: 5min reads archive/vehicles as shipped; "
+        "1min reconstructs the same transitions from archive/trace at 1-minute "
+        "resolution and refits the baselines at that cadence",
+    )
+    parser.add_argument(
         "--sweep-decay",
         action="store_true",
         help="price SEGMENT_DECAY directly: replay the frontier decays "
@@ -600,8 +758,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--decays",
         type=float,
         nargs="+",
-        default=list(SWEEP_DECAYS),
-        help="decays to sweep when --sweep-decay is set",
+        default=None,
+        help="decays to sweep when --sweep-decay is set; defaults to the "
+        "clock-appropriate frontier (SWEEP_DECAYS at 5min, SWEEP_DECAYS_1MIN at 1min)",
     )
     args = parser.parse_args(argv)
 
@@ -613,6 +772,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("fit window leaves nothing to score", file=sys.stderr)
         return 1
     score_start = fit_end + timedelta(days=1)
+
+    clock_seconds = CLOCK_SECONDS[args.clock]
+    decays = args.decays or (
+        SWEEP_DECAYS_1MIN if args.clock == "1min" else SWEEP_DECAYS
+    )
 
     cfg = load_config()
     client = make_client(cfg)
@@ -628,23 +792,77 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         through, topology_source = None, "observed"
 
-    print(f"fitting on vehicle archive {start}..{fit_end}", file=sys.stderr)
-    fit_bodies = fetch_vehicle_metrics(
-        cfg, start_date=start, end_date=fit_end, client=client
-    )
-    params = fit_params(fit_bodies, through)
+    def load_movement(a: date, b: date, label: str) -> list[dict[str, Any]]:
+        """Movement bodies for [a, b] on the selected clock. The 5-minute clock
+        reads archive/vehicles as shipped; the 1-minute clock reconstructs the
+        same cross-tick transitions from archive/trace at 1-minute resolution."""
+        if args.clock == "5min":
+            return fetch_vehicle_metrics(cfg, start_date=a, end_date=b, client=client)
+        print(
+            f"reconstructing 1-min bodies from trace {a}..{b} ({label})",
+            file=sys.stderr,
+        )
+        trace_bodies = fetch_trace_bodies(cfg, start_date=a, end_date=b, client=client)
+        return trace_to_movement_bodies(trace_bodies, tick_seconds=clock_seconds)
+
+    print(f"fitting on {args.clock} movement {start}..{fit_end}", file=sys.stderr)
+    fit_bodies = load_movement(start, fit_end, "fit")
+    params = fit_params(fit_bodies, through, tick_seconds=clock_seconds)
     print(
         f"{len(fit_bodies)} fit ticks -> {len(params['cells'])} cells, "
         f"{len(params['throughput']['ticks'])} fitted bins",
         file=sys.stderr,
     )
 
-    print(f"scoring on vehicle archive {score_start}..{end}", file=sys.stderr)
-    score_bodies = fetch_vehicle_metrics(
-        cfg, start_date=score_start, end_date=end, client=client
+    print(f"scoring on {args.clock} movement {score_start}..{end}", file=sys.stderr)
+    score_bodies = load_movement(score_start, end, "score")
+    ticks = tick_inputs(
+        score_bodies, counts_from_stop=_stop_filter(through), tick_seconds=clock_seconds
     )
-    ticks = tick_inputs(score_bodies, counts_from_stop=_stop_filter(through))
     print(f"{len(ticks)} scored ticks", file=sys.stderr)
+
+    # Intermediate-hop credit the 5-minute sampling drops, measured over the
+    # SCORED window on the shipped 5-minute movement metric vs the 1-minute
+    # reconstruction. TWO multipliers, deliberately kept apart:
+    #   sampling_multiplier    — matched (advances+stalls): the raw per-tick
+    #       evidence gain, dominated by the 5x poll frequency, NOT hops.
+    #   intermediate_hop_multiplier — advances only (frm != to): stations
+    #       crossed per move, the ~2.30x the earlier trip-pattern inference
+    #       stall-every-minute inflation removed. THIS is the dropped-hop number.
+    # Only computed on the 1-minute clock (the arm that recovers the credit);
+    # costs one extra archive/vehicles pull.
+    hop_credit: dict[str, Any] | None = None
+    if args.clock == "1min":
+        vehicle_score = fetch_vehicle_metrics(
+            cfg, start_date=score_start, end_date=end, client=client
+        )
+        sf = _stop_filter(through)
+        five = matched_credit_stats(vehicle_score, counts_from_stop=sf)
+        one = matched_credit_stats(score_bodies, counts_from_stop=sf)
+
+        def _ratio(a: int, b: int) -> float | None:
+            return a / b if b else None
+
+        hop_credit = {
+            "five_min": five,
+            "one_min": one,
+            "sampling_multiplier": _ratio(one["matched"], five["matched"]),
+            "intermediate_hop_multiplier": _ratio(one["advanced"], five["advanced"]),
+            "intermediate_hop_share": (
+                _ratio(one["advanced"] - five["advanced"], one["advanced"])
+            ),
+            "distinct_cells_five_min": five["distinct_cells"],
+            "distinct_cells_one_min": one["distinct_cells"],
+        }
+        print(
+            f"hop credit: advances 5min={five['advanced']} 1min={one['advanced']} "
+            f"-> intermediate-hop x{hop_credit['intermediate_hop_multiplier']:.2f}; "
+            f"matched 5min={five['matched']} 1min={one['matched']} "
+            f"-> sampling x{hop_credit['sampling_multiplier']:.2f}"
+            if hop_credit["intermediate_hop_multiplier"] is not None
+            else "hop credit: no 5-min advances",
+            file=sys.stderr,
+        )
 
     # The truth baseline is fitted on the SAME leading window as the model, and
     # the label is drawn on the held-out span only. Scoring against a baseline
@@ -678,9 +896,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Price SEGMENT_DECAY directly. Throughput ON and the shipped matched
         # floor for every arm, so the only lever moving is the accumulator window
         # — this is the read the route-level recall proxy could not give the knob.
-        arms = {
-            f"decay_{d:g}": (params, Policy(decay=d)) for d in sorted(set(args.decays))
-        }
+        arms = {f"decay_{d:g}": (params, Policy(decay=d)) for d in sorted(set(decays))}
     else:
         # The two axes the epic can buy coverage on, crossed. `window` spends
         # onset latency for coverage (a longer accumulator window means a verdict
@@ -701,6 +917,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "score_start": score_start.isoformat(),
             "score_end": end.isoformat(),
             "topology_source": topology_source,
+            "clock": args.clock,
+            "clock_seconds": clock_seconds,
             "n_fit_ticks": len(fit_bodies),
             "n_scored_ticks": len(ticks),
         },
@@ -738,6 +956,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "arms": {},
     }
+    if hop_credit is not None:
+        report["hop_credit"] = hop_credit
     for name, (arm_params, policy) in arms.items():
         print(f"replaying arm {name} (decay={policy.decay})", file=sys.stderr)
         report["arms"][name] = {
@@ -745,7 +965,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "decay": policy.decay,
                 "min_eff_matched": policy.min_eff_matched,
                 "window_ticks": policy.window_ticks,
-                "window_minutes": policy.window_ticks * TICK_SECONDS / 60,
+                "window_minutes": policy.window_ticks * clock_seconds / 60,
                 "throughput": "throughput" in arm_params,
             },
         } | grade(
@@ -755,6 +975,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_baselined,
             bootstrap=args.bootstrap,
             seed=args.seed,
+            clock_seconds=clock_seconds,
         )
     if args.sweep_decay:
         report["table"] = [

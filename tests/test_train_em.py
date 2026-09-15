@@ -1708,19 +1708,23 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def _no_vehicles(*_: Any, **__: Any) -> list[dict[str, Any]]:
+    def _no_trace(*_: Any, **__: Any) -> list[dict[str, Any]]:
         return []
 
     def _fake_build_segment_baseline(
-        bodies: list[dict[str, Any]], *, counts_from_stop: Any = None
+        bodies: list[dict[str, Any]],
+        *,
+        counts_from_stop: Any = None,
+        tick_seconds: int = 300,
     ) -> dict[tuple[str, str, str], Any]:
         captured["filter"] = counts_from_stop
+        captured["tick_seconds"] = tick_seconds
         return {}
 
     def _no_adjacency(_bodies: list[dict[str, Any]]) -> dict[tuple[str, str, str], Any]:
         return {}
 
-    monkeypatch.setattr("training.publish_params.fetch_vehicle_metrics", _no_vehicles)
+    monkeypatch.setattr("training.publish_params.fetch_trace_bodies", _no_trace)
     monkeypatch.setattr(
         "training.publish_params.build_segment_baseline", _fake_build_segment_baseline
     )
@@ -1742,6 +1746,8 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
     assert admits is not None
     assert admits("A", "north", "A02N")
     assert not admits("A", "north", "A01N")  # chain start, a layover
+    # The whole fit is one cadence: the 1-minute trace clock the Worker judges on.
+    assert captured["tick_seconds"] == 60
 
 
 def test_write_segment_params_stamps_provenance_and_route_stops(
@@ -1751,11 +1757,14 @@ def test_write_segment_params_stamps_provenance_and_route_stops(
 
     fake = _FakeS3()
 
-    def _vehicles(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
-        return [{}]
+    def _trace(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        return []
 
     def _baseline(
-        _bodies: list[dict[str, Any]], *, counts_from_stop: Any = None
+        _bodies: list[dict[str, Any]],
+        *,
+        counts_from_stop: Any = None,
+        tick_seconds: int = 300,
     ) -> dict[tuple[str, str, str], Any]:
         return {("A", "north", "A02N"): SimpleNamespace(p0=0.5, n=10)}
 
@@ -1765,7 +1774,7 @@ def test_write_segment_params_stamps_provenance_and_route_stops(
     def _prov() -> dict[str, Any]:
         return {"code_sha": "abc123", "dirty": False, "producer": "test"}
 
-    monkeypatch.setattr("training.publish_params.fetch_vehicle_metrics", _vehicles)
+    monkeypatch.setattr("training.publish_params.fetch_trace_bodies", _trace)
     monkeypatch.setattr("training.publish_params.build_segment_baseline", _baseline)
     monkeypatch.setattr("training.publish_params.canonical_adjacency", _no_adjacency)
     monkeypatch.setattr("training.publish_params.code_provenance", _prov)
@@ -1793,6 +1802,7 @@ def test_write_segment_params_stamps_provenance_and_route_stops(
     assert doc["route_stops"]["A|north"] == [
         {"stops": ["A01N", "A02N", "A03N"], "n_trips": 5}
     ]
+    assert doc["cadence_seconds"] == 60  # fitted on the 1-minute trace clock
     assert "route_shapes" not in doc
 
 

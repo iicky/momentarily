@@ -6,7 +6,10 @@ import {
   deriveSegmentStates,
   deriveStationFlow,
   pruneSegmentRegimes,
+  SEGMENT_CADENCE_SECONDS,
   SEGMENT_DECAY,
+  segmentCadenceOk,
+  segmentFlowCadenceMatches,
   stationId,
   updateSegmentFlow,
 } from '../src/segment_flow';
@@ -116,18 +119,40 @@ describe('updateSegmentFlow', () => {
     const state = updateSegmentFlow(null, rows, NOW, params);
     expect(state.cells['F|south|A09S']).toEqual({ a: 10, m: 12, e: 0 });
   });
-
   test('decays the carried accumulator by SEGMENT_DECAY', () => {
     const prev: SegmentFlowDoc = {
-      observed_at: NOW - 300,
+      observed_at: NOW - 60,
       cells: { 'F|south|A09S': { a: 10, m: 12, e: 0 } },
       vehicles: {},
       regimes: {},
+      cadence_seconds: SEGMENT_CADENCE_SECONDS,
     };
     const rows = new Map([['F', moveRow({ 'A09S>A09S': 5 })]]); // all stalls this tick
     const state = updateSegmentFlow(prev, rows, NOW, params);
     expect(state.cells['F|south|A09S']!.a).toBeCloseTo(SEGMENT_DECAY * 10, 6);
     expect(state.cells['F|south|A09S']!.m).toBeCloseTo(5 + SEGMENT_DECAY * 12, 6);
+    // The written doc is stamped with the cadence it ran on, so a later deploy
+    // on a different clock can tell it apart.
+    expect(state.cadence_seconds).toBe(SEGMENT_CADENCE_SECONDS);
+  });
+
+  test('discards a carry from the other cadence instead of folding it in', () => {
+    // A 5-minute accumulator (no cadence stamp -> legacy 300s) must not seed the
+    // 1-minute clock: its decayed sums are on a five-times-larger window and its
+    // regimes were debounced per 5-minute tick. Warm up fresh instead.
+    const stale: SegmentFlowDoc = {
+      observed_at: NOW - 60,
+      cells: { 'F|south|A09S': { a: 10, m: 12, e: 3 } },
+      vehicles: {},
+      regimes: {},
+      // no cadence_seconds: the legacy 5-minute doc
+    };
+    const rows = new Map([['F', moveRow({ 'A09S>A10S': 2 })]]);
+    const state = updateSegmentFlow(stale, rows, NOW, params);
+    // Only this tick's counts survive; the stale carry is gone.
+    expect(state.cells['F|south|A09S']).toEqual({ a: 2, m: 2, e: 0 });
+    expect(segmentFlowCadenceMatches(stale)).toBe(false);
+    expect(segmentFlowCadenceMatches(state)).toBe(true);
   });
 
   test('tracks only segments the trainer baselined', () => {
@@ -353,5 +378,24 @@ describe('pruneSegmentRegimes', () => {
   test('drops a regime whose cell a retrain removed from the baseline', () => {
     const kept = pruneSegmentRegimes({ 'F|south|Z99S': entry('normal') }, params.cells);
     expect(kept).toEqual({});
+  });
+});
+
+describe('segmentCadenceOk', () => {
+  test('accepts a fit stamped with the cadence the Worker runs on', () => {
+    expect(segmentCadenceOk({ ...fitted, cadence_seconds: SEGMENT_CADENCE_SECONDS })).toBe(true);
+  });
+
+  test('rejects a fit from the other cadence — both branches would misjudge', () => {
+    // lam is per-tick and p0 is the advance fraction over one cross-tick gap, so
+    // a 5-minute fit read at 1-minute ticks calls every cell a collapse.
+    expect(segmentCadenceOk({ ...fitted, cadence_seconds: 300 })).toBe(false);
+  });
+
+  test('rejects a legacy fit with no cadence stamp as the 5-minute default', () => {
+    // `fitted` here carries no cadence_seconds, i.e. a doc written before the
+    // 1-minute migration — treated as the legacy 5-minute fit and not judged.
+    expect(fitted.cadence_seconds).toBeUndefined();
+    expect(segmentCadenceOk(fitted)).toBe(false);
   });
 });

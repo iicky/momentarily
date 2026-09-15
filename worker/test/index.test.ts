@@ -60,7 +60,7 @@ vi.mock('../src/snapshot', async (importOriginal) => {
 
 import { FEEDS, STATIONS_FEED, TRIP_UPDATE_FEEDS, TRIP_UPDATE_FEED_NAMES } from '../src/fetch';
 import { entity as tuEntity, tripDescriptor, tripUpdate } from './gtfsrt_fixture';
-import { tod_bin } from '../src/hmm';
+import { schedule_bin, tod_bin } from '../src/hmm';
 import worker, { tickMinute } from '../src/index';
 import type { Env } from '../src/index';
 import type * as SnapshotModule from '../src/snapshot';
@@ -448,6 +448,164 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     expect(traceRowsAt(store, traceKeys[1]!)).toEqual([
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: true, stop_seq: 1 }),
     ]);
+  });
+});
+
+describe('scheduled: segment judging on the 1-minute clock (step 0c)', () => {
+  const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
+  const NON_BOUNDARY_AT = 1_704_067_380; // +3 minutes, minute 3
+
+  /** A minimal segment_params doc. `cadence` omitted => a legacy 5-minute fit
+   * (no stamp), which the Worker must refuse at 1-minute ticks. */
+  function seedSegmentParams(
+    store: Map<string, StoredObject>,
+    { cadence }: { cadence?: number },
+  ): void {
+    const bin = schedule_bin(BOUNDARY_AT);
+    const doc: Record<string, unknown> = {
+      schema_version: '1',
+      trained_at: 1,
+      min_share: 0.5,
+      topology_source: 'gtfs_static',
+      cells: { 'A|north|A01N': { p0: 0.9, n: 100, lam: { [bin]: 1 } } },
+      adjacency: { 'A|north|A01N': { to: 'A02N', source: 'gtfs_static' } },
+      throughput: { bin: 'schedule_bin', min_ticks: 20, ticks: { [bin]: 100 } },
+    };
+    if (cadence !== undefined) doc.cadence_seconds = cadence;
+    store.set('state/segment_params.json', { body: JSON.stringify(doc), etag: 'sp0' });
+  }
+
+  test('off the boundary, a 1-minute fit is judged and its own surfaces are written', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedSegmentParams(store, { cadence: 60 });
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(NON_BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // Segment judging ran off the 5-minute gate, on its OWN 1-minute carry,
+    // stamping this minute and its cadence onto the accumulator.
+    const flow = jsonAt(store, 'state/segment_flow.json') as {
+      observed_at: number;
+      cadence_seconds: number;
+    };
+    expect(flow.observed_at).toBe(NON_BOUNDARY_AT);
+    expect(flow.cadence_seconds).toBe(60);
+    expect(store.has('state/station_flow.json')).toBe(true);
+    expect(store.has('state/segment_vehicle_stops.json')).toBe(true);
+    // ...while the 5-minute pipeline stayed skipped and its 5-minute carry
+    // (vehicle_stops.json) was never touched by the segment path.
+    expect(store.has('state/vehicle_stops.json')).toBe(false);
+    expect(store.has('v1/snapshot.json')).toBe(false);
+    expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(0);
+  });
+
+  test('on the boundary, segments judge (1-minute) AND the snapshot publishes (5-minute) in one tick', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedSegmentParams(store, { cadence: 60 });
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // The segment surface is THIS tick's, not a tick lagged: 0c runs before the
+    // boundary publish, so the snapshot reads a current segment_flow.
+    const flow = jsonAt(store, 'state/segment_flow.json') as { observed_at: number };
+    expect(flow.observed_at).toBe(BOUNDARY_AT);
+    // The 5-minute snapshot published in the same run, and its own 5-minute
+    // movement carry advanced untouched by the segment path.
+    expect(store.has('v1/snapshot.json')).toBe(true);
+    expect(store.has('state/vehicle_stops.json')).toBe(true);
+  });
+
+  test('a legacy 5-minute fit (no cadence stamp) is refused, not judged at 1-minute ticks', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedSegmentParams(store, {}); // no cadence_seconds -> legacy 5-minute fit
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(NON_BOUNDARY_AT * 1000);
+    try {
+      await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // lam/p0 are per-tick, so a 5-minute fit read at 1-minute ticks would
+    // misjudge every cell; the guard skips judging entirely until a refit.
+    expect(store.has('state/segment_flow.json')).toBe(false);
+    expect(store.has('state/segment_vehicle_stops.json')).toBe(false);
+  });
+
+  test('a train that moves across a skipped minute is NOT booked as a cross-gap jump', async () => {
+    // The strict-adjacency invariant the 1-minute clock exists to hold: the stop
+    // carry is stamped with its minute, so after a gap (a feed-outage minute, a
+    // missed cron) the next fresh minute diffs from {} instead of a stale carry.
+    // Without the timestamp, a train that crossed several stops during the gap
+    // would be credited one fabricated multi-station transition.
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedSegmentParams(store, { cadence: 60 });
+    const MIN1 = BOUNDARY_AT + 60; // minute 1
+    const MIN3 = BOUNDARY_AT + 180; // minute 3 — minute 2 was a gap
+
+    // Minute 1: train at A01N. Stamps the carry {observed_at: MIN1, ...}.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    let nowSpy = vi.spyOn(Date, 'now').mockReturnValue(MIN1 * 1000);
+    try {
+      await worker.scheduled(scheduledAt(MIN1), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    const carry = jsonAt(store, 'state/segment_vehicle_stops.json') as {
+      observed_at: number;
+      stops: Record<string, string>;
+    };
+    expect(carry.observed_at).toBe(MIN1);
+
+    // Minute 3 (minute 2 skipped): the same train is now at A02N. The carry is
+    // from MIN1, not MIN3-60=minute 2, so it is dropped: no A01N>A02N transition.
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A02N' }),
+    );
+    nowSpy = vi.spyOn(Date, 'now').mockReturnValue(MIN3 * 1000);
+    try {
+      await worker.scheduled(scheduledAt(MIN3), env, execCtx);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const flow = jsonAt(store, 'state/segment_flow.json') as {
+      cells: Record<string, { a: number; m: number; e: number }>;
+    };
+    // The A01N cell survives (its expectation accrues), but it booked NO matched
+    // traversal across the gap — a cross-gap diff would have set m to 1.
+    expect(flow.cells['A|north|A01N']?.m ?? 0).toBe(0);
   });
 });
 

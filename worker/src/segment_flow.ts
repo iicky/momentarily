@@ -47,34 +47,35 @@ import type {
   StationFlowDoc,
 } from './state';
 
-// this tick + DECAY * previous; ~1/(1-DECAY) ≈ 17-tick (~83 min) effective
-// window.
+// this tick + DECAY * previous; ~1/(1-DECAY) ticks effective window.
 //
-// 0.94 rather than the original 0.8 (~25 min), on a graded bakeoff of both
-// coverage axes crossed (training/segment_coverage.py). Against the independent
-// assigned_n episode label this pairing separates real service collapses from
-// healthy service by 5.3x, where the throughput branch at 25 min manages 3.6x
-// and a wider window with no throughput fit manages 1.9x and is not significant
-// at all. It also alarms LESS on healthy routes (6.4% of testable cells against
-// 13.4%): the wider window is smoothing noise, not reaching further.
+// The accumulator now runs on the 1-MINUTE trace clock (see index.ts: segment
+// judging moved off the 5-minute boundary onto the per-minute trace). At 60s
+// ticks 0.98 is a ~50-min window; the cell baselines (`lam`, `p0`) are refit at
+// this cadence in lockstep by the trainer and the doc carries
+// throughput.cadence_seconds so this Worker can refuse a fit from the other
+// clock (see segmentCadenceOk / SEGMENT_CADENCE_SECONDS below) — `lam` is
+// per-tick and silently wrong at the wrong cadence.
 //
-// The obvious objection to a longer window is staleness — a verdict lagging its
-// evidence, which `entered_at` and the recovery forecast conditioned on it would
-// inherit. That objection is structurally void once the throughput branch runs:
-// staleness enters through the regime clock HOLDING a cell's last state while the
-// cell abstains, and a cell with a published rate never abstains. Graded on the
-// published (debounced) surface rather than the raw calls, the two throughput
-// arms score identically to their own call surface, while the two arms without it
-// lose 14-16% of their separation to held-open verdicts.
-//
-// Latency points the same way, for a mechanical reason worth stating: on the
-// ABSENCE question a longer window is faster, not slower. The expected count it
-// accumulates is ~3.3x larger, so an empty window crosses the Poisson threshold
-// sooner. Measured median onset latency is 10 min here against 35 for the
-// narrow-window throughput arm — on 5 and 7 detections respectively, so a
-// direction rather than a measurement, but a direction that agrees with the
-// mechanism and with the separation.
-export const SEGMENT_DECAY = 0.94;
+// 0.98 (50 min) was chosen on a graded sweep of both clocks over the same window
+// (training/segment_coverage.py --sweep-decay --clock {5min,1min}, fit 14d /
+// score 7d against the independent assigned_n episode label). At every window
+// <=125min the 1-minute clock beats the 5-minute clock it replaces on BOTH
+// discrimination and onset latency, and finally on adequate n: at the 50-min
+// window it separates real collapses from healthy service by 8.7x (5-min: 5.2x),
+// and per-cell median onset latency is 12 min against the 5-minute clock's 55,
+// on 263 cell-detections rather than the tens the route-scoped 5-minute metric
+// could muster. The 1-minute trace OBSERVES the intermediate hops of a
+// multi-station move (x2.50 more advance credit) instead of crediting the whole
+// jump to one cell, which is where the extra evidence and the shorter latency
+// come from.
+export const SEGMENT_DECAY = 0.98;
+// The tick length (seconds) this accumulator runs on: one cron minute, the
+// trace cadence. The trainer stamps the cadence its `lam` rates were fitted on
+// into segment_params.json (throughput.cadence_seconds); segmentCadenceOk gates
+// judging on the two agreeing, so an old 5-minute fit cannot be read here at
+// 1-minute ticks.
+export const SEGMENT_CADENCE_SECONDS = 60;
 // Effective (decayed) matched trips a segment needs before the advance-rate
 // branch judges it. Under it the throughput branch takes over — it used to be
 // the point where the cell dropped out entirely. 3 rather than 5 so this floor
@@ -191,6 +192,36 @@ function fittedBin(params: SegmentParamsDoc, observedAt: number): string | null 
   return bin in tp.ticks ? bin : null;
 }
 
+// The tick length a legacy doc (a fit predating the 1-minute migration, so no
+// cadence stamp) was made on: the 5-minute boundary the segment accumulator
+// used to run on.
+const LEGACY_CADENCE_SECONDS = 300;
+
+/** Whether this params doc was fitted on the cadence the Worker now accumulates
+ * on. BOTH branches are cadence-defined: `lam` is expected traversals per tick,
+ * and `p0` is the advance fraction over one cross-tick gap (shorter at 1 minute
+ * than at 5, since a train is likelier to still be at the same stop a minute
+ * later) — so a fit from the 5-minute clock read on the 1-minute clock
+ * mis-judges the throughput branch AND the advance branch. False when they
+ * disagree (a doc from the old clock, or one with no cadence stamp, which is by
+ * definition the legacy 5-minute fit); the caller then skips ALL segment
+ * judging this tick rather than publish nonsense — the deploy-skew guard
+ * params.json's schema_version gate provides, extended to cadence. */
+export function segmentCadenceOk(params: SegmentParamsDoc): boolean {
+  return (params.cadence_seconds ?? LEGACY_CADENCE_SECONDS) === SEGMENT_CADENCE_SECONDS;
+}
+
+/** Whether a carried segment_flow accumulator was built on the cadence the
+ * Worker now runs on, so its decayed sums and regimes can be folded forward. A
+ * mismatch (a carry from the old clock, or one with no stamp — the legacy
+ * 5-minute accumulator) is discarded and the surface warms up fresh over the
+ * next window. Used both in updateSegmentFlow (for the cell sums) and by the
+ * caller (for the regime carry), so the two never diverge. */
+export function segmentFlowCadenceMatches(prev: SegmentFlowDoc | null): boolean {
+  if (prev == null) return false;
+  return (prev.cadence_seconds ?? LEGACY_CADENCE_SECONDS) === SEGMENT_CADENCE_SECONDS;
+}
+
 /** Advance the decaying per-segment accumulator with this tick's counts and this
  * tick's expected rate, and record this tick's per-route vehicle counts for the
  * outage guard.
@@ -206,8 +237,14 @@ export function updateSegmentFlow(
   observedAt: number,
   params: SegmentParamsDoc,
 ): SegmentFlowDoc {
+  // Discard a carry from the other cadence: the decayed sums are per-tick, so a
+  // 5-minute accumulator's `e`/`m`/`a` and its regimes are meaningless at
+  // 1-minute ticks. On a mismatch we warm up fresh over the next window rather
+  // than fold in nonsense (segmentFlowCadenceMatches gates the caller's regime
+  // carry the same way).
+  const carried = segmentFlowCadenceMatches(prev) ? prev : null;
   const counts = tickCounts(moveRows);
-  const prevCells = prev?.cells ?? {};
+  const prevCells = carried?.cells ?? {};
   const bin = fittedBin(params, observedAt);
   const cells: Record<string, { a: number; m: number; e: number }> = {};
   for (const [key, cell] of Object.entries(params.cells)) {
@@ -226,10 +263,17 @@ export function updateSegmentFlow(
 
   const vehicles = tickVehicles(moveRows);
 
-  // Regimes are advanced by the caller (step 8b, alongside advanceRegimes) and
+  // Regimes are advanced by the caller (step 0c, alongside advanceRegimes) and
   // written back onto this doc once computed; carry the previous map through
-  // so the type is whole in between.
-  return { observed_at: observedAt, cells, vehicles, regimes: prev?.regimes ?? {} };
+  // so the type is whole in between. Stamp the cadence this accumulator runs on
+  // so a later deploy on a different clock discards it instead of folding it in.
+  return {
+    observed_at: observedAt,
+    cells,
+    vehicles,
+    regimes: carried?.regimes ?? {},
+    cadence_seconds: SEGMENT_CADENCE_SECONDS,
+  };
 }
 
 /** Clamped relative shortfall of `observed` against `expected`, in [0, 1] — the

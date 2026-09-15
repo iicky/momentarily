@@ -40,10 +40,18 @@ from training.segments import classify_segment, classify_throughput
 # Mirrors of worker/src/segment_flow.ts, including its retuned accumulator
 # window. Kept as module constants rather than imported from anywhere: there is
 # no shared source across the language boundary, and the parity fixture is what
-# proves they agree.
-SEGMENT_DECAY = 0.94
+# proves they agree. 0.98 (not the earlier 0.94) since segment judging moved
+# onto the 1-minute trace clock: at 60s ticks 0.98 is a ~50-min window, the
+# operating point the both-clocks sweep chose (see worker/src/segment_flow.ts
+# and journal.md 2026-09-14).
+SEGMENT_DECAY = 0.98
 MIN_EFF_MATCHED = 3
 PRUNE_MATCHED = 0.3
+# The tick length (seconds) the accumulator runs on, mirroring
+# worker/src/segment_flow.SEGMENT_CADENCE_SECONDS: one cron minute, the trace
+# cadence. The trainer stamps it into segment_params.json (cadence_seconds) and
+# the Worker refuses a fit from any other clock.
+SEGMENT_CADENCE_SECONDS = 60
 EFF_COUNT_SCALE = 1.0 + SEGMENT_DECAY
 
 
@@ -128,6 +136,7 @@ def tick_inputs(
     bodies: Iterable[dict[str, Any]],
     *,
     counts_from_stop: StopFilter | None = None,
+    tick_seconds: int = TICK_SECONDS,
 ) -> list[TickInput]:
     """The archived vehicle bodies reduced to one TickInput per snapped tick,
     in time order.
@@ -144,7 +153,7 @@ def tick_inputs(
         rows = cast(dict[str, Any], body.get("rows") or {})
         if not rows:
             continue
-        tick = (int(body.get("observed_at") or 0) // TICK_SECONDS) * TICK_SECONDS
+        tick = (int(body.get("observed_at") or 0) // tick_seconds) * tick_seconds
         counts, vehicles = by_tick.setdefault(tick, ({}, {}))
         for route, row in rows.items():
             if not isinstance(row, dict):

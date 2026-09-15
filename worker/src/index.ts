@@ -3,9 +3,11 @@
  *
  * Each cron tick:
  *   0. Fetch + decode the vehicle-position feeds, run the per-minute movement
- *      trace, and fold the per-minute platform-wait and observed-headway
- *      carries (every tick — see the hazard note at the top of `scheduled`
- *      for why these are the ONLY things that run off the 5-minute boundary)
+ *      trace, fold the per-minute platform-wait and observed-headway carries,
+ *      and judge segments (step 0c: the segment/station-flow surface moved onto
+ *      the 1-minute trace clock — its own stop carry, gated on the params
+ *      cadence). These run every tick — see the hazard note at the top of
+ *      `scheduled` for why they are the ONLY things off the 5-minute boundary
  *   1. Read rolling state (last_seen, alpha) + trained params from R2
  *   2. Fetch the MTA alerts feed
  *   3. Archive new (alert_id, updated_at) versions
@@ -99,7 +101,7 @@ import {
 } from './hmm';
 import { loadParams, loadRecoveryBaseline, loadRidershipBaseline, loadServiceWeightBaseline, paramsForRoute } from './params';
 import { advanceRegimes, pruneIdleRegimes } from './regime';
-import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, updateSegmentFlow } from './segment_flow';
+import { deriveSegmentStates, deriveStationFlow, pruneSegmentRegimes, segmentCadenceOk, segmentFlowCadenceMatches, SEGMENT_CADENCE_SECONDS, updateSegmentFlow } from './segment_flow';
 import {
   TICK_SECONDS,
   buildArrivals,
@@ -122,6 +124,7 @@ import {
   readMovementState,
   readSegmentDwell,
   readSegmentFlow,
+  readSegmentVehicleStops,
   readSegmentParams,
   readScheduledHeadway,
   readServiceBaseline,
@@ -134,6 +137,7 @@ import {
   writeMovementMetric,
   writeMovementState,
   writeSegmentFlow,
+  writeSegmentVehicleStops,
   writeServiceMetric,
   writeStationFlow,
   writeStationWait,
@@ -256,12 +260,20 @@ export default {
     // 0), reading/writing vehicle_stops.json exactly as often as before this
     // change and seeing exactly the same inputs.
     //
-    // The trace is the one thing allowed to run every minute. It never reads
-    // or writes vehicle_stops.json, and it archives under its OWN prefix
-    // (archive/trace/, see archive.ts) — never archive/vehicles/ — so it can
-    // add finer-grained observations without ever touching the 5-minute
-    // signal above. See vehicles.ts's deriveTrace for why it writes a full
-    // snapshot every poll rather than a delta.
+    // TWO things now run every minute past the trace: step 0b (arrivals) and
+    // step 0c (segment judging). Both are deliberately kept off the 5-minute
+    // signal. The trace never reads or writes vehicle_stops.json and archives
+    // under its OWN prefix (archive/trace/, see archive.ts) — never
+    // archive/vehicles/. Segment judging reads that same per-minute vehicle
+    // decode but diffs it against its OWN 1-minute carry
+    // (state/segment_vehicle_stops.json), never vehicle_stops.json, and its
+    // per-tick baselines are refit at the 1-minute cadence by the trainer and
+    // cadence-gated (segmentCadenceOk) — so it is the one advanced_n/stalled_n
+    // consumer that legitimately runs per minute, precisely because its params
+    // were fit for it. The 5-minute movement census / advance metric / dwell
+    // model at step 8b are untouched and keep their 5-minute carry and inputs.
+    // See vehicles.ts's deriveTrace for why the trace writes a full snapshot
+    // every poll rather than a delta.
     // Gate off the cron's SCHEDULED minute, not observedAt. observedAt is the
     // wall clock at execution and is right for stamping data, but wrong for the
     // gate: a boundary run that starts a few seconds late would read as minute 6
@@ -527,6 +539,124 @@ export default {
       );
     }
     step('0b-arrivals');
+
+    // --- Step 0c: per-minute segment judging (every tick, off the 5-min gate) ---
+    // Segment judging moved off the 5-minute boundary onto the per-minute trace
+    // clock: a graded offline sweep of both clocks (training/segment_coverage.py
+    // --sweep-decay --clock {5min,1min}) showed the 1-minute clock beats the
+    // 5-minute one it replaced on discrimination AND onset latency at every
+    // window <=125min, because the trace OBSERVES the intermediate hops of a
+    // multi-station move instead of crediting the whole jump to one cell.
+    //
+    // It runs on the SAME `vehicles` decoded once at step 0, diffed against its
+    // OWN 1-minute stop carry (state/segment_vehicle_stops.json) — never
+    // vehicle_stops.json, which is the 5-minute carry the retired movement
+    // census / advance metric still accumulate on (step 8b) and must stay
+    // untouched. throughStops is null on purpose: segment judging reads the
+    // unfiltered `transitions` map (segment_flow.tickCounts), never the
+    // through-filtered counters, so the trainer's stop filter is already baked
+    // into which cells are baselined. deriveStationFlow rolls the same doc up to
+    // stations, so station_flow rides this clock too.
+    //
+    // Cost accepted: segment_params.json (~1.8 MB) is now read every minute
+    // rather than every fifth, and this runs BEFORE the 5-minute boundary gate,
+    // so on a boundary tick the snapshot publish waits on this block's reads and
+    // writes. That is the price of judging every minute — the surface has to be
+    // computed on the per-minute clock, ahead of the gate — but it is bounded
+    // (one params read plus a handful of small puts) and immaterial to a
+    // 5-minute-cadence publish. It is fail-soft: a throw or slow read degrades
+    // to "no fresh segment surface this minute", never a failed tick, and the
+    // stop carry is advanced first (below) so a partial failure can't corrupt
+    // the next minute's diff. The cadence gate (segmentCadenceOk) skips judging
+    // entirely until the trainer republishes segment_params.json fitted at this
+    // cadence: `lam` and `p0` are both per-tick, so an old 5-minute fit read
+    // here would call every cell a collapse. Writes are plain puts, same posture
+    // as station_wait — a lost race drops one minute's update, and the next
+    // minute re-decays from the slightly older base.
+    try {
+      const segParams = await readSegmentParams(env.MOMENTARILY);
+      if (segParams && vehicleFreshFeeds.length > 0) {
+        if (!segmentCadenceOk(segParams)) {
+          console.log(
+            `segment judging skipped: params cadence `
+            + `${segParams.cadence_seconds ?? 'legacy-300'}s != ${SEGMENT_CADENCE_SECONDS}s `
+            + '(awaiting a 1-minute refit)',
+          );
+        } else {
+          // Segment judging keys on the SCHEDULED minute, snapped, not the
+          // wall-clock observedAt. observedAt is Date.now() at execution and
+          // jitters (12:00:03 then 12:01:05), so an observedAt-keyed carry would
+          // almost never satisfy `prev === now - 60` and would drop nearly every
+          // transition. scheduledTime is the minute the cron was meant to fire,
+          // so consecutive minutes are exactly SEGMENT_CADENCE_SECONDS apart —
+          // the same reason the 5-minute gate reads scheduledAt (see tickMinute).
+          const segmentTick =
+            Math.floor(scheduledAt / SEGMENT_CADENCE_SECONDS) * SEGMENT_CADENCE_SECONDS;
+          const prevCarry = await readSegmentVehicleStops(env.MOMENTARILY);
+          // Strict adjacency, matching the offline reconstruction: diff only
+          // against the carry stamped exactly one minute ago. A carry from
+          // further back — a feed-gap minute that skipped judging, a missed
+          // cron, a prior read/write failure, a fresh deploy — is dropped in
+          // favour of {}, so a train that crossed several stops across the gap
+          // contributes no transition rather than one fabricated multi-station
+          // jump. The un-timestamped carry could not tell those apart.
+          const prevSegStops =
+            prevCarry.observed_at === segmentTick - SEGMENT_CADENCE_SECONDS
+              ? prevCarry.stops
+              : {};
+          const moveRows = deriveRouteMovementMetric(vehicles, prevSegStops, null);
+          // Advance the stop carry FIRST, before any surface write, stamped with
+          // THIS minute: it is the input to next minute's diff and must reflect
+          // this minute's positions even if the accumulator/regime work or a
+          // surface write below throws. A pure function of `vehicles`,
+          // independent of the flow state, so writing it up front is always
+          // correct — and the timestamp means a skipped write simply reads as a
+          // gap next minute rather than a stale same-looking carry.
+          await writeSegmentVehicleStops(
+            env.MOMENTARILY,
+            segmentTick,
+            stopPositions(vehicles),
+          );
+          const prevFlow = await readSegmentFlow(env.MOMENTARILY);
+          // Everything downstream keys on the snapped scheduled minute too, not
+          // the wall-clock observedAt. This is a parity requirement: the offline
+          // grade that gated this migration snaps trace ticks to the scheduled
+          // minute for the schedule_bin `lam` lookup, the accumulator and the
+          // regime clock alike (training/segment_replay), so a run delayed across
+          // an hour/day boundary must not score a 09:59 tick against the 10:00
+          // bin, and the debounce/idle clock must tick in exact minutes, not
+          // jittery wall-clock deltas. The only cost is that segment_flow's
+          // observed_at is the scheduled minute rather than the execution
+          // instant — at most one tick (<=60s) earlier, immaterial to the
+          // snapshot's ~30-minute freshness gate.
+          const flow = updateSegmentFlow(prevFlow, moveRows, segmentTick, segParams);
+          const carriedRegimes = segmentFlowCadenceMatches(prevFlow)
+            ? prevFlow?.regimes
+            : undefined;
+          const { entries, changes } = advanceRegimes(
+            carriedRegimes,
+            deriveSegmentStates(flow, segParams),
+            segmentTick,
+          );
+          flow.regimes = pruneSegmentRegimes(entries, segParams.cells);
+          await writeSegmentFlow(env.MOMENTARILY, flow);
+          await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
+          try {
+            await writeMovementTransitions(
+              env.MOMENTARILY,
+              segmentTick,
+              movementTransitions(changes, 'segment', segmentTick),
+            );
+          } catch (err) {
+            console.error('segment movement transitions write failed:', err);
+            failWrite('segment_movement_transitions_write');
+          }
+        }
+      }
+    } catch (err) {
+      console.error('segment judging failed; skipping this minute:', err);
+    }
+    step('0c-segments');
 
     if (!isFiveMinuteBoundary) {
       console.log(
@@ -1256,47 +1386,6 @@ export default {
               console.error('movement census write failed:', err);
               failWrite('movement_census_write');
             }
-          }
-
-          // Segment-level station service flow: decay-smoothed per-segment
-          // advance -> classify -> roll up to stations, PLUS the segment
-          // regime clock (same debounce as the route clock, keyed on the
-          // segment cell) that the per-segment dwell curves condition on.
-          // Its own R2 objects, read off the segment baseline (own object
-          // too), so the ~1.8k-cell baseline never touches the hot per-tick
-          // params parse. Read next tick by the snapshot build (one-tick
-          // lag, like movement_state). Fail-soft.
-          try {
-            const segParams = await readSegmentParams(env.MOMENTARILY);
-            if (segParams) {
-              const prevFlow = await readSegmentFlow(env.MOMENTARILY);
-              const flow = updateSegmentFlow(prevFlow, moveRows, observedAt, segParams);
-              const { entries, changes } = advanceRegimes(
-                prevFlow?.regimes,
-                deriveSegmentStates(flow, segParams),
-                observedAt,
-              );
-              // Regimes are pruned against the trainer's baselined cell set,
-              // not the accumulator: every baselined cell is judged every tick
-              // now, so the only stale entry left is one whose cell a retrain
-              // dropped. A cell that merely abstains this tick keeps
-              // advanceRegimes' idle grace.
-              flow.regimes = pruneSegmentRegimes(entries, segParams.cells);
-              await writeSegmentFlow(env.MOMENTARILY, flow);
-              await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
-              try {
-                await writeMovementTransitions(
-                  env.MOMENTARILY,
-                  observedAt,
-                  movementTransitions(changes, 'segment', observedAt),
-                );
-              } catch (err) {
-                console.error('segment movement transitions write failed:', err);
-                failWrite('segment_movement_transitions_write');
-              }
-            }
-          } catch (err) {
-            console.error('station flow update failed; skipping:', err);
           }
 
           console.log(

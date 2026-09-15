@@ -9960,3 +9960,106 @@ exercise. Fixed at the source: load_truth_observations now calls list_alert_keys
 fetch_objects with the bucket it was given. Rule worth keeping: a function that accepts a
 client and a bucket must never reload config to rediscover either; the four remaining
 fetch_alert_versions call sites all pass a config explicitly.
+
+## 2026-09-15 — what the 5-minute alerts poll costs the published condition
+
+origin: agent
+
+Question: would moving the alerts fetch + `route_status.condition` + the onset clock
+(`condition_entered_at`) from the 5-minute pipeline gate (index.ts `isFiveMinuteBoundary`,
+minute % 5 === 0) to the 1-minute cron tick buy real minutes on the shipping condition, or is
+the upstream feed quantized so polling faster buys nothing? Vehicle-derived 1-min detection is
+already graded NO-GO in prior work and out of scope.
+
+Archive read, trailing 35d (2026-08-11..09-15), 6055 alert-version objects over 2839 alert ids,
+via `training.alert_poll_latency`. First-observed tick taken from each object BODY's `observed_at`
+(archive.ts writes `{observed_at, alert}`). observed_at is an UPPER BOUND on first sight, not exact:
+archiveNewAlerts dedupes via `lastSeen` in state, NOT via the key, so a retried/overlapping run
+that has not yet seen the updated `lastSeen` rewrites the same (id, updated_at) object with a later
+observed_at. The bound is tight here because such a rewrite on a later tick would push that
+version's latency past 300s, and no severe version exceeds 292s. Latency = observed_at − mercury
+`updated_at`.
+
+- Severe onset (41 onsets = 1.17/day; onset = each id's FIRST version to reach the severe tier,
+  which catches an alert that opens as Delays and ESCALATES to Severe Delays on an update): mean
+  132.8s, median 134s (2.2 min), p90 230s (3.8 min), p95 252s, MAX 292s — every severe onset
+  landed inside ONE 5-min gate. That the max is < 300s is itself the proof the gateway serves
+  content fresher than 5 min during events: if the CDN were pinned to a 5-min-or-staler snapshot,
+  some severe onset latency would exceed 300s, and none does.
+- Severe split (79 severe versions = 41 first-severe onsets + 38 later severe updates): severe-
+  onset mean 132.8s / median 134s / p90 230s / max 292s; severe-UPDATE mean 149.5s / median 165s /
+  p90 230s / p95 237s / max 276s; severe-all median 158s, p90 230s, max 292s. Both severe sub-
+  splits sit entirely inside one 5-min gate. All-tier updates (3216): median 149s, p90 273s, p95
+  289s. All-tier onsets (2839, id-first version): median 141s but a fat tail (p95 16340s, max
+  687460s) from planned-work alerts whose updated_at is days old.
+- `updated_at mod 300`: UNIFORM. Mean 151.5, median 153 (dead centre of [0,300)); 30s-bin
+  histogram flat (all-tier bins 548–672; severe bins 3–12). The feed does NOT post on a 5-min
+  clock — alerts post continuously — so a 5-min poll adds ~U(0,5 min), mean 2.5 min, to onset
+  observation. This is the load-bearing negative-of-the-null: were mod-300 clustered, faster
+  polling would buy nothing; it is not, so it buys ~U(0,5).
+
+Clears (step 2): the requested measure — fraction of severe-episode ends whose previous tick still
+carried the alert — is UNMEASURABLE from this archive, and is reported as such. 23 of 41 severe
+alert ids wrote a SINGLE version object (updated_at never bumped while active); the multi-version
+ones have a median intra-episode version gap of 1200s (20 min), not ~300s. So the version stream
+is NOT a per-tick membership signal and last-observed != last-present — neither `archive/alerts`
+(no tombstone on removal) nor `archive/alerts_liveness` (body `{observed_at, outcome, fetched_at}`
+— fetch timing, not alert membership) carries per-tick alert IDs, so no clear boundary and no such
+fraction can be reconstructed. The one defensible number is the SUCCESSFUL-feed cadence (liveness
+per fetch attempt with an `outcome`; filtering `outcome == "success"` and collapsing retries to the
+5-min scheduled boundary): 3533/3533 fetches succeeded over 35d, 3532 boundaries, 3529 gaps of
+exactly 300s and only two 600s (a single missed boundary each) — essentially no feed outage. That
+bounds clear DISCOVERY: a clear is seen no sooner than the next fetch, so the 5-min cadence caps
+how much a 1-min poll could save on clears at < ~4 min — an operational upper bound, NOT a measured
+latency distribution (unlike onset, clears have no updated_at to anchor a distribution).
+
+`active_period.start` is a BAD onset clock: for severe onsets, observed_at − active_period.start
+has median 3021s (50 min) and wild outliers (min −1,077,578s — planned/rolling active periods).
+The alert's own `updated_at` is the clean onset timestamp.
+
+Live probe (step 3): 1-min GET of camsys%2Fsubway-alerts.json, detached, writing
+`$BB_THREAD_STORAGE/alert_probe.jsonl` (capture script alert_probe.py, analyzer probe_analyze.py,
+both alongside it in $BB_THREAD_STORAGE). COVERAGE AT THIS
+WRITING IS PARTIAL — the >= 24h the acceptance asks for is NOT yet met; probe left running to
+~26h and the conductor should re-read the analyzer output at close for the full window. Snapshot
+at 0.45h / 28 polls / 0 errors (quiet overnight): 6 five-min windows, 5 with 1 distinct body and 1
+with 2 (one sub-5-min change already caught); GTFS-RT header.timestamp advanced once (a 1655s
+jump), 26 unchanged, 0 regressions, lagging wall a median 810s (min 25s, max 1620s); 0 body-sha
+regressions (the CDN never served a body older than the prior poll); every response
+`x-cache: Miss from cloudfront`, NO cache-control/age/etag/last-modified. Reconciles with the
+archive: the feed rebuild is event-driven — mostly static (frozen header_ts, 1 body/window) when
+quiet, jumping to ~now (big header_ts steps, 2+ bodies/window) when alerts change — which is why
+severe-onset latency is ~U(0,5) and bounded < 300s while a quiet window shows no byte change for
+10+ min. The 24h window is needed to count 2+ bodies/window during BUSY periods; the archive
+already implies the gateway is fresh sub-5-min during events (no severe onset latency > 292s).
+
+Recommendation (full numbers recorded with the work item): (a) split cadence is a defensible GO —
+at 1-min it recovers a MEAN ~1.7 min (measured severe-onset mean 132.8s minus ~30s expected 1-min
+residual wait), p90 ~2.9 min (230s minus ~54s), theoretical max ~3.9 min (292s minus ~60s), of
+severe-onset DETECTION latency at ~1.17 severe onsets/day. Clears get an analogous but UNQUANTIFIED
+benefit: bounded above at < ~4 min (the fetch-interval cap), not a measured distribution (clears
+have no updated_at). Conditional on the 24h probe
+confirming sub-5-min gateway freshness during events (archive already implies yes via max
+severe-onset 292s < 300s). Only the alerts fetch + severity-graded condition + onset clock move to
+1 min; every tick-baselined param stays 5-min-gated until refit.
+(b) Re-key `condition_entered_at` on the FIRST-SEVERE version's `updated_at` (the updated_at of the
+version at which the id first reaches the severe tier), applied ONLY on a condition transition (the
+same restart predicate condition_entered_at already uses) — NOT the current version's updated_at:
+with 38 severe updates against 41 onsets (~one mid-regime revision per episode), stamping the
+current version each tick would restart the clock on every revision. The transition-only first-
+severe rule recovers the FULL onset timestamp error — severe-onset mean 132.8s / median 134s / p90
+230s / max 292s — with ZERO cadence change and ZERO R2 cost, fixing the recovery climatology's
+elapsed-time conditioning; it does not fix detection latency (field still appears at the gated
+tick).
+(c) R2 cost of the split is trivial (< $1/mo). WRITES: 5x on the three
+moved writes — liveness (~80B), alpha.json (11.7KB), v1/snapshot.json (603KB) — each 288->1440/day
+= +1152/day × 3 = ~+3456 class-A ops/day (≈ $0.47/mo @ CF $4.50/M) plus ~+680MB/day snapshot write
+bandwidth (free R2 ingress; overwrite, no storage growth). Alert-version objects are write-on-
+change so their count is roughly flat; the extra distinct versions a 1-min poll would catch cannot
+be quantified from the 5-min-deduped archive and is left unidentified. READS: the 1-min condition
+path reloads state/last_seen.json (61KB, dedup) + state/alpha.json (11.7KB, onset carry) each
+minute instead of each 5 min = +2 GET × (1440-288)/day = ~+2304 class-B GET/day (≈ $0.025/mo @ CF
+$0.36/M) and ~+84MB/day read bandwidth (free egress); it does NOT reload params.json (179KB)
+because the severity-graded condition is a pure alert read, not an HMM step. Net R2 delta ~+3456
+writes + ~+2304 reads per day, << $1/mo; the design constraint is the param-cadence hazard
+index.ts documents, not cost.

@@ -267,6 +267,35 @@ def test_fresh_cohort_keeps_an_alarm_that_actually_arrives() -> None:
     assert out["fresh"]["median_latency_min"] == 5.0
 
 
+def test_fresh_lookback_is_sized_on_the_graded_clock_not_the_truth_tick() -> None:
+    """On the 1-minute clock the clean lookback is 6 ticks = 6 min. Sizing it
+    with the 5-minute truth tick instead (30 min) silently shrinks the fresh
+    cohort on the faster clock: an alarm 10 min before onset is outside a 6-min
+    window and inside a 30-min one."""
+    clock = 60
+    onset = T0 + 20 * clock
+    calls = _calls(
+        {
+            T0 + i * clock: {
+                "A|south|A09S": "disrupted" if i == 10 or i >= 21 else "normal"
+            }
+            for i in range(40)
+        }
+    )
+    out = grade(
+        calls,
+        [Disruption("A", onset, onset + 10 * clock)],
+        [],
+        1,
+        bootstrap=50,
+        clock_seconds=clock,
+    )["calls"]["onset_latency"]
+    assert out["clean_lookback_min"] == 6
+    assert out["n_alarming_at_onset"] == 0
+    assert out["fresh"]["n_episodes"] == 1
+    assert out["fresh"]["median_latency_min"] == 1.0
+
+
 def test_published_surface_holds_a_verdict_the_classifier_stopped_making() -> None:
     """The reason both surfaces are scored. A cell the classifier abstains on
     keeps its last published state, so the snapshot can read disrupted long after

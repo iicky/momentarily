@@ -720,7 +720,7 @@
       "type": "object"
     },
     "Observation": {
-      "description": "Continuous / instantaneous measurement of an entity.\n\nPeer to Alert, and deliberately NOT an Inference: nothing here is fitted,\nbaselined or graded. The value means only what it says it measured.\n\nPopulated in v1 with observed subway headway, from the Worker's GTFS-RT\nvehicle-position decode (worker/src/headway.ts). Reserved for the sources\nstill unwired: travel-time (bridges/tunnels), ETAs, tolls, occupancy.",
+      "description": "Continuous / instantaneous measurement of an entity.\n\nPeer to Alert, and deliberately NOT an Inference: nothing here is fitted,\nbaselined or graded. The value means only what it says it measured.\n\nPopulated in v1 with observed subway headway, from the Worker's GTFS-RT\nvehicle-position decode (worker/src/headway.ts). Reserved for sources\nstill unwired: ETAs, travel-time, tolls, occupancy.",
       "properties": {
         "direction": {
           "anyOf": [

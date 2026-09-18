@@ -149,9 +149,6 @@ describe('segment_flow: per-segment status + recovery', () => {
     expect(seg.recovery!.recovery_minutes).toBeNull();
     expect(seg.recovery!.recovery_minutes_low).toBeNull();
     expect(seg.recovery!.recovery_minutes_high).toBeNull();
-    expect(seg.recovery!.p_normal_in_30min).toBeNull();
-    expect(seg.recovery!.p_normal_in_60min).toBeNull();
-    expect(seg.recovery!.p_normal_in_120min).toBeNull();
     checkSchema(snap);
 
     // The conditioning the block would carry is still exercised, at the

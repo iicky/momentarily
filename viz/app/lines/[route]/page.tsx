@@ -196,11 +196,11 @@ function routeMarkKind(condition: string): MarkKind {
 function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
   const r = snap.route_status[route];
   if (!r) return null;
-  const inf = r.inference;
+  const inf = r.recovery;
   const cls = conditionClass(r.condition);
   const supplyTone = gaugeTone(r);
   const recovery =
-    inf && inf.is_disrupted
+    inf && (r.condition === "disrupted" || r.condition === "suspended")
       ? inf.recovery_withheld != null
         ? NO_RECOVERY_ESTIMATE
         : inf.recovery_indeterminate

@@ -169,38 +169,6 @@
       "title": "Arrival",
       "type": "object"
     },
-    "Bridge": {
-      "description": "Infrastructure asset. Schema scaffold; populated when a data source is wired.",
-      "properties": {
-        "crossings": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/Crossing"
-          },
-          "title": "Crossings",
-          "type": "array"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "operator": {
-          "title": "Operator",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "operator"
-      ],
-      "title": "Bridge",
-      "type": "object"
-    },
     "Compat": {
       "description": "Legacy surfaces, derived from canonical types above.",
       "properties": {
@@ -353,25 +321,6 @@
         }
       },
       "title": "CompatServiceChangeSummary",
-      "type": "object"
-    },
-    "Crossing": {
-      "description": "One direction or segment of a bridge/tunnel crossing.",
-      "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name"
-      ],
-      "title": "Crossing",
       "type": "object"
     },
     "DirectionLabels": {
@@ -675,191 +624,6 @@
         }
       },
       "title": "Freshness",
-      "type": "object"
-    },
-    "Inference": {
-      "description": "HMM-derived state inference: the published forecast block for a route.\n\nPopulated live on every route the model has state for \u2014 not None, and no\nlonger shadow-only. What IS held back is the curve-fitted recovery\nestimate: the 2026-09-04 review (docs/review/2026-09-04-shadow-hmm/memo.md)\ngraded recovery_minutes wrong (causal skill -1.70 against a pre-window\nduration climatology, PIT 0.17, IQR coverage 0.03-0.06), so while\nrecovery_source names a fitted arm (\"movement\" or \"hmm\") the recovery\nnumbers and their horizons publish as null and recovery_withheld says why.\nA \"schedule\" row is a deterministic countdown to an announced resume time,\ncarries no fit, and publishes its numbers. The full numeric values still\nflow to the v1/predictions grading stream, which is what a future review\nwill graduate the estimate on.\n\nThis block is the alert-HMM SHADOW: as of the 2026-09-14 retirement the\npublished route_status.condition is the severity-graded ALERT read and is no\nlonger derived from this block. `condition`/`is_disrupted`/the probabilities\nhere are the HMM view kept for the grading stream and the forecast surfaces,\nnot the current state consumers are shown.",
-      "properties": {
-        "condition": {
-          "title": "Condition",
-          "type": "string"
-        },
-        "is_disrupted": {
-          "title": "Is Disrupted",
-          "type": "boolean"
-        },
-        "model_warming_up": {
-          "default": false,
-          "title": "Model Warming Up",
-          "type": "boolean"
-        },
-        "overdue": {
-          "default": false,
-          "title": "Overdue",
-          "type": "boolean"
-        },
-        "p_disrupted": {
-          "title": "P Disrupted",
-          "type": "number"
-        },
-        "p_normal": {
-          "title": "P Normal",
-          "type": "number"
-        },
-        "p_normal_in_120min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "P Normal In 120Min"
-        },
-        "p_normal_in_30min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "P Normal In 30Min"
-        },
-        "p_normal_in_60min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "P Normal In 60Min"
-        },
-        "p_suspended": {
-          "title": "P Suspended",
-          "type": "number"
-        },
-        "recovery_baseline_level": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Recovery Baseline Level"
-        },
-        "recovery_baseline_n": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Recovery Baseline N"
-        },
-        "recovery_indeterminate": {
-          "default": false,
-          "title": "Recovery Indeterminate",
-          "type": "boolean"
-        },
-        "recovery_minutes": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Recovery Minutes"
-        },
-        "recovery_minutes_high": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Recovery Minutes High"
-        },
-        "recovery_minutes_low": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Recovery Minutes Low"
-        },
-        "recovery_source": {
-          "default": "hmm",
-          "title": "Recovery Source",
-          "type": "string"
-        },
-        "recovery_withheld": {
-          "anyOf": [
-            {
-              "const": "pending_validation",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Recovery Withheld"
-        },
-        "regime_age_seconds": {
-          "title": "Regime Age Seconds",
-          "type": "integer"
-        },
-        "regime_entered_at": {
-          "title": "Regime Entered At",
-          "type": "integer"
-        },
-        "resumes_at": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Resumes At"
-        }
-      },
-      "required": [
-        "condition",
-        "recovery_minutes",
-        "is_disrupted",
-        "p_normal",
-        "p_disrupted",
-        "p_suspended",
-        "regime_entered_at",
-        "regime_age_seconds",
-        "recovery_minutes_low",
-        "recovery_minutes_high"
-      ],
-      "title": "Inference",
       "type": "object"
     },
     "InformedEntity": {
@@ -1314,6 +1078,115 @@
       "title": "Provenance",
       "type": "object"
     },
+    "Recovery": {
+      "description": "Published recovery block for a route. Contains only recovery-timing fields.\n\nThe shadow HMM regime fields (condition, is_disrupted, probabilities,\nregime_entered_at, model_warming_up, p_normal_in_*) were retired in the\n2026-09-18 cutover. This block mirrors worker/src/snapshot.ts PublicRecovery.",
+      "properties": {
+        "overdue": {
+          "default": false,
+          "title": "Overdue",
+          "type": "boolean"
+        },
+        "recovery_baseline_level": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Baseline Level"
+        },
+        "recovery_baseline_n": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Baseline N"
+        },
+        "recovery_indeterminate": {
+          "default": false,
+          "title": "Recovery Indeterminate",
+          "type": "boolean"
+        },
+        "recovery_minutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes"
+        },
+        "recovery_minutes_high": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes High"
+        },
+        "recovery_minutes_low": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Minutes Low"
+        },
+        "recovery_source": {
+          "default": "hmm",
+          "title": "Recovery Source",
+          "type": "string"
+        },
+        "recovery_withheld": {
+          "anyOf": [
+            {
+              "const": "pending_validation",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Withheld"
+        },
+        "resumes_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resumes At"
+        }
+      },
+      "required": [
+        "recovery_minutes",
+        "recovery_minutes_low",
+        "recovery_minutes_high"
+      ],
+      "title": "Recovery",
+      "type": "object"
+    },
     "Route": {
       "description": "Static-ish per-route metadata. From GTFS static + canonical lists.",
       "properties": {
@@ -1397,7 +1270,7 @@
       "type": "object"
     },
     "RouteStatus": {
-      "description": "Derived per-route view from alerts + route metadata + optional HMM inference.",
+      "description": "Derived per-route view from alerts + route metadata + optional recovery block.",
       "properties": {
         "alerts": {
           "default": [],
@@ -1448,17 +1321,6 @@
           "title": "Condition Source",
           "type": "string"
         },
-        "inference": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Inference"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
         "label": {
           "title": "Label",
           "type": "string"
@@ -1474,6 +1336,17 @@
           ],
           "default": null,
           "title": "Primary Alert Type"
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Recovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "route_id": {
           "title": "Route Id",
@@ -1583,39 +1456,6 @@
     "SegmentRecovery": {
       "description": "Expected recovery off a dwell curve conditioned on a regime clock \u2014 same\nfield names as Inference's recovery block, so a segment's recovery is\ndirectly comparable to a route's.\n\nEvery value here is curve-fitted; there is no schedule arm at segment\ngranularity. So the whole block is subject to the same validation gate as\nInference's recovery (see that docstring) and currently publishes as nulls\nplus recovery_withheld. A block of nulls still says something a null block\ndoes not: the segment HAS an estimate and it is not being published, where\n`recovery: null` means no trained curve and no started clock.",
       "properties": {
-        "p_normal_in_120min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "P Normal In 120Min"
-        },
-        "p_normal_in_30min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "P Normal In 30Min"
-        },
-        "p_normal_in_60min": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "P Normal In 60Min"
-        },
         "recovery_indeterminate": {
           "default": false,
           "title": "Recovery Indeterminate",
@@ -1671,10 +1511,7 @@
       "required": [
         "recovery_minutes",
         "recovery_minutes_low",
-        "recovery_minutes_high",
-        "p_normal_in_30min",
-        "p_normal_in_60min",
-        "p_normal_in_120min"
+        "recovery_minutes_high"
       ],
       "title": "SegmentRecovery",
       "type": "object"
@@ -1927,7 +1764,7 @@
       "type": "object"
     },
     "StationStatus": {
-      "description": "Derived per-station view from alerts + equipment + static + optional HMM inference.",
+      "description": "Derived per-station view from alerts + equipment + static metadata.",
       "properties": {
         "ada_status": {
           "default": "operational",
@@ -1979,17 +1816,6 @@
           "title": "Escalators Total",
           "type": "integer"
         },
-        "inference": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Inference"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
         "oldest_outage_since": {
           "anyOf": [
             {
@@ -2001,6 +1827,17 @@
           ],
           "default": null,
           "title": "Oldest Outage Since"
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Recovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "station_complex_id": {
           "title": "Station Complex Id",
@@ -2149,38 +1986,6 @@
       "title": "TranslatedText",
       "type": "object"
     },
-    "Tunnel": {
-      "description": "Infrastructure asset. Schema scaffold; populated when a data source is wired.",
-      "properties": {
-        "crossings": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/Crossing"
-          },
-          "title": "Crossings",
-          "type": "array"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "operator": {
-          "title": "Operator",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "operator"
-      ],
-      "title": "Tunnel",
-      "type": "object"
-    },
     "VehicleFeeds": {
       "description": "Per-line-group liveness of the trip-update feeds this tick.\n\n``expected`` is the full NYCT line-group count (constant, the 8 feed groups);\n``fresh`` how many of those round-tripped this tick; ``stale`` names the groups\nthat did not \u2014 empty on a clean tick, the whole set on a total outage.\nFreshness.vehicle_positions dates the last decode; this names which groups are\ndown right now, so a partial outage (one group rejecting every tick) is visible\nrather than hidden behind a still-fresh vehicle_positions stamp.",
       "properties": {
@@ -2232,14 +2037,6 @@
       "default": "Snapshot built from MTA GTFS-RT feeds via api.mta.info. Published by Momentarily (https://feed.momentarily.nyc). Not affiliated with the MTA.",
       "title": "Attribution",
       "type": "string"
-    },
-    "bridges": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/Bridge"
-      },
-      "title": "Bridges",
-      "type": "array"
     },
     "compat": {
       "$ref": "#/$defs/Compat"
@@ -2346,14 +2143,6 @@
     },
     "system": {
       "$ref": "#/$defs/SystemStatus"
-    },
-    "tunnels": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/Tunnel"
-      },
-      "title": "Tunnels",
-      "type": "array"
     }
   },
   "required": [

@@ -381,7 +381,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    expect(snap.route_status['1']!.inference!.condition).toBe('normal');
+    check(snap);
   });
 
   test('effectiveCondition: confident filter (max p >= 0.9) overrides stale label', () => {
@@ -410,7 +410,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
+    check(snap);
   });
 
   test('effectiveCondition: confident filter agreeing with label is a no-op', () => {
@@ -439,7 +439,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    expect(snap.route_status['1']!.inference!.condition).toBe('disrupted');
+    check(snap);
   });
 
   test('effectiveCondition: unknown label falls back to filter argmax', () => {
@@ -468,7 +468,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    expect(snap.route_status['1']!.inference!.condition).toBe('normal');
+    check(snap);
   });
 
   test('guardrail: confident disrupted filter with zero active alerts publishes normal', () => {
@@ -500,10 +500,8 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     // No alert to explain a disruption → the shadow HMM condition is gated
     // to normal and is_disrupted is false. The recovery estimate behind it
     // (a 0) is fitted-arm sourced, so the published block withholds it.
-    expect(snap.route_status['1']!.inference!.condition).toBe('normal');
-    expect(snap.route_status['1']!.inference!.is_disrupted).toBe(false);
-    expect(snap.route_status['1']!.inference!.recovery_minutes).toBeNull();
-    expect(snap.route_status['1']!.inference!.recovery_withheld).toBe(
+    expect(snap.route_status['1']!.recovery!.recovery_minutes).toBeNull();
+    expect(snap.route_status['1']!.recovery!.recovery_withheld).toBe(
       'pending_validation',
     );
   });
@@ -560,7 +558,7 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
       vehicleFreshFeeds: [],
       vehicleExpectedFeeds: [],
     });
-    const inf = snap.route_status['1']!.inference!;
+    const inf = snap.route_status['1']!.recovery!;
     // The alert arm still estimates recovery from the empirical cell, but it
     // publishes neither the estimate nor a forecast: the estimate is fitted and
     // ungraduated, and the recovery arm's internal gate reads 'unknown' with no
@@ -576,9 +574,6 @@ describe('Worker snapshot conforms to the Pydantic-generated schema', () => {
     expect(inf.recovery_minutes_low).toBeNull();
     expect(inf.recovery_minutes_high).toBeNull();
     expect(inf.recovery_withheld).toBe('pending_validation');
-    expect(inf.p_normal_in_30min).toBeNull();
-    expect(inf.p_normal_in_60min).toBeNull();
-    expect(inf.p_normal_in_120min).toBeNull();
     // An unreadable route has nothing to recover from, so the estimate behind
     // the withholding was not clamped to the indeterminate ceiling either.
     expect(inf.recovery_indeterminate).toBe(false);

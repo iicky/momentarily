@@ -103,7 +103,7 @@ export interface PredictionRecord {
 /**
  * The grading row for every route the model inferred this tick.
  *
- * Takes the FULL inference objects, not `snapshot.route_status[].inference`:
+ * Takes the FULL inference objects, not `snapshot.route_status[].recovery`:
  * the published block withholds curve-fitted recovery (snapshot.ts
  * PUBLISH_FITTED_RECOVERY) and the review that graduates the estimate is
  * exactly what needs the numbers. The snapshot still supplies the published
@@ -112,8 +112,8 @@ export interface PredictionRecord {
  * cannot drift.
  *
  * A route contributes no row when it has no inference (no filter state) or
- * when its PUBLISHED inference was scrubbed: publishSnapshot nulls
- * route_status[].inference on any route carrying a non-finite number
+ * when its PUBLISHED recovery was scrubbed: publishSnapshot nulls
+ * route_status[].recovery on any route carrying a non-finite number
  * (scrubCorruptInferences) and runs before this, so a scrubbed route is one
  * whose posterior is corrupt. Grading it would archive exactly the numbers the
  * publish path just refused to serve.
@@ -127,7 +127,7 @@ export function buildPredictionRows(args: {
       condition_source: string;
       primary_alert_type: string | null;
       // Presence only: null means scrubbed (or never inferred), so skip.
-      inference: unknown;
+      recovery: unknown;
     }
   >;
   inferences: Map<string, Inference>;
@@ -140,7 +140,7 @@ export function buildPredictionRows(args: {
   const rows: PredictionRecord[] = [];
   for (const [routeId, rs] of Object.entries(args.routeStatuses)) {
     const inf = args.inferences.get(routeId);
-    if (!inf || rs.inference == null) continue;
+    if (!inf || rs.recovery == null) continue;
     const mv = args.movementCounts.get(routeId);
     rows.push({
       ts: args.ts,

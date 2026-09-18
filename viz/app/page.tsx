@@ -12,11 +12,9 @@ import {
   routeLabel,
   alertHeadline,
   fmtAgo,
-  fmtMinutes,
   fmtRecovery,
   NO_RECOVERY_ESTIMATE,
   heldFor,
-  fmtProb,
   supplyBand,
   supplyBars,
   SUPPLY_DEGRADE_RATIO,
@@ -28,7 +26,7 @@ import {
   gaugeTone,
 } from "@/lib/feed";
 import type { SupplyBand } from "@/lib/feed";
-import type { Snapshot, RouteStatus, Inference, DirectionAlerts } from "@/lib/types";
+import type { Snapshot, RouteStatus, Recovery, DirectionAlerts } from "@/lib/types";
 import { Gauge } from "./Gauge";
 import { bulletTextColor } from "./ui";
 import { routeMovementByDirection } from "@/lib/segments";
@@ -469,7 +467,7 @@ function RouteCard({
   selected: boolean;
   onClick: () => void;
 }) {
-  const inf = r.inference;
+  const inf = r.recovery;
   const band = supplyBand(r);
   const runningHigh = isRunningHigh(r);
   return (
@@ -500,25 +498,13 @@ function RouteCard({
         <span className={`cond ${conditionClass(r.condition)}`}>{conditionLabel(r.condition)}</span>
       </div>
 
-      {inf && (
-        <div
-          className="pbar"
-          title={`normal ${fmtProb(inf.p_normal)} · disrupted ${fmtProb(
-            inf.p_disrupted
-          )} · suspended ${fmtProb(inf.p_suspended)}`}
-        >
-          <span className="pn" style={{ width: `${inf.p_normal * 100}%` }} />
-          <span className="pd" style={{ width: `${inf.p_disrupted * 100}%` }} />
-          <span className="ps" style={{ width: `${inf.p_suspended * 100}%` }} />
-        </div>
-      )}
 
       <div className="meta">
         <span className="meta-label">
           {r.primary_alert_type ?? (r.alerts.length ? "alert" : "good service")}
         </span>
         <span className="meta-right">
-          {inf && inf.is_disrupted && (
+          {inf && (r.condition === "disrupted" || r.condition === "suspended") && (
             <span className="meta-eta">
               {inf.recovery_withheld != null
                 ? NO_RECOVERY_ESTIMATE
@@ -541,19 +527,13 @@ function RouteCard({
   );
 }
 
-// The recovery numbers mean four different things depending on which arm set the
-// published condition, and one heading asked the wrong question for three of
-// them:
-//   - published normal: movementRecovery's normal branch returns 0/0/0 for the
-//     median/IQR and p_normal_in_30 is P(STAYS normal). "Median —" beside
-//     "P(normal in 30m) 93%" read as a broken forecast; it's a hold-time.
-//   - published unknown: we declined to judge the condition, so the worker
-//     withholds every number. Dashes read as failure, not as abstention.
-//   - schedule arm: a deterministic countdown to the MTA's announced window
-//     end, so median == q25 == q75 by construction. Printing it as an IQR
-//     implied a distribution that doesn't exist.
-//   - otherwise: a real time-to-normal estimate off the dwell curve.
-function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
+// Recovery numbers depend on which arm produced the estimate:
+//   - unknown: nothing to show, worker withholds all numbers.
+//   - not_scheduled / schedule arm: deterministic countdown.
+//   - withheld: fitted curve not yet graduated, no estimate published.
+//   - indeterminate: disruption outlived forecast horizon.
+//   - otherwise: median + IQR off the dwell curve.
+function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Recovery }) {
   if (r.condition === "unknown") {
     return (
       <>
@@ -566,29 +546,8 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
       </>
     );
   }
-
   if (r.condition === "normal") {
-    return (
-      <>
-        <div className="section-title">Stability outlook</div>
-        <div className="section-note">
-          Nothing to recover from. This is the chance the line keeps moving
-          normally.
-        </div>
-        {inf.p_normal_in_30min == null ? (
-          <div className="section-note">
-            No reading yet for how long this line normally holds up.
-          </div>
-        ) : (
-          <div className="kv">
-            <span className="k" title="P(stays normal in 30m)">
-              chance it keeps running normally for 30 min
-            </span>
-            <span className="v">{fmtProb(inf.p_normal_in_30min)}</span>
-          </div>
-        )}
-      </>
-    );
+    return null;
   }
 
   // The schedule arm answers "when does the announced window end" — for planned
@@ -671,45 +630,6 @@ function RecoveryBlock({ r, inf }: { r: RouteStatus; inf: Inference }) {
           {fmtRecovery(inf.recovery_minutes_low)} –{" "}
           {fmtRecovery(inf.recovery_minutes_high)}
         </span>
-        <span className="k" title="P(normal in 30m)">
-          chance it is back to normal within 30 min
-        </span>
-        {inf.p_normal_in_30min == null ? (
-          <span
-            className="v muted"
-            title="Not shown. This number came from a different part of the model than the status above, so the two are not on the same scale."
-          >
-            not forecast
-          </span>
-        ) : (
-          <span className="v">{fmtProb(inf.p_normal_in_30min)}</span>
-        )}
-        <span className="k" title="P(normal in 60m)">
-          chance it is back to normal within 60 min
-        </span>
-        {inf.p_normal_in_60min == null ? (
-          <span
-            className="v muted"
-            title="Not shown. This far out the model scored worse than simply assuming nothing changes."
-          >
-            not forecast
-          </span>
-        ) : (
-          <span className="v">{fmtProb(inf.p_normal_in_60min)}</span>
-        )}
-        <span className="k" title="P(normal in 120m)">
-          chance it is back to normal within 2 hr
-        </span>
-        {inf.p_normal_in_120min == null ? (
-          <span
-            className="v muted"
-            title="Not shown. This far out the model scored worse than simply assuming nothing changes."
-          >
-            not forecast
-          </span>
-        ) : (
-          <span className="v">{fmtProb(inf.p_normal_in_120min)}</span>
-        )}
       </div>
     </>
   );
@@ -736,7 +656,7 @@ function RouteDrawer({
   r: RouteStatus;
   onClose: () => void;
 }) {
-  const inf = r.inference;
+  const inf = r.recovery;
   // Escape closes the drawer, the standard dismissal for an overlay panel. Bound
   // on the document so it fires no matter where focus sits after opening.
   useEffect(() => {
@@ -809,11 +729,7 @@ function RouteDrawer({
         );
       })()}
 
-      {/* The badge's own clock: how long THIS published state has held, from the
-          movement regime's entered_at. Published (non-null) only when the badge
-          is movement-sourced; a schedule/unknown/hmm badge has no honest start,
-          so it gets no row rather than borrowing the model's regime age below —
-          that one times the HMM argmax and flips independently of the badge. */}
+      {/* The badge's own clock: how long THIS published state has held. */}
       {r.condition_entered_at != null && (
         <div className="held-for">
           {conditionLabel(r.condition)} for{" "}
@@ -879,55 +795,14 @@ function RouteDrawer({
         </div>
       )}
 
-      {inf &&
-        r.primary_alert_type === "No Scheduled Service" && (
-          <div className="note">
-            “No Scheduled Service” means this line does not run at this hour.
-            Nothing is broken.
-          </div>
-        )}
-
-      {inf && (
-        <>
-          <div className="section-title">Predicted status</div>
-          <div className="section-note">
-            What the model infers is happening right now. It weighs alerts
-            together with how the trains are actually moving, so it can differ
-            from the status shown above. How many trains are running is a
-            separate reading, not something this prediction folds in.
-          </div>
-          <div
-            className="pbar"
-            style={{ height: 10 }}
-            title="normal / disrupted / suspended"
-          >
-            <span className="pn" style={{ width: `${inf.p_normal * 100}%` }} />
-            <span className="pd" style={{ width: `${inf.p_disrupted * 100}%` }} />
-            <span className="ps" style={{ width: `${inf.p_suspended * 100}%` }} />
-          </div>
-          <div className="kv">
-            <span className="k" title="P(normal)">chance normal now</span>
-            <span className="v">{fmtProb(inf.p_normal)}</span>
-            <span className="k" title="P(disrupted)">chance disrupted now</span>
-            <span className="v">{fmtProb(inf.p_disrupted)}</span>
-            <span className="k" title="P(suspended)">chance suspended now</span>
-            <span className="v">{fmtProb(inf.p_suspended)}</span>
-            {/* This clock belongs to the model above: it restarts whenever the
-                model's top state changes, which is often. The badge runs on the
-                movement arm's own clock, so the label has to say whose age this
-                is — swapping in the movement clock would leave this section
-                timing a regime it does not show. */}
-            <span className="k" title="Model regime age">
-              how long this reading has held
-            </span>
-            <span className="v">
-              {fmtMinutes(inf.regime_age_seconds / 60)}
-            </span>
-          </div>
-
-          <RecoveryBlock r={r} inf={inf} />
-        </>
+      {inf && r.primary_alert_type === "No Scheduled Service" && (
+        <div className="note">
+          "No Scheduled Service" means this line does not run at this hour.
+          Nothing is broken.
+        </div>
       )}
+
+      {inf && <RecoveryBlock r={r} inf={inf} />}
 
       {r.alerts.length > 0 && (
         <>

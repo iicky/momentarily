@@ -248,15 +248,12 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
     const snap = build(snaps, { Z: roll('normal', NOW - 3600) });
     const rs = snap.route_status['Z']!;
     expect(rs.condition).toBe('not_scheduled');
-    const inf = rs.inference!;
-    expect(inf.condition).toBe('not_scheduled');
+    const inf = rs.recovery!;
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.resumes_at).toBe(NOW + 1800);
     expect(inf.recovery_minutes).toBe(30);
     expect(inf.overdue).toBe(false);
-    expect(inf.is_disrupted).toBe(false);
     expect(inf.recovery_indeterminate).toBe(false);
-    expect(inf.p_normal_in_60min).toBe(1); // resume within 60 min
     // Excluded from disruption rollups.
     expect(snap.system.lines_disrupted_count).toBe(0);
     expect(snap.system.by_mode.subway!.severity_max).toBe(0);
@@ -284,16 +281,9 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
       ],
     ]);
     const snap = build(snaps, { A: roll('disrupted', NOW - 7200) });
-    const inf = snap.route_status['A']!.inference!;
-    // The filter posterior is confidently `disrupted`, but the
-    // disruptiveAlertCount === 0 guardrail forces the shadow HMM condition —
-    // and everything derived from it — back to normal. Planned work never
-    // drives the shadow toward disrupted/suspended.
-    expect(inf.condition).toBe('normal');
-    expect(inf.is_disrupted).toBe(false);
     // The published condition is the severity-graded alert read: a planned-only
     // route has no non-planned alert, so it grades 'normal' off the feed
-    // (source 'alerts'), while the shadow HMM condition above is also normal.
+    // (source 'alerts').
     expect(snap.route_status['A']!.condition).toBe('normal');
     expect(snap.route_status['A']!.condition_source).toBe('alerts');
     expect(snap.system.lines_disrupted_count).toBe(0);
@@ -326,12 +316,9 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
       ],
     ]);
     const snap = build(snaps, { N: roll('disrupted', NOW - 3600) });
-    const inf = snap.route_status['N']!.inference!;
-    expect(inf.condition).toBe('disrupted');
+    const inf = snap.route_status['N']!.recovery!;
     expect(inf.recovery_source).toBe('hmm');
     expect(inf.resumes_at).toBeNull();
-    // A live real-time disruption counts, even with planned work also active.
-    expect(inf.is_disrupted).toBe(true);
     // Ordinary real-time Delays is tier 1 — below the canonical severe-only
     // floor — so the published condition grades 'normal' (source 'alerts') even
     // as the shadow HMM condition above reads disrupted. That divergence is the
@@ -354,8 +341,7 @@ describe('snapshot: not_scheduled condition + schedule recovery', () => {
         }),
       ],
     ]);
-    const inf = build(snaps, { Z: roll('normal', NOW - 7200) }).route_status['Z']!.inference!;
-    expect(inf.condition).toBe('not_scheduled');
+    const inf = build(snaps, { Z: roll('normal', NOW - 7200) }).route_status['Z']!.recovery!;
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.overdue).toBe(true);
     expect(inf.recovery_minutes).toBe(0);

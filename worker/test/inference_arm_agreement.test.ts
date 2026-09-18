@@ -1,5 +1,5 @@
 /**
- * Cross-arm composition of the published `inference` block.
+ * Cross-arm composition of the published `recovery` block (PublicRecovery).
  *
  * `is_disrupted` is the ALERT arm's read (snapshot.ts's resolveCondition);
  * `recovery_minutes`/`_low`/`_high`/`recovery_indeterminate` come from
@@ -14,6 +14,13 @@
  * rows from the same live snapshot that were already correct — H (no movement
  * read, alert-arm estimate) and Z (not_scheduled, ceiling convention) — did
  * not move.
+ *
+ * `is_disrupted`, `condition`, and `p_disrupted` are shadow fields that live
+ * only on the internal `Inference` (read via `snap.full`, unchanged by this
+ * fix); PublicRecovery carries none of them, so this file asserts shadow
+ * fields on the full object and asserts only the recovery-contract fields —
+ * `recovery_minutes`/`_low`/`_high`/`recovery_indeterminate`/
+ * `recovery_source`/`resumes_at`/`overdue` — on the public `recovery` block.
  *
  * These guards live in buildInference, whose full-fidelity output is what the
  * grading stream archives, so the estimates are asserted on `snap.full` (the
@@ -157,11 +164,11 @@ function disagreeingArms(routeId: string) {
   });
 }
 
-describe('inference: arms that disagree must not compose into a confident zero', () => {
+describe('recovery: arm agreement — arms that disagree must not compose into a confident zero', () => {
   test('alert arm disrupted + movement arm normal withholds the recovery number (the J row)', () => {
     const snap = disagreeingArms('J');
     const status = snap.route_status.J!;
-    const inf = status.inference!;
+    const inf = status.recovery!;
 
     // Preconditions: the published condition is the alert-graded read — an
     // ordinary Delays alert is sub-floor, so it grades 'normal' (source
@@ -169,9 +176,6 @@ describe('inference: arms that disagree must not compose into a confident zero',
     // recovery arm keys off the movement regime internally.
     expect(status.condition).toBe('normal');
     expect(status.condition_source).toBe('alerts');
-    expect(inf.condition).toBe('disrupted');
-    expect(inf.is_disrupted).toBe(true);
-    expect(inf.p_disrupted).toBeGreaterThan(0.999);
     expect(inf.recovery_source).toBe('movement');
 
     // The defect: a determinate, confident zero on an object that calls itself
@@ -188,10 +192,9 @@ describe('inference: arms that disagree must not compose into a confident zero',
     // "still normal in 30 min" is a correct and well-measured claim, and the
     // arm-agreement guard deliberately does not withhold it. The publish gate
     // does, because it came off the same fitted curve: it survives in the
-    // graded object and is null on the wire.
+    // graded object and is absent from the public recovery block entirely.
     expect(graded.p_normal_in_30min).not.toBeNull();
     expect(graded.p_normal_in_30min!).toBeGreaterThan(0.9);
-    expect(inf.p_normal_in_30min).toBeNull();
   });
 
   test('schedule arm clamped to an overdue zero withholds too (the arm-enumeration hole)', () => {
@@ -229,10 +232,9 @@ describe('inference: arms that disagree must not compose into a confident zero',
       movement: { state: 'disrupted', entered_at: NOW - 40 * MIN },
     });
     const status = snap.route_status.M!;
-    const inf = status.inference!;
+    const inf = status.recovery!;
 
     // Preconditions: the schedule arm was selected and it went overdue.
-    expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.overdue).toBe(true);
     expect(inf.resumes_at).toBe(NOW);
@@ -281,11 +283,10 @@ describe('inference: arms that disagree must not compose into a confident zero',
       ],
       movement: { state: 'disrupted', entered_at: NOW - 40 * MIN },
     });
-    const inf = snap.route_status.M!.inference!;
+    const inf = snap.route_status.M!.recovery!;
 
     // Strictly inside the window, so this reaches the schedule arm under either
     // end-boundary convention — and it is NOT the overdue clamp.
-    expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.resumes_at).toBe(NOW + 20);
     expect(inf.overdue).toBe(false);
@@ -324,7 +325,7 @@ describe('inference: arms that disagree must not compose into a confident zero',
         ],
         movement: { state: 'disrupted', entered_at: NOW - 40 * MIN },
       });
-      const inf = snap.route_status.M!.inference!;
+      const inf = snap.route_status.M!.recovery!;
       expect(inf.recovery_source).toBe('schedule');
       expect(inf.overdue).toBe(false);
       expect(inf.recovery_indeterminate).toBe(false);
@@ -358,8 +359,7 @@ describe('inference: arms that disagree must not compose into a confident zero',
       ],
       movement: { state: 'disrupted', entered_at: NOW - 40 * MIN },
     });
-    const inf = snap.route_status.M!.inference!;
-    expect(inf.is_disrupted).toBe(true);
+    const inf = snap.route_status.M!.recovery!;
     expect(inf.recovery_source).toBe('schedule');
     expect(inf.overdue).toBe(false);
     expect(inf.recovery_indeterminate).toBe(false);
@@ -380,11 +380,10 @@ describe('inference: arms that disagree must not compose into a confident zero',
       ],
       movement: { state: 'disrupted', entered_at: NOW - 30 * MIN },
     });
-    const inf = snap.route_status.J!.inference!;
+    const inf = snap.route_status.J!.recovery!;
     // Published is alert-graded — ordinary Delays is sub-floor → 'normal'; the
     // recovery arm sees the movement 'disrupted' regime internally.
     expect(snap.route_status.J!.condition).toBe('normal');
-    expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('movement');
     // A real movement-curve estimate, not the withheld ceiling — read off the
     // graded object, since the fitted arm publishes no number.
@@ -402,9 +401,8 @@ describe('inference: arms that disagree must not compose into a confident zero',
       roll: roll('normal'),
       movement: { state: 'normal', entered_at: NOW - HOUR },
     });
-    const inf = snap.route_status.J!.inference!;
+    const inf = snap.route_status.J!.recovery!;
     expect(snap.route_status.J!.condition).toBe('normal');
-    expect(inf.is_disrupted).toBe(false);
     expect(inf.recovery_source).toBe('movement');
     // Nothing to recover from, and nothing claiming otherwise: 0 is honest.
     const graded = snap.full.get('J')!;
@@ -433,18 +431,13 @@ describe('inference: arms that disagree must not compose into a confident zero',
       movement: null,
     });
     const status = snap.route_status.H!;
-    const inf = status.inference!;
+    const inf = status.recovery!;
     expect(status.condition).toBe('normal');
-    expect(inf.condition).toBe('disrupted');
-    expect(inf.is_disrupted).toBe(true);
     expect(inf.recovery_source).toBe('hmm');
     const graded = snap.full.get('H')!;
     expect(graded.recovery_indeterminate).toBe(false);
     expect(graded.recovery_minutes).toBeGreaterThan(0);
     expect(graded.recovery_minutes).toBeLessThan(MAX_RECOVERY_MINUTES);
-    // Still the alert arm forecasting its own regime, so the probability is
-    // withheld exactly as before.
-    expect(inf.p_normal_in_30min).toBeNull();
   });
 
   test('Z-style row (not_scheduled with no announced resume) keeps the 1440 ceiling', () => {
@@ -467,10 +460,8 @@ describe('inference: arms that disagree must not compose into a confident zero',
       movement: { state: 'normal', entered_at: NOW - HOUR },
     });
     const status = snap.route_status.Z!;
-    const inf = status.inference!;
+    const inf = status.recovery!;
     expect(status.condition).toBe('not_scheduled');
-    expect(inf.condition).toBe('not_scheduled');
-    expect(inf.is_disrupted).toBe(false);
     expect(inf.resumes_at).toBeNull();
     const graded = snap.full.get('Z')!;
     expect(graded.recovery_indeterminate).toBe(true);

@@ -1,57 +1,30 @@
 // Mirrors the Worker's published contracts so the parser stays honest.
-// Sources: worker/src/snapshot.ts (Snapshot, RouteStatusOut, Inference, SystemStatus),
+// Sources: worker/src/snapshot.ts (Snapshot, RouteStatusOut, PublicRecovery, SystemStatus),
 //          worker/src/grading.ts (PredictionRecord, TransitionRecord).
 // Keep field names in lockstep with those files.
 
 export type Condition = "normal" | "disrupted" | "suspended" | "unknown";
 
-export interface Inference {
-  condition: string;
+export interface Recovery {
   // Null means NO ESTIMATE IS PUBLISHED (see recovery_withheld below), not
   // zero minutes. Render the null case, never coerce it to a number.
   recovery_minutes: number | null;
-  is_disrupted: boolean;
-  p_normal: number;
-  p_disrupted: number;
-  p_suspended: number;
-  regime_entered_at: number;
-  regime_age_seconds: number;
   recovery_minutes_low: number | null;
   recovery_minutes_high: number | null;
-  // Dwell estimate saturated the ceiling — recovery bounds are clamped/
-  // meaningless. Only meaningful when recovery_minutes is non-null.
+  // Dwell estimate saturated the ceiling or outlived its population.
   recovery_indeterminate: boolean;
-  p_normal_in_30min: number | null;
-  // All three horizons are withheld (null) rather than publish a number
-  // known to be wrong, for different reasons per horizon:
-  // 60/120min: model-derived forecasts scored worse than naive persistence
-  // (AUC 0.395 / 0.352, BSS as low as -1.30 — see journal.md § "2026-08-11 —
-  // forecast horizon inversion: projection defect, not left-censoring
-  // (trustworthy-clock subset still inverted, AUC 0.352 at 120min)").
-  // 30min: withheld whenever the forecast arm isn't the arm that produced
-  // `condition` above. Graded against the published condition,
-  // movement-sourced forecasts score AUC 0.856, hmm-sourced score AUC
-  // 0.261, and mixing the two scores AUC 0.084 — worse than either, because
-  // the two arms' probabilities aren't on the same scale.
-  p_normal_in_60min: number | null;
-  p_normal_in_120min: number | null;
-  model_warming_up: boolean;
-  // Which arm produced the recovery numbers. "movement" and "schedule" forecast
-  // the PUBLISHED condition; "hmm" is the alert filter's own regime, which is
-  // exactly when every horizon above is withheld — so this is also how a reader
-  // (and the drawer) tells a bounded-out forecast from a withheld one.
-  recovery_source: "hmm" | "schedule" | "movement";
+  // Which arm produced the recovery numbers.
+  recovery_source: "hmm" | "schedule" | "movement" | "climatology";
+  // Support and pooling level for a "climatology" row; both null otherwise.
+  recovery_baseline_n: number | null;
+  recovery_baseline_level: string | null;
   // Announced end of a planned-work window, set only by the schedule arm.
   resumes_at: number | null;
   // now has passed resumes_at but the alert is still up.
   overdue: boolean;
   // "pending_validation" exactly when this row's recovery numbers came off a
-  // fitted dwell curve and were withheld: the 2026-09-04 review graded them
-  // wrong (causal skill -1.70, IQR coverage 0.03-0.06), so the Worker
-  // publishes no estimate until a fitted arm clears the validation gate.
-  // recovery_source still names the arm that was withheld.
-  // Absent when the Worker publishes fitted recovery again (the gate flips and
-  // the marker is dropped from the document), so test for null loosely.
+  // fitted dwell curve and were withheld pending graduation.
+  // Absent when the Worker publishes fitted recovery again.
   recovery_withheld?: "pending_validation" | null;
 }
 
@@ -97,7 +70,7 @@ export interface RouteStatus {
     northbound: DirectionAlerts;
     southbound: DirectionAlerts;
   };
-  inference: Inference | null;
+  recovery: Recovery | null;
 }
 
 export interface Freshness {
@@ -175,9 +148,6 @@ export interface SegmentRecovery {
   recovery_minutes_low: number | null;
   recovery_minutes_high: number | null;
   recovery_indeterminate: boolean;
-  p_normal_in_30min: number | null;
-  p_normal_in_60min: number | null;
-  p_normal_in_120min: number | null;
   // Absent when the Worker publishes fitted recovery again (the gate flips and
   // the marker is dropped from the document), so test for null loosely.
   recovery_withheld?: "pending_validation" | null;

@@ -205,8 +205,6 @@ describe('projectInference passes climatology through and still withholds fitted
     expect(pub.recovery_baseline_n).toBe(10);
     expect(pub.recovery_baseline_level).toBe('route');
     expect(pub.recovery_withheld).toBeNull();
-    // p_normal_in_30min is nulled on every public row.
-    expect(pub.p_normal_in_30min).toBeNull();
   });
 
   test('an outlived climatology row publishes null minutes, unwithheld, indeterminate', () => {
@@ -252,6 +250,5 @@ describe('projectInference passes climatology through and still withholds fitted
     expect(pub.recovery_minutes).toBe(20);
     expect(pub.recovery_withheld).toBeNull();
     expect(pub.recovery_baseline_n).toBeNull();
-    expect(pub.p_normal_in_30min).toBeNull();
   });
 });

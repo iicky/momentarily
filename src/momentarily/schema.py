@@ -118,8 +118,8 @@ class Observation(BaseModel):
     baselined or graded. The value means only what it says it measured.
 
     Populated in v1 with observed subway headway, from the Worker's GTFS-RT
-    vehicle-position decode (worker/src/headway.ts). Reserved for the sources
-    still unwired: travel-time (bridges/tunnels), ETAs, tolls, occupancy.
+    vehicle-position decode (worker/src/headway.ts). Reserved for sources
+    still unwired: ETAs, travel-time, tolls, occupancy.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -203,139 +203,43 @@ class DirectionStatus(BaseModel):
     primary_alert_type: str | None = None
 
 
-class Inference(BaseModel):
-    """HMM-derived state inference: the published forecast block for a route.
+class Recovery(BaseModel):
+    """Published recovery block for a route. Contains only recovery-timing fields.
 
-    Populated live on every route the model has state for — not None, and no
-    longer shadow-only. What IS held back is the curve-fitted recovery
-    estimate: the 2026-09-04 review (docs/review/2026-09-04-shadow-hmm/memo.md)
-    graded recovery_minutes wrong (causal skill -1.70 against a pre-window
-    duration climatology, PIT 0.17, IQR coverage 0.03-0.06), so while
-    recovery_source names a fitted arm ("movement" or "hmm") the recovery
-    numbers and their horizons publish as null and recovery_withheld says why.
-    A "schedule" row is a deterministic countdown to an announced resume time,
-    carries no fit, and publishes its numbers. The full numeric values still
-    flow to the v1/predictions grading stream, which is what a future review
-    will graduate the estimate on.
-
-    This block is the alert-HMM SHADOW: as of the 2026-09-14 retirement the
-    published route_status.condition is the severity-graded ALERT read and is no
-    longer derived from this block. `condition`/`is_disrupted`/the probabilities
-    here are the HMM view kept for the grading stream and the forecast surfaces,
-    not the current state consumers are shown.
+    The shadow HMM regime fields (condition, is_disrupted, probabilities,
+    regime_entered_at, model_warming_up, p_normal_in_*) were retired in the
+    2026-09-18 cutover. This block mirrors worker/src/snapshot.ts PublicRecovery.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    # Primary user-facing fields (graduate to sensor entities at Phase 4)
-    #   "normal" | "disrupted" | "suspended" | "not_scheduled"
-    # not_scheduled is a planned non-disruption (off-timetable, e.g. rush-only
-    # lines off-hours); open for future regimes.
-    condition: str
-    # Null means NO ESTIMATE IS PUBLISHED — not zero minutes, and not a ceiling
-    # standing in for "unknown". See the class docstring and recovery_withheld.
+    # Null means NO ESTIMATE IS PUBLISHED — not zero minutes.
     recovery_minutes: int | None
-    is_disrupted: bool
-
-    # Probability vector (attribute-depth)
-    p_normal: float
-    p_disrupted: float
-    p_suspended: float
-
-    # Changepoint info
-    regime_entered_at: int
-    regime_age_seconds: int
-
-    # Recovery posterior bounds (attribute-depth)
     recovery_minutes_low: int | None  # 25th percentile
     recovery_minutes_high: int | None  # 75th percentile
 
-    # True whenever recovery_minutes is NOT a prediction, in which case it and
-    # its bounds all carry the ceiling. Three producers: the dwell estimate
-    # saturated its ceiling or outlived every observed dwell (the regime is so
-    # persistent — self-loop ≈ 1, typical of open-ended planned work — that the
-    # model can't bound when it ends); no arm describing the published condition
-    # could answer a live recovery question; or the arm that produced the
-    # recovery block disagrees with is_disrupted about whether there is a
-    # disruption at all.
-    #
-    # Meaningful when recovery_minutes is non-null (it qualifies the number), AND
-    # in exactly one null case: a "climatology" row whose disruption has OUTLIVED
-    # its population — fewer than the cell's min_samples durations run past the
-    # elapsed time — publishes recovery_minutes null with recovery_indeterminate
-    # true, the honest "it has already lasted longer than almost anything we've
-    # seen" rather than an extrapolated tail. A withheld fitted block (null with
-    # recovery_withheld set) has no number and is not indeterminate.
+    # True whenever recovery_minutes is NOT a prediction (ceiling-clamped or
+    # outlived). See worker/src/snapshot.ts PublicRecovery for the three
+    # producers.
     recovery_indeterminate: bool = False
 
-    # Forward predictions.
-    #
-    # p_normal_in_30min is populated only when the forecast came from the same
-    # arm (movement vs. alert-HMM) that produced `condition` above. Graded
-    # against the condition actually published 30 minutes later (25,238
-    # samples over 6 days), movement-sourced rows score AUC 0.856 and
-    # hmm-sourced rows score AUC 0.261 — the two arms put probability on
-    # different scales, so mixing them scores AUC 0.084, worse than either arm
-    # alone, because the combined ranking then tracks which arm answered
-    # rather than the risk. Null whenever the sourcing arm doesn't match.
-    p_normal_in_30min: float | None = None
-    # The 60- and 120-minute horizons lose to naive persistence in every cut
-    # (BSS -0.00 to -1.30, AUC 0.395 and 0.352 — i.e. inverted, worse than a
-    # coin flip), the loss is not a left-censoring artifact, and the horizon
-    # projection itself was verified monotone, so the defect is the shape of
-    # the fitted elapsed-conditional dwell curve. That needs a model-form
-    # change and will not improve with more runtime, so rather than publish a
-    # number we have measured to be anti-informative, the two longer horizons
-    # are withheld: null whenever the value would come from a fitted curve.
-    #
-    # They stay populated when recovery_source == "schedule", where the answer
-    # is a deterministic comparison against an announced resume time rather than
-    # a forecast, and so carries none of the above defect.
-    p_normal_in_60min: float | None = None
-    p_normal_in_120min: float | None = None
-
-    # Cold-start flag — true when the model is still warming up for this entity
-    model_warming_up: bool = False
-
-    # Where recovery_minutes comes from: "schedule" is a deterministic lookup of
-    # the planned-work resume time (no model uncertainty); "movement" is the
-    # movement-clock dwell curve; "hmm" is the alert-regime dwell estimate, the
-    # fitted fallback. "climatology" is the empirical recovery-duration
-    # climatology conditioned on elapsed time (state/recovery_baseline.json) —
-    # the causal duration distribution itself, NOT a fitted curve, so it is
-    # served on a disrupted route in place of the withheld fitted arms and is the
-    # yardstick fitted curves must beat. Graders exclude "schedule" rows from HMM
-    # calibration; a "climatology" row carries recovery_baseline_n / _level below.
-    # Deliberately an OPEN str, not a Literal (see the recovery_withheld contrast
-    # below): a new recovery arm is additive on this path-versioned contract, the
-    # same way condition_source gains new sources. "climatology" is the newest.
+    # Where recovery_minutes comes from.
     recovery_source: str = "hmm"  # "hmm" | "schedule" | "movement" | "climatology"
-    # For a "climatology" row only: the sample count (n) and pooling level
-    # ("route" | "alert_type" | "system") of the cell the estimate was read from,
-    # so a consumer sees how thin it is. None on every other row — the fitted and
-    # schedule arms key no climatology cell. The cell is keyed (route, alert_type)
-    # at the disruption's ONSET on BOTH sides: the trainer keys each episode by
-    # its onset primary_alert_type, and the Worker serves on the primary captured
-    # when the condition clock began (condition_entered_at), NOT the current
-    # tick's primary_alert_type (which drifts as alert types change mid-incident).
+    # For a "climatology" row only: the sample count (n) and pooling level.
     recovery_baseline_n: int | None = None
     recovery_baseline_level: str | None = None
-    # Announced resume time (epoch s) for schedule recovery; None for "hmm".
+    # Announced resume time (epoch s) for schedule recovery; None otherwise.
     resumes_at: int | None = None
-    # now has passed resumes_at but the planned alert is still active — recovery
-    # is clamped to 0 rather than counting down past the announced time.
+    # now has passed resumes_at but the planned alert is still active.
     overdue: bool = False
     # "pending_validation" exactly when this row's fitted recovery numbers were
     # nulled because the estimate has not cleared the validation gate; None
-    # otherwise. recovery_source still names the arm that was withheld, so a
-    # consumer can see what is missing and why.
-    # Closed, unlike recovery_source above: this is a two-valued marker, not an
-    # open label set. A new reason to withhold is a contract change.
+    # otherwise.
     recovery_withheld: Literal["pending_validation"] | None = None
 
 
 class RouteStatus(BaseModel):
-    """Derived per-route view from alerts + route metadata + optional HMM inference."""
+    """Derived per-route view from alerts + route metadata + optional recovery block."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -400,7 +304,7 @@ class RouteStatus(BaseModel):
     # consumers and the compat layer.
     label: str
     by_direction: dict[Literal["northbound", "southbound"], DirectionStatus] = {}
-    inference: Inference | None = None
+    recovery: Recovery | None = None
 
 
 class Station(BaseModel):
@@ -442,7 +346,7 @@ class Equipment(BaseModel):
 
 
 class StationStatus(BaseModel):
-    """Derived per-station view from alerts + equipment + static + optional HMM inference."""
+    """Derived per-station view from alerts + equipment + static metadata."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -458,40 +362,8 @@ class StationStatus(BaseModel):
     # the active outages report an est_return.
     earliest_elevator_return: int | None = None
     # Epoch seconds of the longest-running equipment outage at this station.
-    # Useful to surface "out for 6 months" indicators.
     oldest_outage_since: int | None = None
-    inference: Inference | None = None
-
-
-class Crossing(BaseModel):
-    """One direction or segment of a bridge/tunnel crossing."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    id: str  # e.g. "verrazano:upper:westbound"
-    name: str
-
-
-class Bridge(BaseModel):
-    """Infrastructure asset. Schema scaffold; populated when a data source is wired."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    id: str
-    name: str
-    operator: str  # "MTA-BT" | "PANYNJ" | "NYC-DOT" | ...
-    crossings: list[Crossing] = []
-
-
-class Tunnel(BaseModel):
-    """Infrastructure asset. Schema scaffold; populated when a data source is wired."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    id: str
-    name: str
-    operator: str
-    crossings: list[Crossing] = []
+    recovery: Recovery | None = None
 
 
 class ModeRollup(BaseModel):
@@ -739,9 +611,6 @@ class SegmentRecovery(BaseModel):
     recovery_minutes_low: int | None
     recovery_minutes_high: int | None
     recovery_indeterminate: bool = False
-    p_normal_in_30min: float | None
-    p_normal_in_60min: float | None
-    p_normal_in_120min: float | None
     recovery_withheld: Literal["pending_validation"] | None = None
 
 
@@ -1111,7 +980,6 @@ class Snapshot(BaseModel):
         "Not affiliated with the MTA."
     )
     # Declares which sources are populated this run.
-    # Lets consumers detect when LIRR/MNR/PATH/ferry/bridges land without schema bumps.
     supported_modes: list[str] = []
     freshness: Freshness = Field(default_factory=Freshness)
 
@@ -1121,8 +989,6 @@ class Snapshot(BaseModel):
     routes: dict[str, Route] = Field(default_factory=dict)
     stations: dict[str, Station] = Field(default_factory=dict)
     equipment: list[Equipment] = []
-    bridges: list[Bridge] = []
-    tunnels: list[Tunnel] = []
 
     # Derived views
     route_status: dict[str, RouteStatus] = Field(default_factory=dict)

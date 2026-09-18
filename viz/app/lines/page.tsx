@@ -107,10 +107,10 @@ function lineMarkKind(r: RouteStatus): MarkKind {
 
 function TriageRow({ snap, route, r }: { snap: Snapshot; route: string; r: RouteStatus }) {
   const cls = conditionClass(r.condition);
-  const inf = r.inference;
+  const inf = r.recovery;
   const supplyTone = isRunningHigh(r) ? "high" : supplyBand(r);
   const recovery =
-    inf && inf.is_disrupted
+    inf && (r.condition === "disrupted" || r.condition === "suspended")
       ? inf.recovery_withheld != null
         ? NO_RECOVERY_ESTIMATE
         : inf.recovery_indeterminate

@@ -76,11 +76,8 @@ describe('buildSnapshot: alert-graded published condition', () => {
     expect(a.condition).toBe('disrupted');
     expect(a.condition_source).toBe('alerts');
     // The badge clock is the alert regime's onset carried on the roll, NOT the
-    // HMM argmax clock (inference.regime_entered_at === NOW here).
+    // HMM argmax clock recorded internally.
     expect(a.condition_entered_at).toBe(NOW - 3600);
-    expect(a.inference?.regime_entered_at).toBe(NOW);
-    // The HMM read is still recorded under inference for the grading surfaces.
-    expect(a.inference?.condition).toBe('normal');
   });
 
   test('a sub-floor alert (ordinary Delays) grades normal', () => {
@@ -233,7 +230,7 @@ describe('buildSnapshot: alert-graded published condition', () => {
     // asserts the condition, so nothing is counted disrupted.
     expect(q.condition).toBe('normal');
     expect(q.condition_source).toBe('alerts');
-    expect(q.inference).toBeNull();
+    expect(q.recovery).toBeNull();
     expect(snap.system.lines_disrupted_count).toBe(0);
   });
 });

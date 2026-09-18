@@ -53,10 +53,9 @@ grading. The gate is the `PUBLISH_FITTED_RECOVERY` constant in
 `derive_graded_mta_state` rule the review grades as truth, ported to
 [`mapping.ts`](src/mapping.ts) and parity-pinned): `disrupted`/`suspended` only
 for a severe-tier alert, `not_scheduled` for a planned no-service alert,
-`unknown` only when the alert feed is stale/unparsed. `condition_source` is
 `"alerts"`/`"schedule"`/`"unknown"`, and `condition_entered_at` is the alert
 regime's onset. The movement HMM and vehicle-movement classifiers no longer
-decide it — they feed the `inference` shadow, `v1/predictions`, and the
+decide it — they feed the `recovery` block (`route_status[].recovery`), `v1/predictions`, and the
 descriptive `station_flow`/`segment_flow` surfaces only.
 
 `deriveArrivals` ([`arrivals.ts`](src/arrivals.ts)) folds the decoded trip-update

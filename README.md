@@ -90,14 +90,13 @@ simplification parameters. Versioned copies live at
 - **`alerts`** — every currently-active GTFS-RT alert, with route/stop/direction filtering metadata. The atomic unit; everything else is derived from these.
 - **`observations`** — raw measurements, peer to `alerts`. Populated with the observed subway headway per (route, direction): the seconds between the last two trains to serve that pair's canonical reference stop, measured off the GTFS-RT vehicle feed. Each entry carries the `stop_id` it was measured at and the `direction`. A measurement, not an inference — no baseline, no model, no grade. Absent for a pair that hasn't seen two trains, whose reading is stale, or whose interval spanned a feed gap; empty on a cold start or a vehicle-feed outage, never a fabricated zero. Travel times, ETAs and tolls are still unwired.
 - **`routes`** — static per-route metadata (id, color, name)
-- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, the **severity-graded alert `condition`** (with `condition_source` and `condition_entered_at`), the HMM forecast/recovery block, and the trip-updates supply axis (`service_condition`, `service_ratio`, `service_percentile`). For a disrupted/suspended route **with a known onset and primary alert type** the published `recovery_minutes` is the **causal duration climatology** (`recovery_source: "climatology"`, with `recovery_baseline_n`/`recovery_baseline_level`); otherwise curve-fitted recovery stays withheld (`recovery_minutes` null, `recovery_withheld: "pending_validation"`, on `station_flow`/`segment_flow` too) and the deterministic schedule countdowns (`recovery_source: "schedule"`) are published. See **Recovery** below.
+- **`route_status`** — per-route derived view: active alerts, severity, primary alert_type, per-direction breakdown, the **severity-graded alert `condition`** (with `condition_source` and `condition_entered_at`), the recovery block (`route_status[].recovery`), and the trip-updates supply axis (`service_condition`, `service_ratio`, `service_percentile`). For a disrupted/suspended route **with a known onset and primary alert type** the published `recovery_minutes` is the **causal duration climatology** (`recovery_source: "climatology"`, with `recovery_baseline_n`/`recovery_baseline_level`); otherwise curve-fitted recovery stays withheld (`recovery_minutes` null, `recovery_withheld: "pending_validation"`, on `station_flow`/`segment_flow` too) and the deterministic schedule countdowns (`recovery_source: "schedule"`) are published. See **Recovery** below.
 - **`stations`**, **`station_status`** — per-station metadata + derived view (alerts affecting the stop, ADA status, equipment outage counts)
 - **`station_flow`** — per-station movement verdicts derived from the vehicle feed, one tick (~5 min) lagged
 - **`segment_flow`** — per-segment movement verdicts, one tick (~5 min) lagged, keyed by the `route|direction|from_stop` cell id. Carries every judged cell, normal and disrupted alike, so a key absent from it was never judged this tick — never a healthy read by omission.
 - **`platform_crowding`** — estimated riders waiting on each directional platform: the platform's share of its complex's usual entry rate for the hour, times how long since a train cleared it. An estimate on a stated assumption (see the surface's `method`), not a head count.
 - **`arrivals`** — per-stop upcoming trains keyed by GTFS stop id incl. direction suffix (e.g. `Q05S`), each entry giving `route`, `eta_epoch`, `seconds_away` and `trip_id`, soonest first. Derived from the trip-update feeds with `freshness.trip_updates` dating the last decode. Optional/additive and not yet emitted by the cron — absent from today's published snapshot.
 - **`equipment`** — elevator/escalator outage state
-- **`bridges`**, **`tunnels`** — infrastructure scaffolds; populated when a travel-time data source is wired
 - **`system`** — top-of-dashboard rollup; one human-readable `overall_label`
 - **`compat`** — legacy surfaces derived from the canonical types above. `compat.subwaynow_routes` matches homeassistant-mta-subway's pre-Momentarily `Route` shape, so existing HA installs swap `API_URL` and read it with zero code changes.
 
@@ -165,8 +164,7 @@ only that:
 - **vehicle positions** drive `observations` (the observed headway at each
   route/direction's reference stop), `station_flow`, `segment_flow`, and
   `platform_crowding`. They no longer drive `route_status.condition` (now the
-  severity-graded alert read); the movement HMM they feed lives on as the
-  `inference` shadow and the `v1/predictions` grading stream.
+  severity-graded alert read); the movement HMM they feed lives on as the `v1/predictions` grading stream.
 - **trip updates** drive the supply axis in `route_status` —
   `service_condition`, `service_ratio` and `service_percentile`, all derived
   from assigned trips against that cell's own baseline.
@@ -174,7 +172,7 @@ only that:
 Everything else in the snapshot is JSON-derived. The distinction that matters
 is not JSON vs protobuf but measurement vs inference: `observations` entries
 are raw readings, published with the stop they were measured at and no
-baseline applied, while `service_condition` and the `inference` block are model
+baseline applied, while `service_condition` and the `recovery` block are model
 output and carry their own provenance and grading, and `condition` is the
 severity-graded read off the alert feed.
 

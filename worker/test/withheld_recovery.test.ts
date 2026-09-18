@@ -153,25 +153,17 @@ function tick(): { snapshot: Snapshot; full: Map<string, Inference> } {
 describe('published snapshot withholds fitted recovery, grading stream keeps it', () => {
   test('a movement-sourced inference publishes no recovery numbers, and says so', () => {
     const { snapshot, full } = tick();
-    const inf = snapshot.route_status.J!.inference!;
+    const inf = snapshot.route_status.J!.recovery!;
 
     expect(inf.recovery_source).toBe('movement');
     expect(inf.recovery_minutes).toBeNull();
     expect(inf.recovery_minutes_low).toBeNull();
     expect(inf.recovery_minutes_high).toBeNull();
-    expect(inf.p_normal_in_30min).toBeNull();
-    expect(inf.p_normal_in_60min).toBeNull();
-    expect(inf.p_normal_in_120min).toBeNull();
     expect(inf.recovery_withheld).toBe('pending_validation');
 
     // Withheld, not absent: the estimate existed this tick.
     const graded = full.get('J')!;
     expect(graded.recovery_minutes).toBeGreaterThan(0);
-
-    // Everything else on the block is untouched.
-    expect(inf.condition).toBe(graded.condition);
-    expect(inf.p_disrupted).toBe(graded.p_disrupted);
-    expect(inf.regime_entered_at).toBe(graded.regime_entered_at);
 
     // And the document is still a valid published snapshot.
     expect(validate(snapshot), JSON.stringify(validate.errors, null, 2)).toBe(true);
@@ -179,7 +171,7 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
 
   test('a schedule-sourced inference is untouched: a countdown carries no fit', () => {
     const { snapshot, full } = tick();
-    const inf = snapshot.route_status.M!.inference!;
+    const inf = snapshot.route_status.M!.recovery!;
     const graded = full.get('M')!;
 
     expect(inf.recovery_source).toBe('schedule');
@@ -242,11 +234,6 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
     expect(graduated.recovery_source).toBe(graded.recovery_source);
     // No withheld marker once the numbers publish.
     expect('recovery_withheld' in graduated).toBe(false);
-    // p_normal_in_30min is nulled on EVERY public row regardless of the gate:
-    // the published condition is alert-graded, so the horizon no longer
-    // forecasts the arm that produced it. The full/grading object keeps it (the
-    // JSONL-row test above pins that), so v1/predictions is unchanged.
-    expect(graduated.p_normal_in_30min).toBeNull();
     // The climatology fields are null on a non-climatology row.
     expect(graduated.recovery_baseline_n).toBeNull();
     expect(graduated.recovery_baseline_level).toBeNull();
@@ -256,7 +243,6 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
     const withheld = projectInference(graded, null, false);
     expect(withheld.recovery_minutes).toBeNull();
     expect(withheld.recovery_withheld).toBe('pending_validation');
-    expect(withheld.condition).toBe(graduated.condition);
 
     // A schedule row keeps every recovery number either way — it had no fit to
     // withhold; the gate only decides whether it carries the marker.
@@ -267,14 +253,14 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
     expect(projectInference(scheduleGraded, null, true).recovery_minutes).toBe(
       scheduleGraded.recovery_minutes,
     );
-    expect(snapshot.route_status.M!.inference!.recovery_withheld).toBeNull();
+    expect(snapshot.route_status.M!.recovery!.recovery_withheld).toBeNull();
   });
 
   test('a scrubbed route is not graded: the publish path refused those numbers', () => {
     const { snapshot, full } = tick();
     // What publishSnapshot does to a route carrying a non-finite posterior
     // (scrubCorruptInferences), which runs before the grading write.
-    snapshot.route_status.J!.inference = null;
+    snapshot.route_status.J!.recovery = null;
     const rows = buildPredictionRows({
       ts: NOW,
       routeStatuses: snapshot.route_status,
@@ -351,7 +337,7 @@ describe('recovery climatology is served on the ONSET alert type, not the drifti
     const rs = snapshot.route_status.R!;
     // The published current primary drifted to "Severe Delays"…
     expect(rs.primary_alert_type).toBe('Severe Delays');
-    const inf = rs.inference!;
+    const inf = rs.recovery!;
     // …but recovery is served off the ONSET "Delays" cell: tens of minutes, not
     // the "Severe Delays" cell's hundreds.
     expect(inf.recovery_source).toBe('climatology');

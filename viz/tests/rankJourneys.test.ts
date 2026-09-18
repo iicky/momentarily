@@ -38,9 +38,6 @@ const recovery = (minutes: number, indeterminate = false): SegmentRecovery => ({
   recovery_minutes_low: minutes,
   recovery_minutes_high: minutes,
   recovery_indeterminate: indeterminate,
-  p_normal_in_30min: 0.5,
-  p_normal_in_60min: 0.7,
-  p_normal_in_120min: 0.9,
   recovery_withheld: null,
 });
 
@@ -50,9 +47,6 @@ const withheldRecovery = (): SegmentRecovery => ({
   recovery_minutes_low: null,
   recovery_minutes_high: null,
   recovery_indeterminate: false,
-  p_normal_in_30min: null,
-  p_normal_in_60min: null,
-  p_normal_in_120min: null,
   recovery_withheld: "pending_validation",
 });
 

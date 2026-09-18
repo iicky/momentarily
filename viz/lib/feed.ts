@@ -466,3 +466,8 @@ export function platformCrowding(
 export function fmtRiders(riders: number): string {
   return `~${riders} ${riders === 1 ? "rider" : "riders"}`;
 }
+
+// Tooltip text for every surface that renders a crowding number. One source
+// so all render sites stay in sync.
+export const CROWDING_ASSUMPTION =
+  "Modelled estimate, not observed: the platform's assumed share of its complex's usual entry rate for the hour, times minutes since a train last cleared it. No one is counting riders.";

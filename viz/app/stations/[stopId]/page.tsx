@@ -7,7 +7,7 @@ import { useSnapshot, useCoords, useTopology, useStationFacts, useStationMainten
 import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
-import { fmtEta, fmtMinutes, fmtRecovery, fmtRiders, platformCrowding, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
+import { fmtEta, fmtMinutes, fmtRecovery, fmtRiders, platformCrowding, NO_RECOVERY_ESTIMATE, CROWDING_ASSUMPTION } from "@/lib/feed";
 import type { PlatformCrowdingView } from "@/lib/feed";
 import type { PlatformCrowding, PlatformCrowdingMethod, SegmentRecovery, SegmentStatus } from "@/lib/types";
 import type { StationCoord } from "@/lib/stations";
@@ -183,8 +183,8 @@ export default function StationPage() {
 
           <div className="section-title crowd-title">
             Waiting riders
-            <Chip title="Modelled from entry counts and train movement. Nothing counts people on a platform.">
-              estimate
+            <Chip title={CROWDING_ASSUMPTION}>
+              modelled estimate
             </Chip>
           </div>
           <WaitingRiders
@@ -480,7 +480,9 @@ function WaitingRow({
         <span className="crowd-dir">{label}</span>
         {rank && <Chip title="Against the measured spread of this estimate across the system: p50 = 28 riders, p90 = 86, p99 = 270.">{rank}</Chip>}
         {view.estimated ? (
-          <span className={`crowd-count ${view.band}`}>{fmtRiders(view.riders)}</span>
+          <span className={`crowd-count ${view.band}`} title={CROWDING_ASSUMPTION}>
+            {fmtRiders(view.riders)} (modelled)
+          </span>
         ) : (
           <span className="crowd-count none">no estimate</span>
         )}

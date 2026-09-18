@@ -16,6 +16,7 @@ import {
   conditionLabel,
   conditionClass,
   gaugeTone,
+  CROWDING_ASSUMPTION,
 } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
 import { Gauge } from "../../Gauge";
@@ -274,7 +275,9 @@ function StopRow({
       </Link>
       {snap.platform_crowding &&
         (crowd.estimated ? (
-          <span className={`stop-crowd ${crowd.band}`}>{fmtRiders(crowd.riders)}</span>
+          <span className={`stop-crowd ${crowd.band}`} title={CROWDING_ASSUMPTION}>
+            {fmtRiders(crowd.riders)} (modelled)
+          </span>
         ) : (
           <span className="stop-crowd">no estimate</span>
         ))}

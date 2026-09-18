@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useSnapshot, useCoords, useTopology, useStationFacts, useStationMaintenance } from "../../useData";
 import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
+import { StateMark, clsToMarkKind } from "../../StateMark";
 import { undirected } from "@/lib/stations";
 import { Chip } from "../../models/ChartFrame";
 import { fmtEta, fmtMinutes, fmtRecovery, fmtRiders, platformCrowding, NO_RECOVERY_ESTIMATE, CROWDING_ASSUMPTION } from "@/lib/feed";
@@ -105,8 +106,9 @@ export default function StationPage() {
           <div className="line-head">
             <h2>{name}</h2>
             {flow && (
-              <span className={`cond ${FLOW_CLASS[flow.status]}`}>
-                {flow.status}
+              <span className="cond-mark-pair">
+                <StateMark kind={clsToMarkKind(FLOW_CLASS[flow.status])} size={14} />
+                <span className={`cond ${FLOW_CLASS[flow.status]}`}>{flow.status}</span>
               </span>
             )}
           </div>
@@ -125,6 +127,7 @@ export default function StationPage() {
                       {compass}
                       {label !== compass && <span className="move-to"> · toward {label}</span>}
                     </span>
+                    <StateMark kind={clsToMarkKind(cls)} size={12} />
                     <span className={`cond ${cls}`}>{text}</span>
                   </li>
                 );
@@ -208,7 +211,12 @@ export default function StationPage() {
                       ? `${nameOf(a.from)} → ${name}`
                       : `${name} → ${nameOf(a.to)}`}
                   </span>
-                  {a.status && <span className={`cond ${a.status}`}>{a.status}</span>}
+                  {a.status && (
+                    <>
+                      <StateMark kind={clsToMarkKind(a.status)} size={12} />
+                      <span className={`cond ${a.status}`}>{a.status}</span>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>

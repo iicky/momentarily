@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import Link from "next/link";
 import { useSnapshot } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
+import { StateMark } from "../StateMark";
+import type { MarkKind } from "../StateMark";
 import {
   conditionRank,
   serviceLead,
@@ -96,6 +98,13 @@ export default function LinesPage() {
 // recovery estimate when the flow is disrupted. The whole row links to the line
 // page. Supply is what the flag rests on when the flow itself reads normal (a
 // line running well under the trains it usually would), so it always shows.
+function lineMarkKind(r: RouteStatus): MarkKind {
+  if (r.condition === "disrupted") return "disrupted";
+  if (r.condition === "suspended") return "suspended";
+  if (r.condition === "normal") return "normal";
+  return "muted";
+}
+
 function TriageRow({ snap, route, r }: { snap: Snapshot; route: string; r: RouteStatus }) {
   const cls = conditionClass(r.condition);
   const inf = r.inference;
@@ -113,6 +122,7 @@ function TriageRow({ snap, route, r }: { snap: Snapshot; route: string; r: Route
       <RouteBullet snap={snap} route={route} size={34} />
       <span className="triage-body">
         <span className="triage-lead">
+          <StateMark kind={lineMarkKind(r)} size={16} />
           <span className={`cond ${cls}`}>{conditionLabel(r.condition)}</span>
           {serviceLead(r)}
         </span>

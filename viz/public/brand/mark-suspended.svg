@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- State: suspended. Gap saturated at 11, height dropped to 10 (less train). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="#e06c75" role="img">
+  <rect x="1.5" y="7" width="5" height="10" rx="2.5"/>
+  <rect x="17.5" y="7" width="5" height="10" rx="2.5"/>
+</svg>

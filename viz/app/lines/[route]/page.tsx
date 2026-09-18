@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../../useData";
 import { FLOW_CLASS, PageHeader, RouteBullet } from "../../ui";
+import { StateMark, clsToMarkKind } from "../../StateMark";
+import type { MarkKind } from "../../StateMark";
 import { undirected, orderTrip } from "@/lib/stations";
 import {
   fmtMinutes,
@@ -184,6 +186,13 @@ function LineView() {
 // trains are running against this hour's usual, and the recovery estimate when
 // it is disrupted — stated once, in one sentence plus compact stats. Silent for
 // a line the snapshot carries no status for (the S/SIR shuttle badges).
+function routeMarkKind(condition: string): MarkKind {
+  if (condition === "disrupted") return "disrupted";
+  if (condition === "suspended") return "suspended";
+  if (condition === "normal") return "normal";
+  return "muted";
+}
+
 function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
   const r = snap.route_status[route];
   if (!r) return null;
@@ -203,6 +212,7 @@ function RouteVerdict({ snap, route }: { snap: Snapshot; route: string }) {
       <div className="verdict-main">
         <p className="verdict-lead">{serviceLead(r)}</p>
         <div className="verdict-stats">
+          <StateMark kind={routeMarkKind(r.condition)} size={16} />
           <span className={`cond ${cls}`}>{conditionLabel(r.condition)}</span>
           {r.service_ratio != null && (
             <span className="verdict-stat">
@@ -281,17 +291,20 @@ function StopRow({
         ) : (
           <span className="stop-crowd">no estimate</span>
         ))}
-      {flow && (
-        <span className={`cond ${flowClass}`}>
-          {flow.status}
-          {flow.status === "degraded" && flow.worst_recovery
-            ? ` · ${
-                flow.worst_recovery.recovery_minutes == null
-                  ? NO_RECOVERY_ESTIMATE
-                  : `~${fmtRecovery(flow.worst_recovery.recovery_minutes)}`
-              }`
-            : ""}
-        </span>
+      {flow && flowClass && (
+        <>
+          <StateMark kind={clsToMarkKind(flowClass)} size={12} />
+          <span className={`cond ${flowClass}`}>
+            {flow.status}
+            {flow.status === "degraded" && flow.worst_recovery
+              ? ` · ${
+                  flow.worst_recovery.recovery_minutes == null
+                    ? NO_RECOVERY_ESTIMATE
+                    : `~${fmtRecovery(flow.worst_recovery.recovery_minutes)}`
+                }`
+              : ""}
+          </span>
+        </>
       )}
     </li>
   );

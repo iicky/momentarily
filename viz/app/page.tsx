@@ -2,6 +2,8 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import Nav from "./Nav";
+import { StateMark } from "./StateMark";
+import type { MarkKind } from "./StateMark";
 import {
   fetchSnapshot,
   SnapshotShapeError,
@@ -218,6 +220,14 @@ const FRESH_FIELDS: [
   ["ene", "Elevators/escalators"],
 ];
 
+// Freshness state → mark kind mapping.
+const FRESHNESS_MARK: Record<string, MarkKind> = {
+  ok: "normal",
+  warn: "disrupted",
+  stale: "suspended",
+  off: "muted",
+};
+
 function FreshnessStrip({ snap, now }: { snap: Snapshot; now: number }) {
   return (
     <div className="freshness">
@@ -229,9 +239,10 @@ function FreshnessStrip({ snap, now }: { snap: Snapshot; now: number }) {
           // alerts tick every 5m, E&E hourly — grade generously.
           cls = age < 600 ? "ok" : age < 3 * 3600 ? "warn" : "stale";
         }
+        const markKindStr = FRESHNESS_MARK[cls] ?? "muted";
         return (
           <span key={key}>
-            <span className={`dot ${cls}`} />
+            <StateMark kind={markKindStr} size={12} label={cls} />
             {label}: {fmtAgo(ts, now)}
           </span>
         );
@@ -240,36 +251,6 @@ function FreshnessStrip({ snap, now }: { snap: Snapshot; now: number }) {
   );
 }
 
-// Two-car brand mark. The gap between the cars encodes delay and the bars drop
-// height when suspended — geometry from docs/brand/assets/mark-*.svg. Colour is
-// the state colour, inherited via currentColor (see .mark.* in globals.css).
-type MarkKind = "normal" | "disrupted" | "suspended" | "muted" | "logo";
-
-const MARK_BARS: Record<MarkKind, [number, number, number][]> = {
-  // [x, y, height]; each bar is width 5, rx 2.5, on a 24 grid.
-  normal: [[5, 3, 18], [14, 3, 18]],
-  disrupted: [[3.02, 3, 18], [15.98, 3, 18]],
-  suspended: [[1.5, 7, 10], [17.5, 7, 10]],
-  muted: [[5, 3, 18], [14, 3, 18]],
-  logo: [[5, 3, 18], [14, 3, 18]],
-};
-
-function StateMark({ kind, size = 20 }: { kind: MarkKind; size?: number }) {
-  return (
-    <svg
-      className={`mark ${kind}`}
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      {MARK_BARS[kind].map(([x, y, h], i) => (
-        <rect key={i} x={x} y={y} width={5} height={h} rx={2.5} />
-      ))}
-    </svg>
-  );
-}
 
 function markKind(r: RouteStatus): MarkKind {
   if (r.condition === "disrupted") return "disrupted";

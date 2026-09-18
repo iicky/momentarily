@@ -18,6 +18,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useTopology } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
+import { StateMark, clsToMarkKind } from "../StateMark";
 import { TripVerdict } from "./TripVerdict";
 import { undirected } from "@/lib/stations";
 import { fmtMinutes, fmtRecovery, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
@@ -395,20 +396,24 @@ function Leg({
                 {nameOf(seg.to)}
               </Link>
               {status ? (
-                <span className={`cond ${status}`}>
-                  {status}
-                  {status === "disrupted" && cell?.recovery
-                    ? ` · ${
-                        cell.recovery.recovery_minutes == null
-                          ? NO_RECOVERY_ESTIMATE
-                          : `~${fmtRecovery(cell.recovery.recovery_minutes)}`
-                      }`
-                    : ""}
-                </span>
+                <>
+                  <StateMark kind={clsToMarkKind(status)} size={12} />
+                  <span className={`cond ${status}`}>
+                    {status}
+                    {status === "disrupted" && cell?.recovery
+                      ? ` · ${
+                          cell.recovery.recovery_minutes == null
+                            ? NO_RECOVERY_ESTIMATE
+                            : `~${fmtRecovery(cell.recovery.recovery_minutes)}`
+                        }`
+                      : ""}
+                  </span>
+                </>
               ) : (
-                <span className="cond unknown" title="not judged this tick">
-                  —
-                </span>
+                <>
+                  <StateMark kind="muted" size={12} />
+                  <span className="cond unknown" title="not judged this tick">—</span>
+                </>
               )}
             </li>
           );

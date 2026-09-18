@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSnapshot } from "../useData";
 import { PageHeader, RouteBullet } from "../ui";
+import { StateMark, clsToMarkKind } from "../StateMark";
 import { undirected } from "@/lib/stations";
 import { fmtMinutes, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
 import {
@@ -146,6 +147,7 @@ function CommuteCard({
           ) : (
             <h2 className="commute-name">{commute.name}</h2>
           )}
+          <StateMark kind={clsToMarkKind(badge.cls)} size={14} />
           <span className={`cond ${badge.cls}`}>{badge.label}</span>
         </div>
         <div className="commute-actions">
@@ -306,18 +308,22 @@ function CommuteStrip({
                         {nameOf(s.to)}
                       </Link>
                       {cell ? (
-                        <span className={`cond ${cell}`}>
-                          {cell}
-                          {cell === "disrupted" && recovery != null
-                            ? ` · ~${fmtMinutes(recovery)}`
-                            : cell === "disrupted" && recoveryWithheld
-                              ? ` · ${NO_RECOVERY_ESTIMATE}`
-                              : ""}
-                        </span>
+                        <>
+                          <StateMark kind={clsToMarkKind(cell)} size={12} />
+                          <span className={`cond ${cell}`}>
+                            {cell}
+                            {cell === "disrupted" && recovery != null
+                              ? ` · ~${fmtMinutes(recovery)}`
+                              : cell === "disrupted" && recoveryWithheld
+                                ? ` · ${NO_RECOVERY_ESTIMATE}`
+                                : ""}
+                          </span>
+                        </>
                       ) : (
-                        <span className="cond unknown" title="not judged this tick">
-                          —
-                        </span>
+                        <>
+                          <StateMark kind="muted" size={12} />
+                          <span className="cond unknown" title="not judged this tick">—</span>
+                        </>
                       )}
                     </li>
                   );

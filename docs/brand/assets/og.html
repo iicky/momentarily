@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Source for og.png (1200x630). Regenerate by rendering this file at exactly
+  1200x630 and screenshotting.
+
+  Type is the Interrupted org pair (Meslo for the wordmark and all metadata,
+  Inter for prose), vendored under ./fonts/ so the card is reproducible without
+  the site repo. Mark geometry is computed from the canonical spec below rather
+  than hand-placed, so this file cannot drift from the SVG assets beside it.
+-->
+<style>
+  @font-face{font-family:Meslo;src:url("./fonts/meslo-700.woff2") format("woff2");font-weight:700;font-display:block}
+  @font-face{font-family:Meslo;src:url("./fonts/meslo-400.woff2") format("woff2");font-weight:400;font-display:block}
+  @font-face{font-family:InterV;src:url("./fonts/inter-400.woff2") format("woff2");font-weight:400;font-display:block}
+  :root{
+    --ground:#16181d; --surface:#1b1e24; --line:#2c313a;
+    --bright:#c8ccd4; --text-2:#828997; --muted:#5c6370;
+    --normal:#98c379; --delayed:#e5c07b; --suspended:#e06c75;
+  }
+  *{box-sizing:border-box;margin:0}
+  html,body{width:1200px;height:630px;overflow:hidden}
+  body{background:var(--ground);font-family:InterV,system-ui,sans-serif;padding:64px 72px 56px;
+       display:flex;flex-direction:column;justify-content:space-between}
+  .top{display:flex;gap:64px;align-items:flex-start}
+  .left{flex:1;min-width:0}
+  .lockup{display:flex;align-items:center;gap:26px}
+  .lockup svg{display:block;flex:none}
+  .word{font:700 72px/1 Meslo,ui-monospace,monospace;color:var(--bright);letter-spacing:-.025em}
+  .quote{font:400 34px/1.4 InterV,system-ui,sans-serif;color:var(--text-2);max-width:19ch;margin-top:30px}
+  .quote b{color:var(--bright);font-weight:400}
+  .what{font:400 19px/1.5 InterV,system-ui,sans-serif;color:var(--muted);max-width:32ch;margin-top:26px}
+  /* route list — the mark doing its job next to real MTA bullets */
+  .panel{width:396px;flex:none;background:var(--surface);border:1px solid var(--line);
+         border-radius:12px;padding:7px 0}
+  .r{display:flex;align-items:center;gap:14px;padding:11px 20px}
+  .r+.r{border-top:1px solid var(--line)}
+  .bul{width:30px;height:30px;border-radius:50%;flex:none;display:grid;place-items:center;
+       font:700 16px/1 InterV,system-ui,sans-serif;color:#fff}
+  .bul.dk{color:#000}
+  .r svg{display:block;flex:none}
+  .lbl{font:400 14px/1 Meslo,ui-monospace,monospace;color:var(--muted);margin-left:auto;
+       text-transform:uppercase;letter-spacing:.11em}
+  .foot{display:flex;align-items:flex-end;justify-content:space-between}
+  .url{font:400 20px/1 Meslo,ui-monospace,monospace;color:var(--muted)}
+  .org{font:400 14px/1 Meslo,ui-monospace,monospace;color:var(--muted);
+       text-transform:uppercase;letter-spacing:.18em}
+  .rule{height:1px;background:var(--line);margin-bottom:24px}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="left">
+      <div class="lockup">
+        <span id="logo"></span>
+        <div class="word">Momentarily</div>
+      </div>
+      <p class="quote">&ldquo;We are being held <b>momentarily</b> by the train&rsquo;s dispatcher.&rdquo;</p>
+      <p class="what">A normalized snapshot of NYC MTA service status, alerts and
+         elevator state &mdash; with a probabilistic estimate of when each line recovers.</p>
+    </div>
+    <div class="panel" id="panel"></div>
+  </div>
+
+  <div>
+    <div class="rule"></div>
+    <div class="foot">
+      <div class="url">feed.momentarily.nyc</div>
+      <div class="org">Interrupted</div>
+    </div>
+  </div>
+
+<script>
+// ---- canonical mark geometry (mirrors docs/brand/assets/*.svg) ----
+const BAR_W = 5, H_FULL = 18, H_SHORT = 10, RX = 2.5, GAP_NOMINAL = 4, GAP_MAX = 11;
+const gapOf = min => GAP_NOMINAL + 7 * (1 - Math.exp(-min / 12));
+
+function mark(gap, h, px, fill){
+  const x0 = (24 - (2 * BAR_W + gap)) / 2, y = (24 - h) / 2;
+  const r = x => `<rect x="${x.toFixed(2)}" y="${y}" width="${BAR_W}" height="${h}" rx="${RX}"/>`;
+  return `<svg viewBox="0 0 24 24" width="${px}" height="${px}" fill="${fill}">`
+       + r(x0) + r(x0 + BAR_W + gap) + `</svg>`;
+}
+document.getElementById('logo').innerHTML = mark(GAP_NOMINAL, H_FULL, 92, 'var(--bright)');
+
+const ROWS = [
+  ['1', '#EE352E', GAP_NOMINAL, H_FULL,  'var(--normal)',    'normal'],
+  ['A', '#2850AD', gapOf(6),    H_FULL,  'var(--delayed)',   'delayed'],
+  ['7', '#B933AD', GAP_MAX,     H_SHORT, 'var(--suspended)', 'suspended'],
+  ['F', '#FF6319', gapOf(22),   H_FULL,  'var(--delayed)',   'delayed'],
+  ['G', '#6CBE45', GAP_NOMINAL, H_FULL,  'var(--normal)',    'normal'],
+];
+document.getElementById('panel').innerHTML = ROWS.map(([id, col, gap, h, fill, lbl]) =>
+  `<div class="r"><span class="bul${col === '#FCCC0A' ? ' dk' : ''}" style="background:${col}">${id}</span>`
+  + mark(gap, h, 30, fill) + `<span class="lbl">${lbl}</span></div>`).join('');
+</script>
+</body>
+</html>

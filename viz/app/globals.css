@@ -33,7 +33,7 @@
   --disrupted: #e5c07b;
   --suspended: #e06c75;
   --unknown: #5c6370;
-  --accent: #4493f8;
+  --accent: #00bca8;
   --mono: "Meslo", ui-monospace, SFMono-Regular, Menlo, monospace;
   /* Predicted-vs-observed overlays. Kept separate from the state colors above
      so "model forecast" / "what really happened" never reads as a line state. */
@@ -208,25 +208,13 @@ p a {
   font-size: 12px;
   color: var(--muted);
 }
+/* Freshness mark — the .dot span is replaced by an inline StateMark SVG;
+   keep the class for spacing so existing callers aren't broken if any remain. */
 .dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
   vertical-align: middle;
-}
-.dot.ok {
-  background: var(--normal);
-}
-.dot.warn {
-  background: var(--disrupted);
-}
-.dot.stale {
-  background: var(--suspended);
-}
-.dot.off {
-  background: var(--unknown);
 }
 
 .grid {
@@ -270,39 +258,31 @@ p a {
   color: #fff;
   flex: 0 0 auto;
 }
-/* Condition badge. Kept compact: the train glyph now rides every card head, so
-   the badge has to give back the room it used to spend on padding. */
+/* Condition label. The shape channel comes from the .mark SVG; the text here
+   carries the state word and the hue reinforces it. No pill background — the
+   mark already distinguishes the states without it. */
 .cond {
   font-size: 11px;
   font-weight: 600;
-  padding: 0 5px;
-  border-radius: 999px;
   text-transform: capitalize;
   white-space: nowrap;
 }
 .cond.normal {
   color: var(--normal);
-  background: color-mix(in srgb, var(--normal) 14%, transparent);
 }
-/* Quiet-normal: a judged cell whose timetable runs too little right now for
-   silence to mean anything. Muted, deliberately not the .normal green — a page
-   full of these overnight must not read as an all-clear. Distinct from
-   .unknown, which is the absence of any judgment at all. */
+/* Quiet-normal: muted rather than normal green — a page full of these overnight
+   must not read as an all-clear. Distinct from .unknown (absence of judgment). */
 .cond.quiet {
   color: var(--muted);
-  background: color-mix(in srgb, var(--muted) 12%, transparent);
 }
 .cond.disrupted {
   color: var(--disrupted);
-  background: color-mix(in srgb, var(--disrupted) 16%, transparent);
 }
 .cond.suspended {
   color: var(--suspended);
-  background: color-mix(in srgb, var(--suspended) 16%, transparent);
 }
 .cond.unknown {
   color: var(--muted);
-  background: color-mix(in srgb, var(--unknown) 20%, transparent);
 }
 
 /* Train icon + level bars: the "how many trains are running" axis, on every card

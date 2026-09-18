@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Momentarily — mark study</title>
+<style>
+  :root{
+    /* Interrupted org tokens (interrupted.sh/app/globals.css:2-27) */
+    --ground:#16181d; --surface:#1b1e24; --elevated:#21252b; --line:#2c313a;
+    --bright:#c8ccd4; --text:#abb2bf; --text-2:#828997; --muted:#5c6370;
+    /* One Dark semantic three (candidate state colors) */
+    --normal:#98c379; --disrupted:#e5c07b; --suspended:#e06c75;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: system-ui, -apple-system, sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--text);font:14px/1.55 var(--sans);
+       -webkit-font-smoothing:antialiased;padding:28px 24px 64px}
+  .wrap{max-width:940px;margin:0 auto}
+  h1{font:600 20px/1.2 var(--mono);color:var(--bright);margin:0 0 6px;letter-spacing:-.01em}
+  h2{font:600 12px/1 var(--mono);color:var(--bright);text-transform:uppercase;
+     letter-spacing:.14em;margin:44px 0 4px}
+  .sub{color:var(--text-2);margin:0 0 18px;max-width:64ch}
+  .note{color:var(--muted);font-size:12.5px;max-width:70ch;margin:10px 0 0}
+  section{border-top:1px solid var(--line);padding-top:4px}
+  .row{display:flex;flex-wrap:wrap;gap:14px;margin-top:18px}
+  .cell{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+        padding:16px;display:flex;flex-direction:column;align-items:center;gap:10px;min-width:150px}
+  .cap{font:600 10px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.12em;
+       color:var(--text-2);text-align:center}
+  .spec{font:11px/1.4 var(--mono);color:var(--muted);text-align:center}
+  .ladder{display:flex;align-items:flex-end;gap:20px}
+  .ladder > div{display:flex;flex-direction:column;align-items:center;gap:7px}
+  .px{font:10px/1 var(--mono);color:var(--muted)}
+  mark{background:none;color:var(--bright);font-weight:600}
+  .bad{border-color:#4a2a2f}
+  .bad .cap{color:var(--suspended)}
+  .warnband{font:11px/1.5 var(--mono);color:var(--suspended)}
+  /* ---- the mark: two bars, one --sep variable ---- */
+  svg.mk{display:block;overflow:visible}
+  svg.mk rect{fill:currentColor}
+  svg.mk .l{transform:translateX(calc(var(--sep,0) * -0.5px))}
+  svg.mk .r{transform:translateX(calc(var(--sep,0) *  0.5px))}
+  svg.mk.anim .l, svg.mk.anim .r{transition:transform .5s cubic-bezier(.2,.85,.2,1)}
+  @media (prefers-reduced-motion: reduce){svg.mk.anim .l,svg.mk.anim .r{transition:none}}
+  .light{background:#f4f4f5;border-color:#d4d4d8}
+  .light .cap{color:#52525b}
+  /* route grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:8px;margin-top:18px}
+  .rt{display:flex;align-items:center;gap:7px;background:var(--surface);
+      border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+  .bul{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+       font:700 11px/1 var(--sans);color:#fff;flex:none}
+  .bul.dark{color:#000}
+  button{font:600 11px/1 var(--mono);background:var(--elevated);color:var(--bright);
+         border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer;
+         text-transform:uppercase;letter-spacing:.1em}
+  button:hover{border-color:var(--bright)}
+  .ctl{display:flex;gap:8px;margin-top:16px;align-items:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Momentarily — mark study</h1>
+<p class="sub">One geometry: two bars of equal height and fixed width, and a single variable
+&mdash; the <mark>gap</mark>. Height never varies between the two bars (that is the equalizer trope);
+the bars never ascend (that is the stock bar-chart trope).</p>
+<p class="sub" style="border-left:2px solid var(--disrupted);padding-left:12px">
+<mark>Verdict after drawing it:</mark> gap-width alone <strong>fails</strong> the 20px monochrome test
+&mdash; disrupted and suspended are indistinguishable, so colour ends up doing all the work
+(&sect;6, row E1). Distance judgments need an anchor and 20 pixels gives none.
+The system that passes is <strong>E3</strong>: one bit of topology (joined vs split) plus one bit of
+height (full vs reduced), both applied symmetrically. Logo and status icon then take
+<em>different optical sizes</em> of the same primitive &mdash; wide gap at display size for uniqueness,
+tight gap plus height drop at 20px for discriminability.</p>
+
+<section>
+<h2>1 · The gap family</h2>
+<p class="sub">Two rects, <span style="font-family:var(--mono)">w=5 h=18</span> on a 24 grid, joined at rest.
+<span style="font-family:var(--mono)">--sep</span> slides them apart symmetrically. Gap steps 0 / 4 / 8 &mdash;
+linear, so severity reads by amount, not by decoding three unrelated shapes.</p>
+<div class="row" id="family"></div>
+<p class="note">Shape-encoded, so it survives colorblindness and monochrome. That matches the
+principle already stated in <span style="font-family:var(--mono)">viz/app/globals.css:441</span>
+&mdash; &ldquo;a second encoding so hue isn&rsquo;t the only signal.&rdquo; Colors shown are One Dark&rsquo;s
+semantic three; the hue decision is still open.</p>
+</section>
+
+<section>
+<h2>2 · Size ladder</h2>
+<p class="sub">Favicon does all the work here &mdash; &ldquo;momentarily&rdquo; is 11 characters and
+cannot carry small sizes the way &ldquo;murk&rdquo; can.</p>
+<div class="row" id="ladders"></div>
+</section>
+
+<section>
+<h2>3 · Which member is the resting mark?</h2>
+<p class="sub">This was the open question. The geometry answers it: <mark>the pause glyph has a tight
+gap</mark> &mdash; roughly one bar-width. Push the gap past that ratio and the silhouette stops reading
+as pause, with no extra element needed.</p>
+<div class="row" id="candidates"></div>
+<p class="warnband" id="ratio"></p>
+<p class="note">The two fallback differentiators I floated are rendered for comparison. Both add an
+element to solve a problem that separation already solves; neither survives 16px as cleanly.</p>
+</section>
+
+<section>
+<h2>4 · Onset</h2>
+<p class="sub">A solid bar splitting <em>is</em> onset &mdash; the event the model is graded on for
+detection latency. The animation depicts the product, it is not decoration.</p>
+<div class="ctl">
+  <button id="play">run onset</button>
+  <button id="loop">loop</button>
+  <span class="spec" id="state">normal</span>
+</div>
+<div class="row">
+  <div class="cell"><svg class="mk anim" id="big" viewBox="0 0 24 24" width="128" height="128"
+      style="color:var(--bright)"><rect class="l" x="7" y="3" width="5" height="18" rx="1"/>
+      <rect class="r" x="12" y="3" width="5" height="18" rx="1"/></svg>
+    <div class="cap">128 px</div></div>
+  <div class="cell"><svg class="mk anim" id="small" viewBox="0 0 24 24" width="24" height="24"
+      style="color:var(--bright)"><rect class="l" x="7" y="3" width="5" height="18" rx="1"/>
+      <rect class="r" x="12" y="3" width="5" height="18" rx="1"/></svg>
+    <div class="cap">24 px</div></div>
+</div>
+<p class="note">Gated behind <span style="font-family:var(--mono)">prefers-reduced-motion</span>,
+matching the precedent in <span style="font-family:var(--mono)">Wordmark.module.css</span>.</p>
+</section>
+
+<section>
+<h2>5 · In context &mdash; discriminability at 20px</h2>
+<p class="sub">The real test of the status-icon idea: can you read state across a full route grid at a
+glance, next to actual MTA bullets? Colors below are the live ones from
+<span style="font-family:var(--mono)">feed.momentarily.nyc</span>.</p>
+<div class="grid" id="routes"></div>
+<p class="note">Note the mark never competes with a bullet: bullets are circles carrying a glyph,
+the state mark is orthogonal rectangles carrying no glyph.</p>
+</section>
+
+<section>
+<h2>6 &middot; The diagnostic &mdash; 20px, colour removed</h2>
+<p class="sub">Strip hue and the shape channel has to stand alone. If you cannot read three states
+here, the shape encoding is decorative and colour is doing all the work &mdash; which fails exactly
+the users the second encoding exists for. Scan each row as if it were a route grid.</p>
+<div id="stress"></div>
+<p class="note" id="verdict"></p>
+</section>
+
+<section>
+<h2>7 &middot; Inversion</h2>
+<p class="sub">Two rectangles. Nothing to lose on light ground, no hinting, no optical correction.</p>
+<div class="row" id="inv"></div>
+</section>
+
+</div>
+<script>
+const BAR = 5, GAP_TO_SEP = s => s; // sep in user units == gap width
+const STATES = [
+  {k:'normal',    sep:0, col:'var(--normal)',    desc:'gap 0 · continuous'},
+  {k:'disrupted', sep:4, col:'var(--disrupted)', desc:'gap 4 · 0.8 : 1'},
+  {k:'suspended', sep:8, col:'var(--suspended)', desc:'gap 8 · 1.6 : 1'},
+];
+function mk(sep, px, color, cls){
+  return `<svg class="mk ${cls||''}" viewBox="0 0 24 24" width="${px}" height="${px}"
+    style="--sep:${sep};color:${color}">
+    <rect class="l" x="7" y="3" width="5" height="18" rx="1"/>
+    <rect class="r" x="12" y="3" width="5" height="18" rx="1"/></svg>`;
+}
+// 1 · family
+document.getElementById('family').innerHTML = STATES.map(s=>`
+  <div class="cell" style="flex:1">
+    ${mk(s.sep,104,s.col)}
+    <div class="cap">${s.k}</div>
+    <div class="spec">${s.desc}<br>ink 10 · conserved</div>
+  </div>`).join('');
+// 2 · ladders
+document.getElementById('ladders').innerHTML = STATES.map(s=>`
+  <div class="cell" style="flex:1">
+    <div class="ladder">${[128,32,24,16].map(px=>
+      `<div>${mk(s.sep,px,s.col)}<div class="px">${px}</div></div>`).join('')}</div>
+    <div class="cap">${s.k}</div>
+  </div>`).join('');
+// 3 · candidates
+const B='var(--bright)';
+const tick = px=>`<svg viewBox="0 0 24 24" width="${px}" height="${px}" style="color:${B}">
+  <rect x="3" y="3" width="5" height="18" rx="1" fill="currentColor"/>
+  <rect x="16" y="3" width="5" height="18" rx="1" fill="currentColor"/>
+  <rect x="11.25" y="9" width="1.5" height="6" rx="0.75" fill="currentColor" opacity=".55"/></svg>`;
+const width = px=>`<svg viewBox="0 0 24 24" width="${px}" height="${px}" style="color:${B}">
+  <rect x="4" y="3" width="7" height="18" rx="1" fill="currentColor"/>
+  <rect x="17" y="3" width="2.5" height="18" rx="1" fill="currentColor"/></svg>`;
+const pause = px=>`<svg viewBox="0 0 24 24" width="${px}" height="${px}" style="color:${B}">
+  <rect x="6" y="3" width="5" height="18" rx="1" fill="currentColor"/>
+  <rect x="13" y="3" width="5" height="18" rx="1" fill="currentColor"/></svg>`;
+document.getElementById('candidates').innerHTML = `
+  <div class="cell" style="flex:1;border-color:#3f5a46">
+    <div class="ladder">${[104,32,16].map(px=>`<div>${mk(8,px,B)}<div class="px">${px}</div></div>`).join('')}</div>
+    <div class="cap" style="color:var(--normal)">separation · recommended</div>
+    <div class="spec">gap 8 : bar 5 = <strong>1.6 : 1</strong><br>outside pause proportions</div></div>
+  <div class="cell" style="flex:1">
+    <div class="ladder">${[104,32,16].map(px=>`<div>${tick(px)}<div class="px">${px}</div></div>`).join('')}</div>
+    <div class="cap">tick in the gap</div>
+    <div class="spec">3 elements · smallest is 1.5u<br>mushes at 16</div></div>
+  <div class="cell" style="flex:1">
+    <div class="ladder">${[104,32,16].map(px=>`<div>${width(px)}<div class="px">${px}</div></div>`).join('')}</div>
+    <div class="cap">unequal widths</div>
+    <div class="spec">reads block + cursor<br>asymmetry looks accidental</div></div>
+  <div class="cell bad" style="flex:1">
+    <div class="ladder">${[104,32,16].map(px=>`<div>${pause(px)}<div class="px">${px}</div></div>`).join('')}</div>
+    <div class="cap">pause · Parallels</div>
+    <div class="spec">gap 2 : bar 5 = 0.4 : 1<br>unwinnable</div></div>`;
+document.getElementById('ratio').textContent =
+  'Pause sits near 0.4–1.0 : 1 (gap : bar). The recommended mark sits at 1.6 : 1 — the spec that keeps it out of pause territory.';
+// 4 · onset
+let looping=null, at=0;
+const seq=[0,8], svgs=[document.getElementById('big'),document.getElementById('small')];
+const label=document.getElementById('state');
+function set(sep){svgs.forEach(s=>s.style.setProperty('--sep',sep));
+  label.textContent = sep===0?'normal':'suspended';}
+document.getElementById('play').onclick=()=>{at=1-at;set(seq[at]);};
+document.getElementById('loop').onclick=e=>{
+  if(looping){clearInterval(looping);looping=null;e.target.textContent='loop';return;}
+  e.target.textContent='stop'; looping=setInterval(()=>{at=1-at;set(seq[at]);},1400);};
+set(0);
+// 5 · route grid (live MTA hues)
+const MTA=[['1','#EE352E'],['2','#EE352E'],['3','#EE352E'],['4','#00933C'],['5','#00933C'],
+ ['6','#00933C'],['7','#B933AD'],['A','#2850AD'],['C','#2850AD'],['E','#2850AD'],['B','#FF6319'],
+ ['D','#FF6319'],['F','#FF6319'],['M','#FF6319'],['N','#FCCC0A'],['Q','#FCCC0A'],['R','#FCCC0A'],
+ ['W','#FCCC0A'],['G','#6CBE45'],['J','#996633'],['Z','#996633'],['L','#A7A9AC'],['S','#808183']];
+const pick=i=> i%7===3 ? STATES[2] : i%3===1 ? STATES[1] : STATES[0];
+document.getElementById('routes').innerHTML = MTA.map((r,i)=>{const s=pick(i);
+  const dark = r[1]==='#FCCC0A'||r[1]==='#A7A9AC';
+  return `<div class="rt"><span class="bul ${dark?'dark':''}" style="background:${r[1]}">${r[0]}</span>
+    ${mk(s.sep,20,s.col)}</div>`;}).join('');
+// 6 · inversion
+document.getElementById('inv').innerHTML = STATES.map(s=>`
+  <div class="cell light" style="flex:1">
+    <div class="ladder">${[72,24].map(px=>`<div>${mk(s.sep,px,'#18181b')}<div class="px" style="color:#71717a">${px}</div></div>`).join('')}</div>
+    <div class="cap">${s.k}</div></div>`).join('');
+// 7 · monochrome stress test
+const ENC = [
+  {n:'E1 · gap 0 / 4 / 8', why:'original proposal',
+   f:(s,px)=>mk([0,4,8][s],px,'#c8ccd4')},
+  {n:'E2 · gap 0 / 5 / 11', why:'separation widened to the frame',
+   f:(s,px)=>mk([0,5,11][s],px,'#c8ccd4')},
+  {n:'E3 · split + height', why:'split = held, height drop = suspended',
+   f:(s,px)=>{const h=[18,18,10][s], y=[3,3,7][s], sep=[0,6,6][s];
+     return `<svg class="mk" viewBox="0 0 24 24" width="${px}" height="${px}"
+       style="--sep:${sep};color:#c8ccd4">
+       <rect class="l" x="7" y="${y}" width="5" height="${h}" rx="1"/>
+       <rect class="r" x="12" y="${y}" width="5" height="${h}" rx="1"/></svg>`;}},
+];
+const ORDER=[0,1,2,0,2,1,0,1,2,0];
+document.getElementById('stress').innerHTML = ENC.map(e=>`
+  <div style="margin-top:18px">
+    <div class="cap" style="text-align:left;margin-bottom:8px">${e.n}
+      <span style="color:var(--muted);letter-spacing:0">&nbsp;&mdash; ${e.why}</span></div>
+    <div style="display:flex;gap:14px;align-items:center;background:var(--surface);
+                border:1px solid var(--line);border-radius:8px;padding:12px 14px">
+      ${ORDER.map(s=>e.f(s,20)).join('')}
+      <span style="margin-left:auto;display:flex;gap:14px;align-items:flex-end">
+        ${[0,1,2].map(s=>e.f(s,44)).join('')}</span>
+    </div>
+  </div>`).join('');
+document.getElementById('verdict').textContent =
+  'Sequence in every row: normal, disrupted, suspended, normal, suspended, disrupted, normal, disrupted, suspended, normal. Reference triple at 44px on the right.';
+</script>
+</body>
+</html>

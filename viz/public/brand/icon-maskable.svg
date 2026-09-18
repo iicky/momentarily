@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Maskable: full-bleed ground, mark inside the central 80% safe circle. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img">
+  <rect width="100" height="100" fill="#16181d"/>
+  <g fill="#c8ccd4">
+  <rect x="34.8333" y="30.5" width="10.8333" height="39" rx="5.41667"/>
+  <rect x="54.3333" y="30.5" width="10.8333" height="39" rx="5.41667"/>
+  </g>
+</svg>

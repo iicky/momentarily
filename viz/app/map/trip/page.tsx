@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSnapshot, useCoords, useTopology } from "../../useData";
 import { PageHeader, RouteBullet } from "../../ui";
+import { StateMark, clsToMarkKind } from "../../StateMark";
 import { undirected, edgesFor, orderTrip, projector } from "@/lib/stations";
 import { fmtMinutes, NO_RECOVERY_ESTIMATE } from "@/lib/feed";
 import type { Snapshot } from "@/lib/types";
@@ -292,16 +293,22 @@ function SegPanel({ snap, route, trip }: { snap: Snapshot; route: string; trip: 
                 <Link href={`/stations/${s.toId}`}>{s.toName}</Link>
               </span>
               {s.status ? (
-                <span className={`cond ${s.status}`}>
-                  {s.status}
-                  {s.status === "disrupted" && s.recoveryMin != null
-                    ? ` · ~${fmtMinutes(s.recoveryMin)}`
-                    : s.status === "disrupted" && s.recoveryWithheld
-                      ? ` · ${NO_RECOVERY_ESTIMATE}`
-                      : ""}
-                </span>
+                <>
+                  <StateMark kind={clsToMarkKind(s.status)} size={12} />
+                  <span className={`cond ${s.status}`}>
+                    {s.status}
+                    {s.status === "disrupted" && s.recoveryMin != null
+                      ? ` · ~${fmtMinutes(s.recoveryMin)}`
+                      : s.status === "disrupted" && s.recoveryWithheld
+                        ? ` · ${NO_RECOVERY_ESTIMATE}`
+                        : ""}
+                  </span>
+                </>
               ) : (
-                <span className="cond unknown">—</span>
+                <>
+                  <StateMark kind="muted" size={12} />
+                  <span className="cond unknown">—</span>
+                </>
               )}
             </li>
           ))}

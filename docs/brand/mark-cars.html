@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Momentarily — the train-car system</title>
+<style>
+  :root{
+    --ground:#16181d; --surface:#1b1e24; --elevated:#21252b; --line:#2c313a;
+    --bright:#c8ccd4; --text:#abb2bf; --text-2:#828997; --muted:#5c6370;
+    --normal:#98c379; --disrupted:#e5c07b; --suspended:#e06c75;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: system-ui, -apple-system, sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--text);font:14px/1.55 var(--sans);
+       -webkit-font-smoothing:antialiased;padding:28px 24px 64px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font:600 20px/1.2 var(--mono);color:var(--bright);margin:0 0 6px;letter-spacing:-.01em}
+  h2{font:600 12px/1 var(--mono);color:var(--bright);text-transform:uppercase;
+     letter-spacing:.14em;margin:44px 0 4px}
+  .sub{color:var(--text-2);margin:0 0 14px;max-width:68ch}
+  .note{color:var(--muted);font-size:12.5px;max-width:72ch;margin:10px 0 0}
+  section{border-top:1px solid var(--line);padding-top:4px}
+  .row{display:flex;flex-wrap:wrap;gap:14px;margin-top:16px;align-items:flex-end}
+  .cell{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+        padding:16px;display:flex;flex-direction:column;align-items:center;gap:9px}
+  .cap{font:600 10px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.12em;
+       color:var(--text-2);text-align:center}
+  .spec{font:11px/1.45 var(--mono);color:var(--muted);text-align:center}
+  mark{background:none;color:var(--bright);font-weight:600}
+  svg.mk{display:block;overflow:visible}
+  svg.mk rect{fill:currentColor}
+  svg.mk.anim rect{transition:x .55s cubic-bezier(.2,.85,.2,1), y .55s ease, height .55s ease}
+  @media (prefers-reduced-motion: reduce){svg.mk.anim rect{transition:none}}
+  table{border-collapse:collapse;margin-top:16px;font:12px/1.5 var(--mono);width:100%}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}
+  th{color:var(--text-2);font-weight:600;text-transform:uppercase;letter-spacing:.1em;font-size:10px}
+  td.n{color:var(--bright)}
+  .scan{display:flex;gap:15px;align-items:center;background:var(--surface);
+        border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-top:10px}
+  .col{display:inline-flex;flex-direction:column;gap:0;background:var(--surface);
+       border:1px solid var(--line);border-radius:8px;padding:6px 0;min-width:210px}
+  .col .r{display:flex;align-items:center;gap:10px;padding:5px 13px}
+  .col .r + .r{border-top:1px solid var(--line)}
+  .rid{font:700 11px/1 var(--sans);color:#fff;width:19px;height:19px;border-radius:50%;
+       display:grid;place-items:center;flex:none}
+  .rid.dk{color:#000}
+  .lbl{font:11px/1 var(--mono);color:var(--muted);margin-left:auto}
+  input[type=range]{width:230px;accent-color:#56b6c2}
+  .ctl{display:flex;gap:14px;align-items:center;margin-top:16px;flex-wrap:wrap}
+  .read{font:600 12px/1 var(--mono);color:var(--bright);min-width:150px}
+  button{font:600 11px/1 var(--mono);background:var(--elevated);color:var(--bright);
+         border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer;
+         text-transform:uppercase;letter-spacing:.1em}
+  button:hover{border-color:var(--bright)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Momentarily — the train-car system</h1>
+<p class="sub">Two cars seen from above. Identical height, identical width, never touching.
+<mark>Gap is analog</mark> &mdash; it scales with predicted delay. <mark>Height is binary</mark> &mdash;
+full means running, reduced means suspended. At rest the mark sits at pause proportions, which for
+this product is a correct reading rather than a borrowed one.</p>
+<p class="sub" style="border-left:2px solid var(--normal);padding-left:12px">
+<mark>Verdict after drawing it.</mark>
+The <strong>height bit passes</strong> the 20px monochrome test cleanly &mdash; suspended is instantly
+findable in a scan and in an aligned list (&sect;5).
+The <strong>analog gap reads at the extremes</strong> and is deliberately near-invisible at small
+delays: a 6-minute delay in this city <em>is</em> normal, so a mark that barely moves there is honest
+rather than broken. Only material delay visibly spreads the cars.
+<strong>Stadium ends win</strong> at display size and cost nothing at 20px, so no optical-size split
+is needed (&sect;3).
+<strong>The rotated version is dead</strong> &mdash; dimensionally truer, but it collapses into an
+equals sign by 32px (&sect;6). The caveat did not survive its own fix.
+And the property that falls out for free: nominal sits at <strong>0.80 : 1</strong>, inside pause
+proportions, but by ten minutes it is past <strong>1.59 : 1</strong>. <mark>The logo is a pause button;
+delay turns it into something that is only itself.</mark></p>
+
+<section>
+<h2>1 · The spec</h2>
+<table>
+<tr><th>channel</th><th>type</th><th>range</th><th>carries</th><th>must survive 20px</th></tr>
+<tr><td class="n">gap</td><td>analog</td><td>4 → 11 (saturating)</td><td>delay magnitude</td><td>no &mdash; rewards a look</td></tr>
+<tr><td class="n">height</td><td>binary</td><td>18 / 10</td><td>service present</td><td><strong>yes</strong></td></tr>
+<tr><td class="n">bar width</td><td>fixed</td><td>5</td><td>&mdash;</td><td>fixed so gap reads as footprint</td></tr>
+</table>
+<p class="note">Mapping is exponential-saturating:
+<span style="font-family:var(--mono);color:var(--text-2)">gap = 4 + 7 · (1 − e<sup>−r/12</sup>)</span>
+where <span style="font-family:var(--mono)">r</span> is predicted recovery minutes. Sensitive in the
+0&ndash;15&nbsp;min band where riders actually care, compressed in the tail where 45 vs 60 is the same
+shrug. Bounded by construction, so the mark can never break its own frame.</p>
+</section>
+
+<section>
+<h2>2 · The analog gauge</h2>
+<p class="sub">Gap sweeping across the delay range at display size. Nominal at left is the resting
+mark &mdash; the logo.</p>
+<div class="row" id="sweep"></div>
+</section>
+
+<section>
+<h2>3 · End treatment &mdash; buying back distinctiveness</h2>
+<p class="sub">At pause proportions the silhouette is a pause glyph, and no argument changes that.
+What can change is <em>texture</em>: square ends read as a UI control, fully rounded ends read as
+<em>objects</em> &mdash; and train cars have rounded ends. Same silhouette family, different signal.</p>
+<div class="row" id="ends"></div>
+</section>
+
+<section>
+<h2>4 · The three reference states</h2>
+<div class="row" id="states"></div>
+<p class="note">Suspended maxes both channels at once &mdash; gap saturated, height dropped. The two
+signals reinforce rather than compete, and "less train" is the whole reading.</p>
+</section>
+
+<section>
+<h2>5 · The diagnostic &mdash; 20px, colour removed</h2>
+<p class="sub">The claim to test: does the analog gap read at 20px, and does the height bit survive?
+Top row is a scan; below it the same states in an <em>aligned column</em>, which is how a route list
+actually renders &mdash; and where fixed bar width turns gap into total footprint.</p>
+<div class="scan" id="scan"></div>
+<div class="row" id="cols"></div>
+<p class="note" id="seq"></p>
+</section>
+
+<section>
+<h2>6 · Dimensional honesty &mdash; the rotated version</h2>
+<p class="sub">One caveat on the metaphor: a train from above is much <em>longer</em> than it is wide,
+so strictly, cars nose-to-tail should stack along the travel axis. Rotated, the mark becomes a track
+diagram and is dimensionally true &mdash; but it stops being a pause glyph. Shown for comparison, not
+as a recommendation.</p>
+<div class="row" id="rot"></div>
+</section>
+
+<section>
+<h2>7 · Live &mdash; drive it with delay</h2>
+<div class="ctl">
+  <input type="range" id="slider" min="0" max="45" value="0" step="1">
+  <span class="read" id="read"></span>
+  <button id="susp">toggle suspended</button>
+  <button id="demo">run onset</button>
+</div>
+<div class="row">
+  <div class="cell"><svg class="mk anim" id="live" viewBox="0 0 24 24" width="132" height="132"
+    style="color:var(--bright)"><rect id="L" x="7.5" y="3" width="5" height="18" rx="2.5"/>
+    <rect id="R" x="11.5" y="3" width="5" height="18" rx="2.5"/></svg><div class="cap">132 px</div></div>
+  <div class="cell"><svg class="mk anim" id="live2" viewBox="0 0 24 24" width="20" height="20"
+    style="color:var(--bright)"><rect x="7.5" y="3" width="5" height="18" rx="2.5"/>
+    <rect x="11.5" y="3" width="5" height="18" rx="2.5"/></svg><div class="cap">20 px</div></div>
+</div>
+</section>
+
+<section>
+<h2>8 · In context</h2>
+<div class="row" id="ctx"></div>
+</section>
+
+<section>
+<h2>9 &middot; N cars &mdash; and the one rule that keeps it coherent</h2>
+<p class="sub">The primitive scales. But <mark>the gap already means delay</mark>, so whatever
+<span style="font-family:var(--mono)">N</span> indexes must be sequential in a dimension where
+&ldquo;distance between consecutive items&rdquo; is meaningful &mdash; time or space. Index identity and
+the gap goes silent, which spends the system's only quantitative channel on nothing.</p>
+<div class="row" id="ladder"></div>
+<p class="note">Size floor: at <span style="font-family:var(--mono)">N=8</span> a nominal consist is
+68 units wide against a car height of 18. These are card-and-row components, never icons. The
+<strong>mark stays 2 forever</strong> &mdash; N-car strips are a derived pattern, not a logo variant,
+the same way murk's CSS diamond bullet is a derived use of a fixed mark.</p>
+</section>
+
+<section>
+<h2>10 &middot; What the strip can say</h2>
+<p class="sub">Successive trains, gaps as headways. This is where your extension earns its keep &mdash;
+the two classic failure modes become <em>shapes</em>, not numbers. Synthetic below; in production the
+time strip is drivable per tick, while a spatial station strip needs
+<span style="font-family:var(--mono)">segment_flow</span> joined to GTFS static stop ordering, which
+one snapshot does not carry.</p>
+<div id="patterns"></div>
+<p class="sub" style="margin-top:22px">And the anti-example, for the rule above:</p>
+<div class="row" id="anti"></div>
+</section>
+
+<section>
+<h2>11 &middot; Why nominal could never be zero</h2>
+<p class="sub">Your instinct to reject the joined state was right for a reason past aesthetics.
+Headway fails in <em>two</em> directions &mdash; gapping and bunching &mdash; so
+<mark>nominal is a neutral, not a floor</mark>. Below 4 the cars crowd; above it they spread. Zero has
+to stay reserved for &ldquo;stacked,&rdquo; which means normal cannot sit there.</p>
+<div class="row" id="bidir"></div>
+</section>
+
+</div>
+<script>
+const gapOf = r => 4 + 7*(1 - Math.exp(-r/12));
+// centre the pair in the 24 box: total = 5 + gap + 5
+function bars(gap, h, rx){
+  const total = 10 + gap, x0 = (24-total)/2, y = (24-h)/2;
+  return [{x:x0, y, h}, {x:x0+5+gap, y, h}, rx];
+}
+function mk(gap, h, px, color, rx=2.5, cls=''){
+  const [a,b] = bars(gap,h,rx);
+  return `<svg class="mk ${cls}" viewBox="0 0 24 24" width="${px}" height="${px}" style="color:${color}">
+    <rect x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="5" height="${h}" rx="${rx}"/>
+    <rect x="${b.x.toFixed(2)}" y="${b.y.toFixed(2)}" width="5" height="${h}" rx="${rx}"/></svg>`;
+}
+const FULL=18, SHORT=10, NOM=4, MAXG=11;
+// 2 · sweep
+const SW=[0,3,6,10,16,25,45];
+document.getElementById('sweep').innerHTML = SW.map((r,i)=>{const g=gapOf(r);
+  return `<div class="cell" ${i===0?'style="border-color:#3f5a46"':''}>
+    ${mk(g,FULL,84,i===0?'var(--normal)':'var(--disrupted)')}
+    <div class="cap">${r===0?'nominal · logo':r+' min'}</div>
+    <div class="spec">gap ${g.toFixed(1)}<br>${(g/5).toFixed(2)} : 1</div></div>`;}).join('');
+// 3 · ends
+document.getElementById('ends').innerHTML = [
+  [1,'square ends','rx 1 · reads as a UI control'],
+  [1.6,'soft','rx 1.6 · noncommittal'],
+  [2.5,'stadium · recommended','rx 2.5 · reads as an object'],
+].map(([rx,cap,sp],i)=>`<div class="cell" ${i===2?'style="border-color:#3f5a46"':''}>
+  <div style="display:flex;gap:18px;align-items:flex-end">
+    ${[96,32,20].map(px=>mk(NOM,FULL,px,'var(--bright)',rx)).join('')}</div>
+  <div class="cap">${cap}</div><div class="spec">${sp}</div></div>`).join('');
+// 4 · states
+const REF=[['normal',NOM,FULL,'var(--normal)','gap 4 · full'],
+           ['delayed 10 min',gapOf(10),FULL,'var(--disrupted)','gap '+gapOf(10).toFixed(1)+' · full'],
+           ['suspended',MAXG,SHORT,'var(--suspended)','gap 11 · height 10']];
+document.getElementById('states').innerHTML = REF.map(([k,g,h,c,sp])=>
+  `<div class="cell" style="flex:1">${mk(g,h,104,c)}
+   <div class="cap">${k}</div><div class="spec">${sp}</div></div>`).join('');
+// 5 · diagnostic
+const TEST=[['normal',NOM,FULL],['delayed 6',gapOf(6),FULL],['delayed 20',gapOf(20),FULL],
+            ['suspended',MAXG,SHORT]];
+const ORDER=[0,3,1,0,2,3,0,1,2,0,3,1];
+document.getElementById('scan').innerHTML =
+  ORDER.map(i=>mk(TEST[i][1],TEST[i][2],20,'#c8ccd4')).join('') +
+  `<span style="margin-left:auto;display:flex;gap:16px;align-items:center">
+   ${TEST.map(t=>mk(t[1],t[2],40,'#c8ccd4')).join('')}</span>`;
+const RT=[['1','#EE352E',0],['A','#2850AD',1],['7','#B933AD',3],['G','#6CBE45',0],
+          ['F','#FF6319',2],['L','#A7A9AC',0],['Q','#FCCC0A',1],['J','#996633',3]];
+document.getElementById('cols').innerHTML = [['#c8ccd4','monochrome'],[null,'with hue']]
+  .map(([mono,cap])=>`<div><div class="col">${RT.map(([id,col,ti])=>{
+    const t=TEST[ti], c = mono || ['var(--normal)','var(--disrupted)','var(--disrupted)','var(--suspended)'][ti];
+    return `<div class="r"><span class="rid ${col==='#FCCC0A'||col==='#A7A9AC'?'dk':''}"
+      style="background:${col}">${id}</span>${mk(t[1],t[2],20,c)}
+      <span class="lbl">${t[0]}</span></div>`;}).join('')}</div>
+    <div class="cap" style="margin-top:8px">${cap}</div></div>`).join('');
+document.getElementById('seq').textContent =
+  'Scan order: normal, suspended, delayed-6, normal, delayed-20, suspended, normal, delayed-6, delayed-20, normal, suspended, delayed-6. Reference four at 40px on the right.';
+// 6 · rotated
+function rot(gap,h,px,color,rx=2.5){
+  const total=10+gap, y0=(24-total)/2, x=(24-h)/2;
+  return `<svg class="mk" viewBox="0 0 24 24" width="${px}" height="${px}" style="color:${color}">
+    <rect x="${x}" y="${y0.toFixed(2)}" width="${h}" height="5" rx="${rx}"/>
+    <rect x="${x}" y="${(y0+5+gap).toFixed(2)}" width="${h}" height="5" rx="${rx}"/></svg>`;}
+document.getElementById('rot').innerHTML = [[NOM,FULL,'nominal'],[gapOf(20),FULL,'delayed'],[MAXG,SHORT,'suspended']]
+  .map(([g,h,k])=>`<div class="cell" style="flex:1">
+    <div style="display:flex;gap:18px;align-items:center">
+      ${[96,32,20].map(px=>rot(g,h,px,'var(--bright)')).join('')}</div>
+    <div class="cap">${k} · rotated</div></div>`).join('');
+// 7 · live
+let susp=false;
+function apply(r){
+  const g = susp ? MAXG : gapOf(r), h = susp ? SHORT : FULL;
+  const total=10+g, x0=(24-total)/2, y=(24-h)/2;
+  [['L',x0],['R',x0+5+g]].forEach(([id,x])=>{const e=document.getElementById(id);
+    e.setAttribute('x',x.toFixed(2)); e.setAttribute('y',y.toFixed(2)); e.setAttribute('height',h);});
+  document.getElementById('live2').innerHTML =
+    mk(g,h,20,'var(--bright)').replace(/^<svg[^>]*>/,'').replace(/<\/svg>$/,'');
+  document.getElementById('read').textContent =
+    susp ? 'suspended · gap 11.0' : `${r} min · gap ${g.toFixed(1)}`;
+}
+const sl=document.getElementById('slider');
+sl.oninput=()=>{susp=false;apply(+sl.value);};
+document.getElementById('susp').onclick=()=>{susp=!susp;apply(+sl.value);};
+document.getElementById('demo').onclick=()=>{susp=false;let r=0;sl.value=0;apply(0);
+  const t=setInterval(()=>{r+=3;if(r>24){clearInterval(t);return;}sl.value=r;apply(r);},160);};
+apply(0);
+// 8 · context
+document.getElementById('ctx').innerHTML = `<div class="cell" style="flex:1">
+  <div style="display:flex;gap:26px;align-items:center">
+    ${[[NOM,FULL,'var(--normal)'],[gapOf(8),FULL,'var(--disrupted)'],[MAXG,SHORT,'var(--suspended)']]
+      .map(([g,h,c])=>mk(g,h,128,c)).join('')}</div>
+  <div class="cap">display size · normal / delayed / suspended</div></div>`;
+// ---- N-car strips ----
+function strip(gaps, h, unit, color, rx=2.5){
+  const n = gaps.length + 1;
+  const total = n*5 + gaps.reduce((a,b)=>a+b,0);
+  const y = (24-h)/2; let x = 0; const out=[];
+  for(let i=0;i<n;i++){
+    out.push(`<rect x="${x.toFixed(2)}" y="${y}" width="5" height="${h}" rx="${rx}"/>`);
+    x += 5 + (gaps[i] ?? 0);
+  }
+  return `<svg class="mk" viewBox="0 0 ${total.toFixed(2)} 24"
+    width="${(unit*total/24).toFixed(1)}" height="${unit}" style="color:${color}">${out.join('')}</svg>`;
+}
+const rep=(n,v)=>Array(n).fill(v);
+// 9 · ladder
+document.getElementById('ladder').innerHTML = [2,3,5,8].map(n=>{
+  const g=rep(n-1,NOM), total=n*5+(n-1)*NOM;
+  return `<div class="cell" ${n===2?'style="border-color:#3f5a46"':''}>
+    ${strip(g,FULL,72,n===2?'var(--normal)':'var(--bright)')}
+    <div class="cap">${n} cars${n===2?' · the mark':''}</div>
+    <div class="spec">${n-1} gap${n>2?'s':''} · ${total} units wide</div></div>`;}).join('');
+// 10 · patterns
+const PAT=[
+  ['regular service', rep(6,NOM), 'even gaps · nothing to see', 'var(--normal)'],
+  ['gapping', [NOM,NOM,gapOf(22),NOM,NOM,NOM], 'one hole · a train is missing', 'var(--disrupted)'],
+  ['bunching', [NOM,1.5,1.5,gapOf(18),NOM,NOM], 'three crowded, then a hole', 'var(--disrupted)'],
+  ['suspended stretch', [NOM,NOM,MAXG,MAXG,NOM,NOM], 'wide and short through the middle', 'var(--suspended)'],
+];
+document.getElementById('patterns').innerHTML = PAT.map(([k,g,why,c])=>`
+  <div style="display:flex;gap:18px;align-items:center;background:var(--surface);
+              border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-top:10px">
+    <span style="min-width:150px" class="cap">${k}</span>
+    ${strip(g, k==='suspended stretch'?13:FULL, 34, c)}
+    <span class="spec" style="margin-left:auto;text-align:right">${why}</span></div>`).join('');
+// 10b · anti-example
+document.getElementById('anti').innerHTML = `
+  <div class="cell" style="border-color:#4a2a2f">
+    ${strip(rep(2,NOM),FULL,72,'var(--suspended)')}
+    <div class="cap" style="color:var(--suspended)">N = routes in a trunk</div>
+    <div class="spec">4 / 5 / 6 &mdash; what does the<br>gap between the 4 and the 5 mean?<br>
+      <strong>nothing.</strong> channel wasted</div></div>
+  <div class="cell" style="border-color:#3f5a46">
+    ${strip([NOM,gapOf(14),NOM],FULL,72,'var(--normal)')}
+    <div class="cap" style="color:var(--normal)">N = successive trains</div>
+    <div class="spec">every gap is a measured<br>headway · channel earns its keep</div></div>`;
+// 11 · bidirectional
+document.getElementById('bidir').innerHTML = [
+  [1.2,'bunched','gap 1.2 · trains stacked'],
+  [NOM,'nominal · neutral','gap 4 · the logo'],
+  [gapOf(15),'gapped','gap '+gapOf(15).toFixed(1)+' · a train is late'],
+].map(([g,k,sp],i)=>`<div class="cell" style="flex:1${i===1?';border-color:#3f5a46':''}">
+  ${mk(g,FULL,92,i===1?'var(--normal)':'var(--disrupted)')}
+  <div class="cap">${k}</div><div class="spec">${sp}</div></div>`).join('');
+</script>
+</body>
+</html>

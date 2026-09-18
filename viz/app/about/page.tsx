@@ -36,12 +36,25 @@ export default function AboutPage() {
 
         <h2 className="grp">How status is decided</h2>
         <p>
-          The status we publish follows train movement first. A line reads
-          disrupted when its trains stop moving the way they should, not because
-          an alert was posted. The alerts feed is the cross-reference: it names
-          the likely cause behind a call, but it does not trigger the call. The
-          two are different signals, so when they disagree, the disagreement is
-          itself the signal.
+          A line&apos;s condition is set by the severity of what the MTA has
+          announced. An active non-planned alert at a severe tier — Severe Delays
+          or a suspension — reads as disrupted or suspended. A planned No
+          Scheduled Service alert reads as not scheduled. Everything else reads
+          as normal. The alert feed drives the condition call; train movement
+          does not.
+        </p>
+        <p>
+          Train movement drives separate surfaces: the per-segment and
+          per-station movement reads, the observed headway at each
+          line&apos;s reference stop, and the platform crowding estimate. These
+          describe what is happening on the tracks without changing the
+          condition label.
+        </p>
+        <p>
+          Recovery is how long disruptions like this one have actually lasted,
+          conditioned on how long this one has already been going. It is an
+          empirical count from past incidents of the same type — not a fitted
+          model.
         </p>
 
         <h2 className="grp">What freshness means</h2>
@@ -62,13 +75,14 @@ export default function AboutPage() {
         <h2 className="grp">What we do not know</h2>
         <ul>
           <li>
-            If the trains keep moving but riders are stuck on a platform, the
-            movement signal can miss it.
+            Condition follows the MTA alert feed. If the MTA has not posted an
+            alert, a real disruption will read as normal even if the movement
+            surfaces show trains are stuck.
           </li>
           <li>
-            We can measure how often the movement signal calls a moving line
-            stuck, but not how often it misses a stuck line, because no archived
-            movement truth exists to grade the misses against.
+            There is no archived truth for unannounced disruptions, so we cannot
+            measure how often condition misses something real. Only incidents the
+            alert feed captured can be graded.
           </li>
           <li>
             Grades on the Models page compare the model against its own published

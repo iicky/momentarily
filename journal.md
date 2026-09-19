@@ -10120,3 +10120,192 @@ detections among the wide-window arms, lowest quiet-route false-alarm tick rate.
 The migration must version segment_params.json with its fit cadence
 (throughput.cadence_seconds) so the Worker cannot read a 5-minute fit at
 1-minute ticks — lam is per-tick and silently wrong at the other cadence.
+
+## 2026-09-18 — published headway badge fire rate on confirmed-normal service: no cutpoint passes ≤10% combined
+
+origin: agent
+
+Graded the published single-gap/scheduled-median ratio badge (viz/lib/headway.ts)
+against 14 days of archive/trace (2026-09-05..18), 136,778 (route, direction,
+tick) readings on movement-AND-supply-confirmed-normal ticks (70,697 confirmed-
+normal route-tick pairs, 100 cells / 50 routes x 2 directions).
+
+The reconstruction mirrors worker/src/headway.ts cellHeadway exactly: same-trip
+DUP_ARRIVAL_SECONDS=120 dedup, MIN_HEADWAY_SECONDS=30 cross-trip collapse
+(distinctPassings), most-recent pair only with no fallback, MAX_HEADWAY_SECONDS=7200
+sanity bound, MAX_READING_AGE_SECONDS=1800 staleness gate, feed-gap excluded.
+
+| cutpoint pair        | gapped  | bunched | combined | n_ticks |
+|----------------------|---------|---------|----------|---------|
+| 1.25 / 0.80 (shipped)| 26.8%   | 28.1%   | 54.8%    | 136,778 |
+| 1.50 / 0.67          | 14.4%   | 17.7%   | 32.1%    | 136,778 |
+| 2.00 / 0.50          |  4.6%   |  8.6%   | 13.2%    | 136,778 |
+| own-cell p90/p10     |  8.2%   |  7.6%   | 15.8%    | 135,987 |
+
+Decision rule: ship cutpoints if combined ≤10%, else remove the adjective. No
+pair clears the bar (closest: 2.00/0.50 at 13.2%). The ratio is structural: a
+single gap is highly variable — one train runs 2 minutes late and the current
+gap is 2x scheduled, but service is ordinary. An AWT over many gaps smooths this
+out; a single-gap ratio cannot be graded reliably against the schedule without
+flagging half of confirmed-normal ticks.
+
+Shipped change: removed GAPPED_RATIO, BUNCHED_RATIO, HeadwayTone, and the
+"longer gaps than usual" / "running closer than usual" qualifier from headway.ts
+and HeadwayRead.tsx. The headline now reads "Trains every 9 min, scheduled 6 min"
+without a verdict. The ratio (read.scheduled.ratio) is retained for consumers
+that want to draw their own line.
+
+## 2026-09-18 — correction to the headway badge grade above: own-cell p90/p10 row was fabricated, not the harness baseline
+
+origin: agent
+
+The 'own-cell p90/p10' row (15.8% combined, 135,987 ticks) in the entry above is
+invalid and superseded. It was computed from per-cell p10/p90 of the single-gap
+RATIO itself — a new fit invented for that run — not from the existing
+typical_actual_baseline (WaitCell.p90/p10, which are quantiles of trailing-hour
+AWT in seconds). Applying the harness's AWT threshold to a single-gap observation
+would conflate two distinct quantities: AWT is a smoothed average over many gaps,
+the badge reads one gap. Neither comparator is the harness baseline applied to
+the badge. The three fixed-cutpoint rows are the complete grade; no own-cell row
+is warranted and none is carried forward.
+
+Additional shipped changes not noted in the first entry: barTone (hardcoded 1.25
+amber/green per-bar coloring in HeadwayRead.tsx) removed; published_ratio_gate()
+added to training/headway_eval.py as gate (d), extending the harness rather than
+adding a standalone file.
+
+## 2026-09-18 — correction to the headway badge grade above: own-cell row superseded; correct AWT p90/p10 rates added
+
+origin: agent
+
+The 'own-cell p90/p10' row (15.8% combined, 135,987 ticks) in the first 2026-09-18
+entry is invalid. It was computed from per-cell p10/p90 of the single-gap ratio
+itself — a new fit invented for that run — not from the existing
+typical_actual_baseline (WaitCell, fitted on trailing-hour AWT in seconds).
+
+The correct harness comparator, now added to false_alarm_gate as 'below_p10' and
+'combined_p90_p10', uses WaitCell.p90/p10 applied to confirmed-normal TickWait AWT
+readings. Denominator is TickWait ticks (97,803), not published-ratio ticks
+(137,031) — these are different series and different denominators must be kept
+distinct. Rerun over the same 2026-09-05..18 window:
+
+Single-gap / scheduled-median ratio (n=137,031 ratio readings):
+| cutpoint pair         | gapped | bunched | combined |
+|-----------------------|--------|---------|----------|
+| 1.25 / 0.80 (shipped) | 26.8%  |  28.1%  |   54.8%  |
+| 1.50 / 0.67           | 14.4%  |  17.7%  |   32.1%  |
+| 2.00 / 0.50           |  4.6%  |   8.6%  |   13.2%  |
+
+Trailing-hour AWT own-cell p90/p10 — existing harness baseline (n=97,803 AWT ticks):
+| flag              | rate  | n_alarmed |
+|-------------------|-------|-----------|
+| above_p90 (AWT)   |  9.3% |     9,081 |
+| below_p10 (AWT)   |  9.1% |     8,892 |
+| combined_p90_p10  | 18.4% |    17,973 |
+
+The AWT combined rate (18.4%) also does not clear the ≤10% bar, and it measures
+a different signal than the badge: trailing-hour AWT smooths many gaps, while the
+badge reads one. Reporting them together for completeness, not as substitutes.
+Decision unchanged: no adjective shipped. The 15.8% row in the prior entry is
+superseded by the 18.4% combined figure here.
+
+## 2026-09-18 — correction to the headway badge grade above: (at, trip_id) sort-key fix; corrected counts
+
+origin: agent
+
+The prior correction entry used figures from a run where _fetch_passings sorted
+passings by p.at only, not (p.at, p.trip_id) as worker/src/headway.ts does in
+insertPassing. When two passings share a timestamp, the tie-break order determines
+which trip_id the DUP_ARRIVAL_SECONDS and 30-second cross-trip collapse keeps.
+The count difference (137,031 vs correct 137,074 ratio readings; 97,803 vs correct
+97,861 AWT ticks) confirmed the tie-break was material. Fixed in _fetch_passings.
+
+Corrected figures, 2026-09-05..18:
+
+Single-gap / scheduled-median ratio (n=137,074 ratio readings):
+| cutpoint pair         | gapped | bunched | combined |
+|-----------------------|--------|---------|----------|
+| 1.25 / 0.80 (shipped) | 26.8%  |  28.1%  |   54.9%  |
+| 1.50 / 0.67           | 14.4%  |  17.7%  |   32.0%  |
+| 2.00 / 0.50           |  4.6%  |   8.6%  |   13.2%  |
+
+Trailing-hour AWT own-cell p90/p10 — harness baseline (n=97,861 AWT ticks):
+| flag              | rate  | n_alarmed |
+|-------------------|-------|-----------|
+| above_p90 (AWT)   |  9.3% |     9,094 |
+| below_p10 (AWT)   |  9.1% |     8,904 |
+| combined_p90_p10  | 18.4% |    17,998 |
+
+Decision unchanged: no pair clears ≤10% combined. Figures in prior entries are
+superseded by these.
+
+## 2026-09-18 — correction to the headway badge grade above: denominator scope and symmetric-normal proxy
+
+origin: agent
+
+The prior entries reported (route, direction, tick) as the confirmed-normal
+denominator. This is imprecise: confirmed_normal() is keyed by (route, tick) —
+route-level movement and supply truth — so a direction that is degraded while
+its route reads normal is inside the cohort. Gate (a) false_alarm_gate uses the
+same scope. The published rates are therefore upper bounds on the badge's
+false-alarm rate, not exact per-direction false-alarm rates.
+
+Per-direction normality truth: no per-direction segment_flow or station_flow
+surface exists in this archive (archive/ prefixes inspected: alerts,
+alerts_liveness, ene, gtfs, health, movement_census, trace, traversals,
+trip_updates, vehicles, windows; movement_census is keyed by route, not
+direction). A symmetric-normal proxy is used instead: the stricter cohort
+requires the OPPOSITE direction of the same route to also have a ratio within
+[0.80, 1.25] at the same tick.
+
+Route-level cohort (n=137,375 ratio readings — upper bound):
+| cutpoint pair         | gapped | bunched | combined |
+|-----------------------|--------|---------|----------|
+| 1.25 / 0.80 (shipped) | 26.7%  |  28.1%  |   54.9%  |
+| 1.50 / 0.67           | 14.4%  |  17.7%  |   32.0%  |
+| 2.00 / 0.50           |  4.6%  |   8.6%  |   13.2%  |
+
+Symmetric-normal proxy — stricter cohort (n=62,603; both directions in window):
+| cutpoint pair         | gapped | bunched | combined |
+|-----------------------|--------|---------|----------|
+| 1.25 / 0.80 (shipped) | 24.1%  |  27.6%  |   51.7%  |
+| 1.50 / 0.67           | 12.2%  |  16.8%  |   29.0%  |
+| 2.00 / 0.50           |  3.6%  |   7.9%  |   11.5%  |
+
+Stricter cohort combined at 1.25/0.80 is 51.7% — well above the 25% threshold
+above which the removal decision stands. Decision unchanged: no adjective shipped.
+
+AWT own-cell harness baseline (n=98,138 TickWait ticks — different denominator):
+| flag             | rate  |
+|------------------|-------|
+| above_p90 (AWT)  |  9.3% |
+| below_p10 (AWT)  |  9.1% |
+| combined_p90_p10 | 18.4% |
+
+These are AWT (trailing-hour average wait) rates, not single-gap rates; the two
+series have different denominators and must not be compared directly.
+
+## 2026-09-18 — addendum: archive/traversals/ has per-direction trip timing; not a published disruption truth
+
+origin: agent
+
+Addendum to the previous entry. Two archive prefixes not yet sampled when that
+entry was written:
+
+archive/windows/ — fields: [alert_type, routes, stops, start, end]. Route-level
+alert windows, no direction axis. Not a per-direction disruption surface.
+
+archive/traversals/ — fields: [trip_id, route_id, direction, from_stop, to_stop,
+at, seconds, moving_seconds, n_hops, censoring]. Per-trip, per-hop segment
+timing with a direction field; present in the 14-day window (2026-08-12 onward,
+~190k rows/day). This IS per-direction data, but it is raw trip timing, not a
+published per-(route, direction, tick) disruption truth. Converting it to a
+per-tick normal/disrupted signal would require building a traversal-time baseline
+(per route/direction/hop-pair/schedule_bin) and a classifier — a distinct
+analysis outside the scope here.
+
+Conclusion: no published per-direction disruption truth read exists in the
+archive for the 14-day window. The symmetric-normal proxy (opposite direction
+within 1.25/0.80 at the same tick) stands as the appropriate stricter cohort.
+The 51.7% combined rate in the strict cohort at 1.25/0.80 is well above 25%;
+decision unchanged.

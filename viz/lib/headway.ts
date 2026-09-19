@@ -17,11 +17,9 @@ import { HEADWAY_WINDOW_SIZE } from "../../shared/headway.ts";
 // scheduled artifact.
 export const THIN_N_TRIPS = 3;
 
-// How far the observed gap must sit from scheduled before the read calls it —
-// below these it reads "about on schedule". A gap 25% longer than the timetable
-// is a real wait; one 20% shorter is trains running closer than booked.
-export const GAPPED_RATIO = 1.25;
-export const BUNCHED_RATIO = 0.8;
+// No cutpoint pair for the gap/bunch ratio kept the confirmed-normal fire rate
+// below 10% over the measured window (2.0/0.5: 13.2% combined). The two numbers
+// are shown as-is; no adjective is added.
 
 // The worker caps the rolling window at this many gaps — a full hour of history.
 // The size is defined once in shared/headway.ts and re-exported here: a shorter
@@ -53,7 +51,6 @@ export function fmtGap(seconds: number): string {
   return `${Math.round(seconds / 60)} min`;
 }
 
-export type HeadwayTone = "gapped" | "bunched" | "onschedule";
 
 // Why a reading stands alone with no scheduled comparison — the three honest
 // degraded cases, kept distinct so the copy can say which one it is.
@@ -74,7 +71,6 @@ export interface HeadwayRead {
     seconds: number;
     nTrips: number;
     ratio: number; // observed / scheduled
-    tone: HeadwayTone;
     thin: boolean; // nTrips <= THIN_N_TRIPS — the median is soft
   } | null;
   // Present only when there is no comparison, saying which degraded case it is.
@@ -100,8 +96,6 @@ export function readHeadway(obs: Observation): HeadwayRead {
   }
   const scheduledSeconds = obs.scheduled.median_headway_s;
   const ratio = scheduledSeconds > 0 ? observedSeconds / scheduledSeconds : 1;
-  const tone: HeadwayTone =
-    ratio >= GAPPED_RATIO ? "gapped" : ratio <= BUNCHED_RATIO ? "bunched" : "onschedule";
   return {
     observedSeconds,
     observedAt: obs.observed_at,
@@ -110,7 +104,6 @@ export function readHeadway(obs: Observation): HeadwayRead {
       seconds: scheduledSeconds,
       nTrips: obs.scheduled.n_trips,
       ratio,
-      tone,
       thin: obs.scheduled.n_trips <= THIN_N_TRIPS,
     },
     observedOnly: null,
@@ -118,8 +111,7 @@ export function readHeadway(obs: Observation): HeadwayRead {
 }
 
 /** The one-line headline the views print, drawn from the read. Lay register,
- * no model jargon: the observed gap first, the scheduled gap when there is one,
- * and the bunched/gapped qualifier the timetable comparison licenses. */
+ * no model jargon: the observed gap first, the scheduled gap when there is one. */
 export function headwayHeadline(read: HeadwayRead): string {
   const observed = `Trains every ${fmtGap(read.observedSeconds)}`;
   if (read.scheduled === null) {
@@ -129,11 +121,5 @@ export function headwayHeadline(read: HeadwayRead): string {
     return `${observed} · no scheduled baseline for this hour`;
   }
   const sched = `scheduled ${fmtGap(read.scheduled.seconds)}`;
-  const qualifier =
-    read.scheduled.tone === "gapped"
-      ? "longer gaps than usual"
-      : read.scheduled.tone === "bunched"
-        ? "running closer than usual"
-        : "about on schedule";
-  return `${observed}, ${sched} — ${qualifier}`;
+  return `${observed}, ${sched}`;
 }

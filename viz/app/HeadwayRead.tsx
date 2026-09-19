@@ -14,17 +14,7 @@ import {
   headwayHeadline,
   readHeadway,
   HEADWAY_WINDOW_SIZE,
-  type HeadwayTone,
 } from "@/lib/headway";
-
-// Green when service is on schedule or running closer than booked; amber when
-// the gap has opened past the timetable. Neutral when there is nothing to
-// compare against, so an uncompared reading never borrows a healthy green.
-const TONE_CLASS: Record<HeadwayTone, string> = {
-  onschedule: "hw-ok",
-  bunched: "hw-ok",
-  gapped: "hw-gap",
-};
 
 /** One directional headway read for a route, or null to render nothing when the
  * surface carries no measurement for this (route, direction) this tick. */
@@ -35,27 +25,20 @@ export function HeadwayRead({
 }) {
   if (obs === null) return null;
   const read = readHeadway(obs);
-  const tone = read.scheduled?.tone ?? null;
-  const cls = tone ? TONE_CLASS[tone] : "hw-muted";
 
-  // Per-bar colouring against the scheduled median: a gap at or past the gapped
-  // threshold is amber, one at or under scheduled is green, between is neutral.
-  // Without a baseline every bar is neutral — the shape still reads, the health
-  // claim does not.
-  const sched = read.scheduled?.seconds ?? null;
   const maxGap = Math.max(...read.window, read.observedSeconds, 1);
 
   const shortWindow = read.window.length > 0 && read.window.length < HEADWAY_WINDOW_SIZE;
 
   return (
-    <div className={`hw-read ${cls}`}>
+    <div className="hw-read">
       <p className="hw-headline">{headwayHeadline(read)}</p>
       {read.window.length > 0 && (
         <div className="hw-strip" role="img" aria-label={stripLabel(read.window)}>
           {read.window.map((gap, i) => (
             <span
               key={i}
-              className={`hw-bar ${barTone(gap, sched)}`}
+              className="hw-bar hw-bar-neutral"
               style={{ height: `${Math.round((gap / maxGap) * 100)}%` }}
               title={fmtGap(gap)}
             />
@@ -63,6 +46,11 @@ export function HeadwayRead({
         </div>
       )}
       <p className="hw-note">
+        {read.scheduled !== null && (
+          <span className="hw-ratio">
+            {Math.round(read.scheduled.ratio * 100)}% of scheduled
+          </span>
+        )}
         {read.scheduled?.thin && (
           <span className="hw-flag">sparse timetable this hour — read the schedule loosely</span>
         )}
@@ -79,15 +67,6 @@ export function HeadwayRead({
       </p>
     </div>
   );
-}
-
-// Which colour a single gap bar takes against the scheduled median.
-function barTone(gap: number, scheduled: number | null): string {
-  if (scheduled === null || scheduled <= 0) return "hw-bar-neutral";
-  const ratio = gap / scheduled;
-  if (ratio >= 1.25) return "hw-bar-gap";
-  if (ratio <= 1.0) return "hw-bar-ok";
-  return "hw-bar-neutral";
 }
 
 // A spoken description of the strip for a screen reader: the gaps in order,

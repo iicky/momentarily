@@ -48,25 +48,25 @@ test("fmtGap speaks minutes above a minute and seconds below", () => {
   assert.equal(fmtGap(12), "10 sec"); // rounds to nearest 5
 });
 
-test("a reading longer than scheduled reads as longer gaps than usual", () => {
+test("a reading longer than scheduled carries the ratio, no adjective", () => {
   const read = readHeadway(obs({ value: 540, scheduled: { median_headway_s: 360, n_trips: 10 } }));
   assert.equal(read.observedOnly, null);
   assert.ok(read.scheduled);
-  assert.equal(read.scheduled.tone, "gapped");
   assert.equal(read.scheduled.thin, false);
-  assert.equal(headwayHeadline(read), "Trains every 9 min, scheduled 6 min — longer gaps than usual");
+  assert.equal(read.scheduled.ratio, 1.5); // 540 / 360
+  assert.equal(headwayHeadline(read), "Trains every 9 min, scheduled 6 min");
 });
 
-test("a reading close to scheduled reads as about on schedule", () => {
+test("a reading close to scheduled carries both numbers, no qualifier", () => {
   const read = readHeadway(obs({ value: 380, scheduled: { median_headway_s: 360, n_trips: 10 } }));
-  assert.equal(read.scheduled?.tone, "onschedule");
-  assert.equal(headwayHeadline(read), "Trains every 6 min, scheduled 6 min — about on schedule");
+  assert.ok(read.scheduled);
+  assert.equal(headwayHeadline(read), "Trains every 6 min, scheduled 6 min");
 });
 
-test("a reading well under scheduled reads as running closer than usual", () => {
+test("a reading well under scheduled carries the ratio, no adjective", () => {
   const read = readHeadway(obs({ value: 240, scheduled: { median_headway_s: 360, n_trips: 10 } }));
-  assert.equal(read.scheduled?.tone, "bunched");
-  assert.match(headwayHeadline(read), /running closer than usual$/);
+  assert.ok(read.scheduled);
+  assert.equal(headwayHeadline(read), "Trains every 4 min, scheduled 6 min");
 });
 
 test("a thin timetable cell is flagged but still carries its median", () => {
@@ -108,4 +108,10 @@ test("the window is carried through as the strip series, oldest first", () => {
     }),
   );
   assert.deepEqual(read.window, [600, 420, 240]);
+});
+
+test("ratio at 2x scheduled is 2.0", () => {
+  const read = readHeadway(obs({ value: 720, scheduled: { median_headway_s: 360, n_trips: 10 } }));
+  assert.ok(read.scheduled);
+  assert.equal(read.scheduled.ratio, 2.0); // 720 / 360
 });

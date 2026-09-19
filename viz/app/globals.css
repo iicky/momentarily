@@ -2673,15 +2673,6 @@ a.trip-stop-name:hover {
   padding: 10px 14px;
   margin: 0 0 14px;
 }
-.hw-read.hw-ok {
-  border-left-color: var(--normal);
-}
-.hw-read.hw-gap {
-  border-left-color: var(--disrupted);
-}
-.hw-read.hw-muted {
-  border-left-color: var(--unknown);
-}
 .hw-headline {
   margin: 0;
   font-size: 14px;

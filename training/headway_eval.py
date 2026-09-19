@@ -34,24 +34,30 @@ import json
 import random
 import statistics
 import sys
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from itertools import groupby
+from itertools import groupby, pairwise
 from typing import TYPE_CHECKING, cast
+from zoneinfo import ZoneInfo
 
 from momentarily.hmm import schedule_bin
 from training.eval_common import alert_night_witness, et_date, service_night
 from training.headway import (
+    DUP_ARRIVAL_SECONDS,
+    FEED_GAP_SECONDS,
     HEADWAY_MIN_NIGHTS,
     TICK_SECONDS,
     ReferenceStop,
+    ScheduledHeadwayCell,
     TickWait,
     WaitCell,
     headway_events,
     load_gtfs_zip,
     reference_arrivals,
+    scheduled_headway_baseline,
     scheduled_swt,
     select_reference_stops,
     tick_aligned_waits,
@@ -62,6 +68,7 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
     from training.r2_client import R2Config
+    from training.trace import Passing
 
 
 # route -> the GTFS-RT line-group feed whose freshness governs it, so a
@@ -76,6 +83,70 @@ ROUTE_FEED_GROUP: dict[str, str] = {
     "L": "l",
     **dict.fromkeys(("SI", "SS"), "si"),
 }
+
+# --- worker/src/headway.ts mirror (for published_ratio_gate) ---
+
+# Constants from worker/src/headway.ts.
+_MIN_HEADWAY_S = 30  # distinctPassings cross-trip collapse
+_MAX_HEADWAY_S = 7200  # intervalPublishable sanity bound
+_MAX_READING_AGE_S = 1800  # headwayObservations staleness gate
+
+_NYC_TZ = ZoneInfo("America/New_York")
+
+
+def _distinct_passings_for_cell(passings: Sequence[Passing]) -> list[Passing]:
+    """DUP_ARRIVAL_SECONDS same-trip dedup then MIN_HEADWAY_SECONDS cross-trip
+    collapse, mirroring worker insertPassing + distinctPassings."""
+    last_by_trip: dict[str, int] = {}
+    deduped: list[Passing] = []
+    for p in passings:
+        prev_at = last_by_trip.get(p.trip_id)
+        if prev_at is not None and (p.at - prev_at) < DUP_ARRIVAL_SECONDS:
+            continue
+        last_by_trip[p.trip_id] = p.at
+        deduped.append(p)
+    distinct: list[Passing] = []
+    for p in deduped:
+        if distinct and (p.at - distinct[-1].at) < _MIN_HEADWAY_S:
+            continue
+        distinct.append(p)
+    return distinct
+
+
+def _cell_headway_at_tick(
+    distinct: list[Passing],
+    tick: int,
+    gap_starts: list[int],
+    gaps: list[tuple[int, int]],
+) -> float | None:
+    """cellHeadway at one tick: last two distinct passings, no fallback.
+
+    Returns None if the reading is stale, the pair spans a feed gap, or the
+    gap exceeds MAX_HEADWAY_SECONDS — matching worker/src/headway.ts exactly."""
+    times = [p.at for p in distinct]
+    idx = bisect_right(times, tick) - 1
+    if idx < 0:
+        return None
+    last = distinct[idx]
+    if tick - last.at > _MAX_READING_AGE_S:
+        return None
+    if idx < 1:
+        return None
+    prev = distinct[idx - 1]
+    gap = last.at - prev.at
+    if gap > _MAX_HEADWAY_S:
+        return None
+    i = bisect_left(gap_starts, prev.at)
+    if i < len(gaps) and gaps[i][0] < last.at:
+        return None
+    return float(gap)
+
+
+def _hour_of_week(epoch_seconds: int) -> int:
+    """ET weekday (Mon=0) * 24 + ET hour, matching scheduled_headway_baseline key."""
+    dt = datetime.fromtimestamp(epoch_seconds, tz=_NYC_TZ)
+    return dt.weekday() * 24 + dt.hour
+
 
 # --- confirmed-normal reference ---
 
@@ -184,6 +255,10 @@ def above_p90(tw: TickWait, cell: WaitCell) -> bool:
     return tw.awt_sec > cell.p90
 
 
+def below_p10(tw: TickWait, cell: WaitCell) -> bool:
+    return tw.awt_sec < cell.p10
+
+
 def twice_typical(tw: TickWait, cell: WaitCell) -> bool:
     return tw.awt_sec > 2 * cell.p50
 
@@ -237,6 +312,8 @@ def false_alarm_gate(
     numbers to weigh against the movement bound."""
     per_flag_units: dict[str, dict[tuple[str, str], list[int]]] = {
         "above_p90": {},
+        "below_p10": {},
+        "combined_p90_p10": {},
         "twice_typical": {},
         "sustained_above_p90": {},
     }
@@ -255,6 +332,8 @@ def false_alarm_gate(
             night = (route, service_night(tw.tick).isoformat())
             for flag, fired in (
                 ("above_p90", above_p90(tw, cell)),
+                ("below_p10", below_p10(tw, cell)),
+                ("combined_p90_p10", above_p90(tw, cell) or below_p10(tw, cell)),
                 ("twice_typical", twice_typical(tw, cell)),
                 ("sustained_above_p90", tw.tick in sustained),
             ):
@@ -556,22 +635,151 @@ def severity_report(
     }
 
 
+# --- gate (d): published single-gap / scheduled-median badge ---
+
+
+@dataclass(frozen=True)
+class RatioFireRate:
+    """Fire rate of the published badge.
+
+    n_ticks is (route, direction, tick) readings where the ROUTE-level movement
+    and supply truths both read normal (confirmed_normal is keyed by (route, tick),
+    not (route, direction, tick)).  A direction that is degraded while its route
+    reads normal is inside the cohort, so fire rates are an upper bound on the
+    badge's false-alarm rate.  Gate (a) false_alarm_gate shares this scope."""
+
+    gapped: float  # fraction where gap/sched >= gap_thresh
+    bunched: float  # fraction where gap/sched <= bunch_thresh
+    combined: float  # fraction where either fires
+    n_ticks: int  # (route, direction, tick) readings in the cohort
+
+
+def published_ratio_gate(
+    passings: Mapping[tuple[str, str], Sequence[Passing]],
+    covered: list[int],
+    sched_baseline: Mapping[tuple[str, str, int], ScheduledHeadwayCell],
+    normal: set[tuple[str, int]],
+    *,
+    cutpoints: Sequence[tuple[float, float]] = (
+        (1.25, 0.80),
+        (1.50, 0.67),
+        (2.00, 0.50),
+    ),
+) -> dict[str, RatioFireRate]:
+    """Published single-gap / scheduled-median fire rates on confirmed-normal ticks.
+
+    Mirrors worker/src/headway.ts cellHeadway exactly (distinct passings with
+    DUP + 30 s collapse, last pair only, no fallback, MAX_HEADWAY 7200 s,
+    MAX_READING_AGE 1800 s, feed-gap excluded).
+
+    The denominator is (route, direction, tick) readings on ticks where the
+    ROUTE-level movement and supply truths both read normal.  confirmed_normal()
+    has no direction axis, so a direction degraded while its route reads normal
+    is counted.  Rates are therefore upper bounds on the badge false-alarm rate;
+    gate (a) false_alarm_gate uses the same scope.
+
+    An additional 'symmetric_normal' entry is computed as a stricter cohort:
+    readings where the OPPOSITE direction of the same route also has a ratio
+    reading within the 1.25/0.80 window at the same tick (symmetric-normal
+    proxy for per-direction normality, used in place of a per-direction truth
+    which is absent from this archive)."""
+    if not covered:
+        return {}
+
+    gaps: list[tuple[int, int]] = [
+        (a, b) for a, b in pairwise(covered) if b - a > FEED_GAP_SECONDS
+    ]
+    gap_starts = [g[0] for g in gaps]
+    distinct_by_cell = {
+        key: _distinct_passings_for_cell(ps) for key, ps in passings.items()
+    }
+
+    first_tick = (covered[0] // TICK_SECONDS) * TICK_SECONDS
+    last_tick = (covered[-1] // TICK_SECONDS) * TICK_SECONDS
+
+    # Confirmed-normal (route, direction, tick) rows with their published ratio.
+    rows: list[tuple[str, str, int, float]] = []
+    tick = first_tick
+    while tick <= last_tick:
+        how = _hour_of_week(tick)
+        for (route, direction), distinct in distinct_by_cell.items():
+            if (route, tick) not in normal:
+                continue
+            gap_s = _cell_headway_at_tick(distinct, tick, gap_starts, gaps)
+            if gap_s is None:
+                continue
+            sched_cell = sched_baseline.get((route, direction, how))
+            if sched_cell is None or sched_cell.median_headway_s <= 0:
+                continue
+            rows.append((route, direction, tick, gap_s / sched_cell.median_headway_s))
+        tick += TICK_SECONDS
+
+    n = len(rows)
+    out: dict[str, RatioFireRate] = {}
+
+    for gap_t, bunch_t in cutpoints:
+        label = f"{gap_t:.2f}/{bunch_t:.2f}"
+        gapped = sum(1 for _, _, _, r in rows if r >= gap_t)
+        bunched = sum(1 for _, _, _, r in rows if r <= bunch_t)
+        combined = sum(1 for _, _, _, r in rows if r >= gap_t or r <= bunch_t)
+        out[label] = RatioFireRate(
+            gapped=gapped / n if n else float("nan"),
+            bunched=bunched / n if n else float("nan"),
+            combined=combined / n if n else float("nan"),
+            n_ticks=n,
+        )
+
+    # Symmetric-normal proxy: stricter cohort where the OPPOSITE direction of
+    # the same route also has a ratio in [0.80, 1.25] at the same tick.
+    # Used in place of a per-direction normality truth, which is absent from
+    # this archive (movement_census is keyed by route, not direction).
+    _PROXY_LO, _PROXY_HI = 0.80, 1.25
+    other_in_window: set[tuple[str, str, int]] = {
+        (route, direction, tick)
+        for route, direction, tick, ratio in rows
+        if _PROXY_LO <= ratio <= _PROXY_HI
+    }
+    # For each row, the opposite direction is in the window when the partner
+    # (route, other_dir, tick) key is present in other_in_window.
+    _OPPOSITE = {"north": "south", "south": "north"}
+    strict_rows = [
+        (route, direction, tick, ratio)
+        for route, direction, tick, ratio in rows
+        if (route, _OPPOSITE.get(direction, ""), tick) in other_in_window
+    ]
+    ns = len(strict_rows)
+    for gap_t, bunch_t in cutpoints:
+        label = f"symmetric_normal/{gap_t:.2f}/{bunch_t:.2f}"
+        gapped = sum(1 for _, _, _, r in strict_rows if r >= gap_t)
+        bunched = sum(1 for _, _, _, r in strict_rows if r <= bunch_t)
+        combined = sum(1 for _, _, _, r in strict_rows if r >= gap_t or r <= bunch_t)
+        out[label] = RatioFireRate(
+            gapped=gapped / ns if ns else float("nan"),
+            bunched=bunched / ns if ns else float("nan"),
+            combined=combined / ns if ns else float("nan"),
+            n_ticks=ns,
+        )
+
+    return out
+
+
 # --- end-to-end run over the R2 archive ---
 
 
-def _reconstruct_waits(
+def _fetch_passings(
     cfg: R2Config,
     client: S3Client,
     reference_stops: Mapping[tuple[str, str], ReferenceStop],
     start: date,
     end: date,
-) -> dict[tuple[str, str], list[TickWait]]:
-    """Stream the trace archive day by day (~1440 objects/day) into per-reference-
-    stop passings (transition-keyed departures), then headways, then tick-aligned
-    waits. Per-day so the full
-    window's rows never sit in memory at once."""
+) -> tuple[dict[tuple[str, str], list[Passing]], list[int]]:
+    """Raw sorted passings per (route, direction) and covered ticks.
+
+    Streams the trace archive day by day so the full window's rows never sit
+    in memory at once.  Callers derive both TickWait series (via headway_events
+    + tick_aligned_waits) and the published single-gap series from one fetch."""
     from training.load_r2 import date_range, fetch_objects, list_keys
-    from training.trace import Passing, passings_from_trace
+    from training.trace import passings_from_trace
 
     accum: dict[tuple[str, str], list[Passing]] = defaultdict(list)
     covered: list[int] = []
@@ -584,9 +792,8 @@ def _reconstruct_waits(
         ).items():
             accum[key].extend(ps)
     for series in accum.values():
-        series.sort(key=lambda p: p.at)
-    events = headway_events(accum, sorted(covered))
-    return {k: tick_aligned_waits(v) for k, v in events.items()}
+        series.sort(key=lambda p: (p.at, p.trip_id))
+    return dict(accum), sorted(covered)
 
 
 def _truths(
@@ -693,8 +900,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     zf = load_gtfs_zip(args.gtfs_zip)
     reference_stops = select_reference_stops(zf)
     swt = scheduled_swt(zf, reference_stops)
+    sched_headway = scheduled_headway_baseline(zf, reference_stops)
     print(f"reconstructing trace {start}..{end}", file=sys.stderr)
-    waits = _reconstruct_waits(cfg, client, reference_stops, start, end)
+    raw_passings, covered = _fetch_passings(cfg, client, reference_stops, start, end)
+    waits = {
+        k: tick_aligned_waits(v)
+        for k, v in headway_events(raw_passings, covered).items()
+    }
     print("building movement/supply/alert truths", file=sys.stderr)
     movement, supply, has_delays, fresh, alert_nights = _truths(
         cfg, client, start, end, args.fit_days
@@ -732,6 +944,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "gate_c_severity": severity_report(
             waits, baseline, movement, has_delays, fresh
         ),
+        "gate_d_published_ratio": {
+            k: asdict(v)
+            for k, v in published_ratio_gate(
+                raw_passings, covered, sched_headway, normal
+            ).items()
+        },
     }
     print(json.dumps(report, indent=2, default=str))
     return 0

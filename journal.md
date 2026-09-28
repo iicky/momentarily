@@ -10309,3 +10309,392 @@ archive for the 14-day window. The symmetric-normal proxy (opposite direction
 within 1.25/0.80 at the same tick) stands as the appropriate stricter cohort.
 The 51.7% combined rate in the strict cohort at 1.25/0.80 is well above 25%;
 decision unchanged.
+
+## 2026-09-22 — journey-time gate: the unconditional OD climatology beats the schedule by 49%; a live route-state term makes it worse
+
+origin: agent
+
+First grade of any model in this repo against a rider-time outcome rather than
+an operator-side truth. Target: realized station-to-station travel time for
+spans of 1..8 realtime hops chained per trip from archive/traversals/, arrival
+at origin to arrival at destination (training/journey.py). Window: train
+2026-08-27..09-13 (18 days), holdout 2026-09-14..09-20 (7 days), scored on a
+deterministic 1-in-10 trip subsample. 26,547,855 spans (18,945,969 train,
+7,409,755 holdout, 774,412 scored). The 2026-08-12..08-26 days ran under the
+previous static feed version (20260807-H) and were excluded; scheduled seconds
+are attached only on days whose stamped GTFS digest equals the live feed's
+(2c9e69b8), which is the whole holdout week and none of the train window, so
+every schedule number in the gate is byte-verified and the ratio-to-schedule
+pooling tier saw no train data.
+
+Holdout, common cohort n=736,230 (samples every compared forecaster answered):
+
+| forecaster       | CRPS (s) | MAE of median | 10–90 coverage | skill vs schedule | skill vs historical |
+|------------------|----------|---------------|----------------|-------------------|---------------------|
+| schedule (point) |   68.2   |     68.2      |     0.063      |       0.000       |      -0.952         |
+| historical       |   35.0   |     56.2      |     0.791      |      +0.488       |       0.000         |
+| state            |   37.3   |     59.5      |     0.685      |      +0.454       |      -0.066         |
+| state_hist_only  |   34.9   |     56.2      |     0.797      |      +0.488       |       0.000         |
+
+"historical" is empirical quantiles per (route, direction, origin, destination,
+4-hour ET time-of-day bin, weekend) with pooling, MIN_N=20; it abstained on
+3,044 of 774,412 samples (0.4%). Its PIT is close to flat (bins 72.6k..105.3k
+over ten bins on 771,368 answered) and its 10–90 coverage is 0.79 against a
+nominal 0.80. The schedule's PIT is 296k below / 394k above / 46k exact: the
+timetable is a slightly optimistic point, and a point forecast has no band.
+
+"state" multiplies the same leaves by f = exp(n/(n+5) · mean log(realized /
+OD-normal)) over the same route+direction's spans completed in the trailing
+hour, clamped to [0.5, 3]. f sat in [0.963, 1.139] at p5..p95, was above 1 on
+70% of samples (the holdout week's multi-hop spans ran a mean +3.5% log over
+the train-window OD medians; 1-hop spans +0.1%), and never hit the clamp.
+Stratified by |log f| on a 1-in-10 sub-sample of the scored set, the term is
+harmful in every stratum and worst where it moves most:
+
+| stratum      |   n    | CRPS state | CRPS hist-only | skill  |
+|--------------|--------|------------|----------------|--------|
+| |log f|<0.02 | 27,760 |    30.5    |      30.2      | -0.010 |
+| 0.02–0.05    | 26,834 |    32.8    |      31.5      | -0.042 |
+| 0.05–0.10    | 15,568 |    45.9    |      42.8      | -0.073 |
+| >0.10        |  6,999 |    71.7    |      59.9      | -0.198 |
+
+Reading: subway span times are tight, so a route-wide multiplicative factor a
+few percent off shifts q05 past a large share of realized values (state's PIT
+bin 0 holds 158k of 771k, 20.5%, against 72.6k for hist-only). Where the route
+is genuinely off-normal (>0.10) both forecasters degrade, and the factor
+overshoots or points the wrong way for the specific OD. This is the same shape
+as every movement-primitive result before it: the empirical distribution wins
+and the live term adds noise. Gate as stated (positive skill over BOTH
+baselines): the causal model fails on the historical baseline. What clears the
+schedule by 49% is the climatology itself.
+
+Mechanics worth keeping: a first attempt to hold 26.5M SpanSamples as plain
+frozen dataclasses passed 16 GB RSS while still parsing and was killed;
+slots=True plus sys.intern on the six string fields brought the full run to
+9.9 GB peak and 123 s. The per-sample trailing-hour history slice (~44k spans
+per query x 774k samples) was intractable; forecasters now index the ordered
+history once (IndexedForecaster.index_history) and answer a window with two
+bisects, verified equal to the scan on both window edges.
+
+## 2026-09-22 — correction to the journey-time gate entry above: two train days were digest-verified, not none
+
+origin: agent
+
+The entry above says scheduled seconds were attached on "none of the train
+window". Per-day provenance for 2026-08-27..09-20 read back from the archive:
+08-27..09-10 unstamped (15 days), 09-11 mixed (a mid-day republish), 09-12
+and 09-13 verified against the live digest 2c9e69b8, 09-14..09-20 verified.
+So 16 of the 18 train days carry no schedule and are UNVERIFIED against the
+live feed — their static-feed identity is unknown, not confirmed clean — and
+2 train days (09-12, 09-13) did feed the ratio-to-schedule pooling tier.
+That tier is the last fallback and only fires when an OD has fewer than 20
+train observations at every pooled level; the abstention count (3,044 of
+774,412) bounds how often it could have mattered. The numbers in the entry
+above stand; the provenance claim is superseded by this one.
+
+## 2026-09-22 — segment-local nowcast: the live term flips sign at OD resolution, +0.017 on average, +0.07..+0.14 on slow trips at a -0.14 cost on normal ones
+
+origin: agent
+
+Second and pre-registered live-conditioned journey-time run (four variants
+fixed before scoring, one gate run, same holdout 2026-09-14..20, same 1-in-10
+trip subsample, same common-cohort rule as the entry above; n=736,230). The
+live term now conditions on completed spans with the SAME (route, direction,
+origin, destination) in the trailing window (containment fallback, else f=1)
+instead of the whole route.
+
+| forecaster      | CRPS common | cov 10-90 | skill vs historical |
+|-----------------|-------------|-----------|---------------------|
+| historical      |    35.0     |   0.791   |        0.000        |
+| state (route)   |    37.3     |   0.685   |       -0.066        |
+| state_od        |    35.3     |   0.719   |       -0.011        |
+| state_od_leaf   |    34.8     |   0.725   |       +0.004        |
+| state_od_gated  |    34.7     |   0.747   |       +0.006        |
+| state_od_20m    |    34.4     |   0.746   |       +0.017        |
+
+Three of four clear the pre-registered bar (positive skill over the historical
+distribution). Resolution is the whole story: route-wide -0.066 -> exact-OD
+-0.011 -> exact-OD against the leaf's own normal +0.004 -> 20-minute window
++0.017. Shorter and more local is monotonically better across the variants
+that were registered.
+
+Where the +0.017 comes from (state_od_20m vs the same leaves with f=1, on the
+scored set; realized deviation measured against the historical median):
+
+| realized vs median      |    n    | share | CRPS state | CRPS hist | skill  |
+|-------------------------|---------|-------|------------|-----------|--------|
+| within 10%              | 502,128 | 0.648 |    19.3    |   16.9    | -0.143 |
+| 10-25% slow             | 102,518 | 0.132 |    40.5    |   43.7    | +0.073 |
+| 25-50% slow             |  46,629 | 0.060 |    83.0    |   96.6    | +0.141 |
+| >50% slow               |  28,022 | 0.036 |   198.5    |  227.2    | +0.126 |
+| fast (<-10%)            |  92,071 | 0.119 |    40.6    |   40.4    | -0.005 |
+
+By the model's own confidence: f==1 (no local history) 6.0% of samples, no
+change; |log f|<0.02 51.8%, -0.003; 0.02-0.05 25.7%, +0.009; 0.05-0.10 10.6%,
++0.057; >0.10 5.5%, +0.081.
+
+Reading: the live term is a trade, not a free lunch. It costs 14% on the 65%
+of trips that run within 10% of normal (it nudges tight bands off a target
+that was already right) and buys 7-14% on the 23% that run slow — the trips
+a rider would want warned about. Coverage falls from 0.79 to 0.75 and the PIT
+stays U-shaped when the term fires: the factor moves the location correctly
+but leaves the spread as narrow as a normal day, so it is under-dispersed
+exactly when it acts. That is a calibration defect with a known shape (widen
+with |log f|), not a signal defect.
+
+Not done here, on purpose: no variant was tuned after the run. The gated
+variant's threshold (n>=3, 5%) was set before scoring and is clearly too low
+given the table — a gate that fires only above ~5-10% deviation would keep
+most of the slow-trip gain and drop most of the normal-trip cost. That is
+the next pre-registered run, scheduled with the provenance rerun once the
+archive holds 18 digest-stamped train days (~2026-10-05). Caveats carried
+unchanged from the entries above: 16/18 train days provenance-unverified;
+observed 1-8-hop spans, not end-to-end trips.
+
+## 2026-09-22 — frozen candidate on an untouched week: state_od_20m +0.043 fleet-wide, +0.062 on the F, vs the historical distribution
+
+origin: agent
+
+Confirmatory run for the one candidate frozen before scoring (state_od_20m:
+exact-OD trailing-20-minute state factor on the historical leaves). Train
+2026-08-27..09-06 (11 days), holdout 2026-09-07..09-13 — a week that no
+prior selection decision touched (the OD-local variants were chosen on
+09-14..20). Same 1-in-10 trip subsample. Realized-time only; schedule seconds
+exist on 09-12/13 alone here, so the schedule column's common cohort is small
+(125,327 fleet / 9,905 F) and is reported but not the comparison of record.
+
+Historical and state_od_20m answer exactly the same samples (identical
+abstention), so their skill is on the full scored set:
+
+| scope | n scored | CRPS historical | CRPS state_od_20m | skill | cov 10-90 hist -> state |
+|-------|----------|-----------------|-------------------|-------|-------------------------|
+| all   | 727,815 |     37.6       |       36.0        | +0.041 | 0.759 -> 0.724 |
+| F     |  62,477 |     45.0       |       42.2        | +0.061 | 0.756 -> 0.709 |
+
+On the schedule-verified two days (common cohort with the timetable): skill vs
+historical +0.061 fleet / +0.047 F; vs the timetable point forecast +0.550 /
++0.612. state_hist_only (same leaves, f=1) is +0.002 / +0.001 vs historical,
+so the gain is the live term, not the leaf construction.
+
+This is larger than the +0.017 seen on the selection week, with 11 train days
+instead of 18 — thinner leaves leave more for a live correction to fix. The
+under-dispersion when the term fires persists (coverage falls ~0.035-0.05;
+PIT bin 0 grows), the same known calibration defect as before, not tuned
+here. This is the first live-conditioned model in the repo to beat a
+learned baseline on a week it never saw. Provenance caveat is moot for this
+comparison (no schedule bytes enter either forecaster); the 1-8-hop span
+scope caveat stands until the coverage measurement lands.
+
+## 2026-09-22 — per-line replication of state_od_20m on 09-07..13: F +0.061, 6 +0.050, L +0.032, fleet +0.041 — and a correction on what this week is
+
+origin: agent
+
+Correction first: the entry above calls 09-07..13 "a week that no prior
+selection decision touched". The DATA were untouched, but the CANDIDATE
+(exact-OD, 20-minute window) was chosen from results on 09-14..20, a later
+week. So this is a retrospective replication on data the model had not seen,
+not a prospective validation. A prospective test needs a week collected after
+the candidate was frozen: 09-21 onward. The archive delivers one by 09-28.
+
+Per line, same frozen candidate, same split (train 08-27..09-06), full scored
+set (historical and state_od_20m answer the same samples):
+
+| line  | n scored | CRPS hist | CRPS state | skill  | ablation (f=1) | cov 10-90 hist -> state |
+|-------|----------|-----------|------------|--------|----------------|-------------------------|
+| F     |  62,477  |   45.0    |    42.2    | +0.061 |     +0.001     |     0.757 -> 0.709      |
+| 6     |  37,850  |   32.3    |    30.7    | +0.050 |     +0.001     |     0.747 -> 0.742      |
+| L     |  37,289  |   25.1    |    24.3    | +0.032 |     -0.001     |     0.797 -> 0.755      |
+| fleet | 727,815  |   37.6    |    36.0    | +0.041 |     +0.002     |     0.759 -> 0.724      |
+
+Same sign on every line tested, with the ablation at zero each time. The gain
+scales with how noisy the line's baseline is: the F (CRPS 45, branching,
+long) gains most; the L (CRPS 25, one line, no branches, most predictable)
+gains least — there is less for a live correction to fix. The under-
+dispersion shows on F and L (coverage -0.04..-0.05) and barely on the 6.
+
+## 2026-09-22 — span coverage: 94% of trips are one unbroken chain covering 96% of their scheduled stops; censored trips run 6% slower than clean ones
+
+origin: agent
+
+Measured on archive/traversals/ 2026-09-07..13 (the replication week), all
+routes, 48,512 trip-runs; static feed patterns give a scheduled stop count for
+32,603 of them (the rest have a path code the feed does not name uniquely).
+Tool: training/journey_coverage.py.
+
+Chain structure. 93.6% of trips are a single unbroken EXACT/INTERVAL chain;
+5.1% split in two, 1.4% in three or more. The longest chain per trip is
+p10/p50/p90 = 6/24/40 realtime hops; a trip's scheduled length is 7/29/44
+hops. Longest chain over scheduled hops: p10 0.67, median 0.96, p90 1.00.
+So the dataset sees nearly the whole train run for the median trip; the
+1..8-hop windows scored so far are a length cap the analysis chose, not one
+the data imposes — 88% of trips have a chain of at least 8 hops, and only
+10.5% of trips are shorter than 8 hops in total. Extending MAX_HOPS to cover
+a real commute (say 20 hops) is a config change on data that already exists.
+
+Censoring bias. 10.8% of trips end RIGHT-censored (last seen in transit).
+On EXACT hops the median realized/scheduled ratio is 1.067 for those trips
+and 1.006 for the rest (p90: 1.217 vs 1.180). Trips that vanish mid-run were
+running ~6% slower before they vanished. That is the optimism the span
+dataset carries: its scored spans under-represent the slow tail by roughly
+one-tenth of trips at ~6% each. Small at the median, but it is exactly the
+tail a live term is trying to catch, so any product claim about "bad days"
+should be read as a lower bound on how bad.
+
+F only (2,180 trip-runs, 783 with a known pattern): 91.5% single chain,
+longest chain p50 42 hops against a scheduled 44 (ratio p50 0.977), zero
+RIGHT-censored trip endings this week, EXACT ratio median 1.000. The F is
+better covered than the fleet.
+
+Read for the epic: the 1-8-hop scope caveat is dissolvable by raising
+MAX_HOPS and re-running the gate; the censoring caveat is real, bounded at
+~11% of trips x ~6% slower, and must be stated alongside any published
+estimate. Full-trip scoring is the next gate configuration, not a new
+dataset.
+
+## 2026-09-28 — prospective test: state_od_20m +0.015 fleet-wide on the first week collected after it was frozen; the L does not benefit
+
+origin: agent
+
+First prospective test of any live-conditioned model in this repo. The
+candidate (state_od_20m, training/journey_state.py) was frozen before
+2026-09-21..27 existed; the test was written down before any of that
+week was scored: train 2026-08-27..09-20, holdout 09-21..27, 1-in-10 trip
+subsample, primary = skill vs the historical distribution on the full scored
+set, fleet-wide, pass if > 0. All seven holdout days carry the live GTFS
+digest (2c9e69b8). 33,812,422 spans extracted; gate peak RSS 14.0 GB, 172 s.
+
+| scope | n scored | CRPS historical | CRPS state_od_20m | skill  | ablation (f=1) | cov 10-90 hist -> state |
+|-------|----------|-----------------|-------------------|--------|----------------|-------------------------|
+| all   | 725,497  |      36.3       |       35.8        | +0.015 |     0.000      |     0.767 -> 0.745      |
+| F     |  74,328  |      43.4       |       42.0        | +0.033 |    +0.001      |     0.752 -> 0.728      |
+| 6     |  36,108  |      29.0       |       28.2        | +0.027 |     0.000      |     0.792 -> 0.785      |
+| L     |  36,004  |      24.4       |       24.6        | -0.007 |     0.000      |     0.808 -> 0.776      |
+
+Primary: PASS (+0.015). Common-cohort with the timetable (n=689,465): +0.017
+vs historical, +0.490 vs the schedule point forecast (historical alone
++0.481). Secondary lines were reported, not gated.
+
+Reading: the gain is real and smaller than the retrospective replication on
+09-07..13 (+0.041 fleet, +0.061 F, +0.032 L), which had 11 train days to this
+run's 25. With a fuller memory book there is less for a live correction to
+fix, which is the expected direction. The L — the most regular line, lowest
+baseline CRPS — now loses slightly: on a line that runs to the clock, the
+local peek mostly adds noise. The under-dispersion defect is unchanged
+(coverage falls 0.02-0.03 wherever the term acts). A product built on this
+should apply the live shift only where it earns it (per-line or
+per-baseline-noise gating), which is a new hypothesis for a future frozen
+test, not a change to this one.
+
+## 2026-09-28 — first grade of the MTA's own countdown: centered but wide; 5-10 minutes out, 58% land within a minute and 12.5% run over 2 minutes late
+
+origin: agent
+
+Predictions: every public v1/arrivals.json snapshot a laptop poller saved from
+2026-09-25 20:10 UTC through 09-27 (about 78% of minutes; gaps are laptop
+sleep). That is Friday evening, then Saturday and Sunday: mostly WEEKEND
+service. Truth: the arrival of the same trip_id at the same stop in
+archive/trace (first STOPPED_AT sighting, feed vehicle clock), 567,922 trace
+arrivals. Tool: training/eta_grade.py. 9.08M predictions scored.
+
+error = actual - promised (+ = train later than the countdown said)
+
+| horizon   | n scored  | median | mean  | MAE   | p10  | p90  | within 60 s | >2 min late | >1 min early |
+|-----------|-----------|--------|-------|-------|------|------|-------------|-------------|--------------|
+| 0-2 min   |   397,446 |   -4   | +22.8 |  48.2 |  -42 |  +67 |    0.850    |    0.048    |    0.035     |
+| 2-5 min   |   716,667 |   -1   | +21.7 |  63.2 |  -64 |  +98 |    0.714    |    0.075    |    0.113     |
+| 5-10 min  | 1,159,808 |    0   | +26.1 |  83.6 |  -85 | +144 |    0.576    |    0.125    |    0.179     |
+| 10-20 min | 2,190,189 |    0   | +32.2 | 113.3 | -120 | +204 |    0.455    |    0.187    |    0.239     |
+| 20-60 min | 4,615,702 |   +1   | +53.8 | 155.3 | -155 | +312 |    0.375    |    0.253    |    0.275     |
+
+The countdown is centered (median ~0 at every horizon) and right-skewed:
+when it misses, it misses late by more than it misses early (mean > median
+everywhere). Spread grows with horizon as expected.
+
+Outcomes of predicted (trip, stop) pairs that did not produce a scored arrival:
+- already_arrived 9.9% at 0-2 min (0.3% at 2-5): the snapshot still listed a
+  train the trace had seen arrive in the prior 2 minutes. UPPER BOUND on MTA
+  staleness: observed_at is our Worker's publish time, and the MTA feed it
+  decoded can be older, so part of this is our pipeline lag.
+- served_unobserved 5.4-7.3%: a passing exists, so the train served the stop
+  but was never caught standing there (the 1-minute poll). Our limitation.
+- never_seen 5.8% at 0-2 min rising to 9.8% at 20-60 min: the predicted trip
+  never reported that stop in the next 2 h. Includes skipped stops, cancelled
+  or re-identified trips, and trains that dropped out of the feed — an upper
+  bound on "ghost" predictions, not a count of them.
+
+By line, 2-10 min out (MAE s / median s): worst 3 (145 / -26), SI (114 / +20),
+Q (97 / +10), 5 (94 / -27); best GS (29), FS (37), 1 (52 / -27), L (56 / -21),
+H (57). Lettered trunk lines run late against the countdown (A median +26,
+18% over 2 min late; C +43, 20%); numbered lines and the L run early (2, 4, 5,
+7, 1 medians -22 to -27). By ET hour, 2-10 min out: best in the evening peak
+(16-17h MAE 60-61 s), worst around midnight (00h 112 s) and at noon (12h
+114 s — one bad hour on a weekend; do not generalize from three days).
+
+Scope: 2.3 days, mostly weekend, one laptop. This is the baseline any
+countdown model must beat. A weekday grade needs the poller running through
+a full week (or the Worker archive from the ETA-capture branch).
+
+## 2026-09-28 — corrections to three of the entries above: "pre-registered" variants, ETA sample size, and the prospective gate's scope
+
+origin: agent
+
+1. The 2026-09-22 segment-local entry calls its run "pre-registered" and says
+   three variants "clear the pre-registered bar". That is wrong. The four
+   variants were fixed before that run was scored, but they were designed
+   after the route-wide model's results on the same 2026-09-14..20 week, and
+   scored on that week. The run was exploratory selection, not a test. Its
+   +0.017 is a selection-week number. The 2026-09-07..13 run is a
+   retrospective replication (the 2026-09-22 per-line entry already says so).
+   The first prospective test is the 2026-09-28 run on 2026-09-21..27.
+
+2. The 2026-09-28 countdown entry reports 9.08M scored predictions. Those are
+   prediction snapshots, not independent trains: each (trip, stop) is
+   predicted again every published minute until it arrives. The horizon
+   distributions are valid as distributions over snapshots. The line and hour
+   comparisons carry no valid uncertainty until they are clustered by
+   (trip, stop) or reduced to one prediction per (trip, stop, horizon bin).
+   Read them as directional.
+
+3. The 2026-09-28 prospective entry's gate was one pooled fleet-wide number
+   (skill > 0), stated before scoring. Per-line results were reported, not
+   gated. There was no per-line gate. Had one been set, the L (-0.007) would
+   have failed it. Any future per-line requirement must be written down before
+   its week is scored.
+
+## 2026-09-28 — two defects found at commit review: containment borrowed from other stopping patterns, and coverage split runs at UTC midnight
+
+origin: artifact
+
+The pre-commit adversarial review blocked two of today's modules.
+
+1. Containment in the segment-local forecasters (training/journey_state.py).
+   The version that ran every journey-time result above, including the
+   prospective test on 2026-09-21..27, ordered stops by reachability on the
+   union of all trips' 1-hop edges per route and direction. Where a route
+   splits and rejoins between a sample's endpoints (express beside local, or a
+   diamond), a span on the path the sample's trip did not take still counted
+   as inside its segment. Only the fallback was affected: exact-OD spans take
+   precedence whenever any are in the window. The committed version accepts a
+   contained span only from a trip with the SAME stopping pattern (path code)
+   as the sample's trip, ordered along that pattern's own chain, and gives no
+   containment to a pattern whose train edges branch.
+
+   The prospective result (+0.015 fleet-wide) belongs to the version as
+   tested. A post-hoc rerun of the corrected version on the same split (train
+   2026-08-27..09-20, holdout 09-21..27) scores CRPS 35.57 s against 36.31 s
+   for the historical distribution: skill +0.020, coverage 0.747. The fix
+   helps slightly. This rerun is NOT prospective, because 2026-09-21..27 has
+   now been seen. The corrected version's first prospective test is the week
+   of 2026-09-28..10-04.
+
+2. Coverage run grouping (training/journey_coverage.py) keyed each trip on its
+   UTC calendar day, so a run crossing UTC midnight (8 pm in New York) was
+   counted as two trips. Runs now split on the trace's own gap rule
+   (TRIP_GAP_SECONDS). Corrected figures for 2026-09-07..13 supersede the
+   2026-09-22 coverage entry: 47,821 runs (was 48,512); single unbroken chain
+   93.3% (was 93.6%); longest chain p10/p50/p90 7/25/41 hops (was 6/24/40);
+   longest chain / scheduled hops p10 0.667, median 0.958; 88.8% of runs have
+   a chain of at least 8 hops; 10.6% end RIGHT-censored (was 10.8%). Censored
+   runs still ran slower on their EXACT hops: median realized/scheduled 1.067
+   against 1.006, p90 1.217 against 1.178. F: 2,111 runs, 91.4% single chain,
+   longest / scheduled median 0.977, no censored endings.

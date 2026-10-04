@@ -1807,4 +1807,65 @@ describe('v1/arrivals.json: the per-minute countdown publish', () => {
     // with a fabricated empty read.
     expect(store.get('v1/arrivals.json')?.body).toBe(prior);
   });
+
+  test('a total trip-update outage writes no archive/arrivals object, matching the no-publish gate', async () => {
+    const { bucket, store } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    // Every line-group feed rejects: with no fresh arrivals, nothing is
+    // published and nothing should be archived.
+    for (const [, url] of TRIP_UPDATE_FEEDS) fetchState.protobufFailUrls.add(url);
+
+    const err = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runAt(env, NON_BOUNDARY_AT);
+    } finally {
+      err.mockRestore();
+    }
+
+    // No arrivals object is written to the archive when arrivals were not
+    // published (when all trip-update feeds failed).
+    expect(keysWithPrefix(store, 'archive/arrivals/')).toHaveLength(0);
+  });
+
+  test('archive/arrivals bucket.put failure does not throw or block arrivals.json publish', async () => {
+    const { bucket: baseBucket, store } = fakeBucket();
+    // Wrap the fake bucket to reject puts to archive/arrivals, but allow others
+    const failingArchiveBucket = {
+      ...baseBucket,
+      async put(
+        key: string,
+        body: string,
+        opts?: { httpMetadata?: R2HTTPMetadata; onlyIf?: R2Conditional | Headers },
+      ) {
+        if (key.startsWith('archive/arrivals/')) {
+          throw new Error('simulated archive write failure');
+        }
+        return baseBucket.put(key, body, opts);
+      },
+    } as unknown as R2Bucket;
+
+    const env: Env = { MOMENTARILY: failingArchiveBucket };
+    // Seed one trip so arrivals will be built and published
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      tripUpdateFeed('2', 'trip1', 'Q05S', NON_BOUNDARY_AT + 300),
+    );
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let threwError = false;
+    try {
+      await runAt(env, NON_BOUNDARY_AT);
+    } catch (e) {
+      threwError = true;
+    } finally {
+      err.mockRestore();
+    }
+
+    // Handler must not throw even though archive write failed
+    expect(threwError).toBe(false);
+    // v1/arrivals.json must still be written (publish not blocked by archive failure)
+    expect(store.has('v1/arrivals.json')).toBe(true);
+    // archive/arrivals must not be present (write failed)
+    expect(keysWithPrefix(store, 'archive/arrivals/')).toHaveLength(0);
+  });
 });

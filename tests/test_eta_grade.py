@@ -5,7 +5,14 @@ Synthetic predictions and trace events only — no R2, no snapshots on disk.
 
 from __future__ import annotations
 
-from training.eta_grade import GRACE, MATCH_AFTER, Prediction, grade, summarize
+from training.eta_grade import (
+    GRACE,
+    MATCH_AFTER,
+    Prediction,
+    grade,
+    predictions_from_archive_record,
+    summarize,
+)
 from training.trace import Arrival, Passing
 
 T = 1_790_000_000
@@ -90,3 +97,32 @@ def test_an_arrival_before_the_snapshot_is_stale_not_scored() -> None:
     g = grade([_pred(eta=T + 60)], [_arr(at=T - 30)], [], trace_end=T + 10_000)
     assert g.outcomes["already_arrived|0-2 min"] == 1
     assert not any(k.startswith("h|") for k in g.errors)
+
+
+def test_archive_record_parses_schema_and_skips_null_trip_ids() -> None:
+    # worker/src/archive.ts's archiveArrivalsSample shape: schema_version,
+    # observed_at, fresh_feeds, expected_feeds, stops keyed by stop_id.
+    doc = {
+        "schema_version": 1,
+        "observed_at": T,
+        "fresh_feeds": ["ace"],
+        "expected_feeds": ["ace"],
+        "stops": {
+            "A07N": [
+                {"route": "A", "eta_epoch": T + 300, "trip_id": "t1"},
+                # No trip_id (anonymous trip): never matchable, dropped same
+                # as read_snapshots drops it.
+                {"route": "A", "eta_epoch": T + 600, "trip_id": None},
+            ],
+            "A06N": [{"route": "A", "eta_epoch": T + 450, "trip_id": "t2"}],
+        },
+    }
+    preds = list(predictions_from_archive_record(doc))
+    assert preds == [
+        Prediction(
+            observed_at=T, stop_id="A07N", route="A", trip_id="t1", eta_epoch=T + 300
+        ),
+        Prediction(
+            observed_at=T, stop_id="A06N", route="A", trip_id="t2", eta_epoch=T + 450
+        ),
+    ]

@@ -29,6 +29,7 @@ import { alertConditionOnset, alertConditionTypeAtOnset, readAlphaState, reseedF
 import type { WriteFailureCounts } from './archive';
 import {
   archiveAlertsLiveness,
+  archiveArrivalsSample,
   archiveEneSnapshot,
   archiveHealth,
   archiveNewAlerts,
@@ -521,10 +522,12 @@ export default {
     // "no trains due" reading; a PARTIAL read (some groups decoded) publishes
     // flagged via fresh_feeds/expected_feeds.
     if (tripUpdateFreshFeeds.length > 0) {
+      const arrivalsRecord = buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES);
+
       try {
         await publishArrivals(
           env.MOMENTARILY,
-          buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES),
+          arrivalsRecord,
         );
       } catch (err) {
         console.error(
@@ -532,6 +535,22 @@ export default {
           err,
         );
         failWrite('arrivals_publish');
+      }
+
+      try {
+        await archiveArrivalsSample(
+          env.MOMENTARILY,
+          observedAt,
+          arrivalsRecord.arrivals,
+          arrivalsRecord.fresh_feeds,
+          arrivalsRecord.expected_feeds,
+        );
+      } catch (err) {
+        console.error(
+          'arrivals archive failed:',
+          err,
+        );
+        failWrite('arrivals_archive');
       }
     } else {
       console.warn(

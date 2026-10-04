@@ -320,6 +320,67 @@ export async function archiveTraceRows(
   );
 }
 
+/**
+ * Archive this tick's per-minute arrivals sample — one per-stop countdown with
+ * only the first ARRIVALS_SAMPLE_KEEP_N upcoming trains (soonest first),
+ * fresh_feeds, and expected_feeds. Used for grading the MTA's own countdown
+ * ETAs against realized arrivals (training/eta_grade.py's `--source r2`).
+ *
+ * Gzipped, keep-4: measured against 10 days of real snapshots (a local
+ * laptop poller, 2026-09-25..10-04, 10,878 full 6-train
+ * snapshots). At the Worker's 1-minute cadence, keep-4 plain JSON runs
+ * ~342 MB/day, gzip ~31 MB/day — keep-6 gzip is ~40 MB/day, over the 30 MB/day
+ * budget. keep-4 is the smallest tested N (2/3/4/6) that keeps >=90% of the
+ * 2-5 and 5-10 min countdown predictions (99.6% / 95.1%) — the horizon
+ * eta_grade.py's own per-route/per-hour grade already restricts to (the
+ * window "a rider reads walking to the platform") — against keep-2's
+ * 92.3%/69.9% and keep-3's 98.2%/87.5%. It only reaches 80.3% of the 10-20 min
+ * bin (vs keep-6's 100%), the trade made for the ~10x size cut off keep-6.
+ *
+ * Like archiveTraceRows, keys on the scheduled minute (observedAt) so a retry
+ * overwrites rather than duplicating the object.
+ */
+const ARRIVALS_SAMPLE_KEEP_N = 4;
+
+export async function archiveArrivalsSample(
+  bucket: R2Bucket,
+  observedAt: number,
+  arrivals: Record<string, Array<{ route: string; eta_epoch: number; seconds_away: number; trip_id: string | null }>>,
+  freshFeeds: readonly string[],
+  expectedFeeds: readonly string[],
+): Promise<void> {
+  const key = `archive/arrivals/${utcDate(observedAt)}/${observedAt}.json.gz`;
+  const stops: Record<string, Array<{ route: string; eta_epoch: number; trip_id: string | null }>> = {};
+
+  // Keep only the first ARRIVALS_SAMPLE_KEEP_N arrivals per stop, already
+  // sorted by eta_epoch, and omit seconds_away (derivable from eta_epoch and
+  // wall-clock time). Sort stop IDs for deterministic key order in the JSON
+  // output.
+  const sortedStopIds = Object.keys(arrivals).sort();
+  for (const stopId of sortedStopIds) {
+    const arrivals_list = arrivals[stopId]!;
+    stops[stopId] = arrivals_list.slice(0, ARRIVALS_SAMPLE_KEEP_N).map((a) => ({
+      route: a.route,
+      eta_epoch: a.eta_epoch,
+      trip_id: a.trip_id,
+    }));
+  }
+
+  const body: Record<string, unknown> = {
+    schema_version: 1,
+    observed_at: observedAt,
+    fresh_feeds: [...freshFeeds],
+    expected_feeds: [...expectedFeeds],
+    stops,
+  };
+
+  await bucket.put(
+    key,
+    await gzipJson(body),
+    { httpMetadata: { contentType: 'application/json', contentEncoding: 'gzip' } },
+  );
+}
+
 // --- internal helpers ---
 
 function extractEntities(payload: unknown): unknown[] | null {
@@ -341,4 +402,34 @@ function parseAlertEntity(entity: unknown): { id: string; updatedAt: number } | 
   const updatedAt = (mercury as { updated_at?: unknown }).updated_at;
   if (typeof updatedAt !== 'number') return null;
   return { id, updatedAt };
+}
+
+/**
+ * gzip a JSON-serializable value via the Workers runtime's CompressionStream,
+ * for the one archive stream (archiveArrivalsSample) that writes gzipped —
+ * every other archive/ stream here is small enough that plain JSON was the
+ * right trade, so this stays scoped rather than becoming every writer's path.
+ */
+async function gzipJson(body: unknown): Promise<Uint8Array> {
+  const stream = new CompressionStream('gzip');
+  const writer = stream.writable.getWriter();
+  void writer.write(new TextEncoder().encode(JSON.stringify(body)));
+  void writer.close();
+
+  const chunks: Uint8Array[] = [];
+  const reader = stream.readable.getReader();
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }

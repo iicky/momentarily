@@ -44,11 +44,11 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from training.load_r2 import fetch_objects, list_keys
-from training.r2_client import load_config, make_client
+from training.r2_client import get_object_bytes, load_config, make_client
 from training.trace import Arrival, Passing, arrivals_from_trace, passings_from_trace
 
 MATCH_BEFORE = 120
@@ -104,6 +104,47 @@ def read_snapshots(root: str, start: date, end: date) -> Iterator[Prediction]:
                             trip_id=str(r["trip_id"]),
                             eta_epoch=int(r["eta_epoch"]),
                         )
+        d += timedelta(days=1)
+
+
+def predictions_from_archive_record(doc: dict[str, Any]) -> Iterator[Prediction]:
+    """Parse one archive/arrivals/ record (worker/src/archive.ts's
+    archiveArrivalsSample shape: {schema_version, observed_at, fresh_feeds,
+    expected_feeds, stops: {stop_id: [{route, eta_epoch, trip_id}]}}) into
+    Prediction rows. The archive-side sibling of read_snapshots' inner loop,
+    factored out so it's unit-testable on a synthetic record without network.
+    """
+    observed_at = int(doc["observed_at"])
+    stops: dict[str, list[dict[str, Any]]] = doc.get("stops") or {}
+    for stop_id, rows in stops.items():
+        for r in rows:
+            if not r.get("trip_id"):
+                continue
+            yield Prediction(
+                observed_at=observed_at,
+                stop_id=stop_id,
+                route=str(r.get("route") or ""),
+                trip_id=str(r["trip_id"]),
+                eta_epoch=int(r["eta_epoch"]),
+            )
+
+
+def read_r2_archive(start: date, end: date) -> Iterator[Prediction]:
+    """Every prediction in every archive/arrivals/ object (gzip-compressed,
+    one object per Worker tick) whose UTC date is in [start, end], read from
+    R2 — the --source r2 sibling of read_snapshots. Unlike read_snapshots this
+    is already the production archive (worker/src/archive.ts
+    archiveArrivalsSample), so no local poller is needed once it has run long
+    enough to cover the window."""
+    cfg = load_config()
+    client = make_client(cfg)
+    d = start
+    while d <= end:
+        keys = list_keys(client, cfg.bucket, f"archive/arrivals/{d.isoformat()}/")
+        for key in keys:
+            blob = get_object_bytes(client, cfg.bucket, key)
+            doc = cast(dict[str, Any], json.loads(gzip.decompress(blob)))
+            yield from predictions_from_archive_record(doc)
         d += timedelta(days=1)
 
 
@@ -303,9 +344,17 @@ def main(argv: list[str] | None = None) -> int:
         description="Grade MTA countdown ETAs against the trace"
     )
     parser.add_argument(
+        "--source",
+        choices=("local", "r2"),
+        default="local",
+        help="read predictions from --snapshots (local, default) or the "
+        "archive/arrivals/ R2 archive (r2)",
+    )
+    parser.add_argument(
         "--snapshots",
-        required=True,
-        help="directory of saved arrivals snapshots, one folder per UTC date",
+        default=None,
+        help="directory of saved arrivals snapshots, one folder per UTC date "
+        "(required when --source local)",
     )
     parser.add_argument(
         "--start",
@@ -318,12 +367,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", default=None, help="write the summary JSON here too")
     args = parser.parse_args(argv)
+    if args.source == "local" and args.snapshots is None:
+        parser.error("--snapshots is required when --source local")
     # The trace must run past the last prediction's outcome window.
     arrivals, passings, trace_end = arrivals_and_passings_by_day(
         args.start, args.end + timedelta(days=1)
     )
+    predictions = (
+        read_r2_archive(args.start, args.end)
+        if args.source == "r2"
+        else read_snapshots(args.snapshots, args.start, args.end)
+    )
     g = grade(
-        read_snapshots(args.snapshots, args.start, args.end),
+        predictions,
         arrivals,
         passings,
         trace_end,

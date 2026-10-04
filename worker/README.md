@@ -128,6 +128,7 @@ than duplicating it.
 | `archive/ene/<date>/HH0000-<source>.json` | [`archive.ts`](src/archive.ts) `archiveEneSnapshot` | hourly |
 | `archive/trip_updates/<date>/<observed_at>.json` | [`archive.ts`](src/archive.ts) `archiveTripUpdateMetric` | every 5-min tick |
 | `archive/vehicles/<date>/<observed_at>.json` | [`archive.ts`](src/archive.ts) `archiveVehicleMetric` | every 5-min tick |
+| `archive/arrivals/<date>/<observed_at>.json.gz` | [`archive.ts`](src/archive.ts) `archiveArrivalsSample` | every minute, gzipped, first 4 upcoming trains per stop — grades the feed's own countdown ETAs against realized arrivals |
 | `archive/trace/<date>/<scheduled_at>.json` | [`archive.ts`](src/archive.ts) `archiveTraceRows` | every minute |
 
 ## alert_type → status mapping

@@ -32,15 +32,16 @@ if TYPE_CHECKING:
 DATED_PREFIXES: tuple[tuple[str, int], ...] = (
     ("archive/alerts/", 90),
     ("archive/ene/", 90),
-    # One object/minute, ~85 KB each: ~89.9 MB/day (measured 2026-09-02). The
-    # per-minute per-train census that stop-level timing, observed headways and
-    # traversals are all reconstructed from, so its window is the hard ceiling
-    # on how much stop-level history any model can ever be evaluated on. The
-    # old 30d cap reasoned from size, but at R2 Standard list ($0.015/GB-month)
-    # size no longer decides: 120d is ~10.8 GB (~$0.16/mo), against 2.7 GB at
-    # 30d and 32.8 GB (~$0.49/mo) at a full year. 120d keeps
-    # >=8 weekend nights per (route,direction,hour) cell so the own-cell wait
-    # baseline stops abstaining on weekend cells as a data-window artifact.
+    # Gzipped per-minute countdown sample (keep-4 soonest trains per stop),
+    # written by worker/src/archive.ts's archiveArrivalsSample every 1-min
+    # tick for training/eta_grade.py's --source r2. Measured against 10 days
+    # of real snapshots (a local laptop poller, 2026-09-25..10-04,
+    # 10,878 full 6-train snapshots): keep-4 gzipped runs ~31 MB/day at the
+    # Worker's 1440-tick/day cadence (keep-6 gzipped would be ~40 MB/day).
+    # 120d is ~3.7 GB (~$0.06/mo) — matches archive/trace/'s window below
+    # since both are per-minute live-feed captures read back over the same
+    # practical lookback.
+    ("archive/arrivals/", 120),
     ("archive/trace/", 120),
     # The DERIVED traversals, kept far longer than the raw trace they come from
     # because they are ~56x smaller (1.5 MB/day gzipped against 81 MB/day,

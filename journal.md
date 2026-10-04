@@ -10900,3 +10900,35 @@ every one-minute trace body for the training window into memory before it
 fits. On the 1 GiB container an out-of-memory kill would end the process, and
 a try/except cannot catch that. A measurement of that path's peak memory is
 in progress; it will get its own entry.
+
+## 2026-10-04 — trainer stall confirmed as out-of-memory in the segment fit: 8,001 MiB peak on a 1 GiB container; streaming by day brings it to 681 MiB
+
+origin: artifact
+
+Read-only measurements with `/usr/bin/time -l` against real R2 data for the
+window a Sunday run computes on 2026-10-04 (segment window 2026-09-21..10-04,
+14 days; recovery dwell window 2026-08-31..10-04, 35 days):
+
+| path                                      | peak RSS  | wall   |
+|-------------------------------------------|-----------|--------|
+| segment-params read + fit, whole window   | 8,001 MiB | 148 s  |
+| segment-params read + fit, one day at a time | 681 MiB | 121 s  |
+| recovery-baseline population scan         | 1,193 MiB | 107 s  |
+
+The whole-window segment fit needs 7.8x the trainer container's 1,024 MiB.
+An out-of-memory kill is a SIGKILL, so the step's try/except never sees it.
+That matches R2 for all three Sunday runs since the one-minute trace fit
+shipped on 2026-09-14 (2026-09-20, 09-27, 10-04): params and service_baseline
+written, nothing after. The streamed fit produced the same 2,587 cells and
+2,296 adjacency entries as the whole-window fit on the same data, and parity
+tests pin that on synthetic multi-day input, including a transition across
+midnight.
+
+The recovery-baseline scan, never reached in production, also exceeds
+1 GiB on its own. Its episode extraction needs continuous state across the
+35-day window, so it was not streamed. The container moves from basic
+(0.25 vCPU, 1 GiB) to standard-1 (0.5 vCPU, 4 GiB).
+
+Not yet proven in production: the next scheduled run is 2026-10-11 05:00 UTC.
+Success there means state/params.json trained_at advances and segment_params,
+recovery_baseline, and PROV versions appear for the same trained_at.

@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import statistics
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -620,6 +621,37 @@ def fetch_trace_bodies(
     for d in date_range(start, end):
         keys.extend(list_keys(client, cfg.bucket, f"archive/trace/{d.isoformat()}/"))
     return fetch_objects(client, cfg.bucket, keys)
+
+
+def fetch_trace_bodies_by_day(
+    config: R2Config | None = None,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    client: S3Client | None = None,
+) -> Iterator[list[dict[str, Any]]]:
+    """Same window and keys as fetch_trace_bodies, yielded ONE CALENDAR DAY at a
+    time instead of materializing the whole window's ~1440/day trace snapshots
+    all at once.
+
+    A caller that processes and discards each day's batch before asking for the
+    next (rather than collecting every yielded list) never holds more than one
+    day's raw trace in memory -- the fix for write_segment_params' OOM on the
+    trainer's 1 GiB container (its whole-window fetch peaked at ~7.6 GiB over a
+    14-day run; see trainer/wrangler.toml). Per-day batches compose correctly
+    with training.segment_trace_replay.trace_to_movement_bodies_batch and
+    training.load_r2.fold_segment_batch, whose outputs are associative over the
+    window -- splitting it by day never changes the fitted result (see
+    tests/test_segment_trace_replay.py and tests/test_load_r2.py's
+    streaming-parity tests)."""
+    cfg = config or load_config()
+    client = client or make_client(cfg)
+    today = datetime.now(UTC).date()
+    start = start_date or (today - timedelta(days=1))
+    end = end_date or today
+    for d in date_range(start, end):
+        keys = list_keys(client, cfg.bucket, f"archive/trace/{d.isoformat()}/")
+        yield fetch_objects(client, cfg.bucket, keys)
 
 
 def _ratio_stats(pairs: list[tuple[int, int]], unmatched: int) -> dict[str, Any]:

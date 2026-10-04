@@ -16,6 +16,7 @@ from momentarily.hmm import schedule_bin, tod_bin
 from training.load_r2 import (
     AdvanceBaseline,
     PresenceMask,
+    SegmentFitAccumulator,
     ServiceQuantiles,
     _binom_lower_tail,  # pyright: ignore[reportPrivateUsage]
     _snap_tick,  # pyright: ignore[reportPrivateUsage]
@@ -23,6 +24,7 @@ from training.load_r2 import (
     advance_baseline_to_json,
     build_movement_series,
     build_movement_series_by_direction,
+    build_segment_baseline,
     build_segment_series,
     build_segment_throughput,
     build_tick_observations,
@@ -31,6 +33,9 @@ from training.load_r2 import (
     compute_advance_baseline_by_route,
     compute_baseline,
     compute_service_quantiles,
+    finalize_segment_baseline,
+    finalize_segment_throughput,
+    fold_segment_batch,
     input_manifest_hash,
     movement_observation_fields,
     presence_mask_from_predictions,
@@ -1018,3 +1023,84 @@ def test_throughput_to_json_drops_zero_bins_and_keys_like_the_worker():
 def test_throughput_rounds_to_four_places():
     doc = throughput_to_json({("A", "south", "A09S"): {"wd17": 1 / 3}})
     assert doc == {"A|south|A09S": {"wd17": 0.3333}}
+
+
+# --- Streaming segment fit matches the whole-window fit --------------------
+#
+# training.publish_params.write_segment_params now folds the trainer's
+# trace-cadence window one bounded batch (a calendar day) at a time via
+# SegmentFitAccumulator/fold_segment_batch, instead of holding the whole
+# window's bodies in memory (the OOM root cause on the 1 GiB trainer
+# container; see trainer/wrangler.toml). This must reproduce
+# build_segment_baseline / build_segment_throughput over the whole window
+# bit-for-bit, regardless of how the window is split into batches.
+
+
+def test_streaming_segment_fit_matches_the_whole_window_fit():
+    """Also exercises the one place batching could silently diverge: a leaf
+    whose ONLY traffic falls in a bin that never clears the exposure floor
+    must be OMITTED from the published rates, not zero-filled, in both the
+    whole-window and the streamed path (build_segment_throughput only adds a
+    leaf to `matched` when at least one of its transitions lands in a
+    bin that ends up in the FINAL exposure set -- folding batches must
+    preserve that, not just sum raw per-bin counts)."""
+    bin_a = schedule_bin(T0)
+    t_other = T0 - 6 * 3600  # same day, far enough to land in a different bin
+    bin_b = schedule_bin(t_other)
+    assert bin_a != bin_b, "fixture needs two distinct schedule bins"
+
+    bodies = [
+        _segment_body(T0, "A", south={"X1>Y1": 5, "X3>Y3": 2}),
+        _segment_body(T0 + TICK, "A", south={"X1>Y1": 3, "X1>X1": 1}),
+        _segment_body(T0 + 2 * TICK, "A", south={"X1>Y1": 2}),
+        # Only ONE tick in bin_b -- below min_ticks=3, so bin_b never clears
+        # the exposure floor. X2's only traffic is here.
+        _segment_body(t_other, "A", south={"X2>Y2": 4, "X3>Y3": 1}),
+    ]
+
+    def stop_filter(_r: str, _d: str, frm: str) -> bool:
+        return frm != "X2"
+
+    whole_baseline = build_segment_baseline(
+        bodies, counts_from_stop=stop_filter, tick_seconds=TICK
+    )
+    whole_rates, whole_exposure = build_segment_throughput(
+        bodies, counts_from_stop=stop_filter, min_ticks=3, tick_seconds=TICK
+    )
+    # Unfiltered too, to isolate the omit-vs-zero-fill behaviour from the
+    # counts_from_stop filter.
+    whole_rates_unfiltered, _ = build_segment_throughput(
+        bodies, min_ticks=3, tick_seconds=TICK
+    )
+
+    # Split the window into two arbitrary batches -- NOT aligned with either
+    # schedule bin -- and fold them one at a time, exactly as
+    # write_segment_params folds one calendar day at a time.
+    acc: SegmentFitAccumulator[str] = SegmentFitAccumulator()
+    for batch in (bodies[:2], bodies[2:]):
+        fold_segment_batch(acc, batch, tick_seconds=TICK)
+
+    streamed_baseline = finalize_segment_baseline(
+        acc.leaf_to, counts_from_stop=stop_filter
+    )
+    streamed_rates, streamed_exposure = finalize_segment_throughput(
+        acc.leaf_bin, acc.exposure, counts_from_stop=stop_filter, min_ticks=3
+    )
+    streamed_rates_unfiltered, _ = finalize_segment_throughput(
+        acc.leaf_bin, acc.exposure, min_ticks=3
+    )
+
+    assert streamed_baseline == whole_baseline
+    assert streamed_exposure == whole_exposure == {bin_a: 3}
+    assert streamed_rates == whole_rates
+    assert streamed_rates_unfiltered == whole_rates_unfiltered
+
+    # The critical case, with or without the counts_from_stop filter: X2's
+    # only traffic is in the disqualified bin_b, so it must be ABSENT (not a
+    # key at all), while X1 and X3 (each with qualifying-bin traffic) appear.
+    assert ("A", "south", "X2") not in whole_rates_unfiltered
+    assert ("A", "south", "X2") not in streamed_rates_unfiltered
+    assert ("A", "south", "X1") in whole_rates_unfiltered
+    assert ("A", "south", "X3") in whole_rates_unfiltered
+    assert ("A", "south", "X2") not in whole_rates
+    assert ("A", "south", "X2") not in streamed_rates

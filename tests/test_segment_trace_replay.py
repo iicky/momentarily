@@ -13,8 +13,10 @@ from __future__ import annotations
 from typing import Any
 
 from training.segment_trace_replay import (
+    TraceStreamState,
     matched_credit_stats,
     trace_to_movement_bodies,
+    trace_to_movement_bodies_batch,
 )
 
 T0 = 1_700_000_040  # a multiple of 60
@@ -147,3 +149,52 @@ def test_duplicate_archive_object_does_not_double_count() -> None:
     dup = [*trace, dict(trace[-1])]  # minute 1 archived twice
     bodies = trace_to_movement_bodies(dup, tick_seconds=60)
     assert _transitions(bodies, "A", "north")[T0 + 60] == {"A01N>A02N": 1}
+
+
+# --- Streaming reconstruction matches the whole-window reconstruction ------
+#
+# training.trace.fetch_trace_bodies_by_day + trace_to_movement_bodies_batch
+# (training.publish_params.write_segment_params) let the trainer reconstruct
+# one calendar day's movement bodies at a time, instead of holding the whole
+# window's raw trace in memory (the OOM root cause on the 1 GiB trainer
+# container; see trainer/wrangler.toml). TraceStreamState carries the single
+# preceding tick across the split, so this must reproduce
+# trace_to_movement_bodies(all_bodies) bit-for-bit.
+
+
+def test_trace_to_movement_bodies_batch_matches_whole_window_across_a_split() -> None:
+    """Splitting the SAME trace into two batches and folding them through a
+    shared TraceStreamState must reproduce the whole-window reconstruction --
+    including the one transition that spans the split itself."""
+    trace = _trace(
+        "t1", "A", "north", [(0, "A01N"), (1, "A02N"), (2, "A03N"), (3, "A04N")]
+    )
+    whole = trace_to_movement_bodies(trace, tick_seconds=60)
+
+    # Split AFTER minute 1 -- the transition at minute 2 (A02N -> A03N) is the
+    # one that spans the batch boundary.
+    split = next(i for i, b in enumerate(trace) if b["scheduled_at"] == T0 + 2 * 60)
+    state = TraceStreamState()
+    streamed = trace_to_movement_bodies_batch(trace[:split], state, tick_seconds=60)
+    streamed += trace_to_movement_bodies_batch(trace[split:], state, tick_seconds=60)
+
+    assert streamed == whole
+    assert _transitions(streamed, "A", "north")[T0 + 2 * 60] == {"A02N>A03N": 1}
+
+
+def test_trace_to_movement_bodies_batch_respects_a_gap_across_the_split() -> None:
+    """A trip missing from the trace right at a batch boundary must NOT be
+    stitched across it -- TraceStreamState only supplies `prev` when the
+    carried tick is genuinely the immediately preceding one, exactly like the
+    whole-window function's own gap handling (see
+    test_no_transition_is_assembled_across_a_gap)."""
+    trace = _trace("t1", "A", "north", [(0, "A01N"), (1, "A02N"), (3, "A04N")])
+    whole = trace_to_movement_bodies(trace, tick_seconds=60)
+
+    split = 2  # the batch boundary falls exactly where minute 2 is missing
+    state = TraceStreamState()
+    streamed = trace_to_movement_bodies_batch(trace[:split], state, tick_seconds=60)
+    streamed += trace_to_movement_bodies_batch(trace[split:], state, tick_seconds=60)
+
+    assert streamed == whole
+    assert _transitions(streamed, "A", "north")[T0 + 3 * 60] == {}

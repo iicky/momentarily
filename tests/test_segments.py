@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from training.hierarchical import PooledCell
-from training.segments import Adjacency, canonical_adjacency, classify_segment
+from training.load_r2 import SegmentFitAccumulator, fold_segment_batch
+from training.segments import (
+    Adjacency,
+    canonical_adjacency,
+    classify_segment,
+    finalize_canonical_adjacency,
+)
 
 
 def _cell(p0: float) -> PooledCell:
@@ -67,3 +73,26 @@ def test_canonical_adjacency_sums_across_ticks():
     assert a.n == 13  # 5 + 7 + 1
     assert a.to_stop == "B"
     assert a.share == 12 / 13
+
+
+def test_finalize_canonical_adjacency_matches_canonical_adjacency_when_batched():
+    """canonical_adjacency's streaming sibling (fed `leaf_to` folded by
+    training.load_r2.fold_segment_batch -- the trainer's per-day segment-fit
+    accumulator, training.publish_params.write_segment_params) must reproduce
+    canonical_adjacency(all_bodies) bit-for-bit, regardless of how the window
+    is split into batches."""
+    bodies = [
+        _body({"A>B": 5, "A>C": 2, "A>A": 5}),
+        _body({"A>B": 7, "A>C": 1, "B>C": 4}),
+        _body({"X>Z": 3, "X>Y": 3}),
+    ]
+    whole = canonical_adjacency(bodies)
+
+    acc: SegmentFitAccumulator[str] = SegmentFitAccumulator()
+    for batch in (bodies[:1], bodies[1:]):
+        fold_segment_batch(acc, batch)
+    streamed = finalize_canonical_adjacency(acc.leaf_to)
+
+    assert streamed == whole
+    assert whole[("F", "south", "A")] == Adjacency(to_stop="B", share=12 / 15, n=15)
+    assert whole[("F", "south", "X")] == Adjacency(to_stop="Y", share=0.5, n=6)

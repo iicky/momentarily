@@ -42,9 +42,11 @@ from training.headway import (
 from training.load import TICK_SECONDS
 from training.load_r2 import (
     MIN_THROUGHPUT_TICKS,
+    SegmentFitAccumulator,
     StopFilter,
-    build_segment_baseline,
-    build_segment_throughput,
+    finalize_segment_baseline,
+    finalize_segment_throughput,
+    fold_segment_batch,
     throughput_to_json,
 )
 from training.prov import (
@@ -66,9 +68,12 @@ from training.recovery_baseline import (
 from training.reliability import MIN_SHARE
 from training.segment_dwell import SegmentDwellStats, build_segment_dwell
 from training.segment_replay import SEGMENT_CADENCE_SECONDS
-from training.segment_trace_replay import trace_to_movement_bodies
-from training.segments import canonical_adjacency
-from training.trace import fetch_trace_bodies
+from training.segment_trace_replay import (
+    TraceStreamState,
+    trace_to_movement_bodies_batch,
+)
+from training.segments import finalize_canonical_adjacency
+from training.trace import fetch_trace_bodies_by_day
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -507,23 +512,34 @@ def write_segment_params(
         # 5-minute vehicle metric: segment judging moved onto the per-minute
         # trace, and `lam`/`p0` are cadence-defined (per-tick rate, advance
         # fraction over one cross-tick gap), so they must be fit at the same
-        # cadence the accumulator runs on. trace_to_movement_bodies reconstructs
-        # the same by_direction.transitions shape the fit stack reads, one body
-        # per snapped minute, from archive/trace. Heavier than the 5-minute pull
-        # (~5x objects) but off the publish path.
-        trace_bodies = fetch_trace_bodies(
+        # cadence the accumulator runs on. Materializing the whole window's
+        # 1-minute trace (~1440 objects/day) at once OOMs the trainer's 1 GiB
+        # container (measured ~7.6 GiB over a 14-day window; see trainer/
+        # wrangler.toml), so this streams one calendar day at a time instead:
+        # fetch_trace_bodies_by_day yields a day's raw trace,
+        # trace_to_movement_bodies_batch reconstructs that day's movement
+        # bodies (carrying the single preceding tick across the day boundary
+        # via `trace_state` so a transition spanning midnight is still
+        # credited), and fold_segment_batch folds them into the small running
+        # per-leaf totals in `acc` -- discarding each day's bodies before the
+        # next fetch. The result is identical to fitting the whole window at
+        # once; see tests/test_load_r2.py's streaming-parity test.
+        trace_state = TraceStreamState()
+        acc: SegmentFitAccumulator[str] = SegmentFitAccumulator()
+        for day_trace_bodies in fetch_trace_bodies_by_day(
             cfg, start_date=start_date, end_date=end_date, client=client
-        )
-        bodies = trace_to_movement_bodies(
-            trace_bodies, tick_seconds=SEGMENT_CADENCE_SECONDS
-        )
+        ):
+            day_bodies = trace_to_movement_bodies_batch(
+                day_trace_bodies, trace_state, tick_seconds=SEGMENT_CADENCE_SECONDS
+            )
+            del day_trace_bodies
+            fold_segment_batch(acc, day_bodies, tick_seconds=SEGMENT_CADENCE_SECONDS)
+            del day_bodies
         stop_filter = _stop_filter(through)
-        baseline = build_segment_baseline(
-            bodies, counts_from_stop=stop_filter, tick_seconds=SEGMENT_CADENCE_SECONDS
-        )
-        observed_adjacency = canonical_adjacency(bodies)
-        rates, exposure = build_segment_throughput(
-            bodies, counts_from_stop=stop_filter, tick_seconds=SEGMENT_CADENCE_SECONDS
+        baseline = finalize_segment_baseline(acc.leaf_to, counts_from_stop=stop_filter)
+        observed_adjacency = finalize_canonical_adjacency(acc.leaf_to)
+        rates, exposure = finalize_segment_throughput(
+            acc.leaf_bin, acc.exposure, counts_from_stop=stop_filter
         )
         lam = throughput_to_json(rates)
 

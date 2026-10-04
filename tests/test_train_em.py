@@ -7,6 +7,7 @@ Covers pooling + prior anchoring, the self-loop cap, and the R2 write paths
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -1708,27 +1709,46 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def _no_trace(*_: Any, **__: Any) -> list[dict[str, Any]]:
+    def _one_empty_day(*_: Any, **__: Any) -> Iterator[list[dict[str, Any]]]:
+        empty: list[dict[str, Any]] = []
+        return iter((empty,))
+
+    def _batch(
+        _bodies: list[dict[str, Any]], _state: Any, *, tick_seconds: int
+    ) -> list[dict[str, Any]]:
+        captured["replay_tick_seconds"] = tick_seconds
         return []
 
-    def _fake_build_segment_baseline(
-        bodies: list[dict[str, Any]],
+    def _fold(_acc: Any, _bodies: list[dict[str, Any]], *, tick_seconds: int) -> None:
+        captured["fold_tick_seconds"] = tick_seconds
+
+    def _fake_finalize_segment_baseline(
+        leaf_to: Mapping[tuple[str, str, str, str], int],
         *,
         counts_from_stop: Any = None,
-        tick_seconds: int = 300,
     ) -> dict[tuple[str, str, str], Any]:
         captured["filter"] = counts_from_stop
-        captured["tick_seconds"] = tick_seconds
         return {}
 
-    def _no_adjacency(_bodies: list[dict[str, Any]]) -> dict[tuple[str, str, str], Any]:
+    def _no_adjacency(
+        _leaf_to: Mapping[tuple[str, str, str, str], int],
+    ) -> dict[tuple[str, str, str], Any]:
         return {}
 
-    monkeypatch.setattr("training.publish_params.fetch_trace_bodies", _no_trace)
     monkeypatch.setattr(
-        "training.publish_params.build_segment_baseline", _fake_build_segment_baseline
+        "training.publish_params.fetch_trace_bodies_by_day", _one_empty_day
     )
-    monkeypatch.setattr("training.publish_params.canonical_adjacency", _no_adjacency)
+    monkeypatch.setattr(
+        "training.publish_params.trace_to_movement_bodies_batch", _batch
+    )
+    monkeypatch.setattr("training.publish_params.fold_segment_batch", _fold)
+    monkeypatch.setattr(
+        "training.publish_params.finalize_segment_baseline",
+        _fake_finalize_segment_baseline,
+    )
+    monkeypatch.setattr(
+        "training.publish_params.finalize_canonical_adjacency", _no_adjacency
+    )
 
     write_segment_params(
         _r2_config(),
@@ -1747,7 +1767,8 @@ def test_write_segment_params_fits_the_baseline_on_through_stops_only(
     assert admits("A", "north", "A02N")
     assert not admits("A", "north", "A01N")  # chain start, a layover
     # The whole fit is one cadence: the 1-minute trace clock the Worker judges on.
-    assert captured["tick_seconds"] == 60
+    assert captured["replay_tick_seconds"] == 60
+    assert captured["fold_tick_seconds"] == 60
 
 
 def test_write_segment_params_stamps_provenance_and_route_stops(
@@ -1757,26 +1778,29 @@ def test_write_segment_params_stamps_provenance_and_route_stops(
 
     fake = _FakeS3()
 
-    def _trace(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
-        return []
+    def _no_trace(*_a: Any, **_k: Any) -> Iterator[list[dict[str, Any]]]:
+        return iter(())
 
     def _baseline(
-        _bodies: list[dict[str, Any]],
+        _leaf_to: Mapping[tuple[str, str, str, str], int],
         *,
         counts_from_stop: Any = None,
-        tick_seconds: int = 300,
     ) -> dict[tuple[str, str, str], Any]:
         return {("A", "north", "A02N"): SimpleNamespace(p0=0.5, n=10)}
 
-    def _no_adjacency(_bodies: list[dict[str, Any]]) -> dict[tuple[str, str, str], Any]:
+    def _no_adjacency(
+        _leaf_to: Mapping[tuple[str, str, str, str], int],
+    ) -> dict[tuple[str, str, str], Any]:
         return {}
 
     def _prov() -> dict[str, Any]:
         return {"code_sha": "abc123", "dirty": False, "producer": "test"}
 
-    monkeypatch.setattr("training.publish_params.fetch_trace_bodies", _trace)
-    monkeypatch.setattr("training.publish_params.build_segment_baseline", _baseline)
-    monkeypatch.setattr("training.publish_params.canonical_adjacency", _no_adjacency)
+    monkeypatch.setattr("training.publish_params.fetch_trace_bodies_by_day", _no_trace)
+    monkeypatch.setattr("training.publish_params.finalize_segment_baseline", _baseline)
+    monkeypatch.setattr(
+        "training.publish_params.finalize_canonical_adjacency", _no_adjacency
+    )
     monkeypatch.setattr("training.publish_params.code_provenance", _prov)
 
     n = write_segment_params(

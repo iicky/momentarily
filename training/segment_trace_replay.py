@@ -34,6 +34,7 @@ cannot perturb the 5-minute signal every trained param still assumes.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 # Match the Worker's directionOf output (vehicles.ts) and the by_direction split
@@ -97,6 +98,44 @@ def _empty_row() -> dict[str, Any]:
     }
 
 
+def _movement_rows(
+    stops: dict[str, tuple[str, str | None, str]],
+    prev: dict[str, tuple[str, str | None, str]],
+) -> dict[str, dict[str, Any]]:
+    """One tick's `rows` dict: every route's vehicles_n/advanced_n/stalled_n and
+    by_direction transitions, diffing `stops` (this tick) against `prev` (the
+    immediately preceding tick, {} when there was none). Shared by
+    trace_to_movement_bodies and its streaming sibling
+    trace_to_movement_bodies_batch so the two can never diverge on the actual
+    diff rule -- only on how `prev` is looked up across a batch boundary."""
+    rows_out: dict[str, dict[str, Any]] = {}
+    for trip, (route, direction, stop) in stops.items():
+        row = rows_out.get(route)
+        if row is None:
+            row = _empty_row()
+            rows_out[route] = row
+        row["vehicles_n"] += 1
+        if direction is None:
+            continue
+        drow: dict[str, Any] = row["by_direction"][direction]
+        drow["vehicles_n"] += 1
+        p = prev.get(trip)
+        if p is None:
+            continue
+        pstop = p[2]
+        if not pstop:
+            continue
+        key = f"{pstop}>{stop}"
+        drow["transitions"][key] = drow["transitions"].get(key, 0) + 1
+        if pstop == stop:
+            drow["stalled_n"] += 1
+            row["stalled_n"] += 1
+        else:
+            drow["advanced_n"] += 1
+            row["advanced_n"] += 1
+    return rows_out
+
+
 def trace_to_movement_bodies(
     trace_bodies: Iterable[Mapping[str, Any]],
     *,
@@ -117,38 +156,77 @@ def trace_to_movement_bodies(
     (prevStops carries only stop_id, keyed by trip). `vehicles_n` counts every
     trip present on the route this minute (the outage-guard liveness input),
     direction-known or not.
+
+    Holds the WHOLE window's trace in memory via `trace_bodies` -- for a window
+    too large for that (the trainer's segment-params fit; see trainer/
+    wrangler.toml), use trace_to_movement_bodies_batch over
+    training.trace.fetch_trace_bodies_by_day's per-day batches instead.
     """
     by_tick = _stops_by_tick(trace_bodies, tick_seconds)
     bodies: list[dict[str, Any]] = []
     for tick in sorted(by_tick):
         prev = by_tick.get(tick - tick_seconds, {})
-        rows_out: dict[str, dict[str, Any]] = {}
-        for trip, (route, direction, stop) in by_tick[tick].items():
-            row = rows_out.get(route)
-            if row is None:
-                row = _empty_row()
-                rows_out[route] = row
-            row["vehicles_n"] += 1
-            if direction is None:
-                continue
-            drow: dict[str, Any] = row["by_direction"][direction]
-            drow["vehicles_n"] += 1
-            p = prev.get(trip)
-            if p is None:
-                continue
-            pstop = p[2]
-            if not pstop:
-                continue
-            key = f"{pstop}>{stop}"
-            drow["transitions"][key] = drow["transitions"].get(key, 0) + 1
-            if pstop == stop:
-                drow["stalled_n"] += 1
-                row["stalled_n"] += 1
-            else:
-                drow["advanced_n"] += 1
-                row["advanced_n"] += 1
+        rows_out = _movement_rows(by_tick[tick], prev)
         if rows_out:
             bodies.append({"observed_at": tick, "rows": rows_out})
+    return bodies
+
+
+@dataclass
+class TraceStreamState:
+    """Cross-batch continuity for trace_to_movement_bodies_batch: the single
+    immediately-preceding tick's trip -> (route, direction, stop_id) map,
+    carried forward across calls so splitting the window into batches (one
+    calendar day at a time, see training.trace.fetch_trace_bodies_by_day)
+    reproduces EXACTLY trace_to_movement_bodies(all_bodies) -- a transition
+    spanning a batch boundary (23:59 -> 00:00) is credited identically either
+    way, because days are contiguous on the tick grid (tick_seconds divides
+    86400) so the only cross-batch lookup trace_to_movement_bodies ever makes
+    is for this one carried tick. Construct one empty instance per streaming
+    run and thread it through every batch call, in chronological order."""
+
+    tick: int | None = None
+    stops: dict[str, tuple[str, str | None, str]] = field(
+        default_factory=lambda: dict[str, tuple[str, str | None, str]]()
+    )
+
+
+def trace_to_movement_bodies_batch(
+    trace_bodies: Iterable[Mapping[str, Any]],
+    state: TraceStreamState,
+    *,
+    tick_seconds: int = 60,
+) -> list[dict[str, Any]]:
+    """One batch's movement bodies -- the streaming sibling of
+    trace_to_movement_bodies, for a caller that cannot hold the whole window's
+    raw trace in memory at once (see training.trace.fetch_trace_bodies_by_day).
+    Mutates `state` in place so the NEXT call's first tick diffs correctly
+    against this call's last one.
+
+    Concatenating the outputs of consecutive calls, in chronological order,
+    over any partition of the window into batches is byte-for-byte
+    trace_to_movement_bodies(all_bodies_in_order) -- see
+    tests/test_segment_trace_replay.py's streaming-parity test. (Within a
+    batch, `by_tick.get` already finds the preceding tick when it is in the
+    SAME batch; `state` only ever gets consulted for a batch's first tick, and
+    only matches when that tick is genuinely adjacent to the last one this
+    state has seen -- a real gap, inside or across a batch boundary, still
+    yields an empty `prev` exactly like the whole-window function.)"""
+    by_tick = _stops_by_tick(trace_bodies, tick_seconds)
+    bodies: list[dict[str, Any]] = []
+    for tick in sorted(by_tick):
+        prev_tick = tick - tick_seconds
+        if prev_tick in by_tick:
+            prev = by_tick[prev_tick]
+        elif prev_tick == state.tick:
+            prev = state.stops
+        else:
+            prev = {}
+        rows_out = _movement_rows(by_tick[tick], prev)
+        if rows_out:
+            bodies.append({"observed_at": tick, "rows": rows_out})
+        state.tick = tick
+        state.stops = by_tick[tick]
     return bodies
 
 

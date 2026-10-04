@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -165,10 +166,31 @@ def canonical_adjacency(
     cross-tick transitions. Stalls (from==to) are ignored; from_stops with fewer
     than min_advances total advances are omitted (too thin to name a successor).
     Ties break on the smaller to_stop id so the mapping is deterministic."""
+    leaf_to: dict[tuple[str, str, str, str], int] = {}
+    for (route, direction, frm, to, _tick), n in build_segment_series(bodies).items():
+        key = (route, direction, frm, to)
+        leaf_to[key] = leaf_to.get(key, 0) + n
+    return finalize_canonical_adjacency(leaf_to, min_advances=min_advances)
+
+
+def finalize_canonical_adjacency(
+    leaf_to: Mapping[tuple[str, str, str, str], int],
+    *,
+    min_advances: int = MIN_MATCHED_TRIPS,
+) -> dict[tuple[str, str, str], Adjacency]:
+    """canonical_adjacency's tail, over a pre-aggregated (route, direction,
+    from_stop, to_stop) -> transition-count total (tick already collapsed
+    away) instead of a bodies list. canonical_adjacency folds one bodies list
+    through this directly; a streaming caller instead folds many batches into
+    `leaf_to` via training.load_r2.fold_segment_batch (see
+    SegmentFitAccumulator.leaf_to, shared with
+    training.load_r2.finalize_segment_baseline) and calls this once at the
+    end -- identical result either way, since the per-(route, direction,
+    from_stop, to_stop) total is a sum with no cross-tick state."""
     counts: dict[tuple[str, str, str], dict[str, int]] = defaultdict(
         lambda: defaultdict(int)
     )
-    for (route, direction, frm, to, _tick), n in build_segment_series(bodies).items():
+    for (route, direction, frm, to), n in leaf_to.items():
         if frm != to:
             counts[(route, direction, frm)][to] += n
 

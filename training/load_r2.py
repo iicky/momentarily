@@ -19,7 +19,7 @@ import re
 import statistics
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from zoneinfo import ZoneInfo
@@ -965,10 +965,30 @@ def build_segment_baseline(
     anyway so the whole segment fit (p0 with lam) is visibly one cadence: p0 is
     the advance fraction over ONE cross-tick gap, which is genuinely shorter at
     60s than at 300s, and it is the 60s bodies (not the snap) that make it so."""
-    leaves: dict[tuple[str, str, str], list[int]] = {}
+    leaf_to: dict[tuple[str, str, str, str], int] = {}
     for (route, direction, frm, to, _tick), n in build_segment_series(
         bodies, tick_seconds=tick_seconds
     ).items():
+        key = (route, direction, frm, to)
+        leaf_to[key] = leaf_to.get(key, 0) + n
+    return finalize_segment_baseline(leaf_to, counts_from_stop=counts_from_stop)
+
+
+def finalize_segment_baseline(
+    leaf_to: Mapping[tuple[str, str, str, str], int],
+    *,
+    counts_from_stop: StopFilter | None = None,
+) -> dict[tuple[str, str, str], PooledCell]:
+    """build_segment_baseline's tail, over a pre-aggregated (route, direction,
+    from_stop, to_stop) -> transition-count total (tick already collapsed away)
+    instead of a bodies list. build_segment_baseline folds one batch of bodies
+    through this directly; a streaming caller instead folds many batches into
+    `leaf_to` via fold_segment_batch (see SegmentFitAccumulator) and calls this
+    once at the end -- the result is identical either way, since summing
+    build_segment_series' per-tick counts is associative over any partition of
+    the bodies."""
+    leaves: dict[tuple[str, str, str], list[int]] = {}
+    for (route, direction, frm, to), n in leaf_to.items():
         if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
             continue
         cell = leaves.setdefault((route, direction, frm), [0, 0])
@@ -1058,31 +1078,52 @@ def build_segment_throughput[BinKey: (int, str)](
     Cadence-defined: the rate is per TICK, so a change to the cron cadence the
     Worker accumulates on invalidates it and it has to be refitted in lockstep.
     """
-    exposure = {
-        bin_key: ticks
-        for bin_key, ticks in throughput_exposure(
-            bodies, bin_fn=bin_fn, tick_seconds=tick_seconds
-        ).items()
-        if ticks >= min_ticks
-    }
-    matched: dict[tuple[str, str, str], dict[BinKey, int]] = {}
+    leaf_bin: dict[tuple[str, str, str], dict[BinKey, int]] = {}
     for (route, direction, frm, _to, tick), n in build_segment_series(
         bodies, tick_seconds=tick_seconds
     ).items():
+        bins = leaf_bin.setdefault((route, direction, frm), {})
+        bin_key = bin_fn(tick)
+        bins[bin_key] = bins.get(bin_key, 0) + n
+    exposure_ticks = throughput_exposure(
+        bodies, bin_fn=bin_fn, tick_seconds=tick_seconds
+    )
+    return finalize_segment_throughput(
+        leaf_bin, exposure_ticks, counts_from_stop=counts_from_stop, min_ticks=min_ticks
+    )
+
+
+def finalize_segment_throughput[BinKey: (int, str)](
+    leaf_bin: Mapping[tuple[str, str, str], Mapping[BinKey, int]],
+    exposure_ticks: Mapping[BinKey, int],
+    *,
+    counts_from_stop: StopFilter | None = None,
+    min_ticks: int = MIN_THROUGHPUT_TICKS,
+) -> tuple[dict[tuple[str, str, str], dict[BinKey, float]], dict[BinKey, int]]:
+    """build_segment_throughput's tail: `leaf_bin` is the per-(leaf, bin)
+    matched-transition total (every advance AND stall, unfiltered) and
+    `exposure_ticks` is the per-bin observed-tick total (also unfiltered),
+    both summed over the whole window -- see fold_segment_batch, which a
+    streaming caller uses to build these two from many batches instead of one
+    bodies list. Applies the `min_ticks` floor here, same as
+    build_segment_throughput's own `exposure` comprehension.
+
+    A leaf appears in the result only if at least one of its matched bins
+    cleared the exposure floor -- matching build_segment_throughput exactly: a
+    leaf whose only traffic fell in bins too thin to publish is omitted, not
+    zero-filled, so the published `lam` has no key for it at all (see
+    training.publish_params.write_segment_params)."""
+    exposure = {b: ticks for b, ticks in exposure_ticks.items() if ticks >= min_ticks}
+    rates: dict[tuple[str, str, str], dict[BinKey, float]] = {}
+    for (route, direction, frm), bins in leaf_bin.items():
         if counts_from_stop is not None and not counts_from_stop(route, direction, frm):
             continue
-        bin_key = bin_fn(tick)
-        if bin_key not in exposure:
+        if not any(b in exposure for b in bins):
             continue
-        counts = matched.setdefault((route, direction, frm), {})
-        counts[bin_key] = counts.get(bin_key, 0) + n
-    return (
-        {
-            leaf: {b: counts.get(b, 0) / exposure[b] for b in exposure}
-            for leaf, counts in matched.items()
-        },
-        exposure,
-    )
+        rates[(route, direction, frm)] = {
+            b: bins.get(b, 0) / exposure[b] for b in exposure
+        }
+    return rates, exposure
 
 
 def throughput_to_json(
@@ -1100,6 +1141,80 @@ def throughput_to_json(
         "|".join(leaf): {b: round(lam, 4) for b, lam in sorted(bins.items()) if lam > 0}
         for leaf, bins in rates.items()
     }
+
+
+# --- Streaming segment fit: fold one bounded batch at a time ---------------
+#
+# build_segment_series / build_segment_baseline / build_segment_throughput
+# above (and canonical_adjacency in training.segments) all take the WHOLE
+# window's bodies in one list, because every caller except
+# training.publish_params.write_segment_params prepares its own bounded ad-hoc
+# window that already fits in memory. write_segment_params' trace-cadence fit
+# does not (see trainer/wrangler.toml): the per-leaf totals a partially-pooled
+# baseline and a throughput rate need are a few thousand small numbers, but the
+# RAW trace bodies that feed build_segment_series scale with the whole window's
+# tick count and OOM the trainer's container.
+#
+# SegmentFitAccumulator + fold_segment_batch let a caller fold the window one
+# bounded batch (a day, from training.trace.fetch_trace_bodies_by_day) at a
+# time, discarding each batch's bodies before fetching the next, then finalize
+# once at the end over just the small running totals via
+# finalize_segment_baseline / finalize_segment_throughput above and
+# training.segments.finalize_canonical_adjacency. This is correct because
+# build_segment_series and throughput_exposure are themselves sums over the
+# bodies list with no cross-body state: folding any partition of the window's
+# bodies and summing the per-key totals reproduces exactly the whole-window
+# call (integer addition is associative/commutative). See
+# tests/test_load_r2.py's streaming-parity test.
+
+
+@dataclass
+class SegmentFitAccumulator[BinKey: (int, str)]:
+    """Running per-leaf totals for the streaming segment fit, folded one batch
+    at a time by fold_segment_batch. Bounded by the segment topology (a few
+    thousand (route, direction, from_stop[, to_stop | bin]) keys), never by the
+    window's tick count.
+
+    `leaf_to` feeds both finalize_segment_baseline's advance/stall split
+    (frm==to is a stall, frm!=to an advance) and
+    training.segments.finalize_canonical_adjacency's successor count (frm!=to
+    only). `leaf_bin` and `exposure` feed finalize_segment_throughput's
+    matched-count and tick-exposure totals, binned the same way."""
+
+    leaf_to: dict[tuple[str, str, str, str], int] = field(
+        default_factory=lambda: dict[tuple[str, str, str, str], int]()
+    )
+    leaf_bin: dict[tuple[str, str, str], dict[BinKey, int]] = field(
+        default_factory=lambda: dict[tuple[str, str, str], dict[BinKey, int]]()
+    )
+    exposure: dict[BinKey, int] = field(default_factory=lambda: dict[BinKey, int]())
+
+
+def fold_segment_batch[BinKey: (int, str)](
+    acc: SegmentFitAccumulator[BinKey],
+    bodies: list[dict[str, Any]],
+    *,
+    bin_fn: Callable[[int], BinKey] = THROUGHPUT_BIN_FN,
+    tick_seconds: int = TICK_SECONDS,
+) -> None:
+    """Fold one batch's movement bodies into `acc`, in place.
+
+    Unfiltered by counts_from_stop: the filter is applied once, at finalize
+    time, over the (small) merged totals -- a leaf it drops costs nothing by
+    staying in `acc` a little longer, and filtering per-batch would only repeat
+    the same per-key check at every batch instead of once."""
+    for (route, direction, frm, to, tick), n in build_segment_series(
+        bodies, tick_seconds=tick_seconds
+    ).items():
+        leaf_to_key = (route, direction, frm, to)
+        acc.leaf_to[leaf_to_key] = acc.leaf_to.get(leaf_to_key, 0) + n
+        bins = acc.leaf_bin.setdefault((route, direction, frm), {})
+        bin_key = bin_fn(tick)
+        bins[bin_key] = bins.get(bin_key, 0) + n
+    for bin_key, ticks in throughput_exposure(
+        bodies, bin_fn=bin_fn, tick_seconds=tick_seconds
+    ).items():
+        acc.exposure[bin_key] = acc.exposure.get(bin_key, 0) + ticks
 
 
 # Movement→state thresholds. MIN_MATCHED_TRIPS gates whether a direction has

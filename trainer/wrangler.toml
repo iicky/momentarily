@@ -21,13 +21,39 @@ preview_urls = false
 crons = ["0 5 * * SUN"]
 
 # Trainer container. Build context is the repo root so training/ can import
-# `momentarily` from src/. instance_type basic = 1/4 vCPU / 1 GiB — overkill
-# for a ~90s EM run, and $0 marginal inside the Workers Paid free allowance.
+# `momentarily` from src/. instance_type raised 2026-10-04 from basic (1/4
+# vCPU / 1 GiB) to standard-1 (1/2 vCPU / 4 GiB), on read-only measurements
+# against real R2 data for the 2026-10-04 weekly window:
+#   - write_segment_params' trace-cadence read+fit (training/publish_params.py
+#     + training/trace.py's fetch_trace_bodies_by_day +
+#     training/segment_trace_replay.py's trace_to_movement_bodies_batch +
+#     training/load_r2.py's fold_segment_batch) now streams one calendar day
+#     at a time instead of holding the whole 14-day window (2026-09-21..
+#     2026-10-04) at once: peak RSS 681 MiB streamed, down from 8001 MiB
+#     (~7.6 GiB) batched -- the batched peak alone was ~7.8x basic's 1 GiB,
+#     confirming the OOM that stranded every weekly run since the 1-minute
+#     trace fit shipped (2026-09-14): fits landed through write_params and
+#     write_service_baseline, but segment_params was never written for any
+#     run since, and both paths produced identical fit output (2587 cells,
+#     2296 adjacency entries) on the same data.
+#   - write_recovery_baseline's population scan
+#     (training/recovery_baseline.py build_recovery_population) is NOT
+#     streamed -- its episode extraction needs continuous chronological state
+#     across the whole 35-day dwell window (left/right-censoring, standing-
+#     advisory detection in training/episodes.py) that a day-batched split
+#     cannot supply without a larger rewrite there. Measured standalone on the
+#     2026-08-31..2026-10-04 window: peak RSS 1193 MiB, wall 107s -- already
+#     over basic's 1 GiB in isolation, before whatever the rest of the run has
+#     resident.
+# standard-1's 4 GiB clears the larger (recovery-baseline) measured peak with
+# >3x headroom (well past the 30% floor) and the streamed segment-params peak
+# with >6x. Re-measure both read-only paths before ever shrinking this back
+# down.
 [[containers]]
 class_name = "TrainerContainer"
 image = "../training/Containerfile"
 image_build_context = ".."
-instance_type = "basic"
+instance_type = "standard-1"
 max_instances = 1
 
 [[durable_objects.bindings]]

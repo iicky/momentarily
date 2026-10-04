@@ -104,6 +104,12 @@ def registry() -> dict[str, Callable[[], Forecaster]]:
         pass
     else:
         out.update(STATE_FORECASTERS)
+    try:
+        from training.journey_fine import FORECASTERS as FINE_FORECASTERS
+    except ImportError:
+        pass
+    else:
+        out.update(FINE_FORECASTERS)
     return out
 
 

@@ -10932,3 +10932,40 @@ The recovery-baseline scan, never reached in production, also exceeds
 Not yet proven in production: the next scheduled run is 2026-10-11 05:00 UTC.
 Success there means state/params.json trained_at advances and segment_params,
 recovery_baseline, and PROV versions appear for the same trained_at.
+
+## 2026-10-04 — countdown re-cut by New York service day: weekdays still beat weekends, but the weekend side is two days; and a correction to yesterday's reduction
+
+origin: agent
+
+Snapshots 2026-09-25 20:10 UTC to 2026-10-04, each assigned to the New York
+date of its observed_at, typed by the static feed calendar. Only NY days the
+poller covered for >= 80% of minutes are kept: weekdays 09-28, 09-29, 10-01,
+10-02 (09-30 was 77%); Saturday 10-03; Sunday 09-27. Reduced to the first
+prediction per (trip, stop, horizon bin) WITHIN each NY day. 95% CIs from a
+bootstrap over trip_ids (500 reps).
+
+| horizon  | metric         | weekday (4 days)     | weekend (Sat+Sun, 2 days) |
+|----------|----------------|----------------------|---------------------------|
+| 0-2 min  | within 60 s    | 0.832                | 0.829                     |
+| 2-5 min  | within 60 s    | 0.702 [0.700, 0.704] | 0.674 [0.670, 0.677]      |
+| 2-5 min  | >2 min late    | 0.076 [0.075, 0.077] | 0.090 [0.088, 0.092]      |
+| 5-10 min | MAE            | 79.1 s               | 92.8 s                    |
+| 5-10 min | median         | 0 s                  | +9 s                      |
+| 5-10 min | within 60 s    | 0.570 [0.567, 0.572] | 0.522 [0.518, 0.526]      |
+| 5-10 min | >2 min late    | 0.120 [0.118, 0.122] | 0.163 [0.159, 0.166]      |
+
+On weekends the countdown runs late (median +9 s at 5-10 min, +21 s at
+20-60 min); on weekdays it is centred. Saturday and Sunday alone read alike.
+
+Two limits. The weekend side is one Saturday and one Sunday. The bootstrap
+resamples trips, not days, so it does not capture day-to-day variation, and
+one unusual weekend day could move these numbers. Treat the difference as
+likely, not established, until four or more weekend days are covered.
+
+Correction to the 2026-10-03 weekday grade: its reduction kept the first
+prediction per (trip, stop, horizon bin) across all five UTC days. Scheduled
+trip_id strings recur every day a trip runs, so that kept one day's
+prediction per recurring trip and dropped the rest (1.6M rows kept, against
+about 1.0M per day here). Its rates are close to this entry's (5-10 min
+within 60 s 0.565 vs 0.570) but its n and intervals are wrong. This entry's
+per-day reduction supersedes it.

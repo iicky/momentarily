@@ -10698,3 +10698,205 @@ The pre-commit adversarial review blocked two of today's modules.
    runs still ran slower on their EXACT hops: median realized/scheduled 1.067
    against 1.006, p90 1.217 against 1.178. F: 2,111 runs, 91.4% single chain,
    longest / scheduled median 0.977, no censored endings.
+
+## 2026-09-28 — learning curve: the historical travel-time distribution saturates at about two weeks of history; the live term's gain shrinks as history grows
+
+origin: agent
+
+Fixed holdout 2026-09-21..27 (1-in-10 trips, ~735k scored spans), train
+window ending 2026-09-20 and starting 7, 14, or 25 days earlier. No model
+selection, so reusing a seen week is fine here; this is a curve, not a test.
+
+| train days | train spans | abstained | CRPS historical | CRPS state_od_20m | live skill | cov 10-90 (hist) |
+|------------|-------------|-----------|-----------------|-------------------|------------|------------------|
+|      7     |  7,550,228  |  14,305   |      37.61      |       36.36       |   +0.033   |      0.741       |
+|     14     | 14,744,865  |  12,134   |      36.42      |       35.58       |   +0.023   |      0.764       |
+|     25     | 26,496,197  |   9,962   |      36.31      |       35.57       |   +0.020   |      0.767       |
+
+7 -> 14 days cuts historical CRPS 3.2% and lifts coverage 0.741 -> 0.764.
+14 -> 25 days cuts it 0.3%. At the current resolution (OD x 4-hour bin x
+weekend), the distribution is close to saturated after two weeks. The live
+model's CRPS is flat from 14 days on (35.58 -> 35.57), and its skill over
+the historical distribution shrinks as history grows (+0.033 -> +0.020): the
+live term mostly corrects what a thin history misses.
+
+Consequence: more of the same data will not make these models much better.
+Gains from time must come from what longer history makes possible and has not
+been tried: finer time bins, per-weekday leaves, per-stopping-pattern leaves,
+and holiday and seasonal effects (the archive holds no winter yet).
+
+## 2026-09-30 — finer leaves: one-hour bins with shrinkage beat the 4-hour historical distribution by 1.75% on two seen weeks; schedule day type alone does not help
+
+origin: agent
+
+Selection run for five finer variants of the historical travel-time
+distribution, all fixed before scoring, each scored against the current one
+(H0: OD x 4-hour bin x clock-date weekend) on two already-seen weeks. Day
+type comes from the static feed calendar for the span's service day, so
+Labor Day 2026-09-07 counts as Sunday service (it did run a Sunday schedule).
+Every candidate answered exactly H0's samples in every run.
+
+| candidate                           | fold A skill | fold A cov | fold B skill | fold B cov |
+|-------------------------------------|--------------|------------|--------------|------------|
+| 4h x day type                       |   -0.0020    |   0.787    |   -0.0008    |   0.763    |
+| 1h x day type                       |   +0.0075    |   0.769    |   +0.0095    |   0.748    |
+| 1h x day type x stopping pattern    |   +0.0040    |   0.762    |   +0.0075    |   0.741    |
+| 1h x day type, shrunk               |   +0.0176    |   0.765    |   +0.0174    |   0.746    |
+| 1h x day type x pattern, shrunk     |   +0.0137    |   0.753    |   +0.0149    |   0.735    |
+
+Fold A: train 2026-08-27..09-13, holdout 09-14..20. Fold B: train
+08-27..09-20, holdout 09-21..27. "Shrunk" blends each leaf's quantiles with
+its parent's at w = n/(n+20) instead of cutting off below 20 trips.
+
+Reading: the gain is the hour, and only once thin hourly leaves borrow from
+their parents. Replacing the clock-date weekend flag with the schedule's day
+type at 4-hour resolution is slightly worse — the calendar is more correct,
+but splitting Saturday from Sunday halves the weekend leaves for no gain.
+Conditioning on the stopping pattern costs about 0.3-0.4 points on top of
+1-hour shrinkage: the realized OD time already carries most of the express
+versus local difference, and the extra split thins the leaves.
+
+Frozen candidate: 1h x day type, shrunk. This is selection on seen weeks,
+not a test. Its prospective test is 2026-09-28..10-04 with train
+2026-08-27..09-27, primary fleet-wide skill vs H0 > 0.
+
+## 2026-10-03 — the weekly trainer has fit twice since 2026-09-13 and published neither: the run dies at the recovery-baseline write
+
+origin: artifact
+
+Surfaced by the trainer staleness check (failing daily; first failure
+2026-09-22 at 9 days > 8). The live params pointer is still trained_at
+2026-09-13T05:15:34Z. In R2: state/params/ holds v1789881894 (2026-09-20)
+and v1790486551 (2026-09-27), and state/service_baseline/ holds the same two
+versions, so both weekly runs fit EM and wrote the first sidecar. Neither run
+wrote state/segment_params/, state/scheduled_headway/, state/segment_dwell/,
+state/prov/, or v1/prov/. state/recovery_baseline/ has held zero objects
+since that sidecar was added on 2026-09-14, and the live
+state/recovery_baseline.json returns 404.
+
+Best-supported cause, not yet confirmed from container logs:
+write_recovery_baseline() in training/publish_params.py is the one sidecar
+write in train_em.main() that is deliberately not fail-soft (its docstring:
+a real archive read failure aborts the transactional pointer flip). Its
+population scan reads predictions plus 35 days of the alert archive over
+~7.5M (route, tick) cells. A read-only repro of the same call took 109 s on
+this laptop. The trainer Container is instance_type "basic" (0.25 vCPU,
+1 GiB, confirmed with `wrangler containers info`), sized in wrangler.toml
+for "a ~90s EM run" before this sidecar and the one-minute trace migration
+(same week) existed. An exception, OOM kill, or wall-clock kill there ends
+the process before the final loop that flips the pointers. Confirming the
+signal needs the Cloudflare dashboard Container Logs for the 2026-09-27 run;
+wrangler has no log retrieval for Containers.
+
+Open issues #31 (ridership refresh, GitHub Actions against Socrata, failing
+since 2026-09-13) and #32 (snapshot staleness, first failed 2026-09-16 with
+params 3 days old) have separate causes.
+
+## 2026-10-03 — weekday grade of the MTA countdown: one prediction per train and stop, 5-10 min out, 56.5% land within a minute and 12.6% run over two minutes late
+
+origin: agent
+
+Snapshots 2026-09-28..10-02 UTC (Sunday 8 pm ET through Friday 8 pm ET),
+graded with training/eta_grade.py. This entry adds the reduction the
+2026-09-28 correction asked for: one prediction per (trip, stop, horizon
+bin), the earliest one, with 95% intervals from a bootstrap clustered by
+trip_id (500 reps). 1,600,512 reduced predictions.
+
+| horizon   | n reduced | MAE    | median | within 60 s           | >2 min late           | >1 min early |
+|-----------|-----------|--------|--------|-----------------------|-----------------------|--------------|
+| 0-2 min   |  282,896  |  41.3  |    0   | 0.834                 | 0.039                 | 0.052        |
+| 2-5 min   |  293,631  |  57.9  |    0   | 0.702 [0.699, 0.705]  | 0.078 [0.076, 0.080]  | 0.122        |
+| 5-10 min  |  294,553  |  80.4  |    0   | 0.565 [0.561, 0.568]  | 0.126 [0.123, 0.129]  | 0.196        |
+| 10-20 min |  287,008  | 106.8  |    0   | 0.455                 | 0.176                 | 0.258        |
+| 20-60 min |  221,820  | 139.9  |   -2   | 0.391                 | 0.218                 | 0.293        |
+
+Snapshot-weighted (as committed), the same week reads 5-10 min MAE 75.3 s
+and within 60 s 0.596: repeated later snapshots are closer to arrival and
+more accurate, so counting every snapshot flatters the countdown a little.
+
+Weekend (2026-09-25..27 UTC) vs weekday, both reduced: 5-10 min MAE 90.1 vs
+80.4 s; within 60 s 0.535 [0.531, 0.539] vs 0.565 [0.561, 0.568]; >2 min
+late 0.141 vs 0.126 (intervals do not overlap). The countdown is better on
+weekdays. At 0-2 min there is no difference (within 60 s 0.835 vs 0.834).
+
+By line, 2-10 min, weekday, reduced: best by MAE 1 (46 s, within 60 s 0.79),
+SI (46 s), H (54 s), L (57 s, 0.74), R (59 s). Worst E (88 s, 0.58, 16.5%
+over two minutes late), A (85 s, 0.60, 16.9%), 4 (82 s, 0.55), 7 (81 s),
+5 (78 s, 0.54). The A and E run late against the countdown; the 4, 5, and 7
+are inaccurate in both directions.
+
+The reduction also shrinks the 0-2 min "already arrived" share from 0.093 to
+0.023: most of it was the same stale listing repeated across snapshots.
+
+## 2026-10-03 — record-ridership day 2026-09-23: the A had a Severe Delays incident through the AM rush, but the rest of the system was ~5% slow too
+
+origin: agent
+
+Context: 4,696,692 rides on Wed 2026-09-23, the busiest day since before
+the pandemic. Earlier today a model-free check found its 6-8 am ET
+single-hop trips 4-6% slower than the same hours on the other weekdays.
+
+Alerts (archive/alerts, 2026-09-21..25): two new Severe Delays alerts on
+09-23. One on the A from 04:52 ET covered the whole AM rush. One on the B
+from 12:20 ET (with a Q reroute and a B part-suspension under the same alert)
+covered the PM rush. 09-23 also had the week's most new ordinary delay and
+reroute alerts in both rush windows (10 new 06:00-09:00, 11 new
+16:00-18:00, against 8-9 on Mon, Tue, and Fri).
+
+The A incident does not explain the system-wide slowdown. 6-9 am ET mean
+realized/scheduled, 09-23 against the week's other weekdays:
+
+| scope          | 09-23 | other weekdays | diff   |
+|----------------|-------|----------------|--------|
+| all lines      | 1.140 | 1.087          | +4.9%  |
+| excluding A, C | 1.140 | 1.091          | +4.6%  |
+| A              | 1.222 | 1.065          | +14.8% |
+| C              | 1.049 | 1.042          | +0.7%  |
+| F              | 1.115 | 1.045          | +6.7%  |
+| 4              | 1.137 | 1.078          | +5.5%  |
+| 7              | 1.211 | 1.164          | +4.0%  |
+| 1              | 1.097 | 1.097          | -0.1%  |
+
+So the morning was broadly slow beyond the A. Crowding, a busier alert day,
+or both fit; this data cannot separate them. One day against four.
+
+Models by day and hour bucket (train 2026-08-27..09-20, scored 09-21..25,
+1-in-10 trips, descriptive only: these days were used for selection).
+Wed 09-23 AM rush (6-10 ET) was the hardest window of the week for every
+model: CRPS 45.1 historical, 43.8 hour-by-hour shrunk, 44.7 live, against
+29.8-32.5 on Mon, Tue, and Fri and 37.4-39.4 on Thu. The hour-by-hour model
+kept a +2.9% edge there; the live model's edge was +0.9%, its best AM-rush
+showing that week (-0.8% to +0.6% on the calmer days). In the PM rush
+(B incident) both gained about 2.2-2.3%.
+
+## 2026-10-03 — correction to the weekday countdown entry above: the windows are UTC cuts, not clean weekdays and weekends
+
+origin: agent
+
+The grader selects snapshots by UTC date. The "weekday" window
+(2026-09-28..10-02 UTC) runs Sunday 2026-09-27 20:00 ET to Friday
+2026-10-02 20:00 ET, so it includes about four hours of Sunday evening and
+misses Friday night. The "weekend" window (2026-09-25 20:10 UTC to 09-27 UTC)
+runs Friday 2026-09-25 16:10 ET to Sunday 20:00 ET, so it includes Friday's
+PM rush. The comparison is between these two windows, and "better on
+weekdays" should read "better in the Sun-evening-to-Friday window". A clean
+claim needs both windows re-cut by New York service day.
+
+## 2026-10-03 — correction to the trainer entry above: the runs end at or before the segment-params write, not at the recovery baseline
+
+origin: agent
+
+The trainer entry above attributes the stall to write_recovery_baseline().
+The R2 evidence it cites contradicts that. train_em.main() publishes in this
+order: params, service_baseline, segment_params, route_shapes, segment_dwell,
+scheduled_headway, recovery_baseline, PROV, then the pointer flips. Both the
+2026-09-20 and 2026-09-27 runs wrote params and service_baseline, and neither
+wrote segment_params. So each run ended at or before write_segment_params
+finished, three steps before the recovery baseline.
+
+New leading suspect, still unconfirmed without the container logs:
+write_segment_params is wrapped in try/except, but since 2026-09-14 it loads
+every one-minute trace body for the training window into memory before it
+fits. On the 1 GiB container an out-of-memory kill would end the process, and
+a try/except cannot catch that. A measurement of that path's peak memory is
+in progress; it will get its own entry.

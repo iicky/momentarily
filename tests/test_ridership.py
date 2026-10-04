@@ -8,16 +8,20 @@ real network or R2.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from training.ridership import (
+    _GET_JSON_ATTEMPTS,  # pyright: ignore[reportPrivateUsage]
     BASELINE_KEY,
     QUERY_LIMIT,
     SCHEMA_VERSION,
     VERSIONED_BASELINE_PREFIX,
+    _get_json,  # pyright: ignore[reportPrivateUsage]
     build_doc,
     fetch_hourly_rows,
     reduce_baseline,
@@ -25,6 +29,11 @@ from training.ridership import (
     weekday_weekend_day_counts,
     write_baseline,
 )
+
+
+def _no_sleep(seconds: float) -> None:
+    """Stand-in for time.sleep in the retry tests -- no real backoff delay."""
+    return None
 
 
 def _row(
@@ -218,3 +227,83 @@ def test_write_baseline_writes_live_and_versioned_keys() -> None:
     assert versioned_key == f"{VERSIONED_BASELINE_PREFIX}v1701300000.json"
     assert set(fake.objects) == {BASELINE_KEY, versioned_key}
     assert fake.objects[BASELINE_KEY] == fake.objects[versioned_key]
+
+
+def test_get_json_retries_a_transient_read_timeout_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single dropped read -- the 2026-09-13 failure's httpx.ReadTimeout --
+    does not have to fail the whole run: the next attempt against the same
+    query succeeds."""
+    calls = 0
+
+    def flaky_get(
+        self: httpx.Client,
+        url: str,
+        *,
+        params: object = None,
+        headers: object = None,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("timed out", request=httpx.Request("GET", url))
+        return httpx.Response(
+            200, request=httpx.Request("GET", url), json=[{"latest": "x"}]
+        )
+
+    monkeypatch.setattr(httpx.Client, "get", flaky_get)
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+
+    assert _get_json("https://example.test", {}) == [{"latest": "x"}]
+    assert calls == 2
+
+
+def test_get_json_gives_up_after_exhausting_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def always_timeout(
+        self: httpx.Client,
+        url: str,
+        *,
+        params: object = None,
+        headers: object = None,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("timed out", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", always_timeout)
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+
+    with pytest.raises(httpx.ReadTimeout):
+        _get_json("https://example.test", {})
+    assert calls == _GET_JSON_ATTEMPTS
+
+
+def test_get_json_does_not_retry_a_client_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 4xx means the query itself is wrong -- retrying would get the same
+    answer, so it fails on the first attempt instead of burning the retry
+    budget on a hopeless request."""
+    calls = 0
+
+    def bad_request(
+        self: httpx.Client,
+        url: str,
+        *,
+        params: object = None,
+        headers: object = None,
+    ) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(400, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", bad_request)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _get_json("https://example.test", {})
+    assert calls == 1

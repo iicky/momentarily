@@ -39,6 +39,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -61,6 +62,15 @@ FEED_URL = f"https://data.ny.gov/resource/{DATASET_ID}.json"
 # never a request path, so waiting is free; a slow response is not the same
 # failure as a hung connection.
 FETCH_TIMEOUT = httpx.Timeout(10.0, read=150.0)
+
+# A single slow or dropped response took down the whole weekly run on
+# 2026-09-13 (httpx.ReadTimeout from this same query shape, which every run
+# before and since completed well inside FETCH_TIMEOUT's 150s read budget) --
+# a transient Socrata hiccup, not a query that is too slow in general. A
+# handful of retries with backoff absorbs that without widening the timeout
+# itself, which is already tuned to the live feed's own measured latency.
+_GET_JSON_ATTEMPTS = 3
+_GET_JSON_BACKOFF_SECONDS = 5.0
 
 BASELINE_KEY = "state/ridership_baseline.json"
 # Immutable per-run snapshots live under this prefix as v<generated_at>.json.
@@ -108,11 +118,28 @@ def _floating(dt: datetime) -> str:
 
 def _get_json(url: str, params: dict[str, Any]) -> Any:
     """The one place an HTTP GET happens. Kept separate from the two fetch
-    functions below so tests can monkeypatch this instead of the network."""
-    with httpx.Client(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
-        response = client.get(url, params=params, headers=_headers())
-        response.raise_for_status()
-        return response.json()
+    functions below so tests can monkeypatch this instead of the network.
+
+    Retries a transport-level failure (dropped connection, DNS blip, or a
+    read past FETCH_TIMEOUT) or a 5xx response up to _GET_JSON_ATTEMPTS
+    times with exponential backoff -- see _GET_JSON_ATTEMPTS's comment for
+    the run this would have saved. A 4xx is never retried: it means this
+    query is wrong, and the next attempt would get the same answer."""
+    for attempt in range(_GET_JSON_ATTEMPTS):
+        try:
+            with httpx.Client(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
+                response = client.get(url, params=params, headers=_headers())
+                response.raise_for_status()
+                return response.json()
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            client_error = (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code < 500
+            )
+            if client_error or attempt == _GET_JSON_ATTEMPTS - 1:
+                raise
+            time.sleep(_GET_JSON_BACKOFF_SECONDS * 2**attempt)
+    raise AssertionError("unreachable")
 
 
 # The modes we build baselines for. Staten Island Railway rides the same rails

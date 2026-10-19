@@ -26,7 +26,7 @@ dev = [
     # Local-only credential vault. No deployed artifact needs it (the trainer
     # container reads R2_* from env), and it's a Rust/maturin build that won't
     # compile in the slim image — so keep it out of the runtime deps.
-    "murk-secrets>=0.6.2",
+    "murk-secrets>=0.11.0",
 ]
 
 [build-system]

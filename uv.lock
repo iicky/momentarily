@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 
 [[package]]
@@ -533,7 +533,7 @@ requires-dist = [
 dev = [
     { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.34" },
     { name = "matplotlib", specifier = ">=3.10.9" },
-    { name = "murk-secrets", specifier = ">=0.6.2" },
+    { name = "murk-secrets", specifier = ">=0.11.0" },
     { name = "pyright", specifier = ">=1.1.380" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=5.0" },
@@ -542,9 +542,16 @@ dev = [
 
 [[package]]
 name = "murk-secrets"
-version = "0.6.2"
+version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4e/1b/562cd9ad968b8eff7cd28b1da4727c705e5fc1ea63889c639d3a846ddf70/murk_secrets-0.6.2.tar.gz", hash = "sha256:7fd91ce79457c7305eb767f8721fcb029adfaa66e155762395217df900f4fe1b", size = 5097949, upload-time = "2026-05-03T18:39:13.069Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/4e/0e2bc2b7f91dd2202943745e0648aded3c79d442726170c34c593dbd1064/murk_secrets-0.11.0.tar.gz", hash = "sha256:f77c4ecc86c22b8039f9ec131ab7f7c7cbd6c9916d6e67e0dd9d75d6f443ed29", size = 7139292, upload-time = "2026-09-01T01:51:25.471Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/cd/618521e3f60e70a002cf49819098d34497a32acd4cbe14be874a4a4b9430/murk_secrets-0.11.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:afb460599803f5feb68c9417309994822a8aaf7150f22bfc7d67b0ad19d1ee60", size = 1211278, upload-time = "2026-09-01T01:51:16.934Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/b7/88c25a3b0e0c3c520a6af1a672ee4dad394ac7876ec4632c7c883d277f1f/murk_secrets-0.11.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:c8645ba71208ef997021a1340ebe33ec743dd67feda2ef23e926d992b3cd57fd", size = 1088666, upload-time = "2026-09-01T01:51:18.762Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/b5/7ead731c1c22b41363160af3db9e02c4786efafb59f14593a2f934d9c16b/murk_secrets-0.11.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ed10a8de8a7e6fcb13a2136a0b43d2e88d8964b3735d73efe30a9c2ad70b7848", size = 1292417, upload-time = "2026-09-01T01:51:20.281Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/2e/6f3fb46df642d33db333fca1b174dc4d7a2bae2a45c31557a8d5669e1f04/murk_secrets-0.11.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:80fbb8addd208b5a0896f289d73e72c0a2016fdc5185014b9f36fabb6c87c3a3", size = 1222147, upload-time = "2026-09-01T01:51:21.829Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/f8/01ff03ef193156ca6a9842aef04403f604af28b0922eafdf489c8bd4a87e/murk_secrets-0.11.0-cp39-abi3-win_amd64.whl", hash = "sha256:249f5927f9974d99d999b914bcdbfedcae8993234a3056aa04f4f5fa10f83c24", size = 1248770, upload-time = "2026-09-01T01:51:23.417Z" },
+]
 
 [[package]]
 name = "mypy-boto3-s3"

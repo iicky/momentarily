@@ -7,10 +7,10 @@ of the same derivation logic.
 
 ## R2 object layout
 
-The Worker's only state store is one R2 bucket. Keys fall under three prefixes.
+The Worker's only state store is one R2 bucket. Keys fall under four prefixes.
 Only `v1/` is served publicly — the Worker is the auth boundary and the R2
-custom domain must NOT be bound directly to the bucket, so `state/` and
-`archive/` stay private ([`src/index.ts`](src/index.ts), `PUBLIC_PREFIX`).
+custom domain must NOT be bound directly to the bucket, so `state/`,
+`archive/` and `model/` stay private ([`src/index.ts`](src/index.ts), `PUBLIC_PREFIX`).
 
 The cron fires every minute ([`wrangler.toml`](wrangler.toml)); the full
 derivation pipeline runs only when the minute is a 5-minute boundary, while the
@@ -130,6 +130,24 @@ than duplicating it.
 | `archive/vehicles/<date>/<observed_at>.json` | [`archive.ts`](src/archive.ts) `archiveVehicleMetric` | every 5-min tick |
 | `archive/arrivals/<date>/<observed_at>.json.gz` | [`archive.ts`](src/archive.ts) `archiveArrivalsSample` | every minute, gzipped, first 4 upcoming trains per stop — grades the feed's own countdown ETAs against realized arrivals |
 | `archive/trace/<date>/<scheduled_at>.json` | [`archive.ts`](src/archive.ts) `archiveTraceRows` | every minute |
+
+### `model/observations/s1/` — private, raw observations
+
+Written by the recorder ([`recorder.ts`](src/recorder.ts)) beside the pipeline
+above, which it does not change: the untouched bytes of every upstream fetch
+and one `CollectorTick` per invocation. Contracts, layout and retention are in
+[`docs/model-observations.md`](../docs/model-observations.md) §3–4. Keys
+carry `started_at_ms`, so overlapping invocations for one cron minute write
+separate objects.
+
+| Key | Producer | Cadence |
+| --- | --- | --- |
+| `ticks/<date>/<HH>/<scheduled_at>-<started_at_ms>.json` | `Recorder.finish` (in a `finally`) | every invocation |
+| `raw/gtfsrt/<date>/<HH>/<scheduled_at>-<started_at_ms>.bin` | `Recorder.storeBundle`, before any decode | every invocation: a gzip `TickBundleIndex` member, then one gzip member per GTFS-RT body |
+| `raw/blob/<date>/<sha256>.json.gz` | `Recorder` per JSON fetch | when the digest is new that UTC day: alerts (polled every minute), ENE, stations, entrances |
+
+A failed bundle, blob or tick PUT is counted in that minute's `archive/health/`
+record as `observations_bundle`, `observations_blob` or `observations_tick`.
 
 ## alert_type → status mapping
 

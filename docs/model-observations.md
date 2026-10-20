@@ -664,6 +664,61 @@ Failure behaviour:
 - The recorder runs beside today's archives and does not replace them in
   step 2.
 
+### 4.1 As built (slice 4)
+
+The recorder is `worker/src/recorder.ts`; `worker/src/observation_keys.ts`
+formats its keys, pinned to `keys.py` by
+`tests/fixtures/parity_observation_keys.json`. The build follows §4 except
+where listed here.
+
+- **What is recorded.** Every invocation fetches the 8 GTFS-RT feeds and the
+  alerts feed at its start. On a boundary tick, step 2 of the pipeline takes
+  that same alerts payload, so the pipeline's 5-minute cadence is unchanged and
+  the feed is fetched once. ENE, stations and entrances are recorded when the
+  pipeline fetches them (hourly or daily, alpha CAS winner only). The static
+  GTFS HEAD is recorded every minute. Its detached capture GET is not: it
+  outlives the tick, and its bytes go to `archive/gtfs/`.
+- **Bundle.** Every member is a gzip member, the index (member 0) included.
+  A reader splits them in order (Python: `zlib.decompressobj(31)` and
+  `unused_data`). A bundle is written every invocation, also when no GTFS-RT
+  body was read, so the index records the failed attempts.
+- **Outcomes.** A GTFS-RT body is `unparseable` when its top level or its
+  FeedHeader is not well-formed protobuf. Entity bytes are left to the
+  offline decoder. The alerts JSON must be an object whose `entity` is an
+  array (absent means 0); ENE and Socrata JSON must be an array. Any other
+  JSON, or a body that does not parse, is `unparseable`. The bytes are stored
+  in every one of these cases.
+- **Blob dedup.** A HEAD on the content-addressed key, then a PUT on a miss,
+  filed under the UTC day of `finished_at_ms`. A failed HEAD counts as a
+  miss, so the blob is written anyway. A per-day digest index object was
+  rejected: it needs the same Class B read, adds a Class A write ($4.50/M) on
+  every change, and needs a CAS against overlapping invocations. Two racing
+  PUTs of one blob key write the same bytes.
+- **Closing the tick.** Every fetch runs through `Recorder.attempt`, and
+  `finish()` waits for every attempt still in flight before it writes the
+  tick. An invocation that throws while the alerts fetch is pending still
+  records that fetch and its blob, then rethrows.
+- **Write failures.** A failed bundle, blob or tick PUT counts as
+  `observations_bundle`, `observations_blob` or `observations_tick` in that
+  minute's `archive/health/` record. The recorder finishes before that record
+  is written. The `finally` covers only an invocation that throws.
+- **Tests.** `worker/test/recorder.test.ts` drives the real handler against
+  Miniflare R2. Miniflare's Node-side binding cannot serialize the `Headers`
+  form of `onlyIf` that `conditionalPut` sends (3.20241230 and 4.20260508
+  alike), so the test bucket passes it on as `{ etagDoesNotMatch: '*' }`.
+  `tests/fixtures/recorder_output.json` is a tick and bundle index the
+  recorder wrote; `tests/test_recorder_output.py` runs it through the
+  Pydantic validators.
+- **Cost per tick.** Measured in Node under vitest with Miniflare R2, not in
+  workerd, which was not measured. Recording one minute (8 GTFS-RT feeds and
+  the alerts feed from the 2026-10-20 fixtures: classify, sha256, gzip, R2
+  calls) took 14–15 ms of CPU. A whole off-boundary tick took 39–55 ms.
+- **Size per minute.** The bundle is 135 KB, the alerts blob 74 KB (stored
+  only on a new digest) and the tick record 6.5 KB. At that rate all day the
+  bundles are 194 MB/day. Scaled by the §1.1 weekly-mean factor of 0.73 they
+  are 142 MB/day, the figure §6 started from. Tick records are about
+  9.4 MB/day, not the 3.6 MB first assumed.
+
 ## 5. Backfill mapping
 
 `Unknown(reason)` marks every field a legacy archive did not keep. Nothing is
@@ -699,23 +754,24 @@ and every figure below is a marginal cost.
 
 | Item | Per day | Proposed retention | Steady storage | $/month |
 |---|---|---|---|---|
-| GTFS-RT tick bundles (gzip) | 143 MB | 35 d | 5.0 GB | 0.08 |
+| GTFS-RT tick bundles (gzip) | 143 MB (weekly mean, §1.1); 194 MB at the measured slice-4 rate | 35 d | 5.0–6.8 GB | 0.08–0.10 |
 | Nightly zstd `--long` repack of the bundles | 30 MB | keep (1 yr shown) | 11 GB/yr | 0.16 per retained year |
 | Alerts blobs (gzip, on change) | 8.6–21 MB | keep (1 yr shown) | 3.1–7.7 GB/yr | 0.05–0.12 per year |
 | ENE and Socrata blobs | ~1 MB | keep | 0.4 GB/yr | 0.01 |
-| Tick records | ~3.6 MB [inference] | keep | 1.3 GB/yr | 0.02 |
+| Tick records | 9.4 MB (measured, slice 4) | keep | 3.4 GB/yr | 0.05 per year |
 | Derived vehicle + stop-time parquet | 55 MB | 365 d (rebuildable from raw) | 20 GB | 0.30 |
 | Derived alert presence/versions, ENE, headers | < 2 MB [inference] | keep | < 1 GB/yr | < 0.01 |
 
 R2 operations per month:
 
-- Worker: about 2 PUTs per minute, plus blobs (≤ 288 alerts, about 50 ENE
-  and Socrata per day). That is about 96k Class A, or $0.43, plus about 11k
-  HEADs (Class B) for dedupe, or $0.004.
+- Worker: about 2 PUTs per minute, plus blobs on a new digest (alerts, at
+  least 118 changes a day; about 50 ENE and Socrata). That is about 96k
+  Class A, or $0.43. Dedupe costs one HEAD (Class B) per JSON fetch: 1,440
+  alerts plus about 75 ENE and Socrata a day, about 45k a month, or $0.016.
 - Nightly derive: about 52k GETs ($0.02) and about 1.5k PUTs.
 
-**Total in year one: about $1/month**, rising about $0.3/month for each further
-year of raw and alerts kept.
+**Total in year one: about $1/month**, rising about $0.35/month for each further
+year of raw, alerts and tick records kept.
 
 Not repacking and keeping the gzip bundles for a year instead would cost
 52 GB and $0.78/month. Money does not drive this choice. The repack exists so

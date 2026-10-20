@@ -376,7 +376,7 @@ export async function archiveArrivalsSample(
 
   await bucket.put(
     key,
-    await gzipJson(body),
+    await gzip(new TextEncoder().encode(JSON.stringify(body))),
     { httpMetadata: { contentType: 'application/json', contentEncoding: 'gzip' } },
   );
 }
@@ -405,15 +405,15 @@ function parseAlertEntity(entity: unknown): { id: string; updatedAt: number } | 
 }
 
 /**
- * gzip a JSON-serializable value via the Workers runtime's CompressionStream,
- * for the one archive stream (archiveArrivalsSample) that writes gzipped —
+ * One gzip member of `bytes` via the Workers runtime's CompressionStream.
+ * archiveArrivalsSample is the one archive/ stream that writes gzipped —
  * every other archive/ stream here is small enough that plain JSON was the
- * right trade, so this stays scoped rather than becoming every writer's path.
+ * right trade. The observations recorder gzips its raw payloads with it too.
  */
-async function gzipJson(body: unknown): Promise<Uint8Array> {
+export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new CompressionStream('gzip');
   const writer = stream.writable.getWriter();
-  void writer.write(new TextEncoder().encode(JSON.stringify(body)));
+  void writer.write(bytes);
   void writer.close();
 
   const chunks: Uint8Array[] = [];

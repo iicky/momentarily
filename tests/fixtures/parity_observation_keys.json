@@ -1,0 +1,72 @@
+{
+  "attempts": [
+    {
+      "scheduled_at": 0,
+      "started_at_ms": 0,
+      "utc_day": "1970-01-01",
+      "tick": "model/observations/s1/ticks/1970-01-01/00/0-0.json",
+      "bundle": "model/observations/s1/raw/gtfsrt/1970-01-01/00/0-0.bin"
+    },
+    {
+      "scheduled_at": 1792514520,
+      "started_at_ms": 1792514520412,
+      "utc_day": "2026-10-20",
+      "tick": "model/observations/s1/ticks/2026-10-20/16/1792514520-1792514520412.json",
+      "bundle": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin"
+    },
+    {
+      "scheduled_at": 1792519199,
+      "started_at_ms": 1792519199999,
+      "utc_day": "2026-10-20",
+      "tick": "model/observations/s1/ticks/2026-10-20/17/1792519199-1792519199999.json",
+      "bundle": "model/observations/s1/raw/gtfsrt/2026-10-20/17/1792519199-1792519199999.bin"
+    },
+    {
+      "scheduled_at": 1798761599,
+      "started_at_ms": 1798761600003,
+      "utc_day": "2026-12-31",
+      "tick": "model/observations/s1/ticks/2026-12-31/23/1798761599-1798761600003.json",
+      "bundle": "model/observations/s1/raw/gtfsrt/2026-12-31/23/1798761599-1798761600003.bin"
+    },
+    {
+      "scheduled_at": 1709164800,
+      "started_at_ms": 1709164801000,
+      "utc_day": "2024-02-29",
+      "tick": "model/observations/s1/ticks/2024-02-29/00/1709164800-1709164801000.json",
+      "bundle": "model/observations/s1/raw/gtfsrt/2024-02-29/00/1709164800-1709164801000.bin"
+    },
+    {
+      "scheduled_at": 253402300799,
+      "started_at_ms": 253402300799999,
+      "utc_day": "9999-12-31",
+      "tick": "model/observations/s1/ticks/9999-12-31/23/253402300799-253402300799999.json",
+      "bundle": "model/observations/s1/raw/gtfsrt/9999-12-31/23/253402300799-253402300799999.bin"
+    }
+  ],
+  "blobs": [
+    {
+      "observed_at": 1792514521,
+      "sha256": "85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f",
+      "ext": "json",
+      "key": "model/observations/s1/raw/blob/2026-10-20/85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f.json.gz"
+    },
+    {
+      "observed_at": 1798761599,
+      "sha256": "85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f",
+      "ext": "json",
+      "key": "model/observations/s1/raw/blob/2026-12-31/85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f.json.gz"
+    },
+    {
+      "observed_at": 1798761600,
+      "sha256": "85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f",
+      "ext": "pb",
+      "key": "model/observations/s1/raw/blob/2027-01-01/85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f.pb.gz"
+    },
+    {
+      "observed_at": 1709164800,
+      "sha256": "85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f",
+      "ext": "zip",
+      "key": "model/observations/s1/raw/blob/2024-02-29/85d9b90685e0d03818241c8d339bb711e0ba51196249900529b7ddb99e560d1f.zip.gz"
+    }
+  ]
+}

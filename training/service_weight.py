@@ -75,9 +75,9 @@ if TYPE_CHECKING:
 BASELINE_KEY = "state/service_weight_baseline.json"
 VERSIONED_BASELINE_PREFIX = "state/service_weight_baseline/"
 # RETENTION: the versioned state/service_weight_baseline/ snapshots are kept
-# forever. training.prune has no rule for this prefix -- its DATED_PREFIXES
-# cover only the dated archive/v1 streams, and PARAMS_PREFIX covers only
-# state/params/ -- so nothing sweeps it. This sidecar is unrelated to the HMM
+# forever. training.prune has no rule for this prefix -- it only expires
+# state/params/ rollback snapshots (PARAMS_PREFIX) -- so nothing sweeps it.
+# This sidecar is unrelated to the HMM
 # training window (it derives from the static GTFS schedule on its own
 # weekly cron, service-weight-weekly.yml) and carries no params_trained_at
 # cross-reference, so it needs its own rollback trail exactly like

@@ -1,9 +1,9 @@
 """The long-lived announced-window archive (training/window_archive.py).
 
-This is the ANSWER KEY half of the derived storage. It outlives
-`archive/alerts/` (pruned at 90 days), so once those are gone a stored window
-cannot be regenerated or checked — the same one-way door the traversal archive
-faces, and the same defences apply.
+This is the ANSWER KEY half of the derived storage. Graders read it in place of
+re-parsing `archive/alerts/`, so a stored window is not checked against the
+alert versions behind it — the same exposure the traversal archive has, and
+the same defences apply.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def test_a_day_of_windows_round_trips_including_the_named_stops():
 
 
 def test_an_unreadable_schema_raises_instead_of_parsing_partially():
-    """The alert versions that could have checked a mis-parse are pruned."""
+    """Graders do not re-parse the alert versions that could catch a mis-parse."""
     doc = _doc()
     doc["provenance"]["schema"] = SCHEMA_VERSION + 1
     with pytest.raises(ValueError, match="schema"):
@@ -133,7 +133,7 @@ def test_keys_are_one_object_per_day_under_a_date_segment():
 
 def test_a_span_crossing_a_parser_change_reports_itself_as_mixed():
     """Two answer keys built by different parsers are not one answer key, and
-    after the alerts prune nothing else could reveal it."""
+    graders reading the archive have nothing else that could reveal it."""
     mixed = WindowReadResult(
         windows=[],
         provenance={
@@ -155,8 +155,8 @@ def test_the_parser_semantics_are_pinned_so_a_change_cannot_pass_silently():
     `planned_work.windows_from_alerts` decides which alert types count, how the
     named stations are scoped, and how active periods become windows. If any of
     that changes, every answer key already written disagrees with every one
-    written afterwards — and the alert versions that could re-derive the old days
-    are pruned at 90 days. No downstream grade would fail; they would all keep
+    written afterwards, and graders read the archive rather than re-deriving the
+    old days. No downstream grade would fail; they would all keep
     producing plausible numbers against a subtly different answer key.
 
     When this fails, the change is real. Bump PARSER_VERSION and re-derive
@@ -283,7 +283,7 @@ def test_write_day_then_read_days_round_trips_through_the_client_path():
 def test_write_day_skips_a_day_already_present_without_overwrite():
     """A day present at the destination key is left untouched unless
     overwrite is set -- the guard that keeps a finalized day from ever being
-    silently shortened once alerts prune."""
+    silently replaced by a later, possibly shorter, derivation."""
     day = date(2026, 8, 12)
     key = key_for(day)
     client = cast(Any, _FakeArchiveClient({key: b"already-written"}))

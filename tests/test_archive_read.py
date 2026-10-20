@@ -70,7 +70,7 @@ def test_nothing_is_fetched_when_the_archive_covers_the_span():
 
 def test_the_summary_says_which_half_a_result_came_from():
     """A grade must always be able to state how much of it was archived, because
-    the archived half is the only part that survives the raw prune."""
+    archived days are read as stored, not re-derived from raw."""
     loaded = Loaded[int](
         rows=[1, 2, 3],
         archived_days=[date(2026, 8, 12)],
@@ -85,8 +85,9 @@ def test_the_summary_says_which_half_a_result_came_from():
 
 
 def test_a_mixed_span_says_so_in_its_summary_and_refuses_to_pool():
-    """After the raw streams prune, provenance is the only remaining signal that
-    two days are not the same measurement. A grade that aggregates across days
+    """Archived days are not re-derived from raw, so provenance is the only
+    signal that two days are not the same measurement. A grade that aggregates
+    across days
     must fail rather than average over a definitional change."""
     mixed = Loaded[int](
         rows=[1],

@@ -13,8 +13,9 @@ name: Eval (daily)
 # published_condition exists (from 2026-07-11), so the movement arm is graded on
 # its own data rather than falling back to the alert shadow. Fixed length rather
 # than "everything retained": a window that grows each run changes its own
-# denominator, which is the same confound wearing a different hat. Ceiling is
-# training/prune.py's 90-day retention.
+# denominator, which is the same confound wearing a different hat. The full
+# history is retained (training/prune.py never deletes v1/ streams), so the
+# window is a choice, not a ceiling.
 
 on:
   schedule:

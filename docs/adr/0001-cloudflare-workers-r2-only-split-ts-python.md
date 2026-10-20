@@ -76,7 +76,7 @@ Three independent compute surfaces, all reading/writing the one R2 bucket
 | Publisher | Worker `momentarily-held` (`worker/`) | every 5 min | `v1/snapshot.json`, `v1/predictions/`, `v1/regime_transitions/`, `state/alpha.json`, `state/last_seen.json`, `archive/alerts/`, `archive/ene/` |
 | Trainer | Container via Worker `momentarily-trainer` (`trainer/`) | Sunday 05:00 UTC | `state/params.json`, `state/params/v<trained_at>.json` |
 | Eval | GitHub Actions (`eval-daily.yml`) | daily 06:00 UTC | `v1/eval.json`, `v1/calibration.json` |
-| Prune | GitHub Actions (`prune-nightly.yml`) | daily 05:00 UTC | deletes aged `archive/*` + `v1/predictions/`, `v1/regime_transitions/` objects |
+| Prune | GitHub Actions (`prune-nightly.yml`) | daily 05:00 UTC | deletes `state/params/v*.json` rollback snapshots older than 180 days; dated `archive/*` and `v1/*` history is kept indefinitely |
 
 The container is the **single** writer of `state/params.json`. An earlier GitHub
 Actions workflow (`train-nightly.yml`) also retrained nightly and wrote the same

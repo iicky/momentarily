@@ -1,28 +1,26 @@
-"""A long-lived archive of DERIVED traversals, kept when the raw trace is not.
+"""A long-lived archive of DERIVED traversals, cheap to read where raw is not.
 
-WHY THIS EXISTS. `archive/trace/` is pruned at 30 days because of its size (81
-MB/day measured 2026-08-15), and that prune is the reason every model in this
-repo has been evaluated on at most a month of history. Waiting three weeks,
-grading a month, and finding the older data already deleted is not a data
-problem, it is a retention policy — the evaluation window could never grow.
+WHY THIS EXISTS. `archive/trace/` used to be pruned at 30 days because of its
+size (81 MB/day measured 2026-08-15), and that prune is the reason every model
+in this repo was evaluated on at most a month of history. The raw trace is now
+kept in full by owner decision, but it is still too large to re-read for every
+grade, so the evaluation window grows through this archive.
 
 The raw trace is an INTERMEDIATE. Every measure built on it — traversal
 baselines, the planned-work grade, the progress ratio, the segment grade —
 starts by calling `trace.traversals_from_trace` and never looks at a raw row
 again. Storing the derived traversals instead costs 1.5 MB/day gzipped against
-81 MB/day raw, measured over the same day: 56x smaller, so the storage
-currently spent on a rolling 30-day raw window holds about four and a half years
-of this. That converts "wait for new collection" into "query what we already
-have".
+81 MB/day raw, measured over the same day: 56x smaller to read. That converts
+"re-derive the whole history" into "query what we already have".
 
 WHAT THIS DOES NOT DO. It cannot invent history. The 5-minute
 `archive/vehicles/` stream that reaches further back records per-(route,
 direction) COUNTS with no trip identity, so traversal times are not recoverable
 from it at any effort. This archive begins when the trace began.
 
-PROVENANCE IS PART OF THE RECORD, NOT A NICETY. A derived store outlives its
-inputs: once the raw trace for a day is pruned, a row in here cannot be
-regenerated or checked. So any later change to how traversals are extracted, or
+PROVENANCE IS PART OF THE RECORD, NOT A NICETY. A derived store is read in
+place of its inputs, so a row in here is not re-checked against the raw trace.
+So any later change to how traversals are extracted, or
 to which static feed named the service, would silently make old rows
 incomparable with new ones — and the comparison would still run and still
 produce a number. Every day written therefore carries:
@@ -286,9 +284,7 @@ def key_for(day: date) -> str:
     """One immutable object per day, under a DATE PATH SEGMENT.
 
     The segment form (not `<date>.json.gz`) matches every other stream in the
-    bucket and is what `training.prune`'s date matcher recognises, so this
-    prefix is policed by the same retention machinery as the rest instead of
-    needing its own.
+    bucket, so date-scoped listing works the same way here as elsewhere.
     """
     return f"{PREFIX}{day.isoformat()}/traversals.json.gz"
 
@@ -488,9 +484,9 @@ def write_day(
     ONLY CLOSED DAYS ARE FINALIZED. Writing the day still in progress would
     store a truncated one — at 10:00 UTC roughly 600 of its 1,440 minutes exist
     — and because a present day is skipped by default, every later run would
-    skip it forever. The archive would keep a permanently short day, and once
-    the raw trace is pruned at 30 days there would be nothing left to repair it
-    from. That failure is silent, so it is refused here rather than documented.
+    skip it forever. The archive would keep a permanently short day that no
+    later run repairs, and readers prefer the archive over the raw trace. That
+    failure is silent, so it is refused here rather than documented.
     `allow_partial` exists for deliberate inspection and pairs with `overwrite`,
     because a partial day is only safe if it will be replaced.
     """

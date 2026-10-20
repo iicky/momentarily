@@ -1,7 +1,8 @@
 """The long-lived derived traversal archive (training/traversal_archive.py).
 
-The archive outlives its inputs: once `archive/trace/` is pruned at 30 days, a
-row in here cannot be regenerated or checked against anything. So these cases
+The archive is read in place of its inputs: graders do not re-derive an
+archived day from `archive/trace/`, so a row in here is not checked against
+anything. So these cases
 are mostly about refusing to read or write something incomparable, and about
 making a change in extraction semantics FAIL rather than quietly produce rows
 that get averaged with older ones years from now.
@@ -75,7 +76,7 @@ def test_a_day_round_trips_every_field_exactly():
 
 def test_provenance_travels_with_the_rows_not_beside_them():
     """A day that cannot say which extractor and which static feed produced it is
-    comparable to nothing once the raw trace behind it has been pruned."""
+    comparable to nothing once graders read it in place of the raw trace."""
     doc = _doc()
     assert set(doc) == {"provenance", "fields", "rows"}
     prov = doc["provenance"]
@@ -177,8 +178,8 @@ def test_a_feed_republish_also_counts_as_a_version_boundary():
 def test_only_closed_days_are_finalized():
     """Writing the day still in progress would store a truncated one, and because
     a present day is skipped by default every later run would skip it forever —
-    unrepairable once the raw trace prunes. Closure is a UTC question because the
-    trace is partitioned on the UTC date."""
+    a silently short day that graders read in place of the raw trace. Closure is
+    a UTC question because the trace is partitioned on the UTC date."""
     today = date(2026, 8, 17)
     assert is_closed(date(2026, 8, 16), now=today)
     assert not is_closed(today, now=today)
@@ -186,9 +187,9 @@ def test_only_closed_days_are_finalized():
 
 
 def test_keys_are_one_immutable_object_per_day_under_a_date_segment():
-    """The date-segment layout is what training.prune's matcher recognises, so
-    this prefix is policed by the same retention machinery as every other stream.
-    Day-addressable and immutable is also what makes a holdout a date filter."""
+    """One object per day under a date path segment, matching every other
+    stream. Day-addressable and immutable is also what makes a holdout a date
+    filter."""
     assert (
         key_for(date(2026, 8, 12)) == "archive/traversals/2026-08-12/traversals.json.gz"
     )
@@ -227,8 +228,8 @@ def test_known_and_unknown_feed_days_do_not_pool_silently():
 def test_allow_partial_without_overwrite_is_refused_before_any_work():
     """The one combination that would cause permanent truncation.
 
-    A partial day written once is skipped by every later run, and after the raw
-    trace prunes there is nothing left to repair it from. The pairing is enforced
+    A partial day written once is skipped by every later run, and graders read
+    it in place of the raw trace. The pairing is enforced
     rather than documented, and it fails before any network fetch so a bad
     invocation costs nothing.
     """
@@ -392,7 +393,7 @@ def test_write_day_then_read_days_round_trips_through_the_client_path():
 def test_write_day_skips_a_day_already_present_without_overwrite():
     """A day present at the destination key is left untouched unless
     overwrite is set -- the guard that keeps a finalized day from ever being
-    silently shortened once the raw trace prunes."""
+    silently replaced by a later, possibly shorter, derivation."""
     day = date(2026, 8, 12)
     key = key_for(day)
     client = cast(Any, _FakeArchiveClient({key: b"already-written"}))

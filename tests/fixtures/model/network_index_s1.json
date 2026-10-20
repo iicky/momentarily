@@ -1,0 +1,20 @@
+{
+  "feeds": {
+    "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895": {
+      "applied_retroactively": [
+        "stations"
+      ],
+      "build_id": "bab9b08b93df200b",
+      "content_digest": "a3aaaee6b613dc46f9c47afbc9075333c217e016305f4835c230f4a84ef63a61",
+      "feed_version": "20260601-fixture",
+      "inputs": {
+        "direction_overrides": "d3f684dce689efb3f8aa044a417db1b98ba265d4fc8ad7a04e07cec3dfa7108e",
+        "gtfs": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
+        "stations": "9d1b661c98d562eee4c9fffa6fa9bd64fc588494b53e1477b474b0c3cf43d8f6"
+      },
+      "valid_from": "2026-06-01",
+      "valid_to": "2026-07-01"
+    }
+  },
+  "schema": "network/s1"
+}

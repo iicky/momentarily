@@ -76,9 +76,9 @@ BASELINE_KEY = "state/ridership_baseline.json"
 # Immutable per-run snapshots live under this prefix as v<generated_at>.json.
 VERSIONED_BASELINE_PREFIX = "state/ridership_baseline/"
 # RETENTION: the versioned state/ridership_baseline/ snapshots are kept
-# forever. training.prune has no rule for this prefix -- its DATED_PREFIXES
-# cover only the dated archive/v1 streams, and PARAMS_PREFIX covers only
-# state/params/ -- so nothing sweeps it. This sidecar is unrelated to the HMM
+# forever. training.prune has no rule for this prefix -- it only expires
+# state/params/ rollback snapshots (PARAMS_PREFIX) -- so nothing sweeps it.
+# This sidecar is unrelated to the HMM
 # training window (it derives from the MTA ridership open-data feed on its
 # own weekly cron, ridership-weekly.yml) and carries no params_trained_at
 # cross-reference, so it needs its own rollback trail exactly like

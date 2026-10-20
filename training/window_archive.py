@@ -1,16 +1,14 @@
 """A long-lived archive of the ANSWER KEY: parsed announced-work windows.
 
-WHY, AND WHY IT IS NOT OPTIONAL. `traversal_archive` keeps the movement past
-`archive/trace/`'s 30-day prune. On its own that buys nothing for retrospective
-grading, because the thing movement is graded AGAINST — announced planned work —
-is reconstructed by `planned_work.windows_from_alerts` from
-`archive/alerts/`, and that prefix is pruned at 90 days. Keep the measurements
-and drop the answer key and a grade over last year's traversals cannot run at
-all; worse, it could silently run over the subset of history whose alerts happen
-to survive, and report a number.
+WHY, AND WHY IT IS NOT OPTIONAL. `traversal_archive` makes the movement history
+cheap to grade over. On its own that buys nothing for retrospective grading,
+because the thing movement is graded AGAINST — announced planned work — is
+reconstructed by `planned_work.windows_from_alerts` from `archive/alerts/`, and
+re-parsing every alert version for a long span is the cost the archive exists to
+avoid. Keep the measurements without the answer key and a grade over last
+year's traversals cannot run cheaply at all.
 
-So both halves are persisted on the same nightly path, both BEFORE the prune
-step that would otherwise remove their sources.
+So both halves are persisted on the same nightly path.
 
 WHAT A WINDOW IS. One (alert, active_period) with its named stations, exactly as
 `windows_from_alerts` produces it — this module stores that output and does not
@@ -20,9 +18,9 @@ appears in several days' alert files and readers de-duplicate. That is deliberat
 — it preserves WHEN a window was announced, which a grade of a forecast (as
 opposed to a detection) will need.
 
-PROVENANCE, for the same reason as the traversal archive: this outlives
-`archive/alerts/`, so once those are pruned a stored window cannot be
-regenerated or checked. `PARSER_VERSION` tracks the semantics of
+PROVENANCE, for the same reason as the traversal archive: this is read in place
+of `archive/alerts/`, so a stored window is not re-checked against them.
+`PARSER_VERSION` tracks the semantics of
 `windows_from_alerts` — which alert types count, how stops are scoped, how
 active periods are split — and is guarded by a golden test, because a parse
 change that forgets to bump it would make old and new answer keys disagree while
@@ -80,8 +78,7 @@ def _window(row: Sequence[Any]) -> Window:
 
 
 def key_for(day: date) -> str:
-    """Date-segment layout, matching every other stream so `training.prune`'s
-    date matcher polices this prefix too."""
+    """Date-segment layout, matching every other stream in the bucket."""
     return f"{PREFIX}{day.isoformat()}/windows.json.gz"
 
 

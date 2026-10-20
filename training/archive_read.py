@@ -4,7 +4,7 @@ WHY A SHARED LOADER. Three graders (`planned_work`, `segment_grade`, `progress`)
 each need the same two inputs over the same span — traversals and the announced
 windows they are graded against — and each used to rebuild both from the raw
 streams on every run. That is why a grade cost minutes and why it could never
-reach past `archive/trace/`'s 30-day prune. Reading the derived archives fixes
+reach past `archive/trace/`'s old 30-day prune. Reading the derived archives fixes
 both, but only if all three read them the SAME way: a loader per grader would
 drift, and two graders disagreeing about which days they included is exactly the
 class of bug this repo has spent the week correcting.
@@ -18,9 +18,9 @@ finalizes closed days), everything older comes from the archive. `raw_days` and
 PROVENANCE IS SURFACED, NEVER AVERAGED OVER. `homogeneous` is False when the
 archived span crosses a change in extraction, in the static feed, or in whether
 that feed's bytes are known. Callers are expected to print it; `require_pooled`
-turns it into a hard failure for the grades that pool across days. The archive
-outlives its inputs, so after the raw streams prune this is the only remaining
-signal that two days are not the same measurement.
+turns it into a hard failure for the grades that pool across days. Archived days
+are not re-derived from raw, so this is the only signal that two days are not the
+same measurement.
 """
 
 from __future__ import annotations
@@ -159,9 +159,9 @@ def load_windows(
     known to us is not the same claim as a window we have movement for.
 
     Raw alert fallback covers only [start, end]: those are the days recent enough
-    to be unarchived, and `archive/alerts/` is pruned at 90 days so a 180-day
-    lookback could not be served from it anyway. Older publication days come from
-    the archive or not at all, which is precisely what the archive is for.
+    to be unarchived. Older publication days come from the archive or not at
+    all, which is precisely what the archive is for: re-parsing a 180-day
+    lookback of raw alert versions on every grade is the cost it avoids.
     """
     pub_start = start - timedelta(days=lookback_days)
     archived = read_window_days(pub_start, end)

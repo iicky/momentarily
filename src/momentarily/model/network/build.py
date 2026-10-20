@@ -2,13 +2,15 @@
 
 Deterministic by construction: every collection is emitted in a fixed order,
 ``built_at`` comes from the inputs rather than the clock, and the gzip header
-carries mtime 0, so the same inputs (and code) give byte-identical output.
+carries mtime 0, so the same inputs (and code) give the same output.
+``content_digest`` (blake3 of the canonical uncompressed JSON) is the
+identity to compare, since gzip bytes can differ between zlib builds.
 
 A build that cannot satisfy the network's invariants fails with every problem
 listed rather than emitting a partial network: each GTFS parent station maps
-to exactly one stations-dataset row, every directional platform has a
-rider-facing label, every trip resolves to exactly one pattern, and each
-pattern's segments chain end to end.
+to exactly one stations-dataset row, every platform has a rider-facing label,
+every trip resolves to exactly one pattern, and each pattern's segments chain
+end to end.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import json
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
@@ -31,10 +33,12 @@ from momentarily.model.network.contracts import (
     SCHEMA_ID,
     Ada,
     Complex,
+    DayFeedMap,
     DayType,
     Direction,
     DirectionCode,
     Feed,
+    IndexEntry,
     NetworkSnapshot,
     Pattern,
     PatternSegment,
@@ -52,14 +56,18 @@ from momentarily.model.network.contracts import (
 from momentarily.model.network.stations import StationsSnapshot, digest_of
 from training.gtfs_static import (
     Calendar,
-    _gtfs_seconds,  # pyright: ignore[reportPrivateUsage]
-    _rows,  # pyright: ignore[reportPrivateUsage]
+    feed_rows,
+    gtfs_seconds,
     read_calendar,
     read_version,
 )
 from training.provenance import code_provenance
 
 DEFAULT_SYSTEM_ID = "nyct-subway"
+
+# Part of every build_id. Bump whenever a builder change alters the output for
+# the same inputs, so an old build_id never names different bytes.
+BUILDER_VERSION = "1"
 
 _WEEKDAYS: tuple[Weekday, ...] = (
     "monday",
@@ -91,11 +99,22 @@ class NetworkBuildError(ValueError):
 
 
 @dataclass(frozen=True)
+class FirstObserved:
+    """The earliest UTC archive day collected against this feed (the traversal
+    archive is keyed by UTC date), and the digest of the day->feed map it was
+    read from."""
+
+    utc_day: date
+    source_digest: str
+
+
+@dataclass(frozen=True)
 class Inputs:
     gtfs: bytes
     stations: StationsSnapshot
     direction_overrides: dict[str, str]
     overrides_digest: str | None
+    first_observed: FirstObserved | None
 
 
 @dataclass(frozen=True)
@@ -110,10 +129,14 @@ def current_code() -> CodeStamp:
 
 
 def build_id_for(
-    feed_id: str, stations_digest: str, overrides_digest: str | None
+    system_id: str,
+    feed_id: str,
+    stations_digest: str,
+    overrides_digest: str | None,
 ) -> str:
-    """Data identity of a build: schema + exact inputs (not the code)."""
-    parts = [SCHEMA_ID, feed_id, stations_digest]
+    """Data identity of a build: schema, builder version, system, and the exact
+    data inputs (not the code commit)."""
+    parts = [SCHEMA_ID, BUILDER_VERSION, system_id, feed_id, stations_digest]
     if overrides_digest is not None:
         parts.append(overrides_digest)
     return blake3.blake3("\x1f".join(parts).encode()).hexdigest()[:16]
@@ -243,7 +266,7 @@ def build_network(
     zf = zipfile.ZipFile(io.BytesIO(inputs.gtfs))
 
     # --- system / feed ---------------------------------------------------
-    agencies = _rows(zf, "agency.txt")
+    agencies = feed_rows(zf, "agency.txt")
     if not agencies:
         raise NetworkBuildError(["agency.txt is missing or empty"])
     agency = agencies[0]
@@ -275,12 +298,14 @@ def build_network(
             if _opt(r.get("route_sort_order"))
             else None,
         )
-        for r in sorted(_rows(zf, "routes.txt"), key=lambda r: r["route_id"])
+        for r in sorted(feed_rows(zf, "routes.txt"), key=lambda r: r["route_id"])
     ]
+    if not routes:
+        problems.append("routes.txt is missing or empty")
     route_ids = {r.route_id for r in routes}
 
     # --- stations / platforms / complexes --------------------------------
-    stop_rows = _rows(zf, "stops.txt")
+    stop_rows = feed_rows(zf, "stops.txt")
     parents = {
         s["stop_id"]: s for s in stop_rows if (s.get("location_type") or "") == "1"
     }
@@ -370,7 +395,7 @@ def build_network(
         if label is None and stop_id in inputs.direction_overrides:
             label = inputs.direction_overrides[stop_id]
             used_overrides.add(stop_id)
-        if label is None and code is not None and row is not None:
+        if label is None and row is not None:
             problems.append(f"platform {stop_id}: no direction label")
         platforms.append(
             Platform(
@@ -397,7 +422,13 @@ def build_network(
 
     # --- trips + stop times ----------------------------------------------
     trips_raw: dict[str, _TripRow] = {}
-    for r in _rows(zf, "trips.txt"):
+    trip_rows = feed_rows(zf, "trips.txt")
+    if not trip_rows:
+        problems.append("trips.txt is missing or empty")
+    for r in trip_rows:
+        if r["trip_id"] in trips_raw:
+            problems.append(f"duplicate trip_id {r['trip_id']}")
+            continue
         raw_dir = (r.get("direction_id") or "").strip()
         direction_id: int | None = None
         if raw_dir in ("0", "1"):
@@ -418,10 +449,13 @@ def build_network(
         )
 
     times: dict[str, list[tuple[int, StopTime]]] = defaultdict(list)
-    for r in _rows(zf, "stop_times.txt"):
+    time_rows = feed_rows(zf, "stop_times.txt")
+    if not time_rows:
+        problems.append("stop_times.txt is missing or empty")
+    for r in time_rows:
         tid = r["trip_id"]
-        arr = _gtfs_seconds(r.get("arrival_time") or "")
-        dep = _gtfs_seconds(r.get("departure_time") or "")
+        arr = gtfs_seconds(r.get("arrival_time") or "")
+        dep = gtfs_seconds(r.get("departure_time") or "")
         if arr is None or dep is None:
             problems.append(f"trip {tid}: stop {r['stop_id']} has no scheduled time")
             continue
@@ -553,20 +587,38 @@ def build_network(
     input_digests = {"gtfs": feed_id, "stations": stations_digest}
     if inputs.overrides_digest is not None:
         input_digests["direction_overrides"] = inputs.overrides_digest
-    retrieved_day = datetime.fromtimestamp(
-        inputs.stations.retrieved_at, ZoneInfo(timezone)
-    ).date()
-    retro = ["stations"] if window is None or retrieved_day > window[0] else []
+    # The stations data is retroactive when it was captured on or after the
+    # first day it is applied to: the first UTC archive day observed on this
+    # feed when known (compared in UTC), else the feed's first service day
+    # (compared in the system timezone). A same-day capture counts: part of
+    # that day ran before the snapshot existed.
+    period_start: date | None = None if window is None else window[0]
+    captured_at = inputs.stations.retrieved_at
+    observed = inputs.first_observed
+    if observed is not None:
+        input_digests["day_feed_map"] = observed.source_digest
+        captured_utc = datetime.fromtimestamp(captured_at, UTC).date()
+        retroactive = captured_utc >= observed.utc_day
+    elif period_start is not None:
+        captured_local = datetime.fromtimestamp(captured_at, ZoneInfo(timezone)).date()
+        retroactive = captured_local >= period_start
+    else:
+        retroactive = True
     provenance = Provenance(
         code_sha=stamp.sha,
         code_dirty=stamp.dirty,
         schema=SCHEMA_ID,
         inputs=input_digests,
-        applied_retroactively=retro,
-        built_at=inputs.stations.retrieved_at,
+        captured_at={"stations": captured_at},
+        period_start=None if period_start is None else _iso(period_start),
+        observed_from_utc_day=None if observed is None else _iso(observed.utc_day),
+        applied_retroactively=["stations"] if retroactive else [],
+        built_at=captured_at,
     )
     return NetworkSnapshot(
-        build_id=build_id_for(feed_id, stations_digest, inputs.overrides_digest),
+        build_id=build_id_for(
+            system_id, feed_id, stations_digest, inputs.overrides_digest
+        ),
         provenance=provenance,
         system=system,
         feed=feed,
@@ -624,20 +676,72 @@ def check_chains(
     return problems
 
 
-def serialize(snapshot: NetworkSnapshot) -> bytes:
-    """Canonical gzip bytes: sorted keys, compact JSON, mtime 0, no filename."""
-    text = json.dumps(
+def canonical_json(snapshot: NetworkSnapshot) -> bytes:
+    """The one uncompressed serialisation: sorted keys, compact, UTF-8."""
+    return json.dumps(
         snapshot.model_dump(mode="json"),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
-    )
+    ).encode()
+
+
+def content_digest(snapshot: NetworkSnapshot) -> str:
+    """blake3 of ``canonical_json``: stable across zlib builds, unlike the
+    gzip bytes."""
+    return digest_of(canonical_json(snapshot))
+
+
+def network_digest(snapshot: NetworkSnapshot) -> str:
+    """blake3 of the canonical JSON without provenance: the network data a
+    build_id names. Provenance is metadata about the build and may change
+    under the same build_id; this may not without a BUILDER_VERSION bump."""
+    data = json.dumps(
+        snapshot.model_dump(mode="json", exclude={"provenance"}),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    return digest_of(data)
+
+
+def serialize(snapshot: NetworkSnapshot) -> bytes:
+    """Gzip of ``canonical_json`` with mtime 0 and no filename."""
     buf = io.BytesIO()
     with gzip.GzipFile(
         filename="", mode="wb", fileobj=buf, mtime=0, compresslevel=9
     ) as gz:
-        gz.write(text.encode())
+        gz.write(canonical_json(snapshot))
     return buf.getvalue()
+
+
+def index_entry(snapshot: NetworkSnapshot) -> IndexEntry:
+    return IndexEntry(
+        build_id=snapshot.build_id,
+        content_digest=content_digest(snapshot),
+        feed_version=snapshot.feed.feed_version,
+        valid_from=snapshot.feed.valid_from,
+        valid_to=snapshot.feed.valid_to,
+        inputs=snapshot.provenance.inputs,
+        applied_retroactively=snapshot.provenance.applied_retroactively,
+    )
+
+
+def first_observed(day_map: bytes, gtfs: bytes) -> FirstObserved | None:
+    """The earliest UTC day in a day->feed map collected against this feed:
+    the verified feed_id, or, for an unverified day, its inferred feed."""
+    feed_id = hashlib.sha256(gtfs).hexdigest()
+    parsed = DayFeedMap.model_validate_json(day_map)
+    days = [
+        day
+        for day, entry in parsed.days.items()
+        if (entry.feed_id or entry.inferred_feed_id) == feed_id
+    ]
+    if not days:
+        return None
+    return FirstObserved(
+        utc_day=date.fromisoformat(min(days)), source_digest=digest_of(day_map)
+    )
 
 
 def load_overrides(data: bytes | None) -> tuple[dict[str, str], str | None]:

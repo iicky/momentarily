@@ -13,10 +13,20 @@ export interface NetworkIndex {
 export interface IndexEntry {
   applied_retroactively: string[];
   build_id: string;
+  /**
+   * blake3 of the build's canonical uncompressed JSON.
+   */
+  content_digest: string;
   feed_version: string | null;
   inputs: {
     [k: string]: string | undefined;
   };
+  /**
+   * First service day the feed declares (inclusive).
+   */
   valid_from: string | null;
+  /**
+   * Exclusive end: the day after feed_info's feed_end_date.
+   */
   valid_to: string | null;
 }

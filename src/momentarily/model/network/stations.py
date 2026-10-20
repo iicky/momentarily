@@ -28,6 +28,16 @@ STATIONS_QUERY = {"$limit": "5000"}
 FETCH_TIMEOUT = httpx.Timeout(30.0)
 
 
+class NonCanonicalSnapshotError(ValueError):
+    """The file's bytes are not the canonical form, so its digest would not
+    identify its content."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "stations snapshot is not canonical; rewrite it with snapshot-stations"
+        )
+
+
 @dataclass(frozen=True)
 class StationRow:
     gtfs_stop_id: str
@@ -97,8 +107,7 @@ def parse_snapshot(data: bytes) -> StationsSnapshot:
     retrieved_at = int(doc["retrieved_at"])
     raw_rows = cast("list[dict[str, Any]]", doc["rows"])
     if canonical_bytes(retrieved_at, raw_rows) != data:
-        msg = "stations snapshot is not canonical; rewrite it with snapshot-stations"
-        raise ValueError(msg)
+        raise NonCanonicalSnapshotError
     rows = tuple(
         StationRow(
             gtfs_stop_id=str(r["gtfs_stop_id"]).strip(),

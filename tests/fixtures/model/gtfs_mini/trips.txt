@@ -19,3 +19,4 @@ A,A-Weekday-0930-express-S,Weekday,Echo,1,A..S03
 A,A-Weekday-0845-branch-S,Weekday,Foxtrot,1,A..S04
 A,A-Weekday-0850-branch-N,Weekday,Alpha,,A..N04
 A,A-Weekday-2358-local-S,Weekday,Echo,1,A..S01
+A,A-Weekday-0950-shortturn-N,Weekday,Charlie,0,A..N05

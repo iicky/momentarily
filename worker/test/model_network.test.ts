@@ -11,25 +11,57 @@
 
 /// <reference types="node" />
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020';
 import { describe, expect, test } from 'vitest';
 
+import dayFeedMapSchema from '../../schema/model/s1/day_feed_map.schema.json';
 import schema from '../../schema/model/s1/network.schema.json';
+import indexSchema from '../../schema/model/s1/network_index.schema.json';
+import type { DayFeedMap } from '../../shared/model/s1/day_feed_map';
 import type { NetworkSnapshot, Pattern, Segment } from '../../shared/model/s1/network';
+import type { NetworkIndex } from '../../shared/model/s1/network_index';
+import dayFeedMapFixture from '../../tests/fixtures/model/day_feed_map_s1.json';
 import fixture from '../../tests/fixtures/model/network_s1.json';
+import indexFixture from '../../tests/fixtures/model/network_index_s1.json';
 import { TYPES_DIR, renderModelTypes } from '../scripts/model_types';
 
 describe('generated model types', () => {
   test('shared/model/s1 matches the committed JSON Schemas', async () => {
     const rendered = await renderModelTypes();
     expect(rendered.size).toBeGreaterThan(0);
+    const onDisk = readdirSync(TYPES_DIR)
+      .filter((f) => f.endsWith('.ts'))
+      .sort();
+    expect(onDisk, 'shared/model/s1 has files no schema generates: run bun run gen:model').toEqual(
+      [...rendered.keys()].sort(),
+    );
     for (const [name, text] of rendered) {
       const committed = readFileSync(join(TYPES_DIR, name), 'utf8');
       expect(committed, `shared/model/s1/${name} is stale: run bun run gen:model`).toBe(text);
     }
+  });
+});
+
+describe('index and day map conform to their generated contracts', () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+
+  test('the fixture index validates and reads through its type', () => {
+    const validate: ValidateFunction<NetworkIndex> = ajv.compile<NetworkIndex>(indexSchema);
+    expect(validate(indexFixture), JSON.stringify(validate.errors)).toBe(true);
+    if (!validate(indexFixture)) return;
+    const entries = Object.values(indexFixture.feeds);
+    expect(entries.map((e) => e?.build_id)).toEqual([fixture.build_id]);
+  });
+
+  test('the fixture day map validates and reads through its type', () => {
+    const validate: ValidateFunction<DayFeedMap> = ajv.compile<DayFeedMap>(dayFeedMapSchema);
+    expect(validate(dayFeedMapFixture), JSON.stringify(validate.errors)).toBe(true);
+    if (!validate(dayFeedMapFixture)) return;
+    const verified = Object.values(dayFeedMapFixture.days).filter((d) => d?.verified);
+    expect(verified.map((d) => d?.feed_id)).toEqual([fixture.feed.feed_id]);
   });
 });
 

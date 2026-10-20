@@ -3,7 +3,7 @@
 Pydantic (src/momentarily/model/) is the source of truth. The TypeScript types
 in shared/model/s1/ are generated from these files by
 worker/scripts/model_types.ts, so the chain is Pydantic -> JSON Schema -> TS
-with no hand-written mirror. tests/test_model_parity.py fails on a stale
+with no hand-written mirror. tests/test_model_network.py fails on a stale
 schema; worker/test/model_network.test.ts fails on stale generated TS.
 
 Run:  uv run python -m scripts.export_model_schema

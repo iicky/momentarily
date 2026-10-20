@@ -1,11 +1,17 @@
-"""Build the committed network fixture the Worker validates against the schema.
+"""Build the committed network fixtures the Worker validates against the schemas.
 
 tests/fixtures/model/gtfs_mini/ (a hand-written GTFS feed, kept as text so it
 reviews as a diff) is zipped deterministically and built with
-tests/fixtures/model/stations.json into tests/fixtures/model/network_s1.json.
-worker/test/model_network.test.ts validates that file against
-schema/model/s1/network.schema.json and reads it through the generated TS
-types; tests/test_model_network.py fails if it is stale.
+tests/fixtures/model/stations.json and direction_overrides.json into:
+
+  * network_s1.json        the NetworkSnapshot
+  * network_index_s1.json  the index.json a build of it writes
+  * day_feed_map_s1.json   a day->feed map covering verified, unstamped, and
+                           partly stamped days
+
+worker/test/model_network.test.ts validates each against schema/model/s1/ and
+reads the network through the generated TS types; tests/test_model_network.py
+fails if any is stale.
 
 Run:  uv run python -m scripts.gen_model_network_fixture
 """
@@ -17,14 +23,30 @@ import json
 import zipfile
 from pathlib import Path
 
-from momentarily.model.network.build import CodeStamp, Inputs, build_network
-from momentarily.model.network.contracts import NetworkSnapshot
+from momentarily.model.network.build import (
+    CodeStamp,
+    Inputs,
+    build_network,
+    index_entry,
+    load_overrides,
+)
+from momentarily.model.network.contracts import (
+    SCHEMA_ID,
+    DayFeedMap,
+    NetworkIndex,
+    NetworkSnapshot,
+)
+from momentarily.model.network.day_feed import resolve_day
 from momentarily.model.network.stations import parse_snapshot
+from training.traversal_archive import DayProvenance, FeedDigestRange
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "model"
 GTFS_DIR = FIXTURE_DIR / "gtfs_mini"
 STATIONS_PATH = FIXTURE_DIR / "stations.json"
+OVERRIDES_PATH = FIXTURE_DIR / "direction_overrides.json"
 FIXTURE_PATH = FIXTURE_DIR / "network_s1.json"
+INDEX_FIXTURE_PATH = FIXTURE_DIR / "network_index_s1.json"
+DAY_MAP_FIXTURE_PATH = FIXTURE_DIR / "day_feed_map_s1.json"
 FIXTURE_CODE = CodeStamp(sha="fixture", dirty=None)
 
 
@@ -41,11 +63,13 @@ def zip_dir(directory: Path) -> bytes:
 
 
 def fixture_inputs() -> Inputs:
+    overrides, digest = load_overrides(OVERRIDES_PATH.read_bytes())
     return Inputs(
         gtfs=zip_dir(GTFS_DIR),
         stations=parse_snapshot(STATIONS_PATH.read_bytes()),
-        direction_overrides={},
-        overrides_digest=None,
+        direction_overrides=overrides,
+        overrides_digest=digest,
+        first_observed=None,
     )
 
 
@@ -53,14 +77,50 @@ def build_fixture() -> NetworkSnapshot:
     return build_network(fixture_inputs(), stamp=FIXTURE_CODE)
 
 
-def render_fixture() -> str:
-    doc = build_fixture().model_dump(mode="json")
+def _dump(doc: object) -> str:
     return json.dumps(doc, indent=2, sort_keys=True) + "\n"
 
 
+def _day(feed_version: str, **kw: object) -> DayProvenance:
+    return DayProvenance(
+        schema=1,
+        extractor=1,
+        feed_version=feed_version,
+        n_rows=0,
+        n_source_objects=0,
+        source_manifest="",
+        code_sha=None,
+        written_at=0,
+        **kw,  # pyright: ignore[reportArgumentType]
+    )
+
+
+def render_fixtures() -> dict[Path, str]:
+    snap = build_fixture()
+    feed_id = snap.feed.feed_id
+    index = NetworkIndex(schema=SCHEMA_ID, feeds={feed_id: index_entry(snap)})
+    version = snap.feed.feed_version or ""
+    days = {
+        "2026-06-02": _day(version, feed_digest=None),
+        "2026-06-03": _day(
+            version,
+            feed_digest=None,
+            feed_digests=[FeedDigestRange(digest=feed_id, first_ts=1, last_ts=2)],
+        ),
+        "2026-06-04": _day(version, feed_digest=feed_id),
+    }
+    day_map = DayFeedMap(days={d: resolve_day(p, index) for d, p in days.items()})
+    return {
+        FIXTURE_PATH: _dump(snap.model_dump(mode="json")),
+        INDEX_FIXTURE_PATH: _dump(index.model_dump(mode="json")),
+        DAY_MAP_FIXTURE_PATH: _dump(day_map.model_dump(mode="json")),
+    }
+
+
 def main() -> int:
-    FIXTURE_PATH.write_text(render_fixture())
-    print(f"wrote {FIXTURE_PATH}")
+    for path, text in render_fixtures().items():
+        path.write_text(text)
+        print(f"wrote {path}")
     return 0
 
 

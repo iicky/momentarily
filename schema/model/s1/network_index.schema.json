@@ -14,6 +14,12 @@
           "title": "Build Id",
           "type": "string"
         },
+        "content_digest": {
+          "description": "blake3 of the build's canonical uncompressed JSON.",
+          "pattern": "^[0-9a-f]{16,64}$",
+          "title": "Content Digest",
+          "type": "string"
+        },
         "feed_version": {
           "anyOf": [
             {
@@ -44,6 +50,7 @@
               "type": "null"
             }
           ],
+          "description": "First service day the feed declares (inclusive).",
           "title": "Valid From"
         },
         "valid_to": {
@@ -57,11 +64,13 @@
               "type": "null"
             }
           ],
+          "description": "Exclusive end: the day after feed_info's feed_end_date.",
           "title": "Valid To"
         }
       },
       "required": [
         "build_id",
+        "content_digest",
         "feed_version",
         "valid_from",
         "valid_to",

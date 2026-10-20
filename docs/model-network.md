@@ -12,7 +12,10 @@ schemas. Nothing is hand-mirrored.
 - **ServiceDate**: ISO date of a GTFS service day. It is never the UTC date of
   an instant.
 - **GtfsSeconds**: seconds after noon minus 12 h on the service day. Values of
-  86400 or more are legal (24:04:00 = 86640).
+  86400 or more are legal (24:04:00 = 86640). Convert with
+  `instant_of(service_date, seconds, tz)`, which subtracts 12 h in UTC
+  seconds. On DST change days, that origin is 23:00 or 01:00 local time, not
+  midnight.
 - **Intervals are half-open**, `[start, end)`. GTFS's inclusive `end_date`
   values (`calendar.txt`, `feed_info.txt`) are stored as end + 1 day.
 - **No defaults**: no contract field has a default value. A missing value is an
@@ -20,8 +23,14 @@ schemas. Nothing is hand-mirrored.
   never read as a normal value. `Model` rejects a subclass that declares a
   default.
 - **Provenance**: `code_sha`, `code_dirty`, `schema`, `inputs` (name to digest),
-  `applied_retroactively`, and `built_at`. `built_at` is the capture time of the
-  stations snapshot, not the wall clock, so a rebuild gives the same bytes.
+  `captured_at` (name to capture instant), `period_start` (the feed's first
+  service day), `observed_from_utc_day`, `applied_retroactively`, and
+  `built_at`. `built_at` is the capture time of the stations snapshot, not the
+  wall clock, so a rebuild gives the same bytes. An input is retroactive when it
+  was captured on or after the start of the period it describes. With
+  `--day-feed-map`, that start is `observed_from_utc_day`, the first UTC archive
+  day observed on the feed, compared with the capture time in UTC. Without it,
+  the start is `period_start`, compared in the system timezone.
 
 ## Identities
 
@@ -29,7 +38,8 @@ schemas. Nothing is hand-mirrored.
 | --- | --- |
 | Feed | `feed_id` = sha256 hex of the GTFS zip bytes (the same key as `archive/gtfs/`) |
 | Stations input | blake3 of the canonical snapshot file |
-| Build | `build_id` = first 16 hex of blake3(`network/s1␟feed_id␟stations_digest`[`␟overrides_digest`]) |
+| Build | `build_id` = first 16 hex of blake3(`network/s1␟BUILDER_VERSION␟system_id␟feed_id␟stations_digest`[`␟overrides_digest`]) |
+| Build content | `content_digest` = blake3 of the canonical uncompressed JSON (in `index.json`) |
 | Pattern | `{route}-{code \| direction_id \| x}-{h}`, where h = first 12 hex of blake3(system␟route␟code␟stops…) |
 | Segment | `{from_stop}>{to_stop}` (directed, platform level) |
 
@@ -45,21 +55,30 @@ rider-facing label for that side of the station.
 uv run python -m momentarily.model.network snapshot-stations --out OUT
 # 2. Build a network from a GTFS zip (or --live to fetch the current feed).
 uv run python -m momentarily.model.network build --gtfs FEED.zip \
-    --stations OUT/stations-<digest16>.json --out OUT
+    --stations OUT/stations-<digest16>.json [--day-feed-map OUT/day_feed_map.json] --out OUT
 # 3. Map each archived traversal day to the feed it was collected against.
+#    (Inferred leads for unstamped days use OUT/index.json, so build first.)
 uv run python -m momentarily.model.network day-feed-map \
     --traversals ARCHIVE/traversals --out OUT
 ```
 
 `build` writes `OUT/<build_id>.json.gz` (gzip mtime 0, sorted keys) and adds an
-entry to `OUT/index.json`. The build fails, and lists every problem, when any of
-these is true:
+entry to `OUT/index.json`. A build_id names one network's data (everything but
+provenance). If that file already exists with the same network data but
+different provenance (another commit or a newer day map), it is replaced and
+the index entry is updated. If its network data differs, or it cannot be read,
+the build is refused: bump `BUILDER_VERSION` when a builder change alters the
+output. A test pins the fixture's network digest to the current version.
 
+The build fails, and lists every problem, when any of these is true:
+
+- `routes.txt`, `trips.txt`, or `stop_times.txt` is empty, or a trip_id
+  repeats;
 - a GTFS parent station does not have exactly one stations-dataset row, or a
   dataset row has no GTFS station;
-- a directional platform has no direction label (`--overrides` can fill a gap
-  with a JSON object of stop_id to label; an override that fills no gap also
-  fails the build);
+- a platform has no direction label. A platform with no N/S suffix gets no
+  label from the dataset, so it needs `--overrides` (a JSON object of stop_id
+  to label). An override that fills no gap also fails the build;
 - a trip does not resolve to exactly one pattern;
 - a pattern's segments do not chain from end to end.
 
@@ -68,9 +87,10 @@ these is true:
 ```sh
 uv run python -m scripts.export_model_schema        # schema/model/s1
 (cd worker && bun run gen:model)                    # shared/model/s1
-uv run python -m scripts.gen_model_network_fixture  # tests/fixtures/model/network_s1.json
+uv run python -m scripts.gen_model_network_fixture  # tests/fixtures/model/*_s1.json
 ```
 
-If a schema is out of date, `tests/test_model_network.py` fails. If the
-generated TypeScript is out of date, `worker/test/model_network.test.ts` fails.
-The worker test also validates the fixture build with ajv.
+If a schema or fixture is out of date, `tests/test_model_network.py` fails. If
+the generated TypeScript is out of date or a stray file is in
+`shared/model/s1`, `worker/test/model_network.test.ts` fails. The worker test
+also validates the fixture network, index, and day map with ajv.

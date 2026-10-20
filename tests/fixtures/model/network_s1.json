@@ -1,5 +1,5 @@
 {
-  "build_id": "a455f6408a77be6e",
+  "build_id": "bab9b08b93df200b",
   "complexes": [
     {
       "complex_id": "1",
@@ -46,12 +46,22 @@
     }
   ],
   "feed": {
-    "feed_id": "164c204b7a89d7e6a34bd81fce0cdd247b9b0a0f1f4ce15627ab58a0de6b660f",
+    "feed_id": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
     "feed_version": "20260601-fixture",
     "valid_from": "2026-06-01",
     "valid_to": "2026-07-01"
   },
   "pattern_segments": [
+    {
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "segment_id": "106M>104N",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "segment_id": "104N>103N",
+      "seq": 1
+    },
     {
       "pattern_id": "A-1-d402ec57731e",
       "segment_id": "101S>102S",
@@ -169,6 +179,25 @@
     }
   ],
   "patterns": [
+    {
+      "direction": {
+        "code": null,
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Charlie",
+      "n_trips": 1,
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "route_id": "A",
+      "shape_ids": [
+        "A..N05"
+      ],
+      "stops": [
+        "106M",
+        "104N",
+        "103N"
+      ]
+    },
     {
       "direction": {
         "code": null,
@@ -386,7 +415,7 @@
     },
     {
       "direction_code": null,
-      "direction_label": null,
+      "direction_label": "All trains",
       "name": "Foxtrot",
       "station_id": "106",
       "stop_id": "106M"
@@ -411,12 +440,18 @@
       "stations"
     ],
     "built_at": 1781524800,
+    "captured_at": {
+      "stations": 1781524800
+    },
     "code_dirty": null,
     "code_sha": "fixture",
     "inputs": {
-      "gtfs": "164c204b7a89d7e6a34bd81fce0cdd247b9b0a0f1f4ce15627ab58a0de6b660f",
+      "direction_overrides": "d3f684dce689efb3f8aa044a417db1b98ba265d4fc8ad7a04e07cec3dfa7108e",
+      "gtfs": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
       "stations": "9d1b661c98d562eee4c9fffa6fa9bd64fc588494b53e1477b474b0c3cf43d8f6"
     },
+    "observed_from_utc_day": null,
+    "period_start": "2026-06-01",
     "schema": "network/s1"
   },
   "routes": [
@@ -530,6 +565,7 @@
     {
       "from_stop": "104N",
       "pattern_ids": [
+        "A-0-8b47ed6bb45d",
         "A-N-fbb7efff7232",
         "A-x-744e9ee9c40b"
       ],
@@ -576,6 +612,7 @@
     {
       "from_stop": "106M",
       "pattern_ids": [
+        "A-0-8b47ed6bb45d",
         "A-x-744e9ee9c40b"
       ],
       "route_ids": [
@@ -1459,6 +1496,36 @@
         ]
       ],
       "trip_id": "A-Weekday-0930-express-S"
+    },
+    {
+      "direction": {
+        "code": null,
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Charlie",
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..N05",
+      "stop_times": [
+        [
+          "106M",
+          35400,
+          35430
+        ],
+        [
+          "104N",
+          35520,
+          35550
+        ],
+        [
+          "103N",
+          35640,
+          35670
+        ]
+      ],
+      "trip_id": "A-Weekday-0950-shortturn-N"
     },
     {
       "direction": {

@@ -25,7 +25,9 @@ Missing data
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from typing import Annotated, Any, ClassVar, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticUndefined
@@ -48,7 +50,35 @@ GtfsSeconds = Annotated[
         ),
     ),
 ]
+UtcDate = Annotated[
+    str,
+    Field(
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="ISO date of a UTC calendar day (never a service day).",
+    ),
+]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{16,64}$")]
+
+
+def instant_of(service_date: str, gtfs_seconds: int, tz: str) -> int:
+    """The Instant of ``gtfs_seconds`` on a service day in timezone ``tz``.
+
+    GTFS counts from noon minus 12 h, which is local midnight except on DST
+    change days (then it is 23:00 or 01:00). Subtracting in UTC seconds keeps
+    that rule; subtracting a timedelta from an aware local noon would not.
+    """
+    day = date.fromisoformat(service_date)
+    noon = datetime.combine(day, time(12), tzinfo=ZoneInfo(tz))
+    return int(noon.timestamp()) - 43200 + gtfs_seconds
+
+
+class ContractDefaultError(TypeError):
+    """A contract model declared a field with a default."""
+
+    def __init__(self, model: str, fields: list[str]) -> None:
+        self.model = model
+        self.fields = fields
+        super().__init__(f"{model}: contract fields may not have defaults: {fields}")
 
 
 class Model(BaseModel):
@@ -67,8 +97,7 @@ class Model(BaseModel):
             if info.default is not PydanticUndefined or info.default_factory is not None
         ]
         if defaulted:
-            msg = f"{cls.__name__}: contract fields may not have defaults: {defaulted}"
-            raise TypeError(msg)
+            raise ContractDefaultError(cls.__name__, defaulted)
 
 
 class Unknown(Model):
@@ -95,16 +124,22 @@ class Interval(Model):
 class Provenance(Model):
     """Which code and which exact inputs produced an artifact.
 
-    ``built_at`` is a *logical* build time derived from the inputs (the capture
-    instant of the newest input), not the wall clock, so rebuilding from the same
-    inputs yields identical bytes. ``applied_retroactively`` names inputs that
-    were captured after part of the period the artifact describes, i.e. today's
-    reference data stamped onto an older timetable.
+    ``built_at`` is a *logical* build time taken from the inputs (for the
+    network, the stations snapshot's capture instant), not the wall clock, so
+    rebuilding from the same inputs yields identical bytes. ``captured_at``
+    records when each live input was captured. The period the artifact
+    describes starts on ``observed_from_utc_day`` (the first UTC archive day
+    observed against it) when known, else on the service day ``period_start``.
+    ``applied_retroactively`` names inputs captured on or after that start,
+    i.e. today's reference data stamped onto an older period.
     """
 
     code_sha: str
     code_dirty: bool | None
     schema_: str = Field(alias="schema")
     inputs: dict[str, Digest]
+    captured_at: dict[str, Instant]
+    period_start: ServiceDate | None
+    observed_from_utc_day: UtcDate | None
     applied_retroactively: list[str]
     built_at: Instant

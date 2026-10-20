@@ -205,9 +205,16 @@ class NetworkSnapshot(Model):
 
 class IndexEntry(Model):
     build_id: str
+    content_digest: Digest = Field(
+        description="blake3 of the build's canonical uncompressed JSON."
+    )
     feed_version: str | None
-    valid_from: ServiceDate | None
-    valid_to: ServiceDate | None
+    valid_from: ServiceDate | None = Field(
+        description="First service day the feed declares (inclusive)."
+    )
+    valid_to: ServiceDate | None = Field(
+        description="Exclusive end: the day after feed_info's feed_end_date."
+    )
     inputs: dict[str, Digest]
     applied_retroactively: list[str]
 

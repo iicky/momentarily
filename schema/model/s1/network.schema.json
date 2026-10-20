@@ -285,7 +285,7 @@
     },
     "Provenance": {
       "additionalProperties": false,
-      "description": "Which code and which exact inputs produced an artifact.\n\n``built_at`` is a *logical* build time derived from the inputs (the capture\ninstant of the newest input), not the wall clock, so rebuilding from the same\ninputs yields identical bytes. ``applied_retroactively`` names inputs that\nwere captured after part of the period the artifact describes, i.e. today's\nreference data stamped onto an older timetable.",
+      "description": "Which code and which exact inputs produced an artifact.\n\n``built_at`` is a *logical* build time taken from the inputs (for the\nnetwork, the stations snapshot's capture instant), not the wall clock, so\nrebuilding from the same inputs yields identical bytes. ``captured_at``\nrecords when each live input was captured. The period the artifact\ndescribes starts on ``observed_from_utc_day`` (the first UTC archive day\nobserved against it) when known, else on the service day ``period_start``.\n``applied_retroactively`` names inputs captured on or after that start,\ni.e. today's reference data stamped onto an older period.",
       "properties": {
         "applied_retroactively": {
           "items": {
@@ -299,6 +299,15 @@
           "minimum": 0,
           "title": "Built At",
           "type": "integer"
+        },
+        "captured_at": {
+          "additionalProperties": {
+            "description": "UTC epoch seconds.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": "Captured At",
+          "type": "object"
         },
         "code_dirty": {
           "anyOf": [
@@ -323,6 +332,32 @@
           "title": "Inputs",
           "type": "object"
         },
+        "observed_from_utc_day": {
+          "anyOf": [
+            {
+              "description": "ISO date of a UTC calendar day (never a service day).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observed From Utc Day"
+        },
+        "period_start": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Period Start"
+        },
         "schema": {
           "title": "Schema",
           "type": "string"
@@ -333,6 +368,9 @@
         "code_dirty",
         "schema",
         "inputs",
+        "captured_at",
+        "period_start",
+        "observed_from_utc_day",
         "applied_retroactively",
         "built_at"
       ],

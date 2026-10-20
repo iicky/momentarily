@@ -85,3 +85,6 @@ A-Weekday-2358-local-S,102S,24:00:00,24:00:30,20
 A-Weekday-2358-local-S,103S,24:02:00,24:02:30,30
 A-Weekday-2358-local-S,104S,24:04:00,24:04:30,40
 A-Weekday-2358-local-S,105S,24:06:00,24:06:30,50
+A-Weekday-0950-shortturn-N,106M,09:50:00,09:50:30,10
+A-Weekday-0950-shortturn-N,104N,09:52:00,09:52:30,20
+A-Weekday-0950-shortturn-N,103N,09:54:00,09:54:30,30

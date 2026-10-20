@@ -34,10 +34,18 @@ import momentarily.model.observations.columns
 import momentarily.model.observations.contracts
 import momentarily.model.observations.decode
 import momentarily.model.observations.keys
+import momentarily.model.observations.legacy.alerts
+import momentarily.model.observations.legacy.alerts_liveness
+import momentarily.model.observations.legacy.common
+import momentarily.model.observations.legacy.ene
+import momentarily.model.observations.legacy.fresh_feeds
+import momentarily.model.observations.legacy.health
+import momentarily.model.observations.legacy.predictions
+import momentarily.model.observations.legacy.trace
 decode = files("momentarily.model.observations.decode")
 assert decode.joinpath("nyct-subway.proto").is_file()
 assert "site-packages" in momentarily.__file__, momentarily.__file__
-stray = sorted(m for m in ("boto3", "botocore", "training") if m in sys.modules)
+stray = sorted(m for m in ("boto3", "botocore", "pyarrow", "training") if m in sys.modules)
 assert not stray, stray
 """
 

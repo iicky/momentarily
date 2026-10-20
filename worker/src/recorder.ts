@@ -227,7 +227,9 @@ export class Recorder {
   private closed = false;
 
   /**
-   * @param scheduledAt  the cron minute (epoch seconds) this invocation serves
+   * @param scheduledAt  floor(event.scheduledTime / 1000): the instant Cloudflare
+   *                     dispatched this invocation (epoch seconds), seconds past
+   *                     the minute and not the cron minute itself
    * @param startedAtMs  when the invocation started, before any fetch
    * @param failWrite    the tick's write-failure counter (archive/health/)
    */

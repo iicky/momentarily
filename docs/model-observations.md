@@ -802,7 +802,7 @@ period; §3.4). Legacy fetch and tick facts never become `FeedFetch` or
 
 | Legacy source (coverage) | Becomes | Kept | Permanently lost (Unknown) |
 |---|---|---|---|
-| `archive/trace/` (R2 only, 120 d; earliest days pruned from about 12-10 [inference: trace start ≈ 08-12]) | partial VehicleObservation, plus a LegacyFetchOutcome per feed and trace minute | `trip_id`, `stop_id`, `vehicle_ts`, `stop_seq` (when stopped), `stopped=true` → `current_status=1`, `observed_at`, `scheduled_at`, `fresh_feeds` → per-feed `succeeded`, static `feed_digest`/`feed_etag` | `route_id` as published (folded: `6`/`7`/`F` may have been `6X`/`7X`/`FX`), `current_status` when not stopped (0, 2 or absent), `stop_seq` when moving, `is_assigned` (placeholder vehicles are indistinguishable), `source` feed of each row, `start_date`, `start_time`, `train_id`, `entity_id`, `entity_index`, `fetch_id`, vehicles with empty trip or stop ids, header timestamp, fetch failure reason, bytes |
+| `archive/trace/` (R2 only, 120 d; earliest days pruned from about 12-10 [inference: trace start ≈ 08-12]) | partial VehicleObservation, plus a LegacyFetchOutcome per feed and trace minute | `trip_id`, `stop_id`, `vehicle_ts`, `stop_seq` (when stopped), `stopped=true` → `current_status=1`, `observed_at`, `scheduled_at`, `fresh_feeds` → per-feed `succeeded`. `feed_digest`/`feed_etag` are not carried: they are the static feed identity, which `archive/gtfs/` holds, and all 2,880 objects that carry them hold one identical pair | `route_id` as published (folded: `6`/`7`/`F` may have been `6X`/`7X`/`FX`), `current_status` when not stopped (0, 2 or absent), `stop_seq` when moving, `is_assigned` (placeholder vehicles are indistinguishable), `source` feed of each row, `start_date`, `start_time`, `train_id`, `entity_id`, `entity_index`, `fetch_id`, vehicles with empty trip or stop ids, header timestamp, fetch failure reason, bytes |
 | `archive/arrivals/` (R2 only, 120 d) | **not mapped** | — | truncated to 4 trains within 60 min, SKIPPED rows dropped, arrival/departure merged, route folded. It stays a grading input for `eta_grade.py`. |
 | `archive/trip_updates/` (06-15..), `archive/vehicles/` (06-21..) | LegacyFetchOutcome only (5-min, per feed `succeeded`) | which feeds were fresh | every per-entity field. The counts and transitions are aggregates and stay what they are. |
 | `archive/alerts/` (90 d. Mirror 07-21..) | AlertVersion | entity verbatim, `content_digest`, `alert_type`, `created_at`, `updated_at`, `first_seen` = `observed_at` (5-min resolution, a sighting that is normally the first) | `absent_before`, `last_seen`, `gone_by`, `gone_kind` (except a later `updated_at` for the same id, which proves `superseded` by that time), `unobserved`, `window`, content changes with no `updated_at` bump, feed header |
@@ -817,6 +817,106 @@ period; §3.4). Legacy fetch and tick facts never become `FeedFetch` or
 `v1/predictions/` are deleting their first days (07-21/22) now. For those
 days the local mirror is the only copy. The trace's first days follow in
 about 7 weeks.
+
+### 5.1 As built (slice 6)
+
+The adapters live in `momentarily.model.observations.legacy`, one module per
+row of the table above (`trace`, `fresh_feeds` for `archive/trip_updates` and
+`archive/vehicles`, `alerts`, `alerts_liveness`, `predictions`, `ene`,
+`health`). They need no `pyarrow`. `momentarily.model.observations.parquet`
+writes any record type; the derive job is meant to reuse it.
+
+```
+python -m momentarily.model.observations.legacy --mirror <mirror-root> \
+    --out <out-root> [--report report.json]
+```
+
+The CLI reads the mirror (local only) and writes
+`<out>/model/observations/s1/derived/...` with the existing `keys`; no key
+was added. `vehicle` and `equipment` files are hourly by `observed_at`.
+`alert_version` files are daily by `first_seen`. The three legacy-only
+records are daily by `observed_at`. A malformed object is skipped, listed in
+the report, and makes the CLI exit 1. A missing mirror exits 2. A record that
+a contract rejects stops the run.
+
+**Legacy periods.** Each `start` is the first UTC day folder of the archive
+in the mirror of 2026-10-20. `end` is null. The values are constants
+(`legacy.common.PERIODS`), so a partial input cannot move them. For
+`archive/alerts`, `archive/ene` and `v1/predictions` the start is the oldest
+surviving day, not the first day written. The Worker wrote these archives
+from about 2026-05-13, and the days before 07-21 were pruned before history
+was kept.
+
+| Archive | `start` |
+|---|---|
+| `archive/trip_updates` | 2026-06-15 |
+| `archive/vehicles` | 2026-06-21 |
+| `archive/alerts`, `archive/ene`, `v1/predictions` | 2026-07-21 (oldest surviving day) |
+| `archive/trace` | 2026-08-12 |
+| `archive/alerts_liveness` | 2026-09-02 |
+| `archive/health` | 2026-09-11 |
+
+**Deviations and findings.**
+
+- **Trace `feed_digest` and `feed_etag` are not carried.** The owner decided
+  this. They are the static feed identity, which `archive/gtfs/` already
+  holds. All 2,880 objects that carry the fields hold one identical pair.
+- **The trace `scheduled_at` is not the cron minute.** It is
+  `floor(event.scheduledTime / 1000)`, the instant Cloudflare dispatched the
+  invocation. It falls 14, 15, 19, 26 or 35 s past the minute, and 2,828 of
+  3,330 objects have the same value as `observed_at`. `LegacyFetchOutcome`
+  keeps it verbatim. Layer 3 must not assume one tick per minute. On
+  2026-10-19 two invocations ran 5 s apart, at `scheduled_at` 1792429574
+  and 1792429579 (17:06:14 and 17:06:19 UTC).
+- **A stopped trace row without `stop_seq`** (18,141 rows) has
+  `current_stop_sequence` null: the feed omitted the field. It is not
+  `Unknown`. A moving row has both `current_status` and
+  `current_stop_sequence` `Unknown`.
+- **`ene_equipments`** objects give a `LegacyFetchOutcome` only, because the
+  catalog is not a layer-2 record. ENE wall times are parsed in
+  America/New_York. A blank or whitespace-only time is `None` (absent). A
+  repeated, skipped or unparseable time is `Unknown`. The slice-3 decoder
+  uses the same rule.
+- **Alert versions.** A version is one distinct `(alert_id,
+  content_digest)`. `first_seen` is the earliest sighting, and the lineage
+  names that object. `gone_kind` is `superseded` when another version of the
+  same id has a larger `updated_at`. The object that proves it is one of
+  the file's provenance inputs, so `built_at` can fall after the file's
+  day. The mirror has no re-sightings of an identical digest, so the number
+  of versions equals the number of objects.
+- **Writer.** zstd level 9, row groups of 2^20 rows, rows in natural-key
+  order, and a duplicate key rejected. Every writer option that affects the
+  bytes is pinned: format version, data page version and size, dictionary,
+  statistics, compression and level. The key-value metadata holds the arrow
+  schema and the `DerivedFileMetadata`. The writer rejects an output path
+  that does not end in `file_key`, and any record outside the file's hour or
+  day. The bytes are reproducible for a given `pyarrow` version. `pyarrow`
+  has no upper bound, and `uv.lock` pins the version. The bytes also depend
+  on `code_sha` and `code_dirty`. `columns.layout` is now cached per model.
+
+**Full run** (2026-10-20, all of the mirror, about 130 s for each run).
+Parse failures: none. Two runs gave byte-identical files (sha256 of all 2,550
+files).
+
+| Archive | Objects | Rows | Adapter s |
+|---|---|---|---|
+| `archive/trace` (3 days) | 3,330 | 1,845,677 vehicle + 26,640 fetch | 30.7 |
+| `archive/trip_updates` | 36,547 | 292,376 fetch | 5.8 |
+| `archive/vehicles` | 34,631 | 277,048 fetch | 6.8 |
+| `archive/alerts` | 16,195 | 16,195 alert_version | 2.6 |
+| `archive/alerts_liveness` | 13,609 | 13,609 fetch | 1.6 |
+| `archive/ene` | 6,424 | 257,604 equipment + 6,424 fetch | 8.3 |
+| `archive/health` | 51,944 | 51,944 health | 6.1 |
+| `v1/predictions` | 26,211 | 760,119 route alert state | 12.8 |
+
+| Record | Files | Bytes | Write s |
+|---|---|---|---|
+| `vehicle` | 56 | 9,953,714 | 37.7 |
+| `equipment` | 2,142 | 33,864,175 | 5.8 |
+| `alert_version` | 92 | 12,219,988 | 0.8 |
+| `legacy_fetch_outcome` | 128 | 42,362,836 | 5.0 |
+| `legacy_route_alert_state` | 92 | 11,139,853 | 4.7 |
+| `legacy_collector_health` | 40 | 20,843,935 | 0.3 |
 
 ## 6. Retention and storage cost
 

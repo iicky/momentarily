@@ -186,7 +186,7 @@
           "title": "Payload Sha256"
         },
         "scheduled_at": {
-          "description": "The cron minute this attempt served.",
+          "description": "floor(event.scheduledTime / 1000): the invocation's dispatch instant, not minute-aligned.",
           "minimum": 0,
           "title": "Scheduled At",
           "type": "integer"

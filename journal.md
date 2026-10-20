@@ -10991,3 +10991,31 @@ always in `active_period`. In 5, the feed had dropped periods that had
 already ended. In 1, the far-future end of the alert's only period had
 moved later. The archive keys on `(id, updated_at)`, so it missed these
 edits. A digest of the entity content records each one as a new version.
+## 2026-10-20 legacy-backfill-survey
+
+origin: agent
+
+I ran the backfill adapters over the whole R2 mirror of 2026-10-20. I
+surveyed every legacy object before mapping it.
+
+- `archive/trace` `scheduled_at` comes from Cloudflare's
+  `event.scheduledTime`. In practice that value is not the minute the cron
+  was meant for. None of the 3,330 mirrored trace objects has a
+  minute-aligned value, and 2,828 of them have the same value as
+  `observed_at`. The recorder's tick ids and keys take the same value, so a
+  consumer must not assume `scheduled_at % 60 == 0` or one tick per minute
+  (on 10-19 two invocations ran 5 s apart). The adapters keep the value
+  verbatim.
+- Negative results. There are 0 malformed objects in 188,891 objects across
+  eight archives. Every key agrees with its body (day folder, observed_at,
+  ENE hour, predictions `ts`). `archive/alerts` has 0 repeat sightings of an
+  identical entity digest, and 0 cases of one `(id, updated_at)` with two
+  contents, so 16,195 objects give 16,195 versions. All 13,609
+  `archive/alerts_liveness` objects are `success`. No ENE wall time falls in
+  a DST overlap or gap.
+- 18,141 stopped trace rows (1.0% of rows) have no `stop_seq`, because the
+  feed omitted `current_stop_sequence`. Missing here means omitted, not
+  unknown.
+- The trace's `feed_digest` and `feed_etag` are the same pair in all 2,880
+  objects that carry them. `archive/gtfs/` already holds that static feed
+  identity, so layer 2 does not carry them.

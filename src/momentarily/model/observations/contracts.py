@@ -34,7 +34,9 @@ realtime-only stop ids (``R60N``) are kept, ``start_date`` stays a
 ``YYYYMMDD`` string. This layer assigns no service day and matches nothing to
 the network.
 
-Time fields: ``scheduled_at`` is the cron minute an attempt served;
+Time fields: ``scheduled_at`` is ``floor(event.scheduledTime / 1000)`` of the
+invocation, the instant Cloudflare dispatched it (seconds past the minute,
+not the cron minute; two invocations can serve one minute);
 ``started_at_ms``/``finished_at_ms`` the Worker clock around the request;
 ``observed_at`` = ``finished_at_ms // 1000``, the instant we learned the
 content. Upstream timestamps (header, vehicle, trip update, alert) are kept
@@ -150,7 +152,9 @@ class FeedFetch(Model):
     source: SourceId
     url: str
     method: Literal["GET", "HEAD"] = Field(description="HEAD only for gtfs_static.")
-    scheduled_at: Instant = Field(description="The cron minute this attempt served.")
+    scheduled_at: Instant = Field(
+        description="floor(event.scheduledTime / 1000): the invocation's dispatch instant, not minute-aligned."
+    )
     started_at_ms: InstantMs
     finished_at_ms: InstantMs | None = Field(description="null exactly on timeout.")
     outcome: FetchOutcome

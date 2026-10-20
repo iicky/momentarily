@@ -1,0 +1,864 @@
+{
+  "$defs": {
+    "Complex": {
+      "additionalProperties": false,
+      "description": "Stations a rider can transfer between without leaving the system.",
+      "properties": {
+        "complex_id": {
+          "title": "Complex Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "station_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Station Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "complex_id",
+        "name",
+        "station_ids"
+      ],
+      "title": "Complex",
+      "type": "object"
+    },
+    "Direction": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "enum": [
+                "N",
+                "S"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The N/S suffix shared by every stop, or null if they differ.",
+          "title": "Code"
+        },
+        "direction_id": {
+          "anyOf": [
+            {
+              "enum": [
+                0,
+                1
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GTFS direction_id; null when the feed omits it.",
+          "title": "Direction Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pattern-wide label. Null in s1: labels vary along a line, so they live on Platform.",
+          "title": "Label"
+        }
+      },
+      "required": [
+        "direction_id",
+        "code",
+        "label"
+      ],
+      "title": "Direction",
+      "type": "object"
+    },
+    "Feed": {
+      "additionalProperties": false,
+      "properties": {
+        "feed_id": {
+          "description": "sha256 hex of the GTFS zip bytes.",
+          "pattern": "^[0-9a-f]{16,64}$",
+          "title": "Feed Id",
+          "type": "string"
+        },
+        "feed_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Feed Version"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "First service day the feed declares (feed_info).",
+          "title": "Valid From"
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive end: the day after feed_info's feed_end_date.",
+          "title": "Valid To"
+        }
+      },
+      "required": [
+        "feed_id",
+        "feed_version",
+        "valid_from",
+        "valid_to"
+      ],
+      "title": "Feed",
+      "type": "object"
+    },
+    "Pattern": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "headsign": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Most common trip headsign (ties broken lexicographically).",
+          "title": "Headsign"
+        },
+        "n_trips": {
+          "minimum": 1,
+          "title": "N Trips",
+          "type": "integer"
+        },
+        "pattern_id": {
+          "title": "Pattern Id",
+          "type": "string"
+        },
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "shape_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Shape Ids",
+          "type": "array"
+        },
+        "stops": {
+          "description": "Platform stop_ids in order.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "Stops",
+          "type": "array"
+        }
+      },
+      "required": [
+        "pattern_id",
+        "route_id",
+        "direction",
+        "headsign",
+        "stops",
+        "shape_ids",
+        "n_trips"
+      ],
+      "title": "Pattern",
+      "type": "object"
+    },
+    "PatternSegment": {
+      "additionalProperties": false,
+      "properties": {
+        "pattern_id": {
+          "title": "Pattern Id",
+          "type": "string"
+        },
+        "segment_id": {
+          "title": "Segment Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "0-based hop index within the pattern.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pattern_id",
+        "seq",
+        "segment_id"
+      ],
+      "title": "PatternSegment",
+      "type": "object"
+    },
+    "Platform": {
+      "additionalProperties": false,
+      "description": "A GTFS child stop: where trains actually stop.",
+      "properties": {
+        "direction_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "N",
+                "S"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "NYC N/S suffix; null for a platform serving both directions.",
+          "title": "Direction Code"
+        },
+        "direction_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rider-facing label for this side of the station, e.g. 'Manhattan'.",
+          "title": "Direction Label"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "station_id": {
+          "title": "Station Id",
+          "type": "string"
+        },
+        "stop_id": {
+          "title": "Stop Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stop_id",
+        "station_id",
+        "name",
+        "direction_code",
+        "direction_label"
+      ],
+      "title": "Platform",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Which code and which exact inputs produced an artifact.\n\n``built_at`` is a *logical* build time derived from the inputs (the capture\ninstant of the newest input), not the wall clock, so rebuilding from the same\ninputs yields identical bytes. ``applied_retroactively`` names inputs that\nwere captured after part of the period the artifact describes, i.e. today's\nreference data stamped onto an older timetable.",
+      "properties": {
+        "applied_retroactively": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Applied Retroactively",
+          "type": "array"
+        },
+        "built_at": {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "title": "Built At",
+          "type": "integer"
+        },
+        "code_dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Code Dirty"
+        },
+        "code_sha": {
+          "title": "Code Sha",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "pattern": "^[0-9a-f]{16,64}$",
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "schema": {
+          "title": "Schema",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code_sha",
+        "code_dirty",
+        "schema",
+        "inputs",
+        "applied_retroactively",
+        "built_at"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "Route": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Color"
+        },
+        "long_name": {
+          "title": "Long Name",
+          "type": "string"
+        },
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "route_type": {
+          "title": "Route Type",
+          "type": "integer"
+        },
+        "short_name": {
+          "title": "Short Name",
+          "type": "string"
+        },
+        "sort_order": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sort Order"
+        },
+        "text_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Text Color"
+        }
+      },
+      "required": [
+        "route_id",
+        "short_name",
+        "long_name",
+        "route_type",
+        "color",
+        "text_color",
+        "sort_order"
+      ],
+      "title": "Route",
+      "type": "object"
+    },
+    "ScheduledTrip": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "headsign": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Headsign"
+        },
+        "pattern_id": {
+          "title": "Pattern Id",
+          "type": "string"
+        },
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "service_id": {
+          "title": "Service Id",
+          "type": "string"
+        },
+        "shape_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Shape Id"
+        },
+        "stop_times": {
+          "description": "[stop_id, arrival, departure] in stop_sequence order.",
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "description": "Seconds after noon-minus-12h of the service day; values >= 86400 are past midnight (24:04:00 = 86640).",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "description": "Seconds after noon-minus-12h of the service day; values >= 86400 are past midnight (24:04:00 = 86640).",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Stop Times",
+          "type": "array"
+        },
+        "trip_id": {
+          "title": "Trip Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trip_id",
+        "route_id",
+        "pattern_id",
+        "service_id",
+        "headsign",
+        "shape_id",
+        "direction",
+        "stop_times"
+      ],
+      "title": "ScheduledTrip",
+      "type": "object"
+    },
+    "Segment": {
+      "additionalProperties": false,
+      "properties": {
+        "from_stop": {
+          "title": "From Stop",
+          "type": "string"
+        },
+        "pattern_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pattern Ids",
+          "type": "array"
+        },
+        "route_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Route Ids",
+          "type": "array"
+        },
+        "segment_id": {
+          "description": "f'{from_stop}>{to_stop}'.",
+          "title": "Segment Id",
+          "type": "string"
+        },
+        "to_stop": {
+          "title": "To Stop",
+          "type": "string"
+        }
+      },
+      "required": [
+        "segment_id",
+        "from_stop",
+        "to_stop",
+        "route_ids",
+        "pattern_ids"
+      ],
+      "title": "Segment",
+      "type": "object"
+    },
+    "Service": {
+      "additionalProperties": false,
+      "description": "One GTFS service_id, exactly as declared (never collapsed to a day type).",
+      "properties": {
+        "added_dates": {
+          "items": {
+            "description": "ISO date of a GTFS service day (never a UTC date).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "type": "string"
+          },
+          "title": "Added Dates",
+          "type": "array"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive end: the day after calendar.txt's end_date.",
+          "title": "End"
+        },
+        "removed_dates": {
+          "items": {
+            "description": "ISO date of a GTFS service day (never a UTC date).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "type": "string"
+          },
+          "title": "Removed Dates",
+          "type": "array"
+        },
+        "service_id": {
+          "title": "Service Id",
+          "type": "string"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "First day of the weekly rule.",
+          "title": "Start"
+        },
+        "weekdays": {
+          "items": {
+            "enum": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday",
+              "saturday",
+              "sunday"
+            ],
+            "type": "string"
+          },
+          "title": "Weekdays",
+          "type": "array"
+        }
+      },
+      "required": [
+        "service_id",
+        "weekdays",
+        "start",
+        "end",
+        "added_dates",
+        "removed_dates"
+      ],
+      "title": "Service",
+      "type": "object"
+    },
+    "ServiceDay": {
+      "additionalProperties": false,
+      "properties": {
+        "active_service_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Active Service Ids",
+          "type": "array"
+        },
+        "date": {
+          "description": "ISO date of a GTFS service day (never a UTC date).",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Date",
+          "type": "string"
+        },
+        "day_type": {
+          "description": "weekday/saturday/sunday when every active service's weekly rule is exactly that; none when nothing runs; otherwise mixed.",
+          "enum": [
+            "weekday",
+            "saturday",
+            "sunday",
+            "mixed",
+            "none"
+          ],
+          "title": "Day Type",
+          "type": "string"
+        },
+        "is_exception": {
+          "description": "calendar_dates.txt touches this date.",
+          "title": "Is Exception",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "date",
+        "active_service_ids",
+        "day_type",
+        "is_exception"
+      ],
+      "title": "ServiceDay",
+      "type": "object"
+    },
+    "Station": {
+      "additionalProperties": false,
+      "description": "A GTFS parent stop (location_type 1).",
+      "properties": {
+        "ada": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "full",
+                "partial"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ada"
+        },
+        "borough": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Borough"
+        },
+        "complex_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Complex Id"
+        },
+        "lat": {
+          "title": "Lat",
+          "type": "number"
+        },
+        "lon": {
+          "title": "Lon",
+          "type": "number"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "station_id": {
+          "title": "Station Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "station_id",
+        "name",
+        "lat",
+        "lon",
+        "complex_id",
+        "borough",
+        "ada"
+      ],
+      "title": "Station",
+      "type": "object"
+    },
+    "System": {
+      "additionalProperties": false,
+      "properties": {
+        "agency_id": {
+          "title": "Agency Id",
+          "type": "string"
+        },
+        "agency_name": {
+          "title": "Agency Name",
+          "type": "string"
+        },
+        "system_id": {
+          "description": "Stable system key, e.g. 'nyct-subway'.",
+          "title": "System Id",
+          "type": "string"
+        },
+        "timezone": {
+          "description": "IANA timezone of the service days.",
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system_id",
+        "timezone",
+        "agency_id",
+        "agency_name"
+      ],
+      "title": "System",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "build_id": {
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Build Id",
+      "type": "string"
+    },
+    "complexes": {
+      "items": {
+        "$ref": "#/$defs/Complex"
+      },
+      "title": "Complexes",
+      "type": "array"
+    },
+    "feed": {
+      "$ref": "#/$defs/Feed"
+    },
+    "pattern_segments": {
+      "items": {
+        "$ref": "#/$defs/PatternSegment"
+      },
+      "title": "Pattern Segments",
+      "type": "array"
+    },
+    "patterns": {
+      "items": {
+        "$ref": "#/$defs/Pattern"
+      },
+      "title": "Patterns",
+      "type": "array"
+    },
+    "platforms": {
+      "items": {
+        "$ref": "#/$defs/Platform"
+      },
+      "title": "Platforms",
+      "type": "array"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/Route"
+      },
+      "title": "Routes",
+      "type": "array"
+    },
+    "segments": {
+      "items": {
+        "$ref": "#/$defs/Segment"
+      },
+      "title": "Segments",
+      "type": "array"
+    },
+    "service_days": {
+      "items": {
+        "$ref": "#/$defs/ServiceDay"
+      },
+      "title": "Service Days",
+      "type": "array"
+    },
+    "services": {
+      "items": {
+        "$ref": "#/$defs/Service"
+      },
+      "title": "Services",
+      "type": "array"
+    },
+    "stations": {
+      "items": {
+        "$ref": "#/$defs/Station"
+      },
+      "title": "Stations",
+      "type": "array"
+    },
+    "system": {
+      "$ref": "#/$defs/System"
+    },
+    "trips": {
+      "items": {
+        "$ref": "#/$defs/ScheduledTrip"
+      },
+      "title": "Trips",
+      "type": "array"
+    }
+  },
+  "required": [
+    "build_id",
+    "provenance",
+    "system",
+    "feed",
+    "routes",
+    "stations",
+    "complexes",
+    "platforms",
+    "patterns",
+    "segments",
+    "pattern_segments",
+    "services",
+    "service_days",
+    "trips"
+  ],
+  "title": "NetworkSnapshot",
+  "type": "object"
+}

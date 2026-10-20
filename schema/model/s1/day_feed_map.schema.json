@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "DayFeed": {
+      "additionalProperties": false,
+      "description": "Which feed served one UTC collection day of the traversal archive.",
+      "properties": {
+        "feed_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{16,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The single stamped digest; null unless verified.",
+          "title": "Feed Id"
+        },
+        "feed_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Feed Version"
+        },
+        "inferred_feed_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{16,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unverified days: the archived feed whose version matches.",
+          "title": "Inferred Feed Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the day is unverified.",
+          "title": "Reason"
+        },
+        "verified": {
+          "title": "Verified",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "feed_id",
+        "verified",
+        "reason",
+        "feed_version",
+        "inferred_feed_id"
+      ],
+      "title": "DayFeed",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "days": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DayFeed"
+      },
+      "description": "Keyed by UTC date YYYY-MM-DD.",
+      "title": "Days",
+      "type": "object"
+    }
+  },
+  "required": [
+    "days"
+  ],
+  "title": "DayFeedMap",
+  "type": "object"
+}

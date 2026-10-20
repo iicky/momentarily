@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "IndexEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "applied_retroactively": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Applied Retroactively",
+          "type": "array"
+        },
+        "build_id": {
+          "title": "Build Id",
+          "type": "string"
+        },
+        "feed_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Feed Version"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "pattern": "^[0-9a-f]{16,64}$",
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Valid From"
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "description": "ISO date of a GTFS service day (never a UTC date).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Valid To"
+        }
+      },
+      "required": [
+        "build_id",
+        "feed_version",
+        "valid_from",
+        "valid_to",
+        "inputs",
+        "applied_retroactively"
+      ],
+      "title": "IndexEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Every network build in an output directory, keyed by feed_id.",
+  "properties": {
+    "feeds": {
+      "additionalProperties": {
+        "$ref": "#/$defs/IndexEntry"
+      },
+      "title": "Feeds",
+      "type": "object"
+    },
+    "schema": {
+      "title": "Schema",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "feeds"
+  ],
+  "title": "NetworkIndex",
+  "type": "object"
+}

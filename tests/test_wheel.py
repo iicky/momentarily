@@ -26,12 +26,16 @@ REPO = Path(__file__).resolve().parent.parent
 # The wheel installs them, so only sys.modules can show a stray import.
 _PROBE = """
 import sys
+from importlib.resources import files
 import momentarily
 import momentarily.model.network.build
 import momentarily.model.network.day_feed
 import momentarily.model.observations.columns
 import momentarily.model.observations.contracts
+import momentarily.model.observations.decode
 import momentarily.model.observations.keys
+decode = files("momentarily.model.observations.decode")
+assert decode.joinpath("nyct-subway.proto").is_file()
 assert "site-packages" in momentarily.__file__, momentarily.__file__
 stray = sorted(m for m in ("boto3", "botocore", "training") if m in sys.modules)
 assert not stray, stray

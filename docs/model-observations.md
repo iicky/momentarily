@@ -603,6 +603,79 @@ The build follows §3.1–3.3 except where listed here.
   `legacy_fetch_outcome` and `legacy_collector_health` are daily
   `derived/<record>/<YYYY-MM-DD>.parquet` files.
 
+### 3.5 As built (slice 3)
+
+The decoders are `momentarily.model.observations.decode`: pure functions of
+the payload bytes and a `RawFetch` (`fetch_id`, `source`, `observed_at`,
+`RawLineage`), with no I/O and no clock. `DECODER_VERSION` (`"1"`) names
+their output. Each decoder checks that the bytes hash to the lineage's
+`payload_sha256`. A payload that does not parse, lacks a proto2 required
+field, is not the JSON shape its source publishes, is nested too deep to
+read, or holds a value that a contract rejects (a `direction_id` of 2, a
+negative time) raises `DecodeError`, with the cause chained. Nothing is
+returned for that payload.
+
+- **Protobuf.** `gtfs-realtime-bindings` 3.0.0 on protobuf 7.36.2. The NYCT
+  extension is vendored beside the decoder as the upstream `.proto` and its
+  compiled module, whose header gives the source, its digest and the exact
+  `protoc` run. An omitted optional field is `None`. An enum value that the
+  proto does not define is kept by protobuf as an unknown field. The decoder
+  therefore reads it as `None` and lists its path in `unmodeled_fields`.
+- **`unmodeled_fields`.** Dotted field-number paths, relative to the
+  record's message (VehiclePosition or TripUpdate): `2` is a vehicle's
+  `position`, `2.6` a stop-time update's `stop_time_properties`. A leading
+  `..` names a field of the enclosing FeedEntity other than `id`,
+  `trip_update`, `vehicle` and `alert`. `l` sends `is_deleted` on every
+  entity, so all its records carry `..2`. A path stops at the first
+  unmodelled field. Extensions and unknown fields appear by number. Repeated
+  messages give no index, so a field seen in any stop-time update is listed
+  once. The list is sorted: `..` paths first, then by field numbers.
+  Unmodelled fields of the FeedMessage and FeedHeader are not recorded,
+  because no contract has a place for them. So an unknown tag appended to a
+  payload's bytes, which lands on the FeedMessage, is dropped, and an
+  undefined `incrementality` value reads as `None` with no path. On the
+  2026-10-20 sample, every other feed decodes with an empty list.
+- **Entities.** An entity that holds a trip update and a vehicle gives one
+  record of each, with the same `entity_index`. Shapes, stops and trip
+  modifications give no record. Alert entities are decoded only from
+  `numbered`, because `AlertSource` admits no other GTFS-RT feed. In any
+  other feed they are dropped. The sample had none elsewhere.
+- **`numbered` alerts.** The digested entity JSON is protobuf
+  `MessageToDict(entity, preserving_proto_field_name=True)` of the whole
+  FeedEntity, with every other option at its default. So enums are names,
+  64-bit integers are strings, omitted fields are left out, extensions are
+  keyed `[<full name>]`, and unknown fields are dropped, so they are
+  neither digested nor reported anywhere. `updated_at` is null. The entity
+  id is a per-poll sequence number: the one "Train delayed" alert came back
+  as `000401`–`000417` across 40 polls. So a `numbered` alert id does not
+  identify an alert from one poll to the next.
+- **Camsys alerts.** Each entity is digested exactly as parsed. A digest of
+  the same entity read back from `archive/alerts/` is identical. An absent
+  `entity` list is an empty presence. An entity published twice with the
+  same content is one entry. The header timestamp is read exactly as the
+  recorder reads it for `FeedFetch.header_timestamp`: a non-negative
+  integer or a string of 1 to 15 digits, and otherwise `None`. An entity
+  without a string `id`, or with an `updated_at` that is not epoch seconds,
+  fails the decode even though the recorder counts the fetch as `ok`.
+- **Silent alert edits.** Content does change without an `updated_at` bump.
+  The committed fixture is the 14:36 UTC 2026-10-20 alerts payload. Of the
+  170 `archive/alerts/` objects in the local mirror (2026-07-21 to
+  2026-10-20) whose `(id, updated_at)` it still carries, 6 have different
+  content. All 6 differences are in `active_period`. In 5, the feed dropped
+  periods that had already ended. In 1, the far-future end of the alert's
+  only period moved later. The digest records each such change as a new
+  version.
+- **ENE.** Records are kept in published order, and every value must be a
+  string. `outagedate` and `estimatedreturntoservice` are read as
+  `MM/DD/YYYY hh:mm:ss AM|PM` New York wall time, ASCII digits only. A key
+  the record omits, or a blank or whitespace-only value, parses to `None`
+  (the `_local` field keeps the published text), as in the backfill
+  adapters. Any other text is `Unknown("unparseable: ...")`. A wall time
+  that the fall-back hour repeats is `Unknown("ambiguous: ...")`, one that
+  the spring-forward hour skips is `Unknown("nonexistent: ...")`, and one
+  before 1970 is `Unknown("before 1970: ...")`, because no `Instant` holds
+  it.
+
 ## 4. Writer placement
 
 The Worker is the only always-on fetcher, so it must write `CollectorTick`,
@@ -837,9 +910,10 @@ by age.
    the first day the recorder wrote `AlertPresence`). Layer 3 uses it only for
    dates without `AlertPresence`, and labels any bound it produces as derived
    from legacy data.
-6. **GTFS-RT decoder: open.** Recommendation unchanged:
-   `gtfs-realtime-bindings` plus a vendored, compiled NYCT proto, with
-   `UnknownFields` feeding `unmodeled_fields`. Needed by slice 3 only.
+6. **GTFS-RT decoder: decided.** Google's `gtfs-realtime-bindings` plus the
+   MTA's `nyct-subway.proto`, compiled with `protoc` and vendored into the
+   package, with present-but-unmodelled fields recorded in `unmodeled_fields`
+   (§3.5).
 7. **Materialize TripUpdateObservation: decided.** Yes, as parquet, kept
    365 d. Older days are regenerated from the raw bundles, which are kept
    indefinitely.

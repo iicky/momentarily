@@ -10969,3 +10969,25 @@ prediction per recurring trip and dropped the rest (1.6M rows kept, against
 about 1.0M per day here). Its rates are close to this entry's (5-10 min
 within 60 s 0.565 vs 0.570) but its n and intervals are wrong. This entry's
 per-day reduction supersedes it.
+
+## 2026-10-20 numbered-alert-ids-and-silent-alert-edits
+
+origin: artifact
+
+Two findings from decoding the 2026-10-20 live sample (40 polls at 15 s) into
+layer-2 alert presence.
+
+The `numbered` GTFS-RT feed gives its Alert entities a per-poll sequence id,
+not a stable one. The single "Train delayed" alert came back as `000401` to
+`000417` across the 40 polls. A `numbered` alert id therefore does not
+identify an alert from one poll to the next, and a version index keyed on it
+starts a new version for the same alert every poll.
+
+The camsys alerts feed changes an alert's content without bumping
+`updated_at`. In the 14:36 UTC 2026-10-20 alerts payload, 170 of the
+`(id, updated_at)` pairs match an `archive/alerts/` object in the local
+mirror (2026-07-21 to 2026-10-20). For 6 of these, the content differs, and
+always in `active_period`. In 5, the feed had dropped periods that had
+already ended. In 1, the far-future end of the alert's only period had
+moved later. The archive keys on `(id, updated_at)`, so it missed these
+edits. A digest of the entity content records each one as a new version.

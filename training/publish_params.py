@@ -399,9 +399,9 @@ def write_params(
 SEGMENT_PARAMS_KEY = "state/segment_params.json"
 VERSIONED_SEGMENT_PREFIX = "state/segment_params/"
 # RETENTION: the versioned state/segment_params/ snapshots are kept forever.
-# training.prune has no rule for this prefix -- its DATED_PREFIXES cover only
-# the dated archive/v1 streams, and PARAMS_PREFIX covers only state/params/ --
-# so nothing ever sweeps it. Each snapshot is one small per-run JSON doc
+# training.prune has no rule for this prefix -- it only expires state/params/
+# rollback snapshots (PARAMS_PREFIX) -- so nothing ever sweeps it. Each
+# snapshot is one small per-run JSON doc
 # (segment cells + adjacency + throughput, no raw per-tick data), negligible
 # next to any dated archive prefix, and a past snapshot is only ever fetched
 # by exact key during a manual rollback (docs/params-rollback.md) alongside
@@ -701,7 +701,7 @@ SERVICE_BASELINE_KEY = "state/service_baseline.json"
 VERSIONED_SERVICE_PREFIX = "state/service_baseline/"
 # RETENTION: the versioned state/service_baseline/ snapshots are kept forever.
 # Same absence of a training.prune rule as state/segment_params/ above (only
-# DATED_PREFIXES and PARAMS_PREFIX are policed), and the same negligible size
+# PARAMS_PREFIX is policed), and the same negligible size
 # (one per-run assigned_n baseline doc). Doubly worth keeping here: this
 # sidecar is versioned by its OWN `generated_at`, not `trained_at` (see
 # write_service_baseline below), because both a full retrain AND a standalone
@@ -784,7 +784,7 @@ SCHEDULED_HEADWAY_KEY = "state/scheduled_headway.json"
 VERSIONED_SCHEDULED_HEADWAY_PREFIX = "state/scheduled_headway/"
 # RETENTION: the versioned state/scheduled_headway/ snapshots are kept
 # forever. Same absence of a training.prune rule as the sidecars above (only
-# DATED_PREFIXES and PARAMS_PREFIX are policed) and the same reasoning: one
+# PARAMS_PREFIX is policed) and the same reasoning: one
 # small per-run median-headway doc, versioned by `trained_at` like
 # state/params/, so a rollback of a given params.json (docs/params-rollback.md)
 # always has this sidecar's matching version still available to pair with it.
@@ -875,8 +875,8 @@ VERSIONED_PROV_PREFIX = "state/prov/"
 PUBLIC_PROV_KEY = "v1/prov/latest.json"
 PUBLIC_PROV_PREFIX = "v1/prov/"
 # RETENTION: the PROV sidecars are kept forever. training.prune never sweeps the
-# state/prov/ or v1/prov/ prefixes (its rules cover only the dated archive
-# prefixes and state/params/v* at PARAMS_RETENTION_DAYS), and prune-nightly.yml
+# state/prov/ or v1/prov/ prefixes (its only rule covers state/params/v* at
+# PARAMS_RETENTION_DAYS), and prune-nightly.yml
 # carries the matching keep-forever note. One tiny (~KB) immutable doc per weekly
 # run is negligible next to any dated archive prefix; the public v1/prov mirror is
 # advertised immutable (max-age 1y) and is the target of every published
@@ -1002,7 +1002,7 @@ SEGMENT_DWELL_KEY = "state/segment_dwell.json"
 VERSIONED_SEGMENT_DWELL_PREFIX = "state/segment_dwell/"
 # RETENTION: the versioned state/segment_dwell/ snapshots are kept forever.
 # Same absence of a training.prune rule as the other publish_params sidecars
-# above (only DATED_PREFIXES and PARAMS_PREFIX are policed) and the same
+# above (only PARAMS_PREFIX is policed) and the same
 # reasoning: one small per-run pooled-dwell-curve doc, versioned by
 # `trained_at` like state/params/, so a rollback of a given params.json
 # (docs/params-rollback.md) always has this sidecar's matching version still
@@ -1079,7 +1079,7 @@ RECOVERY_BASELINE_KEY = "state/recovery_baseline.json"
 VERSIONED_RECOVERY_BASELINE_PREFIX = "state/recovery_baseline/"
 # RETENTION: the versioned state/recovery_baseline/ snapshots are kept forever.
 # Same absence of a training.prune rule as the other publish_params sidecars
-# above (only DATED_PREFIXES and PARAMS_PREFIX are policed) and the same
+# above (only PARAMS_PREFIX is policed) and the same
 # reasoning: one small per-run duration-climatology doc, versioned by
 # `trained_at` like state/params/, so a rollback of a given params.json
 # (docs/params-rollback.md) always has this sidecar's matching version still

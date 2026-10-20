@@ -24,7 +24,7 @@ and keeping only archive days whose provenance carries that digest — an
 unstamped or mid-day-mixed day is not verified. Realized seconds never depend
 on schedule bytes and are kept for every day.
 
-`service_day` comes from gtfs_static.service_dates on the first hop's arrival:
+`service_day` comes from gtfs.static.service_dates on the first hop's arrival:
 nearest candidate by the trip id's own scheduled origin, the rule the live
 pipeline already uses. No midnight rule is invented here.
 
@@ -47,10 +47,11 @@ from dataclasses import asdict
 from datetime import date
 from typing import IO, TYPE_CHECKING, Literal
 
+from momentarily.archive.traversals import EXACT, INTERVAL, Traversal
+from momentarily.gtfs.static import Timetable, fetch_gtfs_zip, service_dates, timetable
 from training.gtfs_archive import digest_of
-from training.gtfs_static import Timetable, fetch_gtfs_zip, service_dates, timetable
 from training.journey_types import MAX_HOPS, SpanSample
-from training.trace import EXACT, INTERVAL, Traversal, scheduled_for
+from training.trace import scheduled_for
 from training.traversal_archive import ReadResult, read_days
 
 if TYPE_CHECKING:

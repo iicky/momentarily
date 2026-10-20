@@ -45,7 +45,7 @@ from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 
-from training.gtfs_static import path_code
+from momentarily.gtfs.static import path_code
 from training.journey_model import StateConditionedForecaster, shrunk
 from training.journey_types import HISTORY_SECONDS, Forecaster, SpanSample
 

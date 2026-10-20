@@ -14,7 +14,7 @@ import json
 from datetime import date
 from typing import Any
 
-from training.gtfs_static import Calendar, FeedVersion, Weekly
+from momentarily.gtfs.static import Calendar, FeedVersion, Weekly
 from training.service_weight import (
     BASELINE_KEY,
     SCHEMA_VERSION,

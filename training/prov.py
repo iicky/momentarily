@@ -219,7 +219,7 @@ class ProvDocument:
 
 @dataclass(frozen=True)
 class AgentFacts:
-    """The trainer build that ran, from training.provenance.code_provenance."""
+    """The trainer build that ran, from momentarily.provenance.code_provenance."""
 
     code_sha: str
     dirty: bool | None

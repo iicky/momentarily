@@ -12,7 +12,7 @@ how many trains the schedule runs at that exact platform in each
 (weekday/weekend, local hour) cell.
 
 Source is the same static GTFS zip the trainer already fetches for its movement
-baselines (training/gtfs_static). Keyed by the DIRECTIONAL stop_id (`631N`,
+baselines (momentarily.gtfs.static). Keyed by the DIRECTIONAL stop_id (`631N`,
 `901S`) -- the same id the realtime trace and stop_times.txt both carry -- so it
 joins to `state/station_wait.json`'s platform keys with no crosswalk. A cell is
 a raw scheduled-departure count for a representative service day, not a rate:
@@ -20,7 +20,7 @@ the Worker only ever consumes RATIOS between a complex's platforms at one (day,
 hour) cell, so no per-day normalization is needed.
 
 Which services count as "weekday" vs "weekend" is resolved the same way the rest
-of this package reads the calendar -- through gtfs_static.Calendar.active(),
+of this package reads the calendar -- through gtfs.static.Calendar.active(),
 which applies calendar_dates.txt exceptions -- for a representative weekday,
 Saturday, and Sunday that the feed actually covers and that carry no holiday
 exception. The `we` cell pools Saturday and Sunday, the same weekend pooling
@@ -41,7 +41,7 @@ Run with:
 
 Writes state/service_weight_baseline.json (live pointer) + a versioned sibling
 under state/service_weight_baseline/, both stamped with
-training/provenance.py::code_provenance(), mirroring training/ridership.py.
+src/momentarily/provenance.py::code_provenance(), mirroring training/ridership.py.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     GTFS_STATIC_URL,
     Calendar,
     FeedVersion,
@@ -66,7 +66,7 @@ from training.gtfs_static import (
     read_calendar,
     read_version,
 )
-from training.provenance import code_provenance
+from momentarily.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 
 if TYPE_CHECKING:

@@ -21,8 +21,8 @@ import json
 import zipfile
 from pathlib import Path
 
+from momentarily.gtfs.static import GTFS_STATIC_URL, fetch_gtfs_zip
 from training.diagram import build, to_json
-from training.gtfs_static import GTFS_STATIC_URL, fetch_gtfs_zip
 
 DIAGRAM_PATH = (
     Path(__file__).resolve().parent.parent / "viz" / "public" / "diagram.json"

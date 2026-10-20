@@ -75,10 +75,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from momentarily.gtfs.static import load_topology, through_stops
 from training.degradation_label import BIN_FN, build_labels
 from training.episodes import Episode, extract_episodes
 from training.escalation import corroborate_episodes
-from training.gtfs_static import load_topology, through_stops
 from training.load import TICK_SECONDS
 from training.load_r2 import (
     CLASSIFY_ALPHA,

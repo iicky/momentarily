@@ -13,8 +13,8 @@ from dataclasses import replace
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from training.gtfs_static import HopKey, Timetable, timetable
-from training.trace import EXACT, INTERVAL, RIGHT, Traversal
+from momentarily.archive.traversals import EXACT, INTERVAL, RIGHT, Traversal
+from momentarily.gtfs.static import HopKey, Timetable, timetable
 from training.traversal import (
     TraversalCell,
     deviation,

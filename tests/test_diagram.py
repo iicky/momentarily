@@ -17,6 +17,7 @@ from datetime import date
 
 import pytest
 
+from momentarily.gtfs.static import FeedVersion
 from training.diagram import (
     OFFSET_SPACING,
     PAD,
@@ -32,7 +33,6 @@ from training.diagram import (
     route_sort_key,
     to_json,
 )
-from training.gtfs_static import FeedVersion
 
 
 def _approx(expected: float, tol: float | None = None) -> object:
@@ -208,7 +208,7 @@ def test_a_one_way_pair_gets_one_key_not_a_fabricated_twin() -> None:
 
 
 def test_the_busiest_pattern_wins_a_contested_successor() -> None:
-    """Same rule as gtfs_static.dominant_successor: a from_stop reaching one
+    """Same rule as gtfs.static.dominant_successor: a from_stop reaching one
     neighbour under two patterns resolves to the busier, not to whichever the
     dict happened to iterate last."""
     pairs = edge_directions({("1", "north", "100N"): [("101N", 2), ("101N", 40)]})
@@ -518,10 +518,10 @@ def test_the_asset_is_stable_across_builds_of_the_same_feed() -> None:
 
 
 def test_adjacency_carries_the_full_static_successor_graph_ranked() -> None:
-    """adjacency is gtfs_static.successors() reshaped to the array AdjEdge
+    """adjacency is gtfs.static.successors() reshaped to the array AdjEdge
     shape the viz consumes directly: `to` is the top-ranked (most-run,
     smaller-stop-id-tiebreak) successor, `successors` the full ranked list —
-    the same rule gtfs_static.dominant_successor uses, not a second one."""
+    the same rule gtfs.static.dominant_successor uses, not a second one."""
     payload = to_json(build(_feed()))
     by_key = {a["key"]: a for a in payload["adjacency"]}
     assert set(by_key) == {
@@ -547,7 +547,7 @@ def test_adjacency_carries_the_full_static_successor_graph_ranked() -> None:
 
 
 def test_route_stops_carries_scheduled_patterns_most_run_first() -> None:
-    """route_stops is gtfs_static.route_patterns() (the same read
+    """route_stops is gtfs.static.route_patterns() (the same read
     publish_params.write_segment_params publishes as segment_params.json's own
     route_stops), keyed 'route|direction', most-run pattern first."""
     payload = to_json(build(_feed()))

@@ -1,4 +1,4 @@
-"""Static-GTFS segment topology parsing (training/gtfs_static.py).
+"""Static-GTFS segment topology parsing (src/momentarily/gtfs/static.py).
 
 Synthetic in-memory GTFS zips only — no network access.
 """
@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     Chain,
     RoutePattern,
     Span,
@@ -215,7 +215,7 @@ def test_load_successors_composes_fetch_and_parse(
     def fake_fetch(url: str = "") -> bytes:
         return zip_bytes
 
-    import training.gtfs_static as gtfs_static
+    import momentarily.gtfs.static as gtfs_static
 
     monkeypatch.setattr(gtfs_static, "fetch_gtfs_zip", fake_fetch)
     result = load_successors()
@@ -260,7 +260,7 @@ def test_load_topology_returns_successors_and_patterns(
     def fake_fetch(url: str = "") -> bytes:
         return zip_bytes
 
-    import training.gtfs_static as gtfs_static
+    import momentarily.gtfs.static as gtfs_static
 
     monkeypatch.setattr(gtfs_static, "fetch_gtfs_zip", fake_fetch)
     succ, pats = load_topology()
@@ -500,7 +500,7 @@ def test_304_returns_cached_bytes(
 ) -> None:
     """A 304 response sends back the bytes already on disk, avoiding a full
     re-download of the ~5.6 MB zip."""
-    from training.gtfs_static import fetch_gtfs_zip
+    from momentarily.gtfs.static import fetch_gtfs_zip
 
     cached = b"previously downloaded zip"
     (tmp_path / f"{_stem()}.zip").write_bytes(cached)
@@ -525,7 +525,7 @@ def test_missing_validators_performs_full_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No cached zip or metadata -> unconditional GET, no conditional headers."""
-    from training.gtfs_static import fetch_gtfs_zip
+    from momentarily.gtfs.static import fetch_gtfs_zip
 
     body = b"fresh zip content"
     captured_headers: list[dict[str, str]] = []
@@ -552,7 +552,7 @@ def test_cached_bytes_without_metadata_triggers_full_fetch(
     """Cached zip exists but metadata sidecar is missing — the cached bytes
     must be replaced by the fresh download, not returned on a 304 that was
     never requested."""
-    from training.gtfs_static import fetch_gtfs_zip
+    from momentarily.gtfs.static import fetch_gtfs_zip
 
     (tmp_path / f"{_stem()}.zip").write_bytes(b"stale")
 
@@ -580,7 +580,7 @@ def test_etag_and_last_modified_both_sent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both validators present in meta -> both conditional headers sent."""
-    from training.gtfs_static import fetch_gtfs_zip
+    from momentarily.gtfs.static import fetch_gtfs_zip
 
     (tmp_path / f"{_stem()}.zip").write_bytes(b"old")
     (tmp_path / f"{_stem()}.meta.json").write_text(
@@ -619,7 +619,7 @@ def test_corrupt_meta_falls_through_to_full_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Corrupt or unreadable metadata doesn't prevent a successful fetch."""
-    from training.gtfs_static import fetch_gtfs_zip
+    from momentarily.gtfs.static import fetch_gtfs_zip
 
     (tmp_path / f"{_stem()}.zip").write_bytes(b"old")
     (tmp_path / f"{_stem()}.meta.json").write_text("not json")

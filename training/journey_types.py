@@ -2,7 +2,7 @@
 
 A SpanSample is one realized rider journey on one train: the trip's arrival at
 `origin` to its arrival at `destination`, chained from consecutive traversal
-rows (training.trace.Traversal) of the same trip. `depart_at` is Traversal.at
+rows (momentarily.archive.traversals.Traversal) of the same trip. `depart_at` is Traversal.at
 of the first hop — the arrival at origin, which is when a rider standing there
 would board — so `seconds` includes the dwell at origin, matching what the
 traversal baselines already fit.

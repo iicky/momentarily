@@ -6,13 +6,14 @@ eval.json) carries a `provenance` block answering "which code produced this":
     {"code_sha": "<git commit>", "dirty": bool|None, "producer": str}
 
 `code_sha` is git's own commit hash, embedded verbatim — not a hash we choose.
-(Content/lineage hashing we control uses BLAKE3; that lives elsewhere.)
+Lineage hashing we control uses BLAKE3: `input_manifest_hash` fingerprints the
+archive object keys an artifact was derived from.
 
 Resolution order, so local dev, CI, and the trainer container all work:
   1. MOMENTARILY_CODE_SHA env var — authoritative; injected at build/CI time.
   2. `git rev-parse HEAD` — local dev, where the working tree is present and is
      the only source that can also answer whether it is dirty.
-  3. .build-sha file next to the package — the container path, since the image
+  3. .build-sha file at the project root — the container path, since the image
      excludes .git (so `git rev-parse` can't run there). Written by the deploy
      script and COPYed into the image. It also survives in a dev checkout after
      a local `deploy:ci`, where it is stale the moment the next commit lands —
@@ -31,7 +32,11 @@ import subprocess
 from pathlib import Path
 from typing import TypedDict
 
-_BUILD_SHA_FILE = Path(__file__).resolve().parent.parent / ".build-sha"
+from blake3 import blake3
+
+# The project root (src/momentarily/ is two levels down), which the editable
+# install in the checkout and the trainer image (/app) both resolve to.
+_BUILD_SHA_FILE = Path(__file__).resolve().parents[2] / ".build-sha"
 
 
 class Provenance(TypedDict):
@@ -86,3 +91,17 @@ def code_provenance() -> Provenance:
             return {"code_sha": file_sha, "dirty": _env_dirty(), "producer": producer}
 
     return {"code_sha": "unknown", "dirty": _env_dirty(), "producer": producer}
+
+
+def input_manifest_hash(keys: list[str]) -> str:
+    """BLAKE3 over the sorted object keys that fed a fit.
+
+    The archive is immutable and keys are timestamped, so the sorted key set is a
+    deterministic fingerprint of exactly which feed snapshots trained the model —
+    re-listing the same window reproduces the same digest. Empty key set hashes
+    the empty string."""
+    h = blake3()
+    for k in sorted(keys):
+        h.update(k.encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()

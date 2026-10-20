@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     FeedVersion,
     HopKey,
     RoutePattern,
@@ -218,7 +218,7 @@ class Edge:
     gave no arrival-to-arrival time there — never that the hop is instant —
     so the renderer must read absence as "no data", not 0. Classes are
     separate rather than pooled because they really are different
-    timetables: `gtfs_static.Timetable`'s own docstring measures pooling all
+    timetables: `gtfs.static.Timetable`'s own docstring measures pooling all
     three at 26% of observed weekday hops wrong by more than 10%.
     """
 
@@ -348,7 +348,7 @@ def _dominant_hops(
 ) -> dict[tuple[PairKey, str], tuple[str, str]]:
     """(pair, direction) -> (from_stop, to_stop): the busiest hop reaching this
     station pair in this direction, by scheduled trip count — the same rule as
-    gtfs_static.dominant_successor. `edge_directions` and `edge_seconds` both
+    gtfs.static.dominant_successor. `edge_directions` and `edge_seconds` both
     read off this one resolution, so a pair's segment_flow key and its
     scheduled time always describe the same physical hop rather than two that
     happen to share a drawn edge.
@@ -377,7 +377,7 @@ def edge_directions(
     rebuilt by re-suffixing a station id, so a pair scheduled in one direction
     only yields one key instead of a fabricated northbound twin. Where a
     from_stop reaches the same neighbour under more than one pattern the
-    busiest wins, matching gtfs_static.dominant_successor's rule.
+    busiest wins, matching gtfs.static.dominant_successor's rule.
     """
     out: dict[PairKey, dict[str, str]] = defaultdict(dict)
     for (pair, direction), (frm, _) in _dominant_hops(succ).items():
@@ -425,7 +425,7 @@ def edge_seconds(
     draw from, so a pair's segment_flow key and its scheduled time never
     disagree about which hop on a branch they describe.
 
-    `hops_by_class` is one `gtfs_static.DayTimetable.hops` per service class,
+    `hops_by_class` is one `gtfs.static.DayTimetable.hops` per service class,
     each built from a single representative day (`representative_days`) — NOT
     pooled across classes. `Timetable`'s own docstring measures pooling all
     three at 26% of observed weekday hops wrong by more than 10%, because the
@@ -784,7 +784,7 @@ def build(zf: zipfile.ZipFile) -> Diagram:
     }
 
     # A third read of stop_times.txt: the scheduled stopping patterns
-    # (training.gtfs_static.route_patterns), the same static-topology read
+    # (momentarily.gtfs.static.route_patterns), the same static-topology read
     # `training.publish_params.write_segment_params` feeds into
     # `state/segment_params.json`'s own `route_stops`. Reusing it here, rather
     # than relinearizing `succ`, keeps the asset's canonical line order the
@@ -850,7 +850,7 @@ def to_json(diagram: Diagram) -> dict[str, Any]:
         ],
         "topology_source": "gtfs_static",
         # Every route|direction|from_stop cell, ranked most-run first — same
-        # tie-break as gtfs_static.dominant_successor (`to` is succs[0]), so a
+        # tie-break as gtfs.static.dominant_successor (`to` is succs[0]), so a
         # from_stop with a real branch/express split keeps its full successor
         # list instead of being truncated to the modal winner. Sorted by key:
         # `adjacency` is a JSON array, so `json.dumps(..., sort_keys=True)`

@@ -23,7 +23,7 @@ build/
 
 # wrangler local cache
 .wrangler/
-# Local HTTP cache (training/gtfs_static.py fetch_gtfs_zip)
+# Local HTTP cache (src/momentarily/gtfs/static.py fetch_gtfs_zip)
 .cache/
 
 # Shadow-review artifacts (generated locally by training.review; not for upstream)

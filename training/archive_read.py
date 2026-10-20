@@ -29,14 +29,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
+from momentarily.archive.traversals import ComparableKey, DayProvenance, Traversal
 from training.load_r2 import date_range
 from training.planned_work import (
     Window,
     fetch_alert_bodies,
     windows_from_alerts,
 )
-from training.trace import Traversal, fetch_trace_bodies, traversals_from_trace
-from training.traversal_archive import ComparableKey, DayProvenance
+from training.trace import fetch_trace_bodies, traversals_from_trace
 from training.traversal_archive import key_for as traversal_key
 from training.traversal_archive import read_days as read_traversal_days
 from training.window_archive import key_for as window_key

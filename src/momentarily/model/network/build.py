@@ -28,6 +28,13 @@ from zoneinfo import ZoneInfo
 
 import blake3
 
+from momentarily.gtfs.static import (
+    Calendar,
+    feed_rows,
+    gtfs_seconds,
+    read_calendar,
+    read_version,
+)
 from momentarily.model.conventions import Provenance
 from momentarily.model.network.contracts import (
     SCHEMA_ID,
@@ -54,14 +61,7 @@ from momentarily.model.network.contracts import (
     Weekday,
 )
 from momentarily.model.network.stations import StationsSnapshot, digest_of
-from training.gtfs_static import (
-    Calendar,
-    feed_rows,
-    gtfs_seconds,
-    read_calendar,
-    read_version,
-)
-from training.provenance import code_provenance
+from momentarily.provenance import code_provenance
 
 DEFAULT_SYSTEM_ID = "nyct-subway"
 

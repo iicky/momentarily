@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from momentarily.archive.traversals import DayProvenance, FeedDigestRange
 from momentarily.model.conventions import ContractDefaultError, Model, instant_of
 from momentarily.model.network.__main__ import BuildConflictError, write_build
 from momentarily.model.network.build import (
@@ -60,7 +61,6 @@ from scripts.gen_model_network_fixture import (
     render_fixtures,
     zip_dir,
 )
-from training.traversal_archive import DayProvenance, FeedDigestRange
 
 FEED_ID_A = "a" * 64
 FEED_ID_B = "b" * 64

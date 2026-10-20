@@ -16,10 +16,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from botocore.exceptions import ClientError
 
+from momentarily.gtfs.static import RoutePattern
 from momentarily.hmm import EmissionParams, HMMParams, Observation, schedule_bin
 from training.dwell import DwellQuantiles
 from training.eval import MovementTransitionRecord, PredictionRecord, TransitionRecord
-from training.gtfs_static import RoutePattern
 from training.load_r2 import (
     MIN_MATCHED_TRIPS,
     MIN_SCHEDULE_TICKS,

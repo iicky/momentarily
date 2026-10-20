@@ -22,7 +22,7 @@ COPY training/ ./training/
 # context — the image excludes .git, so this file is how the container learns
 # which commit it was built from. The [a] glob makes the copy optional, so a
 # bare `docker build .` without the file still succeeds (code_sha then falls
-# back to "unknown"). See training/provenance.py.
+# back to "unknown"). See src/momentarily/provenance.py.
 COPY .build-sh[a] ./
 ENV MOMENTARILY_PRODUCER=container
 

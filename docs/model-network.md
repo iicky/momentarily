@@ -62,6 +62,14 @@ uv run python -m momentarily.model.network day-feed-map \
     --traversals ARCHIVE/traversals --out OUT
 ```
 
+The model package imports only `momentarily.*`, so these commands also run from
+an installed wheel with no checkout. It shares the static-GTFS reader
+(`momentarily.gtfs.static`), the code-provenance stamp
+(`momentarily.provenance`), and the traversal-day codec
+(`momentarily.archive.traversals`) with `training/`, which imports them from the
+package. `tests/test_wheel.py` installs the built wheel in a fresh venv and runs
+the CLI.
+
 `build` writes `OUT/<build_id>.json.gz` (gzip mtime 0, sorted keys) and adds an
 entry to `OUT/index.json`. A build_id names one network's data (everything but
 provenance). If that file already exists with the same network data but

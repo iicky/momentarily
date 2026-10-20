@@ -12,7 +12,8 @@ import zipfile
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from training.gtfs_static import Timetable, timetable
+from momentarily.archive.traversals import EXACT, INTERVAL, RIGHT, Traversal
+from momentarily.gtfs.static import Timetable, timetable
 from training.load import TICK_SECONDS
 from training.progress import (
     Auc,
@@ -22,7 +23,6 @@ from training.progress import (
     progress_ratio,
     stalled_share,
 )
-from training.trace import EXACT, INTERVAL, RIGHT, Traversal
 
 from .conftest import make_gtfs_zip
 

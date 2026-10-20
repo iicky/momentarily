@@ -14,7 +14,7 @@ difference in score is the leaf definition, not the machinery:
   `n_clock_fallback_days`. Tests inject the map instead of fetching the feed.
 - Hour bin: the New York local clock hour of depart_at, either the raw hour
   (0..23) or the four-hour bin shared with the baseline.
-- Stopping pattern (optional): `gtfs_static.path_code(trip_id)` as the top
+- Stopping pattern (optional): `gtfs.static.path_code(trip_id)` as the top
   level of the key.
 
 Fallback chain, finest first, each level requiring MIN_N observations in the
@@ -57,7 +57,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from training.gtfs_static import Calendar, fetch_gtfs_zip, path_code, read_calendar
+from momentarily.gtfs.static import Calendar, fetch_gtfs_zip, path_code, read_calendar
 from training.journey_baselines import (
     MIN_N,
     _empirical,  # pyright: ignore[reportPrivateUsage] -- shared estimator by design

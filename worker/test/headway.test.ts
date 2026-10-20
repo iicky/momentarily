@@ -7,7 +7,7 @@
  * The reference-stop parity block reads viz/public/diagram.json, which is the
  * repo's committed copy of exactly the `route_stops` the Worker reads off
  * state/segment_params.json (training/diagram.py builds both from
- * gtfs_static.route_patterns). It is the only place the real scheduled
+ * gtfs.static.route_patterns). It is the only place the real scheduled
  * patterns live in-repo, and the point of that block is that this rule agrees
  * with training/headway.select_reference_stops on real data rather than on a
  * fixture shaped to make it agree.
@@ -198,7 +198,7 @@ describe('selectReferenceStops on the real scheduled patterns', () => {
     // rule gates candidates on being through-stops BEFORE ranking them by
     // scheduled trips. Recomputing the terminal set here independently of the
     // rule — sources and sinks of each cell's dominant-successor skeleton,
-    // which is what training/gtfs_static.terminals names — and asserting the
+    // which is what momentarily.gtfs.static.terminals names — and asserting the
     // pick is never one, rather than trusting the gate by inspection.
     for (const [key, ref] of Object.entries(picked)) {
       const succ = new Map<string, Map<string, number>>();

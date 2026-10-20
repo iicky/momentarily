@@ -40,12 +40,12 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     FETCH_TIMEOUT,
     GTFS_STATIC_URL,
     Timetable,
 )
-from training.gtfs_static import timetable as parse_timetable
+from momentarily.gtfs.static import timetable as parse_timetable
 from training.load_r2 import list_keys
 from training.r2_client import R2Config, get_object_bytes, load_config, make_client
 

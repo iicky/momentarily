@@ -42,7 +42,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
-from training.gtfs_static import (
+from momentarily.archive.traversals import EXACT, Traversal
+from momentarily.gtfs.static import (
     HopKey,
     base_route,
     is_express_variant,
@@ -50,7 +51,6 @@ from training.gtfs_static import (
 )
 from training.load_r2 import date_range, fetch_objects, list_keys
 from training.r2_client import R2Config, load_config, make_client
-from training.trace import EXACT, Traversal
 
 # WHAT PLANNED WORK ACTUALLY DOES TO MOVEMENT, which is not what the first cut of
 # this module assumed. Nearly every announced type changes WHICH PAIRS a train

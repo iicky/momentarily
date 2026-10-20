@@ -23,9 +23,9 @@
  *
  * The rule is applied here, in the Worker, to the scheduled stopping patterns
  * the trainer already publishes on state/segment_params.json (`route_stops`,
- * from training/gtfs_static.route_patterns). It is not a second source of
+ * from momentarily.gtfs.static.route_patterns). It is not a second source of
  * truth: `route_stops` IS route_patterns(), and the consecutive-stop pairs
- * summed over it reproduce gtfs_static.successors() exactly, so the
+ * summed over it reproduce gtfs.static.successors() exactly, so the
  * dominant-successor skeleton the through-stop test reads off is the same
  * graph. Verified against the offline rule's documented output on the current
  * feed: 25 routes x 2 directions, coverage 1.000, 1|north=121N, 2|north=120N,

@@ -37,7 +37,7 @@ interface ParamsDoc {
   movement_through_stops?: unknown;
 }
 
-// Co-versioned with movement_baseline (see training/gtfs_static.through_stops
+// Co-versioned with movement_baseline (see momentarily.gtfs.static.through_stops
 // + training/load_r2.StopFilter): absent/malformed params.json degrades to
 // unfiltered counting, same as any tick before movement_through_stops existed.
 async function fetchThroughStops(): Promise<ThroughStops> {

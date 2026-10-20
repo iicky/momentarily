@@ -2,7 +2,7 @@
 // metrics, mirroring the debiased movement classifier in training/load_r2.py
 // (_cross_tick_counts, compute_advance_baseline, classify_direction,
 // derive_movement_state, build_movement_truth), the through-stop topology in
-// training/gtfs_static.py (through_stops / terminals), and
+// src/momentarily/gtfs/static.py (through_stops / terminals), and
 // worker/src/movement_state.ts + worker/src/params.ts (TrainedParams.throughStops).
 //
 // Two artifacts:
@@ -88,7 +88,7 @@ export interface VehicleBody {
 export type ThroughStops = ReadonlySet<string> | null;
 
 /** Flatten params.json's movement_through_stops ({route: {direction:
- * [stop_id, ...]}}, published from training.gtfs_static.through_stops) into
+ * [stop_id, ...]}}, published from momentarily.gtfs.static.through_stops) into
  * the route|direction|stop key set crossTickCounts filters on. Malformed or
  * absent input returns null, never an empty set — an empty set would exclude
  * every stop instead of leaving the signal unfiltered. Mirrors the flattening

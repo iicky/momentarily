@@ -20,7 +20,7 @@ type EquipmentType = Literal["elevator", "escalator"]
 
 # The two directions NYCT runs, as the N/S suffix on every stop_id normalises
 # to across the repo (worker/src/vehicles.ts directionOf,
-# training/gtfs_static.direction_of). Closed, unlike the open strings above.
+# momentarily.gtfs.static.direction_of). Closed, unlike the open strings above.
 type ObservationDirection = Literal["north", "south"]
 
 
@@ -140,7 +140,7 @@ class Observation(BaseModel):
     # `direction` is a CLOSED vocabulary, unlike the open strings above: NYCT
     # gives exactly two directions, as the N/S suffix on every stop_id, and
     # the whole repo normalises them to these two words (worker/src/vehicles.ts
-    # directionOf, training/gtfs_static.direction_of). Adding a third would be
+    # directionOf, momentarily.gtfs.static.direction_of). Adding a third would be
     # a schema change, not a new value in an open set — so it is a Literal and
     # reaches the published JSON Schema as an enum.
     direction: ObservationDirection | None = None

@@ -33,7 +33,7 @@ fitted on the vehicle archive and graded against the vehicle archive cannot see
 its own drift — a system slow for a month teaches that to the baseline as
 normal. `schedule_drift` is the one claim in this module the archive does not
 get a vote on, and it only means anything because nothing here was fitted from
-the schedule. gtfs_static.Timetable is also read for two jobs no amount of
+the schedule. gtfs.static.Timetable is also read for two jobs no amount of
 movement data can do: naming the scheduled seconds a cell is later compared
 against, and catching bypasses. It carries its own feed version, and a
 traversal outside that feed's validity window is compared against nothing.
@@ -71,17 +71,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date
 
-from training.gtfs_static import HopKey, Timetable, load_timetable
+from momentarily.archive.traversals import EXACT, RIGHT, Traversal
+from momentarily.gtfs.static import HopKey, Timetable, load_timetable
 from training.hierarchical import MIN_LEAF_N
 from training.survival import fit_loglogistic, loglogistic_quantile
-from training.trace import (
-    EXACT,
-    RIGHT,
-    Traversal,
-    fetch_trace_bodies,
-    scheduled_for,
-    traversals_from_trace,
-)
+from training.trace import fetch_trace_bodies, scheduled_for, traversals_from_trace
 
 # Observations a hop needs before it can be fitted at all. Under it the cell is
 # absent and the caller reads "can't judge" — the same floor and the same

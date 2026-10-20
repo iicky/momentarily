@@ -10,12 +10,9 @@ from datetime import date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from training.gtfs_static import Timetable, timetable
+from momentarily.archive.traversals import EXACT, INTERVAL, RIGHT, Traversal
+from momentarily.gtfs.static import Timetable, timetable
 from training.trace import (
-    EXACT,
-    INTERVAL,
-    RIGHT,
-    Traversal,
     arrivals_from_trace,
     passings_and_catch_stats,
     passings_from_trace,

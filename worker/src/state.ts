@@ -396,7 +396,7 @@ export async function writeServiceMetric(
 // Read at step 8b to score per-segment movement for the station-flow surface.
 // Topology (adjacency) comes from the static GTFS timetable when the trainer's
 // feed fetch succeeds, falling back to observed cross-tick adjacency otherwise
-// — see training/gtfs_static.py + training/train_em.py write_segment_params.
+// — see src/momentarily/gtfs/static.py + training/train_em.py write_segment_params.
 export const SEGMENT_PARAMS_KEY = "state/segment_params.json";
 
 const SegmentParamsSchema = z.object({
@@ -464,7 +464,7 @@ const SegmentParamsSchema = z.object({
     .optional(),
   // Canonical per-(route, direction) stop order: the scheduled trip patterns,
   // most-run first, keyed 'route|direction'. Written by the trainer from static
-  // GTFS (training/gtfs_static.route_patterns) for off-Worker consumers (the
+  // GTFS (momentarily.gtfs.static.route_patterns) for off-Worker consumers (the
   // viz line/map surfaces) that need line order; the Worker itself doesn't read
   // it. Absent on docs written before this field, and {} on the observed
   // fallback. Read as a whole, so a malformed entry degrades the ordering, not
@@ -476,7 +476,7 @@ const SegmentParamsSchema = z.object({
     )
     .optional(),
   // Which code produced this doc — {code_sha, dirty, producer}, the same block
-  // params.json/eval.json carry (training/provenance.py). Absent on docs written
+  // params.json/eval.json carry (src/momentarily/provenance.py). Absent on docs written
   // before this field. The Worker doesn't read it; it's for off-Worker consumers
   // (viz) that surface the topology's lineage.
   provenance: z

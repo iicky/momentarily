@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from momentarily.archive.traversals import DayProvenance, decode_day
 from momentarily.model.network.contracts import DayFeed, DayFeedMap, NetworkIndex
-from training.traversal_archive import DayProvenance, decode_day
 
 DAY_OBJECT = "traversals.json.gz"
 

@@ -26,6 +26,7 @@ import sys
 import zlib
 from pathlib import Path
 
+from momentarily.gtfs.static import fetch_gtfs_zip
 from momentarily.model.network.build import (
     DEFAULT_SYSTEM_ID,
     Inputs,
@@ -129,12 +130,7 @@ def _cmd_snapshot_stations(args: argparse.Namespace) -> int:
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
-    if args.live:
-        from training.gtfs_static import fetch_gtfs_zip
-
-        gtfs = fetch_gtfs_zip()
-    else:
-        gtfs = Path(args.gtfs).read_bytes()
+    gtfs = fetch_gtfs_zip() if args.live else Path(args.gtfs).read_bytes()
     overrides, overrides_digest = load_overrides(
         Path(args.overrides).read_bytes() if args.overrides else None
     )

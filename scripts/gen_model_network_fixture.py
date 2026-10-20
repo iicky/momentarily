@@ -23,6 +23,7 @@ import json
 import zipfile
 from pathlib import Path
 
+from momentarily.archive.traversals import DayProvenance, FeedDigestRange
 from momentarily.model.network.build import (
     CodeStamp,
     Inputs,
@@ -38,7 +39,6 @@ from momentarily.model.network.contracts import (
 )
 from momentarily.model.network.day_feed import resolve_day
 from momentarily.model.network.stations import parse_snapshot
-from training.traversal_archive import DayProvenance, FeedDigestRange
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "model"
 GTFS_DIR = FIXTURE_DIR / "gtfs_mini"

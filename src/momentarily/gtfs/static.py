@@ -54,8 +54,9 @@ FETCH_TIMEOUT = httpx.Timeout(30.0)
 # Local HTTP-level cache for fetch_gtfs_zip.  Advisory: callers see identical
 # bytes whether they come from the wire or disk, and a missing directory or
 # corrupt sidecar falls through to a normal unconditional GET.
-# .cache/gtfs/ is gitignored.
-_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "gtfs"
+# .cache/gtfs/ at the checkout root, which the project's editable install
+# resolves to (src/momentarily/gtfs/ is three levels down); gitignored.
+_CACHE_DIR = Path(__file__).resolve().parents[3] / ".cache" / "gtfs"
 
 
 def _cache_stem(url: str) -> str:

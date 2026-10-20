@@ -29,7 +29,7 @@ train.
 
 Writes state/ridership_baseline.json (live pointer) + a versioned sibling
 under state/ridership_baseline/, both stamped with
-`training/provenance.py::code_provenance()`, mirroring
+`src/momentarily/provenance.py::code_provenance()`, mirroring
 `train_em.py::write_service_baseline`.
 """
 
@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from training.provenance import code_provenance
+from momentarily.provenance import code_provenance
 from training.r2_client import R2Config, load_config, make_client
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ FEED_URL = f"https://data.ny.gov/resource/{DATASET_ID}.json"
 # Read timeout only, not connect -- these are server-side aggregations over a
 # 90-day window (measured 2026-08-23: the weekday query alone takes ~55s
 # against the live feed), an order of magnitude past what a static-file GET
-# like gtfs_static.fetch_gtfs_zip needs. This runs from a weekly cron job,
+# like gtfs.static.fetch_gtfs_zip needs. This runs from a weekly cron job,
 # never a request path, so waiting is free; a slow response is not the same
 # failure as a hung connection.
 FETCH_TIMEOUT = httpx.Timeout(10.0, read=150.0)

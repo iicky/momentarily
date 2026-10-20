@@ -812,8 +812,8 @@ def _truths(
     """Movement, supply, and alert truths over the window, movement fit on a
     leading window that ends before it (held out), plus the alerts-fetch
     liveness witness the confirmed-normal label is gated on."""
+    from momentarily.gtfs.static import load_topology, through_stops
     from training.degradation_label import BIN_FN, degraded_now_truth
-    from training.gtfs_static import load_topology, through_stops
     from training.load_r2 import (
         SERVICE_MIN_NIGHTS,
         build_movement_series_by_direction,

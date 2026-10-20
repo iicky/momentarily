@@ -40,7 +40,8 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any
 
-from training.gtfs_static import (
+from momentarily.archive.traversals import EXACT, INTERVAL, RIGHT, Traversal
+from momentarily.gtfs.static import (
     DayTimetable,
     Pattern,
     Timetable,
@@ -48,7 +49,7 @@ from training.gtfs_static import (
     path_code,
 )
 from training.journey_types import MAX_HOPS
-from training.trace import EXACT, INTERVAL, RIGHT, TRIP_GAP_SECONDS, Traversal
+from training.trace import TRIP_GAP_SECONDS
 from training.traversal_archive import read_days
 
 
@@ -95,7 +96,7 @@ def _chains(rows: Sequence[Traversal]) -> list[list[Traversal]]:
 
 def _pattern_candidates(table: DayTimetable, code: str) -> tuple[Pattern, ...]:
     """Same lookup as DayTimetable._candidates (exact key, else prefix match
-    over sorted codes): that method is private to gtfs_static, so this
+    over sorted codes): that method is private to momentarily.gtfs.static, so this
     derives the same result from the public patterns/codes attributes."""
     exact = table.patterns.get(code)
     if exact is not None:

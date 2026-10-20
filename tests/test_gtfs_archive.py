@@ -11,6 +11,11 @@ from __future__ import annotations
 import hashlib
 from datetime import date
 
+from momentarily.archive.traversals import (
+    EXTRACTOR_VERSION,
+    SCHEMA_VERSION,
+    DayProvenance,
+)
 from training.gtfs_archive import (
     BY_ETAG_PREFIX,
     LATEST_KEY,
@@ -19,12 +24,7 @@ from training.gtfs_archive import (
     key_for,
     store,
 )
-from training.traversal_archive import (
-    EXTRACTOR_VERSION,
-    SCHEMA_VERSION,
-    DayProvenance,
-    ReadResult,
-)
+from training.traversal_archive import ReadResult
 
 
 def test_the_key_is_the_content_hash():

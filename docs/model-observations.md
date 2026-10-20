@@ -1,0 +1,707 @@
+# Data model, layer 2: raw observations (`observations/s1`) — scoping proposal
+
+Status: proposal for the owner to decide on. Nothing here is built yet.
+
+Layer 2 records what each upstream source said, when we asked, and what came
+back, including failures. It keeps upstream identities verbatim: realtime trip
+ids, route ids as published (`6X`, `SS`), realtime-only stop ids (`R60N`), and
+alert ids. Matching to the network, service-day assignment, and every judgment
+("is this train real", "did the alert end") belong to layer 3.
+
+All sizes below come from measurements made on 2026-10-20, unless the row
+names another source, using local measurement scripts that are not part of
+the repo. Live
+sample: 40 polls at 15 s intervals of every source, 14:36–14:46 UTC
+(10:36 ET, a Tuesday). Archive figures use the local R2 mirror, median of
+2026-10-01..10-18. `[inference]` marks a claim that was not measured.
+
+## 1. Inventory
+
+### 1.1 Upstream sources the Worker reads
+
+| Source (Worker name) | URL (gateway = `api-endpoint.mta.info/Dataservice/mtagtfsfeeds`) | Worker cadence | Measured payload (decoded / gzip) | What changes between polls |
+|---|---|---|---|---|
+| GTFS-RT `ace` | `nyct%2Fgtfs-ace` | 1 min | 112 KB / 21 KB, 257 entities, 2,434 stop-time updates | every poll (header ts moves every ≤15 s) |
+| GTFS-RT `bdfm` | `nyct%2Fgtfs-bdfm` | 1 min | 176 KB / 34 KB | every poll |
+| GTFS-RT `g` | `nyct%2Fgtfs-g` | 1 min | 20 KB / 3.8 KB | every poll |
+| GTFS-RT `jz` | `nyct%2Fgtfs-jz` | 1 min | 23 KB / 4.5 KB | every poll |
+| GTFS-RT `nqrw` | `nyct%2Fgtfs-nqrw` | 1 min | 132 KB / 25 KB | every poll |
+| GTFS-RT `l` | `nyct%2Fgtfs-l` | 1 min | 31 KB / 5.9 KB | every poll |
+| GTFS-RT `numbered` | `nyct%2Fgtfs` | 1 min | 180 KB / 40 KB | every poll |
+| GTFS-RT `si` | `nyct%2Fgtfs-si` | 1 min | 6 KB / 1.5 KB | every poll |
+| **All 8 GTFS-RT** | | 1 min | **679 KB / 136 KB per minute**, 660 vehicle entities, 16,081 stop-time updates | 0 of 320 payloads repeated |
+| Alerts JSON `alerts` | `camsys%2Fsubway-alerts.json` | 5 min (boundary ticks only) | 908 KB / 73 KB, 179 entities (1 `lmm:alert`, 178 `lmm:planned_work`) | unchanged across all 40 polls (header ts 14:30:14) |
+| ENE outages `ene_current` | `nyct%2Fnyct_ene.json` | 1 h | 60 KB / 4.5 KB, 146 records | 2,129 of 2,142 archived hours distinct |
+| ENE upcoming `ene_upcoming` | `nyct%2Fnyct_ene_upcoming.json` | 1 h | 42 KB / 2.9 KB, 103 records | 365 distinct (as a set) of 2,141 |
+| ENE catalog `ene_equipments` | `nyct%2Fnyct_ene_equipments.json` | 1 h | 645 KB / 65 KB, 707 records | **20 distinct of 2,141** |
+| Static GTFS | `rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip` | HEAD every minute, GET on ETag change | 5.6 MB zip | ETag `bd592a…` since 2026-08-27 |
+| Stations (data.ny.gov `39hk-dx4f`) | Socrata JSON | 1 day | 285 KB / 23 KB, 496 rows | Last-Modified 2026-10-20 04:17 |
+| Entrances (data.ny.gov `i9wp-a4ja`) | Socrata JSON | 1 day | 901 KB / 54 KB, 2,120 rows | Last-Modified 2025-12-05 |
+
+The MTA gateway sends no `ETag` or `Last-Modified`. Only `Date` and
+`x-cache: Miss from cloudfront` come back, so the feed header timestamp is the
+only upstream clock. The alerts feed is also published as protobuf
+(`camsys%2Fsubway-alerts`, 442 KB). The Worker does not read it.
+
+Per-day volume scales with trains in service. On 2026-10-13/14 the mean
+vehicle count over the day was 0.80 of its value at the sample time. Weekend
+days run lower (391 and 355 against 551). The weekly mean is **0.73 × the
+sample**, so "per day" below means 1,440 × 0.73 = 1,051 sample-minutes.
+
+### 1.2 What the live feeds contain (verified against the brief)
+
+Field census of 320 GTFS-RT payloads (`pb_census.json`, `detail.json`):
+
+- **Vehicle entities.** `ace`, `bdfm`, `g`, `jz`, `nqrw` and `si` send exactly
+  one VehiclePosition for every TripUpdate. That is why `vehicles_n == trips_n`
+  on those feeds. `l` is the exception among non-numbered feeds: it sends a
+  vehicle only for assigned trips (850 vehicles, 1,371 trips). So does
+  `numbered` (6,306 and 9,958). On the six one-per-trip feeds, a vehicle for an
+  **unassigned** trip is a placeholder. It has no `current_status`, and its
+  `timestamp` is a median 29 min in the future, which looks like the scheduled
+  departure [inference]. Assigned vehicles report a timestamp a median 17–20 s
+  old. On `si`, every trip is flagged assigned, placeholders included (median
+  vehicle timestamp 955 s in the future). So "only 1–7 and L carry real
+  positions" is too strong. Every feed carries real positions for dispatched
+  trains, and six feeds add one placeholder per undispatched trip.
+- **`current_status`.** On `ace`, `bdfm`, `jz` and `nqrw`, every assigned
+  vehicle reported `STOPPED_AT` in every poll. On `g`, 27 of 442 had no status.
+  `numbered` uses `INCOMING_AT` (842), `STOPPED_AT` (3,023) and absent (2,441).
+  `l` uses `STOPPED_AT` and `IN_TRANSIT_TO`. The Worker's comment that NYCT
+  "only ever emits STOPPED_AT" holds only for the B-division feeds.
+- **Producer differences.** Only `l` sends `incrementality`, `is_deleted`,
+  trip `schedule_relationship`, `direction_id`, `stop_sequence`, arrival and
+  departure `delay` and `uncertainty`, `TripUpdate.timestamp`, and
+  `congestion_level`. `l` and `numbered` omit `start_time`. The B-division
+  feeds and `si` send `departure_occupancy_status` (field 7) on every
+  stop-time update. Some `delay` values are negative and arrive as 64-bit
+  two's-complement varints, so a decoder must read them as signed.
+- **NYCT extensions.** The header carries `nyct_feed_header.trip_replacement_period`
+  (per route, the end of the window in which the realtime feed replaces the
+  schedule). Trips carry `train_id` (e.g. `1A 0904 207/FAR`), `is_assigned`
+  (absent on about half of the B-division trips), and `direction`. Stop-time
+  updates carry `scheduled_track` and `actual_track`.
+- **Trip-level alerts.** `numbered` carries about one Alert entity per poll
+  ("Train delayed"), with a trip descriptor in `informed_entity`.
+- **Path codes.** Trip ids with `X` in the path part: `bdfm` 12%, `numbered`
+  12%, `jz` 47%, `si` 52%. No `6X`/`7X`/`FX` or `SS` route appeared in this
+  off-peak sample. The holdup audit saw `SS` only at weekday rush hours.
+- **Alerts JSON.** The header has `gtfs_realtime_version`, `incrementality`,
+  `timestamp` and `mercury_feed_header`. Every entity has `active_period`,
+  `informed_entity`, `header_text`, `description_text` and `mercury_alert`
+  (`created_at`, `updated_at`, `alert_type`, `display_before_active`,
+  `human_readable_active_period`, sometimes `station_alternative` and
+  `affected_stations`). 952 of 1,625 informed entities carry `direction_id`,
+  1,612 carry `stop_id`. Today's sample is almost all planned work, and it is
+  consistent with the holdup finding that Delays alerts lost `stop_id` on
+  2026-08-11.
+
+### 1.3 Current archives and streams
+
+Sizes are logical bytes from the mirror (median day, 10-01..10-18). Retention
+comes from `training/prune.py`.
+
+| R2 prefix | Writer, cadence | What it holds | Size/day | Objects/day | Retention |
+|---|---|---|---|---|---|
+| `archive/trace/` | Worker, 1 min | `{observed_at, scheduled_at, fresh_feeds, feed_digest, feed_etag, rows:[{trip_id, route_id, direction, stop_id, stop_seq, stopped, vehicle_ts}]}` | ~90 MB (prune.py) | 1,440 | 120 d |
+| `archive/arrivals/` | Worker, 1 min | gzip, first 4 trains per stop: `{route, eta_epoch, trip_id}` | ~31 MB (prune.py) | 1,440 | 120 d |
+| `archive/trip_updates/` | Worker, 5 min | per-route counts `assigned_n, trips_n, with_movement_n, dir_n, dir_s` + `fresh_feeds` | 0.56 MB | 288 | 3650 d |
+| `archive/vehicles/` | Worker, 5 min | per-route counts + cross-tick `from>to` transition counts + `fresh_feeds` | 3.1 MB | 288 | 3650 d |
+| `archive/alerts/` | Worker, 5 min | one object per new `(alert_id, updated_at)`: `{observed_at, alert: entity}` | 0.30 MB | 196 | 90 d |
+| `archive/alerts_liveness/` | Worker, 5 min | `{observed_at, outcome, fetched_at}` | 20 KB | 288 | 3650 d |
+| `archive/ene/` | Worker, 1 h | `{observed_at, source, payload}` for all 3 ENE feeds | **14.0 MB** | 69 | 90 d |
+| `archive/health/` | Worker, 1 min | `{observed_at, write_failures}` | 66 KB | 1,434 | 3650 d |
+| `archive/movement_census/` | Worker, 5 min | route regime census | 0.54 MB | 288 | 3650 d |
+| `archive/gtfs/` | Worker on ETag change + nightly | static zip, sha256-addressed, `by_etag/`, `latest.json` | 5.6 MB per release | — | never |
+| `archive/traversals/` | nightly trainer | per-hop traversals derived from trace | 2.0 MB | 1 | 3650 d |
+| `archive/windows/` | nightly trainer | planned-work windows by observation day | 1.3 KB | 1 | 3650 d |
+| `v1/predictions/` | Worker, 5 min | per-route inference incl. `primary_alert_type` | 5.1 MB | 288 | 90 d |
+| `v1/regime_transitions/` | Worker | regime changes | 27 KB | 96 | 90 d |
+| `v1/movement_transitions/` | Worker, 5 min | movement transitions | 0.78 MB | 1,232 | 90 d |
+| `state/stations.json`, `v1/entrances.json` | Worker, 1 day | overwritten in place | — | — | none kept |
+
+### 1.4 What the Worker's reduction drops
+
+GTFS-RT (`gtfsrt.ts` reads only the fields listed in its header comment):
+
+| Level | Dropped | Changed |
+|---|---|---|
+| FeedHeader | everything: `gtfs_realtime_version`, `incrementality`, `timestamp`, NYCT `trip_replacement_period` | — |
+| FeedEntity | `id`, `is_deleted`, every `alert` (trip-level "Train delayed") | — |
+| TripDescriptor | `start_time`, `start_date`, `schedule_relationship`, `direction_id`, NYCT `train_id` | `is_assigned` absent → `false`. `route_id` folded `6X/7X/FX` → `6/7/F` (`baseRoute`) before every archive |
+| TripUpdate | `timestamp`, `delay`, `vehicle` | — |
+| StopTimeUpdate | `stop_sequence`, arrival/departure `delay` and `uncertainty`, `departure_occupancy_status`, NYCT `scheduled_track`, `actual_track` | `schedule_relationship` absent → 0. Missing `stop_id` → `''` |
+| VehiclePosition | `trip.start_*`, `is_assigned` (never carried in `VehicleLite`), NYCT `train_id`, `congestion_level`, entity id | `current_status` collapsed to `stopped` (0, 2 and absent all become `false`). `stop_seq` kept only when stopped |
+
+On top of that, the trace drops vehicles with an empty `trip_id` or `stop_id`
+and records which feeds succeeded but not when, why one failed, the header
+timestamp, or the bytes. Because `is_assigned` is not carried, trace rows
+include the placeholder vehicles of §1.2 and nothing marks them. The arrivals
+sample keeps 4 trains per stop within 60 min, drops SKIPPED and past rows,
+and merges arrival and departure (`arrival ?? departure`).
+
+Alerts: the archive keeps each entity verbatim, but only the first time its
+`(alert_id, updated_at)` is seen. It drops the feed header, the set of alerts
+present at each fetch, the moment an alert leaves the feed, any content change
+that does not bump `updated_at`, and every minute that is not a 5-minute
+boundary. If `state/last_seen.json` is lost, a version is written again with a
+later `observed_at`. So `observed_at` is "a sighting of this version", normally
+the first.
+
+ENE: payloads are complete but re-serialized (`JSON.stringify`), so the bytes
+are not upstream's. A failed fetch writes nothing, and two runs in one hour
+overwrite one key. 1,228 MB of the 1,319 MB under `archive/ene/` are identical
+copies of the equipment catalog.
+
+**Is any raw feed archived unreduced today?** No realtime payload is kept as
+fetched. The only byte-exact raw archive is the static GTFS zip
+(`archive/gtfs/`). ENE comes closest: full content, hourly, re-serialized,
+with no failure record.
+
+## 2. Storage options
+
+Measured per sample-minute for all 8 GTFS-RT feeds, then per day (× 1,051):
+
+| Option | Per minute | Per day | Notes |
+|---|---|---|---|
+| (a) raw protobuf, plain | 679 KB | 714 MB | |
+| (a) raw, gzip-6 per payload | 136 KB | **143 MB** | what a Worker can write (`CompressionStream`) |
+| (a) raw, zstd-19 per payload | 79 KB | 83 MB | Workers have no zstd |
+| (a) raw, zstd-19 `--long`, one 10-min bundle per feed | 28.6 KB | **30 MB** | what a nightly repack reaches |
+| (b) VehicleObservation, gzip JSONL | 15.8 KB | 17 MB | 660 rows/min |
+| (b) VehicleObservation, parquet-zstd (10-min file) | 5.2 KB | 5.5 MB | |
+| (b) TripUpdateObservation, gzip JSONL | 192 KB | 202 MB | 16,081 stop-time rows/min, bigger than raw |
+| (b) TripUpdateObservation, parquet-zstd (10-min file) | 47.8 KB | 50 MB | |
+
+Content addressing: none of 320 GTFS-RT payloads repeated, even after
+removing the header. 31–62% of entity bytes repeat from one 15-s poll to the
+next (0.5% on `l`), which is where the `--long` bundle gains. Whole-payload
+dedupe pays off only for the alerts JSON (no change in 10 min) and ENE (the
+catalog: 20 distinct payloads in 92 days, 11.5 MB instead of 1,228 MB).
+
+Other sources, per day: alerts raw gzip, written only on change, 118–288
+changes × 73 KB = **8.6–21 MB** (118 = median count of 5-min ticks per day
+that saw a new alert version, a lower bound). ENE content-addressed: 1.0 MB
+(the unique bytes of the 92-day archive). Fetch metadata: about 2.5 KB per
+tick, 3.6 MB uncompressed [inference: size of the sketch in §3].
+
+**Recommendation: (c), split by writer.**
+
+- The Worker records **raw payload bytes for every fetch, plus fetch
+  metadata**, and nothing else. GTFS-RT goes into one object per tick. Repeating
+  sources (alerts, ENE, stations, entrances) go into content-addressed blobs.
+- Python decodes the raw payloads **offline** into the normalized contracts of
+  §3 and stores them as hourly parquet files.
+
+Reasons:
+
+1. One decoder. The normalized records come from one Python implementation,
+   so no TypeScript/Python parity is needed for them. The current Worker
+   decoder has three faults a replay could fix after the fact: `is_assigned`
+   absent read as false, `current_status` collapsed, and the arrival/departure
+   merge. With raw bytes kept, a decoder fix replays history. Without them,
+   history stays wrong.
+2. Normalized stop-time rows written per minute as JSON cost more than the raw
+   protobuf (202 MB/day against 143 MB/day) and need far more Worker CPU.
+3. The Worker stays a recorder. It adds about 5 ms of CPU per tick (§4) and no
+   decoding beyond what it does today.
+4. Fetch metadata separates "no data" from "nothing happening" (§3.1). A
+   missing tick means the collector did not run. A failed fetch carries its
+   outcome. An `ok` fetch with zero alerts means upstream said there were none.
+
+## 3. Draft contracts
+
+Conventions are layer 1's (`momentarily.model.conventions`): `Model` (frozen,
+closed, no defaults), `Instant` (UTC epoch s), `Digest`, `Unknown`,
+`Interval`, `Provenance`. Schema id `observations/s1`. Pydantic is the source
+of truth. JSON Schema goes to `schema/model/s1/`, TypeScript to
+`shared/model/s1/`.
+
+Three states for every upstream field:
+
+- a value: the payload carried it;
+- `None`: the payload omitted it (GTFS-RT is proto2, so presence is knowable);
+- `Unknown(reason)`: we did not capture it (legacy backfill), or could not
+  decode it.
+
+Time fields, used the same way everywhere:
+
+- `scheduled_at`: the cron minute this attempt served.
+- `started_at_ms`, `finished_at_ms`: the Worker clock around the HTTP request.
+- `observed_at`: `finished_at_ms // 1000`. It is the instant we learned the
+  content, and it is the partition key.
+- `header_timestamp`: the upstream's own claim of when it built the payload.
+- Entity timestamps, kept verbatim: `vehicle_timestamp`,
+  `trip_update_timestamp`, alert `created_at` and `updated_at`, and predicted
+  `arrival_time` and `departure_time`.
+
+Layer 2 never assigns a ServiceDate. `start_date` stays the published
+`YYYYMMDD` string.
+
+### 3.1 Written by the Worker
+
+```python
+SCHEMA_ID = "observations/s1"
+SourceId = Literal[
+    "ace", "bdfm", "g", "jz", "nqrw", "l", "numbered", "si",      # GTFS-RT
+    "alerts",                                                      # camsys JSON
+    "ene_current", "ene_upcoming", "ene_equipments",
+    "gtfs_static", "stations", "entrances",
+]
+FetchOutcome = Literal[
+    "ok",             # HTTP 2xx, body read, parsed as the expected format
+    "empty",          # HTTP 2xx, zero entities / records (payload still stored)
+    "unparseable",    # HTTP 2xx, body is not valid protobuf / JSON (payload stored)
+    "http_error",     # non-2xx (status recorded)
+    "timeout",        # the 10 s fetch budget expired
+    "network_error",  # DNS / connect / reset
+]
+
+class FeedFetch(Model):
+    fetch_id: str = Field(description="f'{source}@{started_at_ms}'; unique per attempt.")
+    source: SourceId
+    url: str
+    method: Literal["GET", "HEAD"]
+    scheduled_at: Instant
+    started_at_ms: int
+    finished_at_ms: int | None = Field(description="null on timeout.")
+    outcome: FetchOutcome
+    http_status: int | None
+    content_type: str | None
+    http_date: Instant | None
+    http_last_modified: Instant | None
+    http_etag: str | None
+    body_bytes: int | None = Field(description="Decoded body length.")
+    payload_sha256: Digest | None = Field(description="sha256 of the decoded body bytes.")
+    payload_key: str | None = Field(description="R2 key holding the bytes; null if not stored.")
+    payload_member: int | None = Field(description="Member index inside a tick bundle; null for blobs.")
+    header_timestamp: Instant | None
+    entity_count: int | None = Field(description="Top-level entities (GTFS-RT, alerts) or records (ENE, Socrata).")
+    store_error: str | None = Field(description="Why the bytes were not stored, when they were not.")
+
+class CollectorBuild(Model):
+    code_sha: str
+    code_dirty: bool | None
+
+class CollectorTick(Model):
+    """One Worker invocation. Absence of a tick for a minute = collector gap."""
+    schema_: str = Field(alias="schema")
+    tick_id: str = Field(description="f'{scheduled_at}-{started_at_ms}'; retries keep both.")
+    scheduled_at: Instant
+    started_at_ms: int
+    finished_at_ms: int
+    collector: CollectorBuild
+    planned_sources: list[SourceId] = Field(description="What this tick was due to fetch.")
+    fetches: list[FeedFetch]
+```
+
+`sha256` rather than layer 1's blake3: Workers have `crypto.subtle` SHA-256
+natively and no blake3. It is also the `archive/gtfs/` key already.
+
+### 3.2 Derived offline from raw payloads (Python)
+
+```python
+class TripDescriptorObs(Model):
+    trip_id: str | None
+    route_id: str | None = Field(description="As published: '6X', 'SS', never folded.")
+    start_time: str | None = Field(description="Published 'HH:MM:SS'; may exceed 24h.")
+    start_date: str | None = Field(description="Published 'YYYYMMDD'; not a ServiceDate.")
+    schedule_relationship: int | None
+    direction_id: Literal[0, 1] | None
+    nyct_train_id: str | None
+    nyct_is_assigned: bool | None = Field(description="null when the extension omits it.")
+    nyct_direction: Literal[1, 2, 3, 4] | None
+
+class VehicleObservation(Model):
+    fetch_id: str
+    source: SourceId
+    observed_at: Instant
+    entity_id: str | Unknown
+    trip: TripDescriptorObs
+    stop_id: str | None = Field(description="As published, realtime-only ids kept.")
+    current_stop_sequence: int | None
+    current_status: Literal[0, 1, 2] | None
+    vehicle_timestamp: Instant | None = Field(description="Verbatim; may be in the future.")
+    congestion_level: int | None
+    unmodeled_fields: list[str] = Field(description="Field paths present but not decoded, e.g. '2' (position).")
+
+class StopTimePrediction(Model):
+    index: int = Field(ge=0, description="Position in the trip's stop_time_update list.")
+    stop_id: str | None
+    stop_sequence: int | None
+    arrival_time: Instant | None
+    arrival_delay: int | None
+    arrival_uncertainty: int | None
+    departure_time: Instant | None
+    departure_delay: int | None
+    departure_uncertainty: int | None
+    schedule_relationship: int | None
+    departure_occupancy_status: int | None
+    nyct_scheduled_track: str | None
+    nyct_actual_track: str | None
+
+class TripUpdateObservation(Model):
+    fetch_id: str
+    source: SourceId
+    observed_at: Instant
+    entity_id: str | Unknown
+    trip: TripDescriptorObs
+    trip_update_timestamp: Instant | None
+    delay: int | None
+    stop_times: list[StopTimePrediction]
+    unmodeled_fields: list[str]
+
+class FeedHeaderObservation(Model):
+    fetch_id: str
+    source: SourceId
+    observed_at: Instant
+    gtfs_realtime_version: str | None
+    incrementality: int | None
+    header_timestamp: Instant | None
+    nyct_version: str | None
+    trip_replacement_periods: dict[str, Instant | None] = Field(
+        description="route_id -> end of the replacement window, as published.")
+
+class AlertEntry(Model):
+    alert_id: str
+    content_digest: Digest = Field(description="sha256 of the entity's canonical JSON.")
+    updated_at: Instant | None
+
+class AlertPresence(Model):
+    """The full alert set at one successful fetch: the fix for alert end times."""
+    fetch_id: str
+    source: Literal["alerts", "numbered"]
+    observed_at: Instant
+    header_timestamp: Instant | None
+    entries: list[AlertEntry] = Field(description="Sorted by alert_id; [] = feed said none.")
+
+class AlertVersion(Model):
+    """One distinct alert content, and the window in which it was seen."""
+    source: Literal["alerts", "numbered"]
+    alert_id: str
+    content_digest: Digest
+    entity: dict[str, JsonValue] = Field(description="Verbatim entity.")
+    alert_type: str | None
+    created_at: Instant | None
+    updated_at: Instant | None
+    absent_before: Instant | None | Unknown = Field(
+        description="Last ok fetch before first_seen without this version; null = first fetch of the window.")
+    first_seen: Instant | Unknown
+    last_seen: Instant | Unknown
+    gone_by: Instant | None | Unknown = Field(
+        description="First ok fetch after last_seen without this version; null = still present at window end.")
+    gone_kind: Literal["removed", "superseded"] | None
+    unobserved: list[Interval] = Field(
+        description="Gaps inside [first_seen, gone_by) with no ok fetch.")
+    window: Interval = Field(description="The presence window this index was built over.")
+
+class EquipmentObservation(Model):
+    fetch_id: str
+    source: Literal["ene_current", "ene_upcoming"]
+    observed_at: Instant
+    equipment_id: str
+    record: dict[str, str] = Field(description="The record verbatim.")
+    outage_start_local: str | None = Field(description="'outagedate' as published (ET wall time).")
+    estimated_return_local: str | None
+    outage_start: Instant | None | Unknown = Field(description="Parsed in America/New_York; Unknown if ambiguous or unparseable.")
+    estimated_return: Instant | None | Unknown
+```
+
+Keys and rules:
+
+- Natural keys: VehicleObservation and TripUpdateObservation use
+  `(fetch_id, entity index)`. A trip id can repeat inside one payload, so it
+  is not a key. AlertPresence uses `fetch_id`. AlertVersion uses
+  `(source, alert_id, content_digest)`. EquipmentObservation uses
+  `(fetch_id, equipment_id, row index)`.
+- An alert's end is **bounded, not guessed**. The version left the feed in
+  `(last_seen, gone_by]`. When `unobserved` overlaps that bound, the end is
+  only known to lie in the wider span. A version gone only by `superseded`
+  continues as the same alert id.
+- `content_digest` hashes the parsed entity, so a content change without an
+  `updated_at` bump becomes a new version (the current archive misses that).
+  The digest also matches between live JSON and the re-serialized legacy
+  archive.
+- The ENE catalog (`ene_equipments`) is stored raw and referenced by
+  `FeedFetch`. A typed catalog belongs to a layer-1 extension, not to layer 2.
+- Provenance on every derived file: `inputs` maps raw keys to digests,
+  `code_sha`, and a decoder version. `built_at` = the latest `observed_at` in
+  the file, never the wall clock, so a rebuild gives the same bytes.
+
+### 3.3 R2 layout and partitioning
+
+All keys sit under `model/observations/s1/` and are partitioned by the **UTC
+hour of observation**. Service day is assigned in layer 3.
+
+```
+ticks/<YYYY-MM-DD>/<HH>/<scheduled_at>-<started_at_ms>.json      CollectorTick            (Worker)
+raw/gtfsrt/<YYYY-MM-DD>/<HH>/<scheduled_at>-<started_at_ms>.bin  8 gzip members + index   (Worker)
+raw/blob/<YYYY-MM-DD>/<sha256>.<json|pb|zip>.gz                  alerts, ENE, Socrata     (Worker)
+derived/<record>/<YYYY-MM-DD>/<HH>.parquet                       vehicle, trip_update, feed_header,
+                                                                 alert_presence, equipment (Python)
+derived/alert_version/<YYYY-MM-DD>.parquet                       AlertVersion, window = that day ± carry
+```
+
+Each GTFS-RT tick bundle is a series of independent gzip members, one per
+feed, preceded by a small JSON index member that repeats that tick's GTFS-RT
+`FeedFetch` rows. If the tick record is lost, the bundle still describes
+itself. Blobs are deduplicated **within a UTC day** (HEAD, then PUT if
+missing). A day-dated key lets prune age blobs like everything else, with no
+reference-counting GC. The cost is one copy of the ENE catalog per day
+(65 KB gzip). Static GTFS stays in `archive/gtfs/`, and its `FeedFetch`
+points there.
+
+## 4. Writer placement
+
+The Worker is the only always-on fetcher, so it must write `CollectorTick`,
+the GTFS-RT tick bundles, and the blobs. Everything in §3.2 is derived
+offline. A nightly Python job (the existing training workflow) derives the
+previous UTC day, and an on-demand CLI derives any range.
+
+Per tick, the Worker work is:
+
+1. Keep the body bytes it already fetches. Today `fetchProtobuf` discards a
+   200 with zero entities. The recorder must store those bytes and mark the
+   fetch `empty`.
+2. Hash each body with sha256, gzip it, and assemble the bundle.
+3. PUT the bundle **before** decoding, so a decode failure cannot lose the
+   bytes.
+4. On boundary ticks, record the alerts and ENE fetches the same way and PUT
+   blobs when their digest is new that day.
+5. PUT `CollectorTick` in a `finally`. Make it independent of the alpha CAS,
+   as `archiveAlertsLiveness` is already.
+
+Limits and cost per tick:
+
+- Measured: gzip and sha256 of one tick's 8 payloads took **4–6 ms** in Bun
+  `CompressionStream`, and 8.3 ms for gzip in Python zlib. Workerd uses native
+  zlib, so the cost should be similar [inference].
+- Memory: about 0.8 MB extra.
+- R2 writes: 2 PUTs per minute, plus blobs on change.
+- [Cloudflare limits](https://developers.cloudflare.com/workers/platform/limits/):
+  Workers Paid gives a Cron Trigger 30 s of CPU by default (up to 5 min),
+  128 MB of memory, and 10,000 subrequests. Free gives 10 ms of CPU. The
+  current per-minute decode and inference cannot fit 10 ms, so the account is
+  on Paid [inference, the plan was not checked].
+
+Validation:
+
+- TS types are generated from the JSON Schema with the same
+  `json-schema-to-typescript` step as layer 1 (`bun run gen:model`). The
+  recorder builds records only through those types.
+- A vitest test validates recorder output with ajv against the exported
+  schema. Python and TS fixtures follow the existing `gen_*_parity_fixture.py`
+  pattern.
+- No runtime ajv: ajv compiles validators with `new Function`, which Workers
+  block [inference]. If the owner wants runtime checks, use ajv standalone
+  validators that are precompiled at build time.
+
+Failure behaviour:
+
+- An upstream failure becomes a `FeedFetch` with its outcome. The Worker never
+  retries inside the tick, which keeps today's 10 s budget.
+- If a bundle or blob PUT fails, `payload_key` stays null and `store_error`
+  is set. The tick record is still written, and the existing `writeFailures`
+  counter in `archive/health/` goes up.
+- If the tick record PUT fails, the bundle's index still holds the GTFS-RT
+  metadata. Only the alerts and ENE metadata for that minute are lost, and the
+  minute reads as a partial collector gap.
+- Overlapping invocations for one cron minute write separate keys, because
+  `started_at_ms` is in the key. Both are observations. Choosing one is
+  layer 3's job.
+- The recorder runs beside today's archives and does not replace them in
+  step 2.
+
+## 5. Backfill mapping
+
+`Unknown(reason)` marks every field a legacy archive did not keep. Nothing is
+inferred, including the feed of a trace row and `6` versus `6X`.
+
+| Legacy source (coverage) | Becomes | Kept | Permanently lost (Unknown) |
+|---|---|---|---|
+| `archive/trace/` (R2 only, 120 d; earliest days pruned from about 12-10 [inference: trace start ≈ 08-12]) | partial VehicleObservation, plus FeedFetch for each trace minute | `trip_id`, `stop_id`, `vehicle_ts`, `stop_seq` (when stopped), `stopped=true` → `current_status=1`, `observed_at`, `scheduled_at`, `fresh_feeds` → per-feed ok/not-ok, static `feed_digest`/`feed_etag` | `route_id` as published (folded: `6`/`7`/`F` may have been `6X`/`7X`/`FX`), `current_status` when not stopped (0, 2 or absent), `stop_seq` when moving, `is_assigned` (placeholder vehicles are indistinguishable), `source` feed of each row, `start_date`, `start_time`, `train_id`, `entity_id`, vehicles with empty trip or stop ids, header timestamp, fetch failure reason, bytes |
+| `archive/arrivals/` (R2 only, 120 d) | **not mapped** | — | truncated to 4 trains within 60 min, SKIPPED rows dropped, arrival/departure merged, route folded. It stays a grading input for `eta_grade.py`. |
+| `archive/trip_updates/` (06-15..), `archive/vehicles/` (06-21..) | FeedFetch only (5-min, per feed ok/not-ok) | which feeds were fresh | every per-entity field. The counts and transitions are aggregates and stay what they are. |
+| `archive/alerts/` (90 d. Mirror 07-21..) | AlertVersion | entity verbatim, `content_digest`, `alert_type`, `created_at`, `updated_at`, `first_seen` = `observed_at` (5-min resolution, a sighting that is normally the first) | `absent_before`, `last_seen`, `gone_by`, `gone_kind` (except a later `updated_at` for the same id, which proves `superseded` by that time), content changes with no `updated_at` bump, feed header |
+| `archive/alerts_liveness/` (09-02..) | FeedFetch(`alerts`) | outcome, attempt time | HTTP status, digest, entity count, header timestamp. No AlertPresence before layer 2 starts. |
+| `v1/predictions/` (90 d. Mirror 07-21..) | separate `LegacyRouteAlertState` (decision 5): per route row and 5-min tick, `primary_alert_type` | highest-`sort_order` alert active at that tick, planned work included, for routes with an inference row | alert ids, every lower-priority alert, routes without an inference row. It can bound a route-level alert end. It cannot bound an alert version end. |
+| `archive/ene/` (90 d) | EquipmentObservation, plus FeedFetch for each success | full record content, hourly | failed fetches (no record), byte-exact payload (re-serialized), sub-hour changes |
+| `archive/health/` (09-11..) | partial CollectorTick | write-failure counts per minute | planned sources, fetch timing |
+| `archive/gtfs/` | adopted as is | everything | — |
+| traversals, windows, movement_census, transitions | not layer 2 (derived) | — | — |
+
+**Urgent:** the 90-day windows of `archive/alerts/`, `archive/ene/` and
+`v1/predictions/` are deleting their first days (07-21/22) now. For those
+days the local mirror is the only copy. The trace's first days follow in
+about 7 weeks.
+
+## 6. Retention and storage cost
+
+R2 prices: storage $0.015/GB-month (10 GB free), Class A $4.50/M, Class B
+$0.36/M. The bucket already holds about 17 GB (trace 10.8 GB at 120 d,
+arrivals 3.7 GB, ENE 1.3 GB, and the rest). So the free tier is already used,
+and every figure below is a marginal cost.
+
+| Item | Per day | Proposed retention | Steady storage | $/month |
+|---|---|---|---|---|
+| GTFS-RT tick bundles (gzip) | 143 MB | 35 d | 5.0 GB | 0.08 |
+| Nightly zstd `--long` repack of the bundles | 30 MB | keep (1 yr shown) | 11 GB/yr | 0.16 per retained year |
+| Alerts blobs (gzip, on change) | 8.6–21 MB | keep (1 yr shown) | 3.1–7.7 GB/yr | 0.05–0.12 per year |
+| ENE and Socrata blobs | ~1 MB | keep | 0.4 GB/yr | 0.01 |
+| Tick records | ~3.6 MB [inference] | keep | 1.3 GB/yr | 0.02 |
+| Derived vehicle + stop-time parquet | 55 MB | 365 d (rebuildable from raw) | 20 GB | 0.30 |
+| Derived alert presence/versions, ENE, headers | < 2 MB [inference] | keep | < 1 GB/yr | < 0.01 |
+
+R2 operations per month:
+
+- Worker: about 2 PUTs per minute, plus blobs (≤ 288 alerts, about 50 ENE
+  and Socrata per day). That is about 96k Class A, or $0.43, plus about 11k
+  HEADs (Class B) for dedupe, or $0.004.
+- Nightly derive: about 52k GETs ($0.02) and about 1.5k PUTs.
+
+**Total in year one: about $1/month**, rising about $0.3/month for each further
+year of raw and alerts kept.
+
+Not repacking and keeping the gzip bundles for a year instead would cost
+52 GB and $0.78/month. Money does not drive this choice. The repack exists so
+that "keep raw forever" stays cheap.
+
+Prune: `prune.py` lists every dated prefix in full every night. That costs
+one Class A list per 1,000 keys retained, so its cost grows with the number of
+keys, not bytes. Per-minute keys make this worse. Example: one year of tick
+records plus bundles is 1.05M keys, or about 1,050 list calls a night (32k a
+month, $0.14). The layer-2 prefixes should be pruned by listing day folders
+with a delimiter and deleting only expired days, which costs O(expired days).
+The 3650-day per-minute `archive/health/` prefix already grows by 1,434 keys
+a day under the full listing.
+
+## 7. Prerequisite: no `training` imports in the model package
+
+`momentarily.model.network` imports `training.gtfs_static` (`Calendar`,
+`feed_rows`, `gtfs_seconds`, `read_calendar`, `read_version`,
+`fetch_gtfs_zip`), `training.provenance.code_provenance`, and
+`training.traversal_archive` (`DayProvenance`, `decode_day`, which pulls in
+`training.trace`, `load_r2` and boto3). The wheel packages only
+`src/momentarily`.
+
+Proposal:
+
+1. Move `provenance.py` (standard library only) and the static-GTFS reader
+   (standard library plus httpx, already a dependency) into the package, as
+   `momentarily.provenance` and `momentarily.gtfs.static`.
+2. Move the traversal-day codec (`encode_day`, `decode_day`, `DayProvenance`,
+   and the `Traversal` row type) into `momentarily.archive.traversals`.
+3. Point `training/` at the package, the direction it already uses
+   (`training` imports `momentarily.mapping` and `momentarily.hmm` today).
+   Use a clean cutover with no re-export shims.
+4. Layer 2 code (`momentarily.model.observations`) imports only
+   `momentarily.*`. The GTFS-RT decoder is new package code.
+
+Acceptance: build the wheel, install it in an empty venv, and run
+`python -c "import momentarily.model.network.build, momentarily.model.observations"`.
+
+## 8. Decisions
+
+Decided by the owner on 2026-10-20 unless marked open. The owner intends to
+keep full history, possibly as a commercial dataset, so nothing raw is deleted
+by age.
+
+1. **Raw retention: decided.** Gzip tick bundles for 35 d, then a nightly
+   zstd `--long` hourly repack kept indefinitely (30 MB/day, about $0.16/month
+   per year).
+2. **Alert polling cadence: decided.** The recorder fetches alerts every
+   minute. Blobs are stored only on change. Today the Worker fetches alerts
+   only on 5-minute boundaries, so first sighting trails `updated_at` by a
+   median 143 s.
+3. **Legacy archives: decided.** Stop date-based deletion of every archive and
+   stream (not only `archive/alerts/` and `v1/predictions/`), and upload the
+   mirror's days that R2 has already pruned. This lands on `main` first,
+   because the nightly prune runs from there.
+4. **Normalized storage format: decided.** Parquet-zstd (5.5 + 50 MB/day),
+   with `pyarrow` as an optional extra of the derive job only.
+5. **`LegacyRouteAlertState`: decided, with a condition.** Kept as a lossy
+   legacy contract. Every record states that it is legacy and for which dates:
+   its source (`v1/predictions`), the source's granularity (route, 5-minute
+   tick, presence only), and the legacy period it belongs to (2026-07-21 up to
+   the first day the recorder wrote `AlertPresence`). Layer 3 uses it only for
+   dates without `AlertPresence`, and labels any bound it produces as derived
+   from legacy data.
+6. **GTFS-RT decoder: open.** Recommendation unchanged:
+   `gtfs-realtime-bindings` plus a vendored, compiled NYCT proto, with
+   `UnknownFields` feeding `unmodeled_fields`. Needed by slice 3 only.
+7. **Materialize TripUpdateObservation: decided.** Yes, as parquet, kept
+   365 d. Older days are regenerated from the raw bundles, which are kept
+   indefinitely.
+8. **Poll faster than 1 min: decided.** No. Polling stays at 60 s. Revisit
+   only if layer 3 shows that the 60 s bracket on arrivals and dwells matters
+   to a product.
+9. **Cutover: deferred.** Decide after 30 days of the recorder running side by
+   side with the current archives.
+
+## 9. Step 2 build plan
+
+The slices are listed in order. Slices 3 and 4 can run in parallel after
+slice 2.
+
+1. **Package the shared modules (§7).** Acceptance: the wheel-only import test
+   passes, `training/` contains no copy of the moved code, and the existing
+   layer-1 and training tests pass unchanged.
+2. **Contracts and generation.** Add `momentarily.model.observations.contracts`,
+   the schema export, TS generation and fixtures, following layer 1.
+   Acceptance: layer-1-style tests fail on a stale schema, stale TS, or a
+   stray file. Ajv validates every fixture. A contract with a default is
+   rejected.
+3. **Python decoders.** Add GTFS-RT → VehicleObservation,
+   TripUpdateObservation and FeedHeaderObservation. Add alerts JSON (and the
+   `numbered` feed alerts) → AlertPresence. Add ENE → EquipmentObservation.
+   Use a handful of the 2026-10-20 sample payloads as golden fixtures.
+   Acceptance:
+   - absent fields decode to `None`, never a default;
+   - negative delays come out signed;
+   - placeholder vehicles keep their future timestamp;
+   - `route_id` is verbatim;
+   - an injected unknown field shows in `unmodeled_fields`;
+   - the digest of an alert entity equals the digest of the same entity
+     re-serialized as `archive/alerts/` stores it.
+4. **Worker recorder.** Write tick bundles, blobs and `CollectorTick`
+   beside the existing pipeline. Acceptance:
+   - vitest with Miniflare R2 checks one tick against the expected keys;
+   - injected timeout, HTTP 500, empty 200, garbage 200 and a failed PUT each
+     give the right `outcome` or `store_error`;
+   - ajv validates the output;
+   - a parity fixture shows that the gunzipped bundle members are
+     byte-identical to the fetched bodies (sha256 equals `payload_sha256`).
+5. **Offline derive job and AlertVersion index.** Acceptance (the **replay
+   test**): a committed fixture hour of archived ticks and raw objects derives
+   to records whose canonical bytes match a pinned digest. A second run is
+   byte-identical. Changing the decoder version without updating the pin
+   fails. AlertVersion: a scripted presence sequence (appear, persist, failed
+   fetch, removal, supersede) gives the expected `first_seen`, `last_seen`,
+   `gone_by`, `gone_kind` and `unobserved`.
+6. **Backfill adapters (§5).** Acceptance:
+   - a test asserts that every field outside each legacy source's "kept" list
+     is `Unknown`;
+   - the number of AlertVersions equals the number of `archive/alerts/`
+     objects, minus re-sightings of an identical digest;
+   - trace-derived observation counts equal trace row counts;
+   - running the adapters twice over the mirror gives identical outputs.
+7. **Retention.** Add day-folder pruning for `model/observations/s1/` and the
+   nightly zstd repack. Acceptance: a dry run deletes only expired day
+   folders. The number of list calls is bounded by the number of days, not
+   keys. A repacked hour decodes to the same payload digests as its tick
+   bundles.
+
+## What was not verified
+
+- Daily sizes scale one 10-minute weekday sample by vehicle counts. The share
+  of 6X/7X and SS, rush-hour payload sizes, and night-time payload sizes were
+  not sampled.
+- How often the alerts feed changes in a busy period. The sample saw no
+  change. 118 changes/day is a lower bound taken from the archive.
+- Whether alert content changes without an `updated_at` bump. The current
+  archive cannot show this.
+- Workerd's gzip CPU cost. Bun and Python were measured, not Workerd.
+- The account plan, current R2 usage, and the R2 operation counts. These
+  need credentials, so the bucket total and the existing-operations estimate
+  are derived from the mirror and the code.
+- The trace and arrivals start dates in R2. These are not mirrored.

@@ -36,6 +36,7 @@ import json
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, JsonValue
@@ -238,8 +239,10 @@ def _columns(model: type[BaseModel]) -> tuple[Column, ...]:
     return tuple(out)
 
 
+@cache
 def layout(model: type[BaseModel]) -> tuple[Column, ...]:
-    """The parquet columns of ``model``, in field order."""
+    """The parquet columns of ``model``, in field order (derived once per
+    model: ``to_row`` and ``from_row`` run per record)."""
     return _columns(model)
 
 

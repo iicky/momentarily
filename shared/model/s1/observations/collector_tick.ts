@@ -109,7 +109,7 @@ export interface FeedFetch {
    */
   payload_sha256: string | null;
   /**
-   * The cron minute this attempt served.
+   * floor(event.scheduledTime / 1000): the invocation's dispatch instant, not minute-aligned.
    */
   scheduled_at: number;
   source:

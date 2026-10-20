@@ -15,6 +15,11 @@ dependencies = [
     "blake3>=0.4",
 ]
 
+[project.optional-dependencies]
+derive = [
+    "pyarrow>=26.0.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -27,6 +32,8 @@ dev = [
     # container reads R2_* from env), and it's a Rust/maturin build that won't
     # compile in the slim image — so keep it out of the runtime deps.
     "murk-secrets>=0.11.0",
+    "pyarrow>=26.0.0",
+    "pyarrow-stubs>=20.0.0.20260819",
 ]
 
 [build-system]

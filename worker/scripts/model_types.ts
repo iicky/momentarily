@@ -11,8 +11,8 @@
 
 /// <reference types="node" />
 
-import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { compile } from 'json-schema-to-typescript';
@@ -59,12 +59,18 @@ function normalise(node: Json, keepTitle: boolean): Json {
   return out;
 }
 
+/** Paths under `dir` ending in `suffix`, subdirectories included, '/'-separated and sorted. */
+export function listFiles(dir: string, suffix: string): string[] {
+  return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .map((f) => f.split(sep).join('/'))
+    .filter((f) => f.endsWith(suffix))
+    .sort();
+}
+
+/** Relative `.ts` path -> rendered text, mirroring the schema tree (layer subdirectories included). */
 export async function renderModelTypes(): Promise<Map<string, string>> {
   const rendered = new Map<string, string>();
-  const files = readdirSync(SCHEMA_DIR)
-    .filter((f) => f.endsWith('.schema.json'))
-    .sort();
-  for (const file of files) {
+  for (const file of listFiles(SCHEMA_DIR, '.schema.json')) {
     const schema = JSON.parse(readFileSync(join(SCHEMA_DIR, file), 'utf8')) as Json;
     const ts = await compile(normalise(schema, true) as object, '', {
       bannerComment: BANNER,
@@ -81,13 +87,13 @@ export async function renderModelTypes(): Promise<Map<string, string>> {
 
 export async function writeModelTypes(): Promise<void> {
   const rendered = await renderModelTypes();
-  for (const stale of readdirSync(TYPES_DIR, { withFileTypes: true })) {
-    if (stale.isFile() && stale.name.endsWith('.ts') && !rendered.has(stale.name)) {
-      rmSync(join(TYPES_DIR, stale.name));
-    }
+  for (const stale of listFiles(TYPES_DIR, '.ts')) {
+    if (!rendered.has(stale)) rmSync(join(TYPES_DIR, stale));
   }
   for (const [name, text] of rendered) {
-    writeFileSync(join(TYPES_DIR, name), text);
-    console.log(`wrote ${join(TYPES_DIR, name)}`);
+    const path = join(TYPES_DIR, name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+    console.log(`wrote ${path}`);
   }
 }

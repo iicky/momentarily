@@ -11,7 +11,7 @@
 
 /// <reference types="node" />
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020';
@@ -26,15 +26,13 @@ import type { NetworkIndex } from '../../shared/model/s1/network_index';
 import dayFeedMapFixture from '../../tests/fixtures/model/day_feed_map_s1.json';
 import fixture from '../../tests/fixtures/model/network_s1.json';
 import indexFixture from '../../tests/fixtures/model/network_index_s1.json';
-import { TYPES_DIR, renderModelTypes } from '../scripts/model_types';
+import { TYPES_DIR, listFiles, renderModelTypes } from '../scripts/model_types';
 
 describe('generated model types', () => {
-  test('shared/model/s1 matches the committed JSON Schemas', async () => {
+  test('shared/model/s1 (every layer) matches the committed JSON Schemas', async () => {
     const rendered = await renderModelTypes();
     expect(rendered.size).toBeGreaterThan(0);
-    const onDisk = readdirSync(TYPES_DIR)
-      .filter((f) => f.endsWith('.ts'))
-      .sort();
+    const onDisk = listFiles(TYPES_DIR, '.ts');
     expect(onDisk, 'shared/model/s1 has files no schema generates: run bun run gen:model').toEqual(
       [...rendered.keys()].sort(),
     );

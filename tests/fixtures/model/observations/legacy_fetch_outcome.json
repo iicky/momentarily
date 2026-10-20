@@ -1,0 +1,65 @@
+[
+  {
+    "legacy_fetch_id": "archive/trace/2026-10-01/1790856000.json#ace",
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/trace",
+      "source_key": "archive/trace/2026-10-01/1790856000.json",
+      "row_index": null,
+      "period": {
+        "start": "2026-08-12",
+        "end": null
+      }
+    },
+    "source": "ace",
+    "observed_at": 1790856001,
+    "scheduled_at": 1790856000,
+    "succeeded": true,
+    "last_success_at": {
+      "unknown": true,
+      "reason": "archive/trace keeps no fetch time"
+    }
+  },
+  {
+    "legacy_fetch_id": "archive/trace/2026-10-01/1790856000.json#si",
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/trace",
+      "source_key": "archive/trace/2026-10-01/1790856000.json",
+      "row_index": null,
+      "period": {
+        "start": "2026-08-12",
+        "end": null
+      }
+    },
+    "source": "si",
+    "observed_at": 1790856001,
+    "scheduled_at": 1790856000,
+    "succeeded": false,
+    "last_success_at": {
+      "unknown": true,
+      "reason": "archive/trace keeps no fetch time"
+    }
+  },
+  {
+    "legacy_fetch_id": "archive/alerts_liveness/2026-10-01/1790856310.json#alerts",
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/alerts_liveness",
+      "source_key": "archive/alerts_liveness/2026-10-01/1790856310.json",
+      "row_index": null,
+      "period": {
+        "start": "2026-09-02",
+        "end": null
+      }
+    },
+    "source": "alerts",
+    "observed_at": 1790856310,
+    "scheduled_at": {
+      "unknown": true,
+      "reason": "archive/alerts_liveness keeps the wall clock only"
+    },
+    "succeeded": false,
+    "last_success_at": 1790856010
+  }
+]

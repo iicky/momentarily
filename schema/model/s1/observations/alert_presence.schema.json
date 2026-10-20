@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "AlertEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "alert_id": {
+          "title": "Alert Id",
+          "type": "string"
+        },
+        "content_digest": {
+          "description": "sha256 of the entity's canonical JSON.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "alert_id",
+        "content_digest",
+        "updated_at"
+      ],
+      "title": "AlertEntry",
+      "type": "object"
+    },
+    "RawLineage": {
+      "additionalProperties": false,
+      "description": "Decoded from a stored raw payload.",
+      "properties": {
+        "kind": {
+          "const": "raw",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload_key": {
+          "description": "The tick bundle or blob holding the bytes.",
+          "title": "Payload Key",
+          "type": "string"
+        },
+        "payload_member": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bundle member; null for a blob.",
+          "title": "Payload Member"
+        },
+        "payload_sha256": {
+          "description": "Lowercase sha256 hex.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "payload_key",
+        "payload_member",
+        "payload_sha256"
+      ],
+      "title": "RawLineage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The full alert set at one fetch with outcome ok or empty. Comparing\nconsecutive presences bounds when an alert left the feed. Raw only.",
+  "properties": {
+    "entries": {
+      "description": "Sorted by alert_id then digest; [] = the feed said none (outcome empty).",
+      "items": {
+        "$ref": "#/$defs/AlertEntry"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "fetch_id": {
+      "title": "Fetch Id",
+      "type": "string"
+    },
+    "header_timestamp": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Header Timestamp"
+    },
+    "lineage": {
+      "$ref": "#/$defs/RawLineage"
+    },
+    "observed_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "alerts",
+        "numbered"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "lineage",
+    "fetch_id",
+    "source",
+    "observed_at",
+    "header_timestamp",
+    "entries"
+  ],
+  "title": "AlertPresence",
+  "type": "object"
+}

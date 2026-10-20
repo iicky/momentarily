@@ -1,0 +1,19 @@
+[
+  {
+    "legacy_tick_id": "archive/health@1790856305",
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/health",
+      "source_key": "archive/health/2026-10-01/1790856305.json",
+      "row_index": null,
+      "period": {
+        "start": "2026-09-11",
+        "end": null
+      }
+    },
+    "observed_at": 1790856305,
+    "write_failures": {
+      "predictions_write": 1
+    }
+  }
+]

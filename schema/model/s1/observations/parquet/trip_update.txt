@@ -1,0 +1,11 @@
+lineage: struct<kind: string not null, payload_key: string not null, payload_member: int64, payload_sha256: string not null> not null
+fetch_id: string not null
+source: string not null
+observed_at: int64 not null
+entity_index: int64 not null
+entity_id: string not null
+trip: struct<trip_id: string, route_id: string, route_id__unknown: string, start_time: string, start_time__unknown: string, start_date: string, start_date__unknown: string, schedule_relationship: int64, schedule_relationship__unknown: string, direction_id: int64, direction_id__unknown: string, nyct_train_id: string, nyct_train_id__unknown: string, nyct_is_assigned: bool, nyct_is_assigned__unknown: string, nyct_direction: int64, nyct_direction__unknown: string> not null
+trip_update_timestamp: int64
+delay: int64
+stop_times: list<struct<index: int64 not null, stop_id: string, stop_sequence: int64, arrival_time: int64, arrival_delay: int64, arrival_uncertainty: int64, departure_time: int64, departure_delay: int64, departure_uncertainty: int64, schedule_relationship: int64, departure_occupancy_status: int64, nyct_scheduled_track: string, nyct_actual_track: string> not null> not null
+unmodeled_fields: list<string not null> not null

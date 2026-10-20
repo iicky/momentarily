@@ -93,12 +93,19 @@ The build fails, and lists every problem, when any of these is true:
 ## Regenerating the contracts
 
 ```sh
-uv run python -m scripts.export_model_schema        # schema/model/s1
-(cd worker && bun run gen:model)                    # shared/model/s1
+uv run python -m scripts.export_model_schema        # schema/model/s1 (all layers)
+(cd worker && bun run gen:model)                    # shared/model/s1 (all layers)
 uv run python -m scripts.gen_model_network_fixture  # tests/fixtures/model/*_s1.json
 ```
 
-If a schema or fixture is out of date, `tests/test_model_network.py` fails. If
-the generated TypeScript is out of date or a stray file is in
-`shared/model/s1`, `worker/test/model_network.test.ts` fails. The worker test
-also validates the fixture network, index, and day map with ajv.
+Later layers export into a subdirectory (`schema/model/s1/observations/`), and
+the generated TypeScript mirrors that tree. If a schema under
+`schema/model/s1` is out of date or stray, or a network fixture is stale,
+`tests/test_model_network.py` fails. If the generated TypeScript is out of
+date or a stray file is anywhere under `shared/model/s1`,
+`worker/test/model_network.test.ts` fails. The worker test also validates the
+fixture network, index, and day map with ajv. The observations fixtures
+(`tests/fixtures/model/observations/`) are hand-written;
+`tests/test_model_observations.py` round-trips them through Pydantic and the
+parquet layout, and `worker/test/model_observations.test.ts` validates them
+with ajv.

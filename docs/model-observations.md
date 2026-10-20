@@ -1,6 +1,8 @@
 # Data model, layer 2: raw observations (`observations/s1`) — scoping proposal
 
-Status: proposal for the owner to decide on. Nothing here is built yet.
+Status: the owner's decisions are in §8. The contracts, schema export, TS
+generation and fixtures (slice 2) are built; §3.4 lists where the build
+changed the draft. Nothing else here is built yet.
 
 Layer 2 records what each upstream source said, when we asked, and what came
 back, including failures. It keeps upstream identities verbatim: realtime trip
@@ -214,15 +216,18 @@ Reasons:
 Conventions are layer 1's (`momentarily.model.conventions`): `Model` (frozen,
 closed, no defaults), `Instant` (UTC epoch s), `Digest`, `Unknown`,
 `Interval`, `Provenance`. Schema id `observations/s1`. Pydantic is the source
-of truth. JSON Schema goes to `schema/model/s1/`, TypeScript to
-`shared/model/s1/`.
+of truth (`momentarily.model.observations`). JSON Schema goes to
+`schema/model/s1/observations/`, TypeScript to `shared/model/s1/observations/`.
+The code blocks below are the draft; §3.4 lists what the build changed.
 
 Three states for every upstream field:
 
 - a value: the payload carried it;
 - `None`: the payload omitted it (GTFS-RT is proto2, so presence is knowable);
-- `Unknown(reason)`: we did not capture it (legacy backfill), or could not
-  decode it.
+- `Unknown(reason)`: a legacy archive did not keep it, or the decoder could
+  not read it. A raw-lineage record may hold `Unknown` only in the fields its
+  contract lists as decode failures (§3.4); collector metadata
+  (`FeedFetch`, `CollectorTick`) never holds it.
 
 Time fields, used the same way everywhere:
 
@@ -385,14 +390,14 @@ class AlertVersion(Model):
     created_at: Instant | None
     updated_at: Instant | None
     absent_before: Instant | None | Unknown = Field(
-        description="Last ok fetch before first_seen without this version; null = first fetch of the window.")
+        description="Last fetch (outcome ok or empty) before first_seen without this version; null = first fetch of the window.")
     first_seen: Instant | Unknown
     last_seen: Instant | Unknown
     gone_by: Instant | None | Unknown = Field(
-        description="First ok fetch after last_seen without this version; null = still present at window end.")
+        description="First fetch (outcome ok or empty) after last_seen without this version; null = still present at window end.")
     gone_kind: Literal["removed", "superseded"] | None
     unobserved: list[Interval] = Field(
-        description="Gaps inside [first_seen, gone_by) with no ok fetch.")
+        description="Gaps inside [first_seen, gone_by) with no fetch of outcome ok or empty.")
     window: Interval = Field(description="The presence window this index was built over.")
 
 class EquipmentObservation(Model):
@@ -410,10 +415,10 @@ class EquipmentObservation(Model):
 Keys and rules:
 
 - Natural keys: VehicleObservation and TripUpdateObservation use
-  `(fetch_id, entity index)`. A trip id can repeat inside one payload, so it
+  `(fetch_id, entity_index)`. A trip id can repeat inside one payload, so it
   is not a key. AlertPresence uses `fetch_id`. AlertVersion uses
   `(source, alert_id, content_digest)`. EquipmentObservation uses
-  `(fetch_id, equipment_id, row index)`.
+  `(fetch_id, equipment_id, record_index)`.
 - An alert's end is **bounded, not guessed**. The version left the feed in
   `(last_seen, gone_by]`. When `unobserved` overlaps that bound, the end is
   only known to lie in the wider span. A version gone only by `superseded`
@@ -421,7 +426,9 @@ Keys and rules:
 - `content_digest` hashes the parsed entity, so a content change without an
   `updated_at` bump becomes a new version (the current archive misses that).
   The digest also matches between live JSON and the re-serialized legacy
-  archive.
+  archive. The canonical form is sorted keys, no whitespace, non-ASCII kept,
+  UTF-8 (`canonical_entity_json`); AlertVersion rejects a digest that does
+  not hash its `entity`.
 - The ENE catalog (`ene_equipments`) is stored raw and referenced by
   `FeedFetch`. A typed catalog belongs to a layer-1 extension, not to layer 2.
 - Provenance on every derived file: `inputs` maps raw keys to digests,
@@ -440,16 +447,135 @@ raw/blob/<YYYY-MM-DD>/<sha256>.<json|pb|zip>.gz                  alerts, ENE, So
 derived/<record>/<YYYY-MM-DD>/<HH>.parquet                       vehicle, trip_update, feed_header,
                                                                  alert_presence, equipment (Python)
 derived/alert_version/<YYYY-MM-DD>.parquet                       AlertVersion, window = that day ± carry
+derived/legacy_route_alert_state/<YYYY-MM-DD>.parquet            LegacyRouteAlertState     (Python)
+derived/legacy_fetch_outcome/<YYYY-MM-DD>.parquet                LegacyFetchOutcome        (Python)
+derived/legacy_collector_health/<YYYY-MM-DD>.parquet             LegacyCollectorHealth     (Python)
 ```
 
+Ticks and bundles are filed under the UTC hour of `scheduled_at`, so the
+directory follows from the file name. A blob is filed under the UTC day of
+the fetch that stored it. `momentarily.model.observations.keys` formats and
+parses every key, and rejects a key whose directory disagrees with its file
+name.
+
 Each GTFS-RT tick bundle is a series of independent gzip members, one per
-feed, preceded by a small JSON index member that repeats that tick's GTFS-RT
-`FeedFetch` rows. If the tick record is lost, the bundle still describes
-itself. Blobs are deduplicated **within a UTC day** (HEAD, then PUT if
-missing). A day-dated key lets prune age blobs like everything else, with no
-reference-counting GC. The cost is one copy of the ENE catalog per day
-(65 KB gzip). Static GTFS stays in `archive/gtfs/`, and its `FeedFetch`
-points there.
+feed, preceded by a small JSON index member (`TickBundleIndex`) that repeats
+that tick's GTFS-RT `FeedFetch` rows. If the tick record is lost, the bundle
+still describes itself. Blobs are deduplicated **within a UTC day** (HEAD,
+then PUT if missing). A day-dated key lets prune age blobs like everything
+else, with no reference-counting GC. The cost is one copy of the ENE catalog
+per day (65 KB gzip). Static GTFS stays in `archive/gtfs/`, and its
+`FeedFetch` points there.
+
+### 3.4 As built (slice 2)
+
+The build follows §3.1–3.3 except where listed here.
+
+- **Natural-key fields.** `entity_index` (VehicleObservation,
+  TripUpdateObservation) and `record_index` (EquipmentObservation) are
+  fields. The draft named them as keys but had no field for them. Legacy
+  rows key on `(lineage.source_key, lineage.row_index)` instead.
+- **Narrower sources.** Vehicle, trip-update and header records take only a
+  GTFS-RT source. `VehicleObservation.trip` is nullable, because
+  VehiclePosition's trip is optional in GTFS-RT.
+- **`TickBundleIndex`** is the contract of the bundle's index member: the
+  tick id and the tick's GTFS-RT fetches, each pointing into this bundle.
+- **Collector metadata is live only.** `FeedFetch` and `CollectorTick` keep
+  every field required and known, and hold no `Unknown`. What the old
+  archives kept about fetches and ticks goes to separate legacy contracts
+  (below).
+- **Lineage on every observation record.** Each record carries `lineage`,
+  tagged by `kind`:
+  - `raw`: `payload_key` (the tick bundle or blob), `payload_member` (bundle
+    member, null for a blob) and `payload_sha256`. GTFS-RT records point into
+    a bundle, alerts JSON and ENE records into a blob filed under the
+    record's UTC day.
+  - `legacy`: `archive` (which legacy prefix), `source_key` (the object),
+    `row_index` (position in that object, null when it holds one record) and
+    `period`.
+
+  A consumer filters legacy rows on `lineage.kind` alone; in parquet the
+  lineage is a struct with the `kind` tag and one nullable sub-struct per
+  variant. Only records a legacy archive can supply take a legacy lineage:
+  VehicleObservation (`archive/trace`), AlertVersion (`archive/alerts`) and
+  EquipmentObservation (`archive/ene`). TripUpdateObservation,
+  FeedHeaderObservation and AlertPresence are raw only.
+- **Legacy unknowns.** The fields §5 lists as lost admit `Unknown`:
+  VehicleObservation `fetch_id`, `source`, `entity_index`, `entity_id`,
+  `current_stop_sequence`, `current_status`, `congestion_level`,
+  `unmodeled_fields`; every TripDescriptorObs field except `trip_id`;
+  EquipmentObservation `fetch_id`; AlertVersion `absent_before`,
+  `first_seen`, `last_seen`, `gone_by`, `gone_kind`, `unobserved`, `window`.
+  A raw-lineage record holding `Unknown` anywhere else than its decode
+  failures is rejected. The only decode failures today are
+  EquipmentObservation `outage_start` and `estimated_return` (ambiguous or
+  unparseable ET wall times).
+- **Legacy period** (decision 5, applied to every legacy record):
+  `start` is the first UTC day the archive covers, `end` (exclusive) the
+  first UTC day the recorder wrote the replacing record, null until it has.
+  Both are checked as calendar dates. A legacy record whose day falls outside
+  its period is rejected.
+- **`LegacyRouteAlertState`** has a `v1/predictions` lineage (`source_key`
+  is the prediction object holding its tick, `row_index` its line) and a
+  `granularity` of fixed literals: `scope: "route"`, `tick_seconds: 300`,
+  `content: "primary_alert_type_presence"`. `primary_alert_type` null means
+  the route had an inference row and no alert.
+- **`LegacyFetchOutcome`** (id `f"{source_key}#{source}"`): one source's
+  fetch result as `archive/trace`, `archive/trip_updates`,
+  `archive/vehicles` (`fresh_feeds`), `archive/alerts_liveness` or
+  `archive/ene` (presence of a success) kept it: `succeeded`,
+  `observed_at`, `scheduled_at` (trace only, else `Unknown`) and
+  `last_success_at` (`alerts_liveness` `fetched_at`, else `Unknown`).
+- **`LegacyCollectorHealth`** (id `f"archive/health@{observed_at}"`): one
+  `archive/health` object, `observed_at` and `write_failures` (failed writes
+  per kind, `{}` on a clean tick).
+- **AlertVersion bounds.** "Fetch" in the bounds means outcome `ok` or
+  `empty`: an empty feed is evidence that the alert is gone, not a gap.
+  `absent_before < first_seen <= last_seen < gone_by`. `gone_kind` is null
+  exactly when `gone_by` is null and known when `gone_by` is an instant.
+  With `gone_by` `Unknown` it is `Unknown`, or `superseded` when a later
+  `updated_at` of the same id proves it (§5); `removed` cannot be proven
+  then. `unobserved` gaps are non-empty, sorted, disjoint, and inside the
+  sighting. `alert_type`, `created_at` and `updated_at` must equal the
+  entity's `mercury_alert` fields.
+- **Alert digest.** The canonical form writes integral floats as ints
+  (`1.0` -> `1`, as `JSON.stringify` does) and rejects NaN and infinities.
+  Python and JavaScript format non-integral floats below 1e-4 or from 1e16
+  up differently; alert entities carry none [inference].
+- **`FeedFetch` invariants.** `fetch_id` and `tick_id` formats;
+  `finished_at_ms` null exactly on timeout; a status of the class each
+  outcome implies (a timeout or reset after 2xx headers keeps the 2xx);
+  header fields only with a status; HEAD only for `gtfs_static`. A GET whose
+  body was read has `body_bytes`, `payload_sha256` and exactly one of
+  `payload_key` and `store_error`; any other attempt has none of them. A
+  blob key carries the fetch's digest and UTC day. Every fetch in a tick
+  starts and ends within it, and a bundle member points at that
+  invocation's own bundle.
+- **Error types.** Validators raise `PydanticCustomError` with a stable type
+  (`fetch_storage`, `alert_bounds`, `legacy_period`, ...), so callers match
+  types, not wording.
+- **Digests.** `Sha256` (lowercase, 64 hex) is stricter than layer 1's
+  `Digest` (16 to 64 hex) and types every payload and content digest here.
+- **Parquet layout** (`momentarily.model.observations.columns`), derived from
+  the contract: ints are `int64`, strings `string`, nested models `struct`,
+  lists `list`, `dict[str, X]` a `map` written as key-sorted pairs, the
+  verbatim alert entity a canonical-JSON `string`, and `lineage` a tagged
+  struct. A field that can be `Unknown` gets a sibling `<name>__unknown`
+  string column with the reason, so null, Unknown and a value stay distinct.
+  The layout of every record is committed under
+  `schema/model/s1/observations/parquet/` and pinned per `LAYOUT_VERSION`;
+  any change fails a test until the version is bumped. `pyarrow` is not a
+  dependency yet; the derive job adds it as an optional extra.
+- **Derived-file metadata.** Every parquet file carries one
+  `DerivedFileMetadata` as canonical JSON under the key-value metadata key
+  `momentarily.observations`: `file_key`, `layout_version`,
+  `decoder_version`, `row_count`, and layer 1's `Provenance` (`inputs` and
+  `captured_at` over the same raw or legacy keys, `built_at` the latest
+  `captured_at`, `observed_from_utc_day` the file's day, no service day, never
+  retroactive).
+- **Daily legacy files.** `legacy_route_alert_state`,
+  `legacy_fetch_outcome` and `legacy_collector_health` are daily
+  `derived/<record>/<YYYY-MM-DD>.parquet` files.
 
 ## 4. Writer placement
 
@@ -515,18 +641,21 @@ Failure behaviour:
 ## 5. Backfill mapping
 
 `Unknown(reason)` marks every field a legacy archive did not keep. Nothing is
-inferred, including the feed of a trace row and `6` versus `6X`.
+inferred, including the feed of a trace row and `6` versus `6X`. Every
+backfilled record carries a `legacy` lineage (archive, object key, row,
+period; §3.4). Legacy fetch and tick facts never become `FeedFetch` or
+`CollectorTick`, which stay live only.
 
 | Legacy source (coverage) | Becomes | Kept | Permanently lost (Unknown) |
 |---|---|---|---|
-| `archive/trace/` (R2 only, 120 d; earliest days pruned from about 12-10 [inference: trace start ≈ 08-12]) | partial VehicleObservation, plus FeedFetch for each trace minute | `trip_id`, `stop_id`, `vehicle_ts`, `stop_seq` (when stopped), `stopped=true` → `current_status=1`, `observed_at`, `scheduled_at`, `fresh_feeds` → per-feed ok/not-ok, static `feed_digest`/`feed_etag` | `route_id` as published (folded: `6`/`7`/`F` may have been `6X`/`7X`/`FX`), `current_status` when not stopped (0, 2 or absent), `stop_seq` when moving, `is_assigned` (placeholder vehicles are indistinguishable), `source` feed of each row, `start_date`, `start_time`, `train_id`, `entity_id`, vehicles with empty trip or stop ids, header timestamp, fetch failure reason, bytes |
+| `archive/trace/` (R2 only, 120 d; earliest days pruned from about 12-10 [inference: trace start ≈ 08-12]) | partial VehicleObservation, plus a LegacyFetchOutcome per feed and trace minute | `trip_id`, `stop_id`, `vehicle_ts`, `stop_seq` (when stopped), `stopped=true` → `current_status=1`, `observed_at`, `scheduled_at`, `fresh_feeds` → per-feed `succeeded`, static `feed_digest`/`feed_etag` | `route_id` as published (folded: `6`/`7`/`F` may have been `6X`/`7X`/`FX`), `current_status` when not stopped (0, 2 or absent), `stop_seq` when moving, `is_assigned` (placeholder vehicles are indistinguishable), `source` feed of each row, `start_date`, `start_time`, `train_id`, `entity_id`, `entity_index`, `fetch_id`, vehicles with empty trip or stop ids, header timestamp, fetch failure reason, bytes |
 | `archive/arrivals/` (R2 only, 120 d) | **not mapped** | — | truncated to 4 trains within 60 min, SKIPPED rows dropped, arrival/departure merged, route folded. It stays a grading input for `eta_grade.py`. |
-| `archive/trip_updates/` (06-15..), `archive/vehicles/` (06-21..) | FeedFetch only (5-min, per feed ok/not-ok) | which feeds were fresh | every per-entity field. The counts and transitions are aggregates and stay what they are. |
-| `archive/alerts/` (90 d. Mirror 07-21..) | AlertVersion | entity verbatim, `content_digest`, `alert_type`, `created_at`, `updated_at`, `first_seen` = `observed_at` (5-min resolution, a sighting that is normally the first) | `absent_before`, `last_seen`, `gone_by`, `gone_kind` (except a later `updated_at` for the same id, which proves `superseded` by that time), content changes with no `updated_at` bump, feed header |
-| `archive/alerts_liveness/` (09-02..) | FeedFetch(`alerts`) | outcome, attempt time | HTTP status, digest, entity count, header timestamp. No AlertPresence before layer 2 starts. |
+| `archive/trip_updates/` (06-15..), `archive/vehicles/` (06-21..) | LegacyFetchOutcome only (5-min, per feed `succeeded`) | which feeds were fresh | every per-entity field. The counts and transitions are aggregates and stay what they are. |
+| `archive/alerts/` (90 d. Mirror 07-21..) | AlertVersion | entity verbatim, `content_digest`, `alert_type`, `created_at`, `updated_at`, `first_seen` = `observed_at` (5-min resolution, a sighting that is normally the first) | `absent_before`, `last_seen`, `gone_by`, `gone_kind` (except a later `updated_at` for the same id, which proves `superseded` by that time), `unobserved`, `window`, content changes with no `updated_at` bump, feed header |
+| `archive/alerts_liveness/` (09-02..) | LegacyFetchOutcome(`alerts`) | outcome (`succeeded`), wall-clock attempt time, `fetched_at` (`last_success_at`) | scheduled minute, HTTP status, digest, entity count, header timestamp. No AlertPresence before layer 2 starts. |
 | `v1/predictions/` (90 d. Mirror 07-21..) | separate `LegacyRouteAlertState` (decision 5): per route row and 5-min tick, `primary_alert_type` | highest-`sort_order` alert active at that tick, planned work included, for routes with an inference row | alert ids, every lower-priority alert, routes without an inference row. It can bound a route-level alert end. It cannot bound an alert version end. |
-| `archive/ene/` (90 d) | EquipmentObservation, plus FeedFetch for each success | full record content, hourly | failed fetches (no record), byte-exact payload (re-serialized), sub-hour changes |
-| `archive/health/` (09-11..) | partial CollectorTick | write-failure counts per minute | planned sources, fetch timing |
+| `archive/ene/` (90 d) | EquipmentObservation, plus a LegacyFetchOutcome for each success | full record content, hourly | `fetch_id`, failed fetches (no record), byte-exact payload (re-serialized), sub-hour changes |
+| `archive/health/` (09-11..) | LegacyCollectorHealth | write-failure counts per invocation | planned sources, fetch timing |
 | `archive/gtfs/` | adopted as is | everything | — |
 | traversals, windows, movement_census, transitions | not layer 2 (derived) | — | — |
 

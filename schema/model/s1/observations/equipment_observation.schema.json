@@ -1,0 +1,293 @@
+{
+  "$defs": {
+    "LegacyLineage": {
+      "additionalProperties": false,
+      "description": "Read from a legacy archive object. What it lacks is ``Unknown`` on the\nrecord; layer 3 labels anything it derives from it as legacy-derived.",
+      "properties": {
+        "archive": {
+          "enum": [
+            "archive/trace",
+            "archive/trip_updates",
+            "archive/vehicles",
+            "archive/alerts",
+            "archive/alerts_liveness",
+            "archive/ene",
+            "archive/health",
+            "v1/predictions"
+          ],
+          "title": "Archive",
+          "type": "string"
+        },
+        "kind": {
+          "const": "legacy",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/LegacyPeriod"
+        },
+        "row_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position of the row in that object; null when it holds one.",
+          "title": "Row Index"
+        },
+        "source_key": {
+          "description": "The legacy object the record came from.",
+          "title": "Source Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "archive",
+        "source_key",
+        "row_index",
+        "period"
+      ],
+      "title": "LegacyLineage",
+      "type": "object"
+    },
+    "LegacyPeriod": {
+      "additionalProperties": false,
+      "description": "The UTC days ``[start, end)`` for which a legacy archive stands in for\nthe recorder's records.",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "description": "ISO date of a UTC calendar day (never a service day).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.",
+          "title": "End"
+        },
+        "start": {
+          "description": "First UTC day the legacy archive covers.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "LegacyPeriod",
+      "type": "object"
+    },
+    "RawLineage": {
+      "additionalProperties": false,
+      "description": "Decoded from a stored raw payload.",
+      "properties": {
+        "kind": {
+          "const": "raw",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload_key": {
+          "description": "The tick bundle or blob holding the bytes.",
+          "title": "Payload Key",
+          "type": "string"
+        },
+        "payload_member": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bundle member; null for a blob.",
+          "title": "Payload Member"
+        },
+        "payload_sha256": {
+          "description": "Lowercase sha256 hex.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "payload_key",
+        "payload_member",
+        "payload_sha256"
+      ],
+      "title": "RawLineage",
+      "type": "object"
+    },
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One record of one ENE outage payload, verbatim, with its two published\nlocal times parsed. Legacy rows come from ``archive/ene``.",
+  "properties": {
+    "equipment_id": {
+      "title": "Equipment Id",
+      "type": "string"
+    },
+    "estimated_return": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Estimated Return"
+    },
+    "estimated_return_local": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "'estimatedreturntoservice' as published (ET wall time).",
+      "title": "Estimated Return Local"
+    },
+    "fetch_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "description": "Unknown on legacy rows.",
+      "title": "Fetch Id"
+    },
+    "lineage": {
+      "discriminator": {
+        "mapping": {
+          "legacy": "#/$defs/LegacyLineage",
+          "raw": "#/$defs/RawLineage"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RawLineage"
+        },
+        {
+          "$ref": "#/$defs/LegacyLineage"
+        }
+      ],
+      "title": "Lineage"
+    },
+    "observed_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "outage_start": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Parsed in America/New_York; Unknown if ambiguous or unparseable.",
+      "title": "Outage Start"
+    },
+    "outage_start_local": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "'outagedate' as published (ET wall time).",
+      "title": "Outage Start Local"
+    },
+    "record": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "The record verbatim.",
+      "title": "Record",
+      "type": "object"
+    },
+    "record_index": {
+      "description": "Position of the record in the payload.",
+      "minimum": 0,
+      "title": "Record Index",
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "ene_current",
+        "ene_upcoming"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "lineage",
+    "fetch_id",
+    "source",
+    "observed_at",
+    "record_index",
+    "equipment_id",
+    "record",
+    "outage_start_local",
+    "estimated_return_local",
+    "outage_start",
+    "estimated_return"
+  ],
+  "title": "EquipmentObservation",
+  "type": "object"
+}

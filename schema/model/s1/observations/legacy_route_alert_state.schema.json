@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "LegacyLineage": {
+      "additionalProperties": false,
+      "description": "Read from a legacy archive object. What it lacks is ``Unknown`` on the\nrecord; layer 3 labels anything it derives from it as legacy-derived.",
+      "properties": {
+        "archive": {
+          "enum": [
+            "archive/trace",
+            "archive/trip_updates",
+            "archive/vehicles",
+            "archive/alerts",
+            "archive/alerts_liveness",
+            "archive/ene",
+            "archive/health",
+            "v1/predictions"
+          ],
+          "title": "Archive",
+          "type": "string"
+        },
+        "kind": {
+          "const": "legacy",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/LegacyPeriod"
+        },
+        "row_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position of the row in that object; null when it holds one.",
+          "title": "Row Index"
+        },
+        "source_key": {
+          "description": "The legacy object the record came from.",
+          "title": "Source Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "archive",
+        "source_key",
+        "row_index",
+        "period"
+      ],
+      "title": "LegacyLineage",
+      "type": "object"
+    },
+    "LegacyPeriod": {
+      "additionalProperties": false,
+      "description": "The UTC days ``[start, end)`` for which a legacy archive stands in for\nthe recorder's records.",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "description": "ISO date of a UTC calendar day (never a service day).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.",
+          "title": "End"
+        },
+        "start": {
+          "description": "First UTC day the legacy archive covers.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "LegacyPeriod",
+      "type": "object"
+    },
+    "RouteAlertGranularity": {
+      "additionalProperties": false,
+      "description": "What a ``v1/predictions`` row holds: per route, per 5-minute tick, the\nsingle highest-priority alert type, with no alert identity.",
+      "properties": {
+        "content": {
+          "const": "primary_alert_type_presence",
+          "title": "Content",
+          "type": "string"
+        },
+        "scope": {
+          "const": "route",
+          "title": "Scope",
+          "type": "string"
+        },
+        "tick_seconds": {
+          "const": 300,
+          "title": "Tick Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scope",
+        "tick_seconds",
+        "content"
+      ],
+      "title": "RouteAlertGranularity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Lossy legacy alert state read from ``v1/predictions``. Use only for\ndays without ``AlertPresence``; a bound derived from it is legacy-derived.\nIt can bound a route-level alert end, never an alert version end.",
+  "properties": {
+    "granularity": {
+      "$ref": "#/$defs/RouteAlertGranularity"
+    },
+    "lineage": {
+      "$ref": "#/$defs/LegacyLineage"
+    },
+    "observed_at": {
+      "description": "The prediction row's ts.",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "primary_alert_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null = the route had an inference row and no active alert.",
+      "title": "Primary Alert Type"
+    },
+    "route_id": {
+      "description": "The prediction row's route, as written.",
+      "title": "Route Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "lineage",
+    "granularity",
+    "observed_at",
+    "route_id",
+    "primary_alert_type"
+  ],
+  "title": "LegacyRouteAlertState",
+  "type": "object"
+}

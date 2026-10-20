@@ -52,7 +52,7 @@ from momentarily.model.network.stations import (
     canonical_bytes,
     parse_snapshot,
 )
-from scripts.export_model_schema import SCHEMA_DIR, render_schemas
+from scripts.export_model_schema import committed_schemas, render_schemas
 from scripts.gen_model_network_fixture import (
     FIXTURE_CODE,
     GTFS_DIR,
@@ -122,8 +122,7 @@ def test_committed_model_schemas_match_pydantic() -> None:
     """If this fails, run: uv run python -m scripts.export_model_schema
     and then (cd worker && bun run gen:model)."""
     rendered = render_schemas()
-    committed = {p.name: p.read_text() for p in SCHEMA_DIR.glob("*.schema.json")}
-    assert committed == rendered, "schema/model/s1 is stale"
+    assert committed_schemas() == rendered, "schema/model/s1 is stale"
 
 
 def test_committed_fixtures_are_fresh() -> None:

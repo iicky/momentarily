@@ -1,0 +1,195 @@
+{
+  "$defs": {
+    "LegacyLineage": {
+      "additionalProperties": false,
+      "description": "Read from a legacy archive object. What it lacks is ``Unknown`` on the\nrecord; layer 3 labels anything it derives from it as legacy-derived.",
+      "properties": {
+        "archive": {
+          "enum": [
+            "archive/trace",
+            "archive/trip_updates",
+            "archive/vehicles",
+            "archive/alerts",
+            "archive/alerts_liveness",
+            "archive/ene",
+            "archive/health",
+            "v1/predictions"
+          ],
+          "title": "Archive",
+          "type": "string"
+        },
+        "kind": {
+          "const": "legacy",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/LegacyPeriod"
+        },
+        "row_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position of the row in that object; null when it holds one.",
+          "title": "Row Index"
+        },
+        "source_key": {
+          "description": "The legacy object the record came from.",
+          "title": "Source Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "archive",
+        "source_key",
+        "row_index",
+        "period"
+      ],
+      "title": "LegacyLineage",
+      "type": "object"
+    },
+    "LegacyPeriod": {
+      "additionalProperties": false,
+      "description": "The UTC days ``[start, end)`` for which a legacy archive stands in for\nthe recorder's records.",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "description": "ISO date of a UTC calendar day (never a service day).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.",
+          "title": "End"
+        },
+        "start": {
+          "description": "First UTC day the legacy archive covers.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "LegacyPeriod",
+      "type": "object"
+    },
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "What a legacy archive kept about one source's fetch: whether it\nsucceeded, nothing more. The trace, trip-update and vehicle archives list\nthe GTFS-RT feeds that were fresh; ``archive/alerts_liveness`` records\nsuccess or failure of the alerts fetch; an ``archive/ene`` object exists\nonly for a successful fetch.",
+  "properties": {
+    "last_success_at": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "description": "alerts_liveness fetched_at: the last successful fetch's time.",
+      "title": "Last Success At"
+    },
+    "legacy_fetch_id": {
+      "description": "f'{lineage.source_key}#{source}'.",
+      "title": "Legacy Fetch Id",
+      "type": "string"
+    },
+    "lineage": {
+      "$ref": "#/$defs/LegacyLineage"
+    },
+    "observed_at": {
+      "description": "The legacy record's observed_at.",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "scheduled_at": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "description": "Kept by archive/trace only.",
+      "title": "Scheduled At"
+    },
+    "source": {
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si",
+        "alerts",
+        "ene_current",
+        "ene_upcoming",
+        "ene_equipments",
+        "gtfs_static",
+        "stations",
+        "entrances"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "succeeded": {
+      "description": "false: failed or stale; the archive kept no cause.",
+      "title": "Succeeded",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "legacy_fetch_id",
+    "lineage",
+    "source",
+    "observed_at",
+    "scheduled_at",
+    "succeeded",
+    "last_success_at"
+  ],
+  "title": "LegacyFetchOutcome",
+  "type": "object"
+}

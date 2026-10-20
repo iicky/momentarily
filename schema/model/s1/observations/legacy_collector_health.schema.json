@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "LegacyLineage": {
+      "additionalProperties": false,
+      "description": "Read from a legacy archive object. What it lacks is ``Unknown`` on the\nrecord; layer 3 labels anything it derives from it as legacy-derived.",
+      "properties": {
+        "archive": {
+          "enum": [
+            "archive/trace",
+            "archive/trip_updates",
+            "archive/vehicles",
+            "archive/alerts",
+            "archive/alerts_liveness",
+            "archive/ene",
+            "archive/health",
+            "v1/predictions"
+          ],
+          "title": "Archive",
+          "type": "string"
+        },
+        "kind": {
+          "const": "legacy",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/LegacyPeriod"
+        },
+        "row_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position of the row in that object; null when it holds one.",
+          "title": "Row Index"
+        },
+        "source_key": {
+          "description": "The legacy object the record came from.",
+          "title": "Source Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "archive",
+        "source_key",
+        "row_index",
+        "period"
+      ],
+      "title": "LegacyLineage",
+      "type": "object"
+    },
+    "LegacyPeriod": {
+      "additionalProperties": false,
+      "description": "The UTC days ``[start, end)`` for which a legacy archive stands in for\nthe recorder's records.",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "description": "ISO date of a UTC calendar day (never a service day).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.",
+          "title": "End"
+        },
+        "start": {
+          "description": "First UTC day the legacy archive covers.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "LegacyPeriod",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One ``archive/health`` object: the write failures of one Worker\ninvocation. Planned sources and fetch timing were not kept.",
+  "properties": {
+    "legacy_tick_id": {
+      "description": "f'archive/health@{observed_at}'.",
+      "title": "Legacy Tick Id",
+      "type": "string"
+    },
+    "lineage": {
+      "$ref": "#/$defs/LegacyLineage"
+    },
+    "observed_at": {
+      "description": "The invocation's wall clock (not the cron minute).",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "write_failures": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "description": "Failed writes per kind; {} = a clean tick.",
+      "title": "Write Failures",
+      "type": "object"
+    }
+  },
+  "required": [
+    "legacy_tick_id",
+    "lineage",
+    "observed_at",
+    "write_failures"
+  ],
+  "title": "LegacyCollectorHealth",
+  "type": "object"
+}

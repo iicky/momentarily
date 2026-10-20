@@ -1,0 +1,42 @@
+[
+  {
+    "lineage": {
+      "kind": "legacy",
+      "archive": "v1/predictions",
+      "source_key": "v1/predictions/2026-10-20/1792514400.jsonl",
+      "row_index": 0,
+      "period": {
+        "start": "2026-07-21",
+        "end": null
+      }
+    },
+    "granularity": {
+      "scope": "route",
+      "tick_seconds": 300,
+      "content": "primary_alert_type_presence"
+    },
+    "observed_at": 1792514400,
+    "route_id": "2",
+    "primary_alert_type": "Delays"
+  },
+  {
+    "lineage": {
+      "kind": "legacy",
+      "archive": "v1/predictions",
+      "source_key": "v1/predictions/2026-10-20/1792514400.jsonl",
+      "row_index": 1,
+      "period": {
+        "start": "2026-07-21",
+        "end": null
+      }
+    },
+    "granularity": {
+      "scope": "route",
+      "tick_seconds": 300,
+      "content": "primary_alert_type_presence"
+    },
+    "observed_at": 1792514400,
+    "route_id": "L",
+    "primary_alert_type": null
+  }
+]

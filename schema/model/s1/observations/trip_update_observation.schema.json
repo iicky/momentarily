@@ -1,0 +1,488 @@
+{
+  "$defs": {
+    "RawLineage": {
+      "additionalProperties": false,
+      "description": "Decoded from a stored raw payload.",
+      "properties": {
+        "kind": {
+          "const": "raw",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload_key": {
+          "description": "The tick bundle or blob holding the bytes.",
+          "title": "Payload Key",
+          "type": "string"
+        },
+        "payload_member": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bundle member; null for a blob.",
+          "title": "Payload Member"
+        },
+        "payload_sha256": {
+          "description": "Lowercase sha256 hex.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "payload_key",
+        "payload_member",
+        "payload_sha256"
+      ],
+      "title": "RawLineage",
+      "type": "object"
+    },
+    "StopTimePrediction": {
+      "additionalProperties": false,
+      "properties": {
+        "arrival_delay": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds, signed: negative is early.",
+          "title": "Arrival Delay"
+        },
+        "arrival_time": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Arrival Time"
+        },
+        "arrival_uncertainty": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Arrival Uncertainty"
+        },
+        "departure_delay": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds, signed: negative is early.",
+          "title": "Departure Delay"
+        },
+        "departure_occupancy_status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Departure Occupancy Status"
+        },
+        "departure_time": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Departure Time"
+        },
+        "departure_uncertainty": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Departure Uncertainty"
+        },
+        "index": {
+          "description": "Position in the trip's stop_time_update list.",
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "nyct_actual_track": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nyct Actual Track"
+        },
+        "nyct_scheduled_track": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nyct Scheduled Track"
+        },
+        "schedule_relationship": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Schedule Relationship"
+        },
+        "stop_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stop Id"
+        },
+        "stop_sequence": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stop Sequence"
+        }
+      },
+      "required": [
+        "index",
+        "stop_id",
+        "stop_sequence",
+        "arrival_time",
+        "arrival_delay",
+        "arrival_uncertainty",
+        "departure_time",
+        "departure_delay",
+        "departure_uncertainty",
+        "schedule_relationship",
+        "departure_occupancy_status",
+        "nyct_scheduled_track",
+        "nyct_actual_track"
+      ],
+      "title": "StopTimePrediction",
+      "type": "object"
+    },
+    "TripDescriptorObs": {
+      "additionalProperties": false,
+      "description": "A GTFS-RT TripDescriptor with the NYCT extension, as published.\n``Unknown`` only on legacy rows (the trace kept trip_id alone).",
+      "properties": {
+        "direction_id": {
+          "anyOf": [
+            {
+              "enum": [
+                0,
+                1
+              ],
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Direction Id"
+        },
+        "nyct_direction": {
+          "anyOf": [
+            {
+              "enum": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nyct Direction"
+        },
+        "nyct_is_assigned": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when the extension omits it; never read as false.",
+          "title": "Nyct Is Assigned"
+        },
+        "nyct_train_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nyct Train Id"
+        },
+        "route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "As published: '6X', 'SS', never folded.",
+          "title": "Route Id"
+        },
+        "schedule_relationship": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Schedule Relationship"
+        },
+        "start_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Published 'YYYYMMDD'; not a ServiceDate.",
+          "title": "Start Date"
+        },
+        "start_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/Unknown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Published 'HH:MM:SS'; may exceed 24h.",
+          "title": "Start Time"
+        },
+        "trip_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trip Id"
+        }
+      },
+      "required": [
+        "trip_id",
+        "route_id",
+        "start_time",
+        "start_date",
+        "schedule_relationship",
+        "direction_id",
+        "nyct_train_id",
+        "nyct_is_assigned",
+        "nyct_direction"
+      ],
+      "title": "TripDescriptorObs",
+      "type": "object"
+    },
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One TripUpdate entity. Arrival and departure stay separate; nothing is\ntruncated or filtered. Raw only: no legacy archive keeps trip updates.",
+  "properties": {
+    "delay": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Seconds, signed: negative is early.",
+      "title": "Delay"
+    },
+    "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "entity_index": {
+      "description": "Position of the entity in the feed.",
+      "minimum": 0,
+      "title": "Entity Index",
+      "type": "integer"
+    },
+    "fetch_id": {
+      "title": "Fetch Id",
+      "type": "string"
+    },
+    "lineage": {
+      "$ref": "#/$defs/RawLineage"
+    },
+    "observed_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "stop_times": {
+      "items": {
+        "$ref": "#/$defs/StopTimePrediction"
+      },
+      "title": "Stop Times",
+      "type": "array"
+    },
+    "trip": {
+      "$ref": "#/$defs/TripDescriptorObs"
+    },
+    "trip_update_timestamp": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Trip Update Timestamp"
+    },
+    "unmodeled_fields": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Unmodeled Fields",
+      "type": "array"
+    }
+  },
+  "required": [
+    "lineage",
+    "fetch_id",
+    "source",
+    "observed_at",
+    "entity_index",
+    "entity_id",
+    "trip",
+    "trip_update_timestamp",
+    "delay",
+    "stop_times",
+    "unmodeled_fields"
+  ],
+  "title": "TripUpdateObservation",
+  "type": "object"
+}

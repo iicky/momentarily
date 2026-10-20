@@ -1,0 +1,170 @@
+[
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 2,
+      "payload_sha256": "2804bad6fe94a55f18b2b37e300919a5fd517b95aa81e95db574c0ba069a3740"
+    },
+    "fetch_id": "l@1792514520416",
+    "source": "l",
+    "observed_at": 1792514520,
+    "entity_index": 1,
+    "entity_id": "2",
+    "trip": {
+      "trip_id": "055750_L..S",
+      "route_id": "L",
+      "start_time": null,
+      "start_date": "20261020",
+      "schedule_relationship": 0,
+      "direction_id": 1,
+      "nyct_train_id": "0L 0915+8AV/RPY",
+      "nyct_is_assigned": true,
+      "nyct_direction": 3
+    },
+    "stop_id": "L28S",
+    "current_stop_sequence": 22,
+    "current_status": 1,
+    "vehicle_timestamp": 1792514500,
+    "congestion_level": 0,
+    "unmodeled_fields": []
+  },
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 1,
+      "payload_sha256": "b6ebc9c63dc7f5dc475c4ecd5f9b86961b96f92edbbb2dbad2e7078cbd7142d5"
+    },
+    "fetch_id": "ace@1792514520415",
+    "source": "ace",
+    "observed_at": 1792514521,
+    "entity_index": 87,
+    "entity_id": "000044A",
+    "trip": {
+      "trip_id": "076700_A..S58R",
+      "route_id": "A",
+      "start_time": "12:47:00",
+      "start_date": "20261020",
+      "schedule_relationship": null,
+      "direction_id": null,
+      "nyct_train_id": "1A 1247 207/FAR",
+      "nyct_is_assigned": null,
+      "nyct_direction": 3
+    },
+    "stop_id": "A02S",
+    "current_stop_sequence": null,
+    "current_status": null,
+    "vehicle_timestamp": 1792514820,
+    "congestion_level": null,
+    "unmodeled_fields": []
+  },
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 3,
+      "payload_sha256": "16c9077e647ff0bb0345504d959b43acb1d31953ed67d29fe3c60b404246d0fc"
+    },
+    "fetch_id": "numbered@1792514520416",
+    "source": "numbered",
+    "observed_at": 1792514521,
+    "entity_index": 211,
+    "entity_id": "000212",
+    "trip": {
+      "trip_id": "072450_6..N01X009",
+      "route_id": "6X",
+      "start_time": null,
+      "start_date": "20261020",
+      "schedule_relationship": null,
+      "direction_id": null,
+      "nyct_train_id": "06 1204+ BBR/PEL",
+      "nyct_is_assigned": true,
+      "nyct_direction": 1
+    },
+    "stop_id": "619N",
+    "current_stop_sequence": 14,
+    "current_status": null,
+    "vehicle_timestamp": 1792514491,
+    "congestion_level": null,
+    "unmodeled_fields": [
+      "2"
+    ]
+  },
+  {
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/trace",
+      "source_key": "archive/trace/2026-10-01/1790856000.json",
+      "row_index": 41,
+      "period": {
+        "start": "2026-08-12",
+        "end": null
+      }
+    },
+    "fetch_id": {
+      "unknown": true,
+      "reason": "archive/trace keeps no fetch record"
+    },
+    "source": {
+      "unknown": true,
+      "reason": "archive/trace does not say which feed a row came from"
+    },
+    "observed_at": 1790856001,
+    "entity_index": {
+      "unknown": true,
+      "reason": "not kept by archive/trace"
+    },
+    "entity_id": {
+      "unknown": true,
+      "reason": "not kept by archive/trace"
+    },
+    "trip": {
+      "trip_id": "071350_6..N01R",
+      "route_id": {
+        "unknown": true,
+        "reason": "archive/trace folds 6X/7X/FX into 6/7/F"
+      },
+      "start_time": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      },
+      "start_date": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      },
+      "schedule_relationship": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      },
+      "direction_id": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      },
+      "nyct_train_id": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      },
+      "nyct_is_assigned": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      },
+      "nyct_direction": {
+        "unknown": true,
+        "reason": "not kept by archive/trace"
+      }
+    },
+    "stop_id": "631N",
+    "current_stop_sequence": 19,
+    "current_status": 1,
+    "vehicle_timestamp": 1790855978,
+    "congestion_level": {
+      "unknown": true,
+      "reason": "not kept by archive/trace"
+    },
+    "unmodeled_fields": {
+      "unknown": true,
+      "reason": "not kept by archive/trace"
+    }
+  }
+]

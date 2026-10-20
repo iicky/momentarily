@@ -1,0 +1,74 @@
+[
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/blob/2026-10-20/cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd.json.gz",
+      "payload_member": null,
+      "payload_sha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    },
+    "fetch_id": "ene_current@1792512000211",
+    "source": "ene_current",
+    "observed_at": 1792512001,
+    "record_index": 4,
+    "equipment_id": "EL223",
+    "record": {
+      "station": "14 St",
+      "borough": "",
+      "trainno": "A/C/E/L",
+      "equipment": "EL223",
+      "equipmenttype": "EL",
+      "serving": "mezzanine to uptown A/C/E platform",
+      "ADA": "Y",
+      "outagedate": "10/20/2026 11:41:00 AM",
+      "estimatedreturntoservice": "10/20/2026 08:00:00 PM",
+      "reason": "Under Investigation",
+      "isupcomingoutage": "N",
+      "ismaintenanceoutage": "N"
+    },
+    "outage_start_local": "10/20/2026 11:41:00 AM",
+    "estimated_return_local": "10/20/2026 08:00:00 PM",
+    "outage_start": 1792510860,
+    "estimated_return": 1792540800
+  },
+  {
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/ene",
+      "source_key": "archive/ene/2026-10-20/160000-ene_upcoming.json",
+      "row_index": 0,
+      "period": {
+        "start": "2026-07-21",
+        "end": null
+      }
+    },
+    "fetch_id": {
+      "unknown": true,
+      "reason": "archive/ene keeps no fetch record"
+    },
+    "source": "ene_upcoming",
+    "observed_at": 1792512001,
+    "record_index": 0,
+    "equipment_id": "EL785",
+    "record": {
+      "station": "Grand St",
+      "borough": "",
+      "trainno": "L",
+      "equipment": "EL785",
+      "equipmenttype": "EL",
+      "serving": "Street (NE corner of Bushwick Avenue and Grand Street) to 8 Ave-bound platform",
+      "ADA": "Y",
+      "outagedate": "11/01/2026 01:30:00 AM",
+      "estimatedreturntoservice": "11/01/2026 05:00:00 AM",
+      "reason": "Inspection",
+      "isupcomingoutage": "Y",
+      "ismaintenanceoutage": "N"
+    },
+    "outage_start_local": "11/01/2026 01:30:00 AM",
+    "estimated_return_local": "11/01/2026 05:00:00 AM",
+    "outage_start": {
+      "unknown": true,
+      "reason": "ambiguous: 01:30 occurs twice on 2026-11-01 in America/New_York"
+    },
+    "estimated_return": 1793527200
+  }
+]

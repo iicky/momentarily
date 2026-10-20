@@ -1,0 +1,120 @@
+[
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 2,
+      "payload_sha256": "2804bad6fe94a55f18b2b37e300919a5fd517b95aa81e95db574c0ba069a3740"
+    },
+    "fetch_id": "l@1792514520416",
+    "source": "l",
+    "observed_at": 1792514520,
+    "entity_index": 6,
+    "entity_id": "7",
+    "trip": {
+      "trip_id": "056100_L..N",
+      "route_id": "L",
+      "start_time": null,
+      "start_date": "20261020",
+      "schedule_relationship": 0,
+      "direction_id": 0,
+      "nyct_train_id": "0L 0921 RPY/8AV",
+      "nyct_is_assigned": true,
+      "nyct_direction": 1
+    },
+    "trip_update_timestamp": 1792514502,
+    "delay": -49,
+    "stop_times": [
+      {
+        "index": 0,
+        "stop_id": "L12N",
+        "stop_sequence": 12,
+        "arrival_time": 1792514551,
+        "arrival_delay": -49,
+        "arrival_uncertainty": 0,
+        "departure_time": 1792514566,
+        "departure_delay": -49,
+        "departure_uncertainty": 0,
+        "schedule_relationship": 0,
+        "departure_occupancy_status": null,
+        "nyct_scheduled_track": null,
+        "nyct_actual_track": "1"
+      },
+      {
+        "index": 1,
+        "stop_id": "L11N",
+        "stop_sequence": 13,
+        "arrival_time": 1792514641,
+        "arrival_delay": -39,
+        "arrival_uncertainty": 0,
+        "departure_time": 1792514656,
+        "departure_delay": -39,
+        "departure_uncertainty": 0,
+        "schedule_relationship": 0,
+        "departure_occupancy_status": null,
+        "nyct_scheduled_track": null,
+        "nyct_actual_track": null
+      }
+    ],
+    "unmodeled_fields": []
+  },
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 1,
+      "payload_sha256": "b6ebc9c63dc7f5dc475c4ecd5f9b86961b96f92edbbb2dbad2e7078cbd7142d5"
+    },
+    "fetch_id": "ace@1792514520415",
+    "source": "ace",
+    "observed_at": 1792514521,
+    "entity_index": 86,
+    "entity_id": "000043A",
+    "trip": {
+      "trip_id": "076700_A..S58R",
+      "route_id": "A",
+      "start_time": "12:47:00",
+      "start_date": "20261020",
+      "schedule_relationship": null,
+      "direction_id": null,
+      "nyct_train_id": "1A 1247 207/FAR",
+      "nyct_is_assigned": null,
+      "nyct_direction": 3
+    },
+    "trip_update_timestamp": null,
+    "delay": null,
+    "stop_times": [
+      {
+        "index": 0,
+        "stop_id": "A02S",
+        "stop_sequence": null,
+        "arrival_time": null,
+        "arrival_delay": null,
+        "arrival_uncertainty": null,
+        "departure_time": 1792514820,
+        "departure_delay": null,
+        "departure_uncertainty": null,
+        "schedule_relationship": null,
+        "departure_occupancy_status": 0,
+        "nyct_scheduled_track": "2",
+        "nyct_actual_track": null
+      },
+      {
+        "index": 1,
+        "stop_id": "A03S",
+        "stop_sequence": null,
+        "arrival_time": 1792514910,
+        "arrival_delay": null,
+        "arrival_uncertainty": null,
+        "departure_time": 1792514910,
+        "departure_delay": null,
+        "departure_uncertainty": null,
+        "schedule_relationship": null,
+        "departure_occupancy_status": 0,
+        "nyct_scheduled_track": "2",
+        "nyct_actual_track": null
+      }
+    ],
+    "unmodeled_fields": []
+  }
+]

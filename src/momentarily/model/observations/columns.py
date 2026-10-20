@@ -57,7 +57,7 @@ from momentarily.model.observations.contracts import (
 )
 from momentarily.model.observations.keys import DailyRecord, HourlyRecord
 
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 UNKNOWN_SUFFIX = "__unknown"
 TAG = "kind"
 

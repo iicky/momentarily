@@ -2,7 +2,7 @@
   {
     "schema": "observations/s1",
     "file_key": "model/observations/s1/derived/vehicle/2026-10-20/16.parquet",
-    "layout_version": 1,
+    "layout_version": 2,
     "decoder_version": "gtfsrt-1",
     "row_count": 3,
     "provenance": {

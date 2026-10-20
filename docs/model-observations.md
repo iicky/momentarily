@@ -78,9 +78,15 @@ Field census of 320 GTFS-RT payloads (`pb_census.json`, `detail.json`):
   feeds and `si` send `departure_occupancy_status` (field 7) on every
   stop-time update. Some `delay` values are negative and arrive as 64-bit
   two's-complement varints, so a decoder must read them as signed.
-- **NYCT extensions.** The header carries `nyct_feed_header.trip_replacement_period`
-  (per route, the end of the window in which the realtime feed replaces the
-  schedule). Trips carry `train_id` (e.g. `1A 0904 207/FAR`), `is_assigned`
+- **NYCT extensions.** The header carries `nyct_feed_header`: a required
+  `nyct_subway_version` (`1.0`) and a repeated `trip_replacement_period`,
+  each an optional `route_id` and an optional `TimeRange` within which the
+  realtime feed replaces the route's scheduled trips. Every feed sends one
+  period per route, in a fixed order (`ace`: A C E H; `numbered`: 1–7 S).
+  `numbered` omits the start and its end equals the header timestamp, not
+  the proto comment's "now + 30 minutes"; the B-division feeds and `si`
+  omit the start and end about 60 minutes on; `l` sends both, 30 minutes
+  apart. Trips carry `train_id` (e.g. `1A 0904 207/FAR`), `is_assigned`
   (absent on about half of the B-division trips), and `direction`. Stop-time
   updates carry `scheduled_track` and `actual_track`.
 - **Trip-level alerts.** `numbered` carries about one Alert entity per poll
@@ -360,12 +366,24 @@ class FeedHeaderObservation(Model):
     fetch_id: str
     source: SourceId
     observed_at: Instant
-    gtfs_realtime_version: str | None
+    gtfs_realtime_version: str  # required upstream
     incrementality: int | None
     header_timestamp: Instant | None
-    nyct_version: str | None
-    trip_replacement_periods: dict[str, Instant | None] = Field(
-        description="route_id -> end of the replacement window, as published.")
+    feed_version: str | None
+    nyct_feed_header: NyctFeedHeaderObs | None  # None: no NYCT extension
+
+class NyctFeedHeaderObs(Model):
+    nyct_subway_version: str  # required upstream
+    trip_replacement_periods: list[TripReplacementPeriodObs] = Field(
+        description="Every published period, in published order; a route may repeat.")
+
+class TripReplacementPeriodObs(Model):
+    route_id: str | None
+    replacement_period: TimeRangeObs | None
+
+class TimeRangeObs(Model):
+    start: Instant | None  # None: omitted, an open bound
+    end: Instant | None
 
 class AlertEntry(Model):
     alert_id: str
@@ -566,6 +584,14 @@ The build follows §3.1–3.3 except where listed here.
   `schema/model/s1/observations/parquet/` and pinned per `LAYOUT_VERSION`;
   any change fails a test until the version is bumped. `pyarrow` is not a
   dependency yet; the derive job adds it as an optional extra.
+- **Feed header.** `FeedHeaderObservation` follows the proto: the required
+  `gtfs_realtime_version` and `nyct_subway_version` are non-null, the
+  optional `feed_version` is kept, and `nyct_feed_header` is a nullable
+  struct, so a payload without the NYCT extension (null) stays distinct from
+  one with zero periods (empty list). Replacement periods are a list in
+  published order with duplicates kept; `route_id`, the `TimeRange` and each
+  bound are null exactly when the payload omits them, and an empty
+  `TimeRange` stays distinct from an absent one. Layout version 2.
 - **Derived-file metadata.** Every parquet file carries one
   `DerivedFileMetadata` as canonical JSON under the key-value metadata key
   `momentarily.observations`: `file_key`, `layout_version`,

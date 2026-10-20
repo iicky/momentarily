@@ -36,6 +36,7 @@ from momentarily.model.observations.contracts import (
     DerivedFileMetadata,
     EquipmentObservation,
     FeedFetch,
+    FeedHeaderObservation,
     LegacyCollectorHealth,
     LegacyFetchOutcome,
     LegacyRouteAlertState,
@@ -78,6 +79,7 @@ SHA = "0f" * 32
 # new pin here, never edit an old one.
 PINNED_LAYOUTS = {
     1: "05664fcfdec2e713911ce69ef4deb02df3e13bd7b60646526dd6ab8971d1dd65",
+    2: "9ad00e5cb9c23c34e336084c6a4a13022737cc181e08aa4a0a739f4b183d5fe1",
 }
 
 
@@ -678,6 +680,56 @@ def test_fixtures_round_trip_through_columns(record: str) -> None:
         row = to_row(parsed)
         assert list(row) == names
         assert from_row(model, row) == parsed
+
+
+def test_feed_header_keeps_replacement_periods_as_published() -> None:
+    """Start omitted, route omitted, range omitted, an empty range, and a
+    repeated route all survive pydantic and the columns, in published order."""
+    periods = [
+        {"route_id": "6", "replacement_period": {"start": None, "end": 1792516308}},
+        {"route_id": None, "replacement_period": {"start": 1792514508, "end": None}},
+        {"route_id": "6", "replacement_period": {"start": 1792514508, "end": None}},
+        {"route_id": "S", "replacement_period": None},
+        {"route_id": "1", "replacement_period": {"start": None, "end": None}},
+    ]
+    doc = _record(
+        "feed_header_observation",
+        2,
+        nyct_feed_header={
+            "nyct_subway_version": "1.0",
+            "trip_replacement_periods": periods,
+        },
+    )
+    parsed = FeedHeaderObservation.model_validate_json(json.dumps(doc))
+    assert (
+        parsed.model_dump(mode="json")["nyct_feed_header"]["trip_replacement_periods"]
+        == periods
+    )
+    row = to_row(parsed)
+    assert row["nyct_feed_header"]["trip_replacement_periods"] == periods
+    assert from_row(FeedHeaderObservation, row) == parsed
+
+
+def test_feed_header_without_nyct_extension_differs_from_one_without_periods() -> None:
+    absent = FeedHeaderObservation.model_validate(
+        _record("feed_header_observation", nyct_feed_header=None)
+    )
+    empty = FeedHeaderObservation.model_validate(
+        _record(
+            "feed_header_observation",
+            nyct_feed_header={
+                "nyct_subway_version": "1.0",
+                "trip_replacement_periods": [],
+            },
+        )
+    )
+    assert to_row(absent)["nyct_feed_header"] is None
+    assert to_row(empty)["nyct_feed_header"] == {
+        "nyct_subway_version": "1.0",
+        "trip_replacement_periods": [],
+    }
+    assert from_row(FeedHeaderObservation, to_row(absent)) == absent
+    assert from_row(FeedHeaderObservation, to_row(empty)) == empty
 
 
 def test_file_metadata_round_trips_through_parquet_key_values() -> None:

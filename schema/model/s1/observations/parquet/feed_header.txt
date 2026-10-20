@@ -2,8 +2,8 @@ lineage: struct<kind: string not null, payload_key: string not null, payload_mem
 fetch_id: string not null
 source: string not null
 observed_at: int64 not null
-gtfs_realtime_version: string
+gtfs_realtime_version: string not null
 incrementality: int64
 header_timestamp: int64
-nyct_version: string
-trip_replacement_periods: map<string, int64> not null
+feed_version: string
+nyct_feed_header: struct<nyct_subway_version: string not null, trip_replacement_periods: list<struct<route_id: string, replacement_period: struct<start: int64, end: int64>> not null> not null>

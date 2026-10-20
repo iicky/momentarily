@@ -1,5 +1,30 @@
 {
   "$defs": {
+    "NyctFeedHeaderObs": {
+      "additionalProperties": false,
+      "description": "The NYCT ``nyct_feed_header`` extension of a FeedHeader, as published.",
+      "properties": {
+        "nyct_subway_version": {
+          "description": "Required upstream.",
+          "title": "Nyct Subway Version",
+          "type": "string"
+        },
+        "trip_replacement_periods": {
+          "description": "Every published period, in published order; a route may repeat. Empty when the extension carries none.",
+          "items": {
+            "$ref": "#/$defs/TripReplacementPeriodObs"
+          },
+          "title": "Trip Replacement Periods",
+          "type": "array"
+        }
+      },
+      "required": [
+        "nyct_subway_version",
+        "trip_replacement_periods"
+      ],
+      "title": "NyctFeedHeaderObs",
+      "type": "object"
+    },
     "RawLineage": {
       "additionalProperties": false,
       "description": "Decoded from a stored raw payload.",
@@ -42,16 +67,86 @@
       ],
       "title": "RawLineage",
       "type": "object"
+    },
+    "TimeRangeObs": {
+      "additionalProperties": false,
+      "description": "A GTFS-RT TimeRange as published. Each bound is optional upstream:\n``None`` means the payload omitted it (an open bound), never \"unknown\".",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None: omitted, open end.",
+          "title": "End"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None: omitted, open start.",
+          "title": "Start"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "TimeRangeObs",
+      "type": "object"
+    },
+    "TripReplacementPeriodObs": {
+      "additionalProperties": false,
+      "description": "One NYCT ``TripReplacementPeriod``: within the range, the realtime feed\nreplaces every scheduled trip of the route. Both fields are optional\nupstream; ``None`` means the payload omitted it.",
+      "properties": {
+        "replacement_period": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeRangeObs"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None: no TimeRange published. A TimeRange with neither bound is kept as published, distinct from None."
+        },
+        "route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Route Id"
+        }
+      },
+      "required": [
+        "route_id",
+        "replacement_period"
+      ],
+      "title": "TripReplacementPeriodObs",
+      "type": "object"
     }
   },
   "additionalProperties": false,
   "description": "The FeedHeader of one GTFS-RT payload. Raw only.",
   "properties": {
-    "fetch_id": {
-      "title": "Fetch Id",
-      "type": "string"
-    },
-    "gtfs_realtime_version": {
+    "feed_version": {
       "anyOf": [
         {
           "type": "string"
@@ -60,7 +155,16 @@
           "type": "null"
         }
       ],
-      "title": "Gtfs Realtime Version"
+      "title": "Feed Version"
+    },
+    "fetch_id": {
+      "title": "Fetch Id",
+      "type": "string"
+    },
+    "gtfs_realtime_version": {
+      "description": "Required upstream.",
+      "title": "Gtfs Realtime Version",
+      "type": "string"
     },
     "header_timestamp": {
       "anyOf": [
@@ -84,21 +188,22 @@
           "type": "null"
         }
       ],
+      "description": "None: omitted (the proto default is FULL_DATASET, 0).",
       "title": "Incrementality"
     },
     "lineage": {
       "$ref": "#/$defs/RawLineage"
     },
-    "nyct_version": {
+    "nyct_feed_header": {
       "anyOf": [
         {
-          "type": "string"
+          "$ref": "#/$defs/NyctFeedHeaderObs"
         },
         {
           "type": "null"
         }
       ],
-      "title": "Nyct Version"
+      "description": "None: the payload has no NYCT extension. An extension with zero periods is a NyctFeedHeaderObs with an empty list."
     },
     "observed_at": {
       "description": "UTC epoch seconds.",
@@ -119,23 +224,6 @@
       ],
       "title": "Source",
       "type": "string"
-    },
-    "trip_replacement_periods": {
-      "additionalProperties": {
-        "anyOf": [
-          {
-            "description": "UTC epoch seconds.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "description": "route_id -> end of the replacement window, as published.",
-      "title": "Trip Replacement Periods",
-      "type": "object"
     }
   },
   "required": [
@@ -146,8 +234,8 @@
     "gtfs_realtime_version",
     "incrementality",
     "header_timestamp",
-    "nyct_version",
-    "trip_replacement_periods"
+    "feed_version",
+    "nyct_feed_header"
   ],
   "title": "FeedHeaderObservation",
   "type": "object"

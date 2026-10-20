@@ -658,6 +658,36 @@ class TripUpdateObservation(Model):
         return self
 
 
+class TimeRangeObs(Model):
+    """A GTFS-RT TimeRange as published. Each bound is optional upstream:
+    ``None`` means the payload omitted it (an open bound), never "unknown"."""
+
+    start: Instant | None = Field(description="None: omitted, open start.")
+    end: Instant | None = Field(description="None: omitted, open end.")
+
+
+class TripReplacementPeriodObs(Model):
+    """One NYCT ``TripReplacementPeriod``: within the range, the realtime feed
+    replaces every scheduled trip of the route. Both fields are optional
+    upstream; ``None`` means the payload omitted it."""
+
+    route_id: str | None
+    replacement_period: TimeRangeObs | None = Field(
+        description="None: no TimeRange published. A TimeRange with neither "
+        "bound is kept as published, distinct from None."
+    )
+
+
+class NyctFeedHeaderObs(Model):
+    """The NYCT ``nyct_feed_header`` extension of a FeedHeader, as published."""
+
+    nyct_subway_version: str = Field(description="Required upstream.")
+    trip_replacement_periods: list[TripReplacementPeriodObs] = Field(
+        description="Every published period, in published order; a route may "
+        "repeat. Empty when the extension carries none."
+    )
+
+
 class FeedHeaderObservation(Model):
     """The FeedHeader of one GTFS-RT payload. Raw only."""
 
@@ -665,12 +695,15 @@ class FeedHeaderObservation(Model):
     fetch_id: str
     source: GtfsRtSource
     observed_at: Instant
-    gtfs_realtime_version: str | None
-    incrementality: int | None
+    gtfs_realtime_version: str = Field(description="Required upstream.")
+    incrementality: int | None = Field(
+        description="None: omitted (the proto default is FULL_DATASET, 0)."
+    )
     header_timestamp: Instant | None
-    nyct_version: str | None
-    trip_replacement_periods: dict[str, Instant | None] = Field(
-        description="route_id -> end of the replacement window, as published."
+    feed_version: str | None
+    nyct_feed_header: NyctFeedHeaderObs | None = Field(
+        description="None: the payload has no NYCT extension. An extension "
+        "with zero periods is a NyctFeedHeaderObs with an empty list."
     )
 
     @model_validator(mode="after")

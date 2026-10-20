@@ -1,0 +1,3 @@
+route_id,agency_id,route_short_name,route_long_name,route_type,route_color,route_text_color,route_sort_order
+A,MTA NYCT,A,Alpha Express,1,0062CF,FFFFFF,1
+B,MTA NYCT,B,Bravo Local,1,FF6319,FFFFFF,2

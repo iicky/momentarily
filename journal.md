@@ -11043,3 +11043,78 @@ through it.
   overwrite rule, every rebuild after a new commit would conflict: all 6
   fixture files differed only there. The job rebuilds with the stored file's
   `code_sha` and keeps the file when the bytes then match.
+
+## 2026-10-21 events-layer-scoping-findings
+
+origin: agent
+
+While scoping layer 3 (`docs/model-events.md`), I measured the trace days
+2026-08-12, 09-15 and 10-19, plus two raw samples. The 2026-10-21 sample
+was polled every 30 s from 22:38 to 00:55 New York time.
+
+- From 03:22 to 04:37 UTC, six GTFS-RT feeds (`ace`, `bdfm`, `g`, `jz`,
+  `nqrw`, `si`) served byte-identical payloads with HTTP 200. That is
+  about 75 minutes and about 150 identical payloads per feed, with the
+  header frozen at 03:22. `l` and `numbered` stayed live. A 200 is not
+  evidence of data: coverage must test that the header advances. The three
+  legacy trace days show no such episode (no run of 3 or more identical
+  per-feed row sets).
+- The vehicle `stop_id` means different things per feed. In the B division
+  and SIR it is the last stop reached and changes on arrival, and at a stop
+  change `vehicle_timestamp` equals the trip update's arrival time
+  (617 of 617). In `numbered` and `l` it is the next stop and changes on
+  departure. B-division departures are not observable in either lineage.
+  A trip update stops listing a stop 32–47 s after its predicted time,
+  whether or not the train has left (a review of 1,004 drops), so it is a
+  prune, not a departure. B-division dwell cannot be separated from run
+  time.
+- Raw `start_date` is the calendar date of the trip start, not the GTFS
+  service date. Of 754 matched runs around midnight, 57 trips scheduled
+  past 24:00 carry the service date + 1. Realtime ids appear both wrapped
+  (`000100`) and unwrapped (`144050`).
+- A collapse rule based on the ±10-minute median misses long collapses: on
+  simulated zero-count collapses it flags 5% of the minutes of 20-minute
+  collapses and 2% of 50-minute ones. Comparing with scheduled supply from
+  layer 1, plus a zero-count state for thin feeds, flags 100%.
+- Negative results:
+  - The route lineage barely matters for trip matching. Using the trip id's
+    route field instead of the trace's folded route changes 3–10 runs a
+    day, out of about 9,000.
+  - Splitting runs at a 10 min, 30 min or 4 h gap gives 9,069, 9,053 and
+    9,045 runs on 09-15.
+  - With trailing-frozen rows removed, making tier 5 one-to-one by min-cost
+    assignment costs 2.5 points of match rate on 09-15 (97.7% to 95.2%)
+    and 3.3 on 10-19 (96.9% to 93.6%). Greedy gives 95.0% and 93.4%.
+  - A clock rule (04:00 cut) for the service day of unmatched runs is wrong
+    for 82–84% of runs first seen 00:00–04:00. The id-origin rule is wrong
+    for 11–12% of them, because of the 24:00 wrap.
+
+## 2026-10-21 events-layer-coverage-correction
+
+origin: agent
+
+Correction to `events-layer-scoping-findings` above: the count-based
+collapse rule it mentions (scheduled supply plus a zero-count state) is
+not adopted. Train counts must never mark data as missing. A route, or a
+single-route feed such as `g`, at zero with an advancing header is
+observed absence of trains. Coverage now uses transport evidence only:
+failed fetch, missing invocation, stale header. Counts become supply
+records, with an annotation when 3 or more feeds fall below 30% of
+schedule at once.
+
+- On 2026-10-19, J ran at 0.40–0.70 of schedule for 91 polls without
+  being flagged.
+- In simulation, single-route zeros never set the annotation, and
+  three-feed zeros always did.
+
+## 2026-10-21 events-layer-match-rate-correction
+
+origin: agent
+
+Correction to `events-layer-scoping-findings`: its one-to-one figures
+(95.2% on 09-15, 93.6% on 10-19) were measured with whole trailing
+old-timestamp blocks removed. The proposal now keeps each block's arrival
+row and runs whose every row is old. On that definition min-cost
+assignment gives 95.19% (09-15) and 92.37% (10-19), and greedy gives 94.99%
+and 92.19%. 10-19 falls further because its 152 stale-only runs now take
+part in matching.

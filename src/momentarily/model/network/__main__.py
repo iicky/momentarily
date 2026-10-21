@@ -15,6 +15,13 @@ build (--gtfs ZIP | --live) --stations SNAPSHOT [--overrides JSON]
 day-feed-map --traversals DIR --out DIR
     Write DIR/day_feed_map.json: the feed each archived traversal day was
     collected against, read from that day's own provenance.
+
+update --source ROOT --out ROOT [--through YYYY-MM-DD]
+    Extend OUT's model/network/s1/day_feed_map.json past its last day through
+    --through (default: yesterday, UTC) from the recorder ticks and static
+    feed captures under SOURCE, build every feed the map names that has no
+    build, and write the changed objects. Both are local bucket mirrors; the
+    nightly R2 run is ``training.network_update``.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import gzip
 import json
 import sys
 import zlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 from momentarily.gtfs.static import fetch_gtfs_zip
@@ -183,6 +191,19 @@ def _cmd_day_feed_map(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_update(args: argparse.Namespace) -> int:
+    from momentarily.model.network.update import run, yesterday_utc
+    from momentarily.model.observations.derive.storage import LocalStorage
+
+    through = args.through or yesterday_utc(datetime.now(UTC))
+    return run(
+        LocalStorage(Path(args.source)),
+        LocalStorage(Path(args.out)),
+        through,
+        current_code(),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m momentarily.model.network")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -208,6 +229,12 @@ def main(argv: list[str] | None = None) -> int:
     dfm.add_argument("--traversals", required=True)
     dfm.add_argument("--out", required=True)
     dfm.set_defaults(func=_cmd_day_feed_map)
+
+    upd = sub.add_parser("update", help="extend the day map and build new feeds")
+    upd.add_argument("--source", required=True, help="root holding ticks and gtfs")
+    upd.add_argument("--out", required=True, help="root holding model/network/s1")
+    upd.add_argument("--through", help="last UTC day to add; default yesterday")
+    upd.set_defaults(func=_cmd_update)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

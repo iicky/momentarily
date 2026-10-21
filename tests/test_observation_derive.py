@@ -73,10 +73,12 @@ CODE = ("replay-test", False)
 
 # sha256 of the canonical JSON of every derived file of the fixture day
 # (records and metadata, code provenance aside), per DECODER_VERSION. A
-# decoder change that alters output must bump DECODER_VERSION and add a pin;
-# never edit an old version's pin.
+# decoder change that alters output must bump DECODER_VERSION and add a pin
+# for the new version; it must not edit an existing version's pin. The
+# metadata holds each raw input's digest, so regenerating the fixture's raw
+# objects re-takes the pin.
 REPLAY_DIGEST: dict[str, str] = {
-    "1": "69e3e139087d0114460250ce8bd534cc884085c1d31a9b0bf466fb19b76a3d48",
+    "1": "72df0c578d1137ce304283fc059d1775a9120c9cfb8f971bf64f41138b837a0a",
 }
 
 MODELS: dict[str, type[BaseModel]] = {
@@ -803,7 +805,14 @@ def test_a_listed_key_r2_cannot_return_is_a_missing_input(
         for p in RECORDED.rglob("*")
         if p.is_file()
     }
-    blob = next(k for k in objects if "/raw/blob/" in k)
+    # The alerts blob of the first tick: the run decodes it, so it must read it.
+    # (A blob the run never decodes, such as ene_equipments, is never fetched.)
+    first_tick = CollectorTick.model_validate_json(
+        objects[min(k for k in objects if "/ticks/" in k)]
+    )
+    (alerts,) = [f for f in first_tick.fetches if f.source == "alerts"]
+    assert alerts.payload_key is not None
+    blob = alerts.payload_key
     del objects[blob]
     r2 = R2Storage(_VanishingS3(objects, blob), "bucket")  # pyright: ignore[reportArgumentType]
     report = derive(r2, r2, DAY, *CODE)

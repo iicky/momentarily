@@ -286,22 +286,8 @@ def invocation(
                 )
         clock = max(clock, finished)
         fetches.append(f)
-    fetches.sort(
-        key=lambda f: (f.finished_at_ms or f.started_at_ms + 10_000, f.fetch_id)
-    )
-    gtfsrt = [f for f in fetches if f.source in GTFSRT_SOURCES]
-    # Members are numbered in the order the index lists the stored fetches.
-    renumber = {
-        f.payload_member: i + 1
-        for i, f in enumerate(x for x in gtfsrt if x.payload_member)
-    }
-    fetches = [
-        f.model_copy(update={"payload_member": renumber[f.payload_member]})
-        if f.payload_member
-        else f
-        for f in fetches
-    ]
-    bodies = {renumber[m]: b for m, b in bodies.items()}
+    # Fetches stay in planned order, so members are already numbered in the
+    # order the index lists the stored fetches.
     index = TickBundleIndex.model_validate(
         {
             "schema": "observations/s1",

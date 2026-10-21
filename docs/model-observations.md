@@ -756,7 +756,9 @@ where listed here.
 - **Bundle.** Every member is a gzip member, the index (member 0) included.
   A reader splits them in order (Python: `zlib.decompressobj(31)` and
   `unused_data`). A bundle is written every invocation, also when no GTFS-RT
-  body was read, so the index records the failed attempts.
+  body was read, so the index records the failed attempts. The tick's and the
+  index's `fetches`, and so the member numbers, follow `planned_sources`
+  order, not the order the fetches finished in.
 - **Outcomes.** A GTFS-RT body is `unparseable` when its top level or its
   FeedHeader is not well-formed protobuf. Entity bytes are left to the
   offline decoder. The alerts JSON must be an object whose `entity` is an
@@ -925,7 +927,7 @@ needs the whole day.
   format: ten cron minutes of hour 14, every feed every minute, ENE once. It
   synthesizes one HTTP 503, one overlapping invocation (3 s later, 3
   timeouts) and one lost tick record, and documents each. The output is
-  25 objects, 1,638,618 bytes, and the generator is deterministic.
+  25 objects, 1,638,600 bytes, and the generator is deterministic.
   `tests/test_observation_derive.py` pins the canonical JSON of the derived
   records per `DECODER_VERSION`, checks that a second run is byte-identical,
   and rebuilds the recorder's own bundle from `tests/fixtures/recorder_output.json`

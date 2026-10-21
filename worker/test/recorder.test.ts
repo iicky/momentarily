@@ -576,6 +576,58 @@ describe('blob dedup within a UTC day', () => {
   });
 });
 
+describe('record order', () => {
+  test('fetches, bundle index and members follow the planned order, whichever fetch finishes first', async () => {
+    const urlOf: Record<string, string> = { alerts: FEEDS.alerts, ...Object.fromEntries(TRIP_UPDATE_FEEDS) };
+    const sources = Object.keys(urlOf);
+    // Each feed's response is held until the recorder has recorded the fetch
+    // released before it, so the fetches complete in exactly `release` order.
+    let onRecord = (_source: string): void => {};
+    const proto = Recorder.prototype as unknown as { record: (source: string, ...rest: unknown[]) => void };
+    const record = proto.record;
+    vi.spyOn(proto, 'record').mockImplementation(function (this: unknown, source: string, ...rest: unknown[]) {
+      record.call(this, source, ...rest);
+      onRecord(source);
+    });
+
+    async function run(release: string[]): Promise<{ completed: string[]; tick: CollectorTick; members: Uint8Array[] }> {
+      // The worker's lib target predates Promise.withResolvers.
+      const gate = (): { promise: Promise<void>; resolve: () => void } => {
+        let resolve = (): void => {};
+        const promise = new Promise<void>((r) => { resolve = r; });
+        return { promise, resolve };
+      };
+      const gates = new Map(release.map((s) => [urlOf[s]!, gate()]));
+      const completed: string[] = [];
+      let next = 0;
+      const releaseNext = (): void => gates.get(urlOf[release[next++]!]!)?.resolve();
+      onRecord = (source) => {
+        if (source in urlOf) completed.push(source);
+        releaseNext();
+      };
+      stubUpstream(async (url, init) => {
+        await gates.get(url)?.promise;
+        return liveMinute(url, init);
+      });
+      releaseNext();
+      await runScheduled(r2, SCHEDULED_AT, STARTED_AT_MS);
+      const tick = await tickAt(SCHEDULED_AT, STARTED_AT_MS);
+      const { index, members } = await indexAt(SCHEDULED_AT, STARTED_AT_MS);
+      expect(index.fetches).toEqual(tick.fetches.filter((f) => f.source in GTFSRT_BODIES));
+      await r2.delete([tickKey(SCHEDULED_AT, STARTED_AT_MS), bundleKey(SCHEDULED_AT, STARTED_AT_MS)]);
+      return { completed, tick, members };
+    }
+
+    const forward = await run(sources);
+    const reverse = await run([...sources].reverse());
+    expect(forward.completed).toEqual(sources);
+    expect(reverse.completed).toEqual([...sources].reverse());
+    expect(reverse.tick).toEqual(forward.tick);
+    expect(reverse.members).toEqual(forward.members);
+    expect(forward.tick.fetches.map((f) => f.source)).toEqual(forward.tick.planned_sources);
+  });
+});
+
 describe('recorder output fixture for the Pydantic validators', () => {
   // One off-boundary tick with every outcome the recorder can give a GTFS-RT
   // feed. tests/test_recorder_output.py runs it through CollectorTick and

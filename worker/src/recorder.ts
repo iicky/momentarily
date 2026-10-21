@@ -217,7 +217,9 @@ function concat(parts: Uint8Array[]): Uint8Array {
 }
 
 export class Recorder {
+  /** Sources in the order the tick decided to fetch them. */
   private readonly planned: SourceId[] = [];
+  /** Reported fetches, in `planned` order (see `record`). */
   private readonly recorded: Recorded[] = [];
   /** Every attempt started through `attempt`, settled or not; never rejects. */
   private readonly inflight: Promise<void>[] = [];
@@ -314,7 +316,14 @@ export class Recorder {
         }
       })();
     }
-    this.recorded.push(entry);
+    // Kept in planned-source order, not completion order, so the tick record,
+    // the bundle index and the member numbering do not depend on which fetch
+    // finished first. A source reporting twice keeps its reports in order.
+    const rank = this.planned.indexOf(source);
+    let at = this.recorded.length;
+    // Stable: stop at the first entry of equal or lower rank, so equal ranks stay in report order.
+    while (at > 0 && this.planned.indexOf(this.recorded[at - 1]!.fetch.source) > rank) at -= 1;
+    this.recorded.splice(at, 0, entry);
   }
 
   private async storeBlob(entry: Recorded): Promise<void> {

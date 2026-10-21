@@ -15,6 +15,7 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -49,7 +50,17 @@ from momentarily.model.observations.derive.alert_index import (
 from momentarily.model.observations.derive.bundle import read_bundle
 from momentarily.model.observations.derive.run import NotDecoded, Report, derive
 from momentarily.model.observations.derive.storage import LocalStorage
-from momentarily.model.observations.keys import BlobKey, BundleKey, TickKey, parse_key
+from momentarily.model.observations.keys import (
+    BlobKey,
+    BundleKey,
+    DerivedDayKey,
+    DerivedHourKey,
+    TickKey,
+    parse_key,
+    utc_day,
+)
+from momentarily.model.observations.legacy import run as legacy_run
+from momentarily.model.observations.legacy.__main__ import main as legacy_main
 from momentarily.model.observations.parquet import read_records
 from scripts.gen_recorded_hour_fixture import bundle_bytes, compact_json, gzip_member
 from training.derive_observations import R2Storage
@@ -445,6 +456,118 @@ def test_an_unreadable_stored_file_is_a_conflict_not_a_crash(tmp_path: Path) -> 
     forced = _derive(out, overwrite=True)
     assert not forced.failed
     assert read_records(out / key, FeedHeaderObservation)[0]
+
+
+# --- legacy backfill files share the derived/ keys -----------------------------------
+
+LEGACY_MIRROR = FIXTURES / "model" / "observations" / "legacy_mirror"
+HOUR_14 = day_start(DAY) + 14 * 3600
+VEHICLE_13 = DerivedHourKey("vehicle", HOUR_14 - 3600).key
+VEHICLE_14 = DerivedHourKey("vehicle", HOUR_14).key
+ALERT_VERSION = DerivedDayKey("alert_version", DAY).key
+
+
+def _shift(mirror: Path, key: str, to: int, origin: int) -> None:
+    """Copy the fixture object ``key`` into ``mirror``, every timestamp within
+    a day of ``origin`` moved by ``to - origin``."""
+
+    def moved(text: str) -> str:
+        return re.sub(
+            r"\b\d{10}\b",
+            lambda m: (
+                str(int(m[0]) + to - origin)
+                if abs(int(m[0]) - origin) < 86400
+                else m[0]
+            ),
+            text,
+        ).replace(utc_day(origin), utc_day(to))
+
+    path = mirror / moved(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(moved((LEGACY_MIRROR / key).read_text()))
+
+
+def _legacy_mirror(root: Path) -> Path:
+    """Legacy objects moved onto the fixture day: trace ticks in hours 13 and
+    14 (vehicle files) and two alert sightings (the alert_version file)."""
+    trace = "archive/trace/2026-09-15/1789477995.json"
+    for at in (HOUR_14 - 3000, HOUR_14 + 600):
+        _shift(root, trace, at, 1789477995)
+    for name in ("1791893575", "1791893817"):
+        key = f"archive/alerts/2026-10-13/{name}-lmm_alert_271625_26.json"
+        _shift(root, key, 1791893575 + 7 * 86400, 1791893575)
+    return root
+
+
+def _backfilled(out: Path, tmp_path: Path) -> dict[str, bytes]:
+    legacy_run.run(_legacy_mirror(tmp_path / "mirror"), out, *CODE)
+    files = _files(out)
+    assert {VEHICLE_13, VEHICLE_14, ALERT_VERSION} <= set(files)
+    return files
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_a_day_without_ticks_leaves_backfill_files_alone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], overwrite: bool
+) -> None:
+    out, empty = tmp_path / "out", tmp_path / "empty"
+    empty.mkdir()
+    before = _backfilled(out, tmp_path)
+    args = ["--root", str(empty), "--out", str(out), "--day", DAY]
+    assert main(args + ["--overwrite"] * overwrite) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "no_ticks"
+    assert report["records"] == {}
+    assert _files(out) == before
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_recorded_rows_never_replace_or_remove_backfill_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], overwrite: bool
+) -> None:
+    """Hour 14 and the daily index collide with recorded rows (conflicts);
+    hour 13 has none, so the sweep keeps it without failing."""
+    out = tmp_path / "out"
+    before = _backfilled(out, tmp_path)
+    args = ["--root", str(RECORDED), "--out", str(out), "--day", DAY]
+    assert main(args + ["--overwrite"] * overwrite) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["failed"]
+    assert {c["key"] for c in report["conflicts"]} == {VEHICLE_14, ALERT_VERSION}
+    assert report["foreign_kept"] == [VEHICLE_13]
+    assert report["records"]["vehicle"]["outcomes"] == {"conflict": 1}
+    assert report["records"]["alert_version"]["outcomes"] == {"conflict": 1}
+    after = _files(out)
+    assert {k: after[k] for k in before} == before
+    assert DerivedHourKey("trip_update", HOUR_14).key in after
+
+
+def test_the_backfill_never_overwrites_a_raw_file(tmp_path: Path) -> None:
+    out, saved = tmp_path / "out", tmp_path / "report.json"
+    _derive(out)
+    raw = _files(out)
+    mirror = _legacy_mirror(tmp_path / "mirror")
+    args = ["--mirror", str(mirror), "--out", str(out), "--report", str(saved)]
+    assert legacy_main(args) == 1
+    report = json.loads(saved.read_text())
+    assert sorted(report["conflicts"]) == sorted([VEHICLE_14, ALERT_VERSION])
+    assert VEHICLE_13 in report["files"]
+    after = _files(out)
+    assert {k: after[k] for k in raw} == raw
+    assert VEHICLE_13 in after
+
+
+def test_the_backfill_never_overwrites_an_unreadable_file(tmp_path: Path) -> None:
+    out, saved = tmp_path / "out", tmp_path / "report.json"
+    (out / VEHICLE_13).parent.mkdir(parents=True)
+    (out / VEHICLE_13).write_bytes(b"not parquet")
+    mirror = _legacy_mirror(tmp_path / "mirror")
+    args = ["--mirror", str(mirror), "--out", str(out), "--report", str(saved)]
+    assert legacy_main(args) == 1
+    report = json.loads(saved.read_text())
+    assert report["conflicts"] == [VEHICLE_13]
+    assert VEHICLE_14 in report["files"]
+    assert (out / VEHICLE_13).read_bytes() == b"not parquet"
 
 
 # --- the R2 store ------------------------------------------------------------------

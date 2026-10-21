@@ -11,7 +11,9 @@ hourly ones. Hourly files close on the archive's watermark (an object's key
 bounds the time of every later record), daily files at the end of their day.
 
 A malformed object is skipped and listed in the report; a record a contract
-rejects stops the run.
+rejects stops the run. A stored file at a target key that is not a readable
+legacy file (raw lineage, read from its provenance, or unreadable) is kept
+and listed as a conflict, never overwritten.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import pyarrow as pa
 from pydantic import BaseModel
 
 from momentarily.model.observations.contracts import (
@@ -55,7 +58,12 @@ from momentarily.model.observations.legacy.common import (
     LegacyObject,
     MalformedObjectError,
 )
-from momentarily.model.observations.parquet import file_metadata, write_records
+from momentarily.model.observations.parquet import (
+    file_lineage,
+    file_metadata,
+    read_file_metadata,
+    write_records,
+)
 
 Adapter = Callable[[LegacyObject], list[Emitted]]
 
@@ -108,6 +116,7 @@ class Report:
     archives: dict[str, ArchiveStats]
     records: dict[str, RecordStats]
     files: list[str]
+    conflicts: list[str] = field(default_factory=list[str])
 
 
 @dataclass
@@ -187,7 +196,23 @@ class _Writer:
             if b.end <= before and (archive is None or b.archives == {archive}):
                 self._write(key, self._open.pop(key))
 
+    def _foreign(self, key: str) -> bool:
+        """Whether a file stored under ``key`` is not a readable legacy
+        derived file (raw lineage, or unreadable)."""
+        path = self._out / key
+        if not path.is_file():
+            return False
+        try:
+            meta = read_file_metadata(path.read_bytes())
+        except (pa.ArrowException, KeyError, ValueError):
+            return True
+        return file_lineage(meta) != "legacy"
+
     def _write(self, key: str, bucket: _Bucket) -> None:
+        self._written.add(key)
+        if self._foreign(key):
+            self._report.conflicts.append(key)
+            return
         t0 = time.perf_counter()
         meta = file_metadata(
             key, DECODER_VERSION, len(bucket.records), bucket.inputs, *self._code
@@ -198,7 +223,6 @@ class _Writer:
         stats.rows += len(bucket.records)
         stats.bytes += size
         stats.seconds += time.perf_counter() - t0
-        self._written.add(key)
         self._report.files.append(key)
 
 

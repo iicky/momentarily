@@ -36,7 +36,8 @@ tick folder can add to them.
 blob its records were read from, with the sha256 of the stored object and
 the latest ``observed_at`` it contributed, so ``built_at`` is the latest
 observation in the file and a rebuild from the same objects gives the same
-bytes. ``Output`` applies the overwrite rule.
+bytes. ``Output`` applies the overwrite rule. A run that observes no fetch in
+its scope (``no_ticks``) writes and removes nothing.
 """
 
 from __future__ import annotations
@@ -51,11 +52,9 @@ from pathlib import Path
 from typing import Literal, cast
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 from google.transit import gtfs_realtime_pb2
 from pydantic import BaseModel, JsonValue, ValidationError
 
-from momentarily.model.observations.columns import read_parquet_metadata
 from momentarily.model.observations.contracts import (
     GTFSRT_SOURCES,
     AlertPresence,
@@ -107,7 +106,13 @@ from momentarily.model.observations.keys import (
     parse_key,
     utc_day,
 )
-from momentarily.model.observations.parquet import Rows, file_metadata, write_rows
+from momentarily.model.observations.parquet import (
+    Rows,
+    file_lineage,
+    file_metadata,
+    read_file_metadata,
+    write_rows,
+)
 
 _HOUR = 3600
 _DAY = 86400
@@ -178,6 +183,7 @@ class Report:
     missing_inputs: list[InputProblem] = field(default_factory=list[InputProblem])
     inconsistent_inputs: list[InputProblem] = field(default_factory=list[InputProblem])
     conflicts: list[InputProblem] = field(default_factory=list[InputProblem])
+    foreign_kept: list[str] = field(default_factory=list[str])
 
     @property
     def failed(self) -> bool:
@@ -373,18 +379,15 @@ def _decode(payload: bytes, fetch: RawFetch) -> dict[HourlyRecord, list[BaseMode
 # --- writing -----------------------------------------------------------------
 
 
-def _metadata_of(data: bytes) -> DerivedFileMetadata:
-    meta = pq.read_metadata(pa.BufferReader(data))  # pyright: ignore[reportUnknownMemberType]
-    kv = meta.metadata or {}
-    return read_parquet_metadata(kv)
-
-
 class Output:
     """Writes derived files under the overwrite rule:
 
     * no file under the key: written;
     * a file with identical bytes: unchanged;
-    * a file written by another ``DECODER_VERSION``: replaced;
+    * a file whose provenance does not name raw inputs alone (a legacy
+      backfill file): a conflict, kept even with ``overwrite``; this job
+      never replaces or removes another writer's file;
+    * a raw file written by another ``DECODER_VERSION``: replaced;
     * a file whose bytes equal this build's under the existing file's
       ``code_sha`` and ``code_dirty`` (only the code provenance differs):
       unchanged, the existing file is kept;
@@ -392,9 +395,10 @@ class Output:
       conflict. The existing file is kept and the run fails, unless
       ``overwrite`` replaces it.
 
-    A stored file the rebuild has no rows for follows the same rule: removed
-    when ``overwrite`` is set or its ``decoder_version`` differs, else a
-    conflict.
+    A stored file the rebuild has no rows for: another writer's file is
+    kept and listed in ``foreign_kept`` (not a conflict); a raw file is
+    removed when ``overwrite`` is set or its ``decoder_version`` differs,
+    else a conflict.
     """
 
     def __init__(
@@ -442,9 +446,14 @@ class Output:
         except KeyError:
             return None
         try:
-            return old, _metadata_of(old)
+            return old, read_file_metadata(old)
         except (pa.ArrowException, KeyError, ValueError):
             return old, None
+
+    def _foreign(self, key: str) -> FileOutcome:
+        """A file another writer owns: kept whatever ``overwrite`` says."""
+        self._report.conflicts.append(InputProblem(key, "not a raw-lineage file"))
+        return "conflict"
 
     def _conflict(self, key: str, problem: str) -> FileOutcome:
         if self._overwrite:
@@ -473,6 +482,8 @@ class Output:
             outcome = "unchanged"
         elif stored[1] is None:
             outcome = self._conflict(key, "stored file is not a readable derived file")
+        elif file_lineage(stored[1]) != "raw":
+            outcome = self._foreign(key)
         elif stored[1].decoder_version != DECODER_VERSION:
             outcome = "replaced"
         else:
@@ -490,7 +501,9 @@ class Output:
         if stored is None:
             return
         meta = stored[1]
-        if self._overwrite or (
+        if meta is not None and file_lineage(meta) != "raw":
+            self._report.foreign_kept.append(key)
+        elif self._overwrite or (
             meta is not None and meta.decoder_version != DECODER_VERSION
         ):
             self._storage.delete(key)
@@ -676,8 +689,8 @@ def derive(
 ) -> Report:
     """Derive ``day`` (UTC hours ``hours``, inclusive) from ``source`` into
     ``out``. The daily ``alert_version`` file is built only for a whole day.
-    A day with no fetch observed in the scope writes nothing (status
-    ``no_ticks``)."""
+    A day with no fetch observed in the scope writes and removes nothing
+    (status ``no_ticks``)."""
     check_day(day)
     if not 0 <= hours[0] <= hours[1] <= 23:
         raise ValueError(f"hours {hours} are not a range within one day")
@@ -690,8 +703,9 @@ def derive(
                 for f in inv.fetches:
                     run.fetch(inv, f, report)
             run.flush(folder)
-        run.index(report)
-        run.sweep()
+        if run.fetches:
+            run.index(report)
+            run.sweep()
     finally:
         output.close()
     report.fetches = dict(sorted(run.fetches.items()))

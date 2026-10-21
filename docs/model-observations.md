@@ -817,9 +817,9 @@ missing or inconsistent input, and every conflicting file. Exit status 0
 means clean. Exit status 1 means a fetch failed to decode, an input is
 missing or inconsistent, or a file conflicts (see the overwrite rule). Exit
 status 2 means bad arguments or no `--root`. A day with no fetch observed in
-it writes nothing, reports `"status": "no_ticks"` and exits 0. `--hours`
-derives only those hourly files. The daily `alert_version` file needs the
-whole day.
+it writes and deletes nothing, reports `"status": "no_ticks"` and exits 0.
+`--hours` derives only those hourly files. The daily `alert_version` file
+needs the whole day.
 
 - **Joining an invocation.** Ticks and bundles are filed by `scheduled_at`,
   records by `observed_at`. So the job also reads the hour before the day:
@@ -908,7 +908,12 @@ whole day.
   no rows for follows the same rule: deleted with `--overwrite` or another
   `decoder_version`, else a conflict. The bytes also depend on the `pyarrow`
   version (§5.1). After a `pyarrow` upgrade, rebuilds of old days conflict
-  until they run with `--overwrite`.
+  until they run with `--overwrite`. The job owns raw-lineage files only: a
+  stored file whose provenance inputs are not all ticks, bundles and blobs
+  (a legacy backfill file) is never replaced or deleted, with or without
+  `--overwrite`. Rows built for its key are a conflict and the job exits 1;
+  if the rebuild has no rows for it, it is kept, listed in `foreign_kept`
+  and the exit status is unaffected.
 - **Nightly wiring.** The last derive step of `prune-nightly.yml` (05:00 UTC)
   derives the previous UTC day from R2. It runs after the prune, so a
   failure cannot block it, and with `if: !cancelled()`, so an earlier failed
@@ -987,7 +992,10 @@ was added. `vehicle` and `equipment` files are hourly by `observed_at`.
 `alert_version` files are daily by `first_seen`. The three legacy-only
 records are daily by `observed_at`. A malformed object is skipped, listed in
 the report, and makes the CLI exit 1. A missing mirror exits 2. A record that
-a contract rejects stops the run.
+a contract rejects stops the run. A file at a target key whose provenance
+inputs are not all legacy archive objects (a raw-lineage file the derive job
+wrote), or that is not a readable derived file, is never overwritten: it is
+kept, listed under `conflicts` in the report, and makes the CLI exit 1.
 
 **Legacy periods.** Each `start` is the first UTC day folder of the archive
 in the mirror of 2026-10-20. `end` is null. The values are constants

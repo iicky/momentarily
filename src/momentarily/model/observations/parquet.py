@@ -18,6 +18,7 @@ import os
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal, get_args
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -46,6 +47,7 @@ from momentarily.model.observations.contracts import (
     DerivedFileMetadata,
     EquipmentObservation,
     FeedHeaderObservation,
+    LegacyArchive,
     LegacyCollectorHealth,
     LegacyFetchOutcome,
     LegacyLineage,
@@ -55,8 +57,12 @@ from momentarily.model.observations.contracts import (
     VehicleObservation,
 )
 from momentarily.model.observations.keys import (
+    BlobKey,
+    BundleKey,
     DerivedDayKey,
     DerivedHourKey,
+    KeyLayoutError,
+    TickKey,
     parse_key,
     utc_day,
 )
@@ -67,6 +73,8 @@ ROW_GROUP_SIZE = 1 << 20
 DATA_PAGE_SIZE = 1 << 20
 
 NaturalKey = tuple[str | int, ...]
+FileLineage = Literal["raw", "legacy"]
+_LEGACY_PREFIXES = tuple(f"{a}/" for a in get_args(LegacyArchive))
 
 
 class DerivedFileError(ValueError):
@@ -245,6 +253,34 @@ def file_metadata(
             ),
         }
     )
+
+
+def _raw_input(key: str) -> bool:
+    try:
+        return isinstance(parse_key(key), TickKey | BundleKey | BlobKey)
+    except KeyLayoutError:
+        return False
+
+
+def file_lineage(metadata: DerivedFileMetadata) -> FileLineage | None:
+    """Which writer built a derived file, read from the inputs its provenance
+    names (not from ``decoder_version``): ``raw`` when every input is a
+    recorder tick, bundle or blob, ``legacy`` when every input is a legacy
+    archive object, None for anything else."""
+    inputs = metadata.provenance.inputs
+    if not inputs:
+        return None
+    if all(k.startswith(_LEGACY_PREFIXES) for k in inputs):
+        return "legacy"
+    if all(_raw_input(k) for k in inputs):
+        return "raw"
+    return None
+
+
+def read_file_metadata(data: bytes) -> DerivedFileMetadata:
+    """The metadata of a derived file, read from its footer alone."""
+    meta = pq.read_metadata(pa.BufferReader(data))
+    return read_parquet_metadata(meta.metadata or {})
 
 
 def _partition_day(record: BaseModel, key: DerivedDayKey) -> bool:

@@ -31,7 +31,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--overwrite",
         action="store_true",
         help="replace existing files whose content differs (default: keep "
-        "them and fail, unless DECODER_VERSION changed)",
+        "them and fail, unless DECODER_VERSION changed); a legacy backfill "
+        "file is never replaced",
     )
     parser.add_argument("--report", type=Path, help="also write the JSON report here")
 

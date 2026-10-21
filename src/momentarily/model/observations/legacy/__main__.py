@@ -6,9 +6,11 @@
 Writes ``<out>/model/observations/s1/derived/...`` (local only, never R2) and
 prints, per archive, objects read, rows, malformed objects and time, and per
 record, files and bytes. ``--report`` also writes that report as JSON, with
-every malformed object's key and reason. Exit status: 0 clean, 1 when any
-object was skipped as malformed (the rest is still written), 2 when the
-mirror does not exist.
+every malformed object's key and reason and every conflicting file. A file
+the derive job wrote (raw lineage), or an unreadable one, is never
+overwritten: it is kept and listed as a conflict. Exit status: 0 clean, 1
+when any object was skipped as malformed or any file conflicted (the rest is
+still written), 2 when the mirror does not exist.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ def _print(report: Report) -> None:
     for name, a in report.archives.items():
         for key, reason in a.failures:
             print(f"malformed {name}: {key}: {reason}", file=sys.stderr)
+    for key in report.conflicts:
+        print(f"conflict: {key} is not a readable legacy file; kept", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.report is not None:
         args.report.write_text(json.dumps(asdict(report), indent=2) + "\n")
     malformed = sum(len(a.failures) for a in report.archives.values())
-    return 1 if malformed else 0
+    return 1 if malformed or report.conflicts else 0
 
 
 if __name__ == "__main__":

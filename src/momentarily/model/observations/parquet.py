@@ -183,7 +183,15 @@ def natural_key(record: BaseModel) -> NaturalKey:
         case FeedHeaderObservation() | AlertPresence():
             return (record.fetch_id,)
         case AlertVersion():
-            return (record.source, record.alert_id, record.content_digest)
+            # One row per run of sightings: a version that leaves and comes
+            # back is two rows, told apart by first_seen (-1 when Unknown).
+            first = record.first_seen
+            return (
+                record.source,
+                record.alert_id,
+                record.content_digest,
+                first if isinstance(first, int) else -1,
+            )
         case LegacyRouteAlertState():
             return _lineage_key(record.lineage)
         case LegacyFetchOutcome():
@@ -255,12 +263,8 @@ def _partition_day(record: BaseModel, key: DerivedDayKey) -> bool:
     return isinstance(at, int) and utc_day(at) == key.day
 
 
-def _check_partition(
-    path: Path, metadata: DerivedFileMetadata, records: Sequence[BaseModel]
-) -> None:
-    if not path.as_posix().endswith(f"/{metadata.file_key}"):
-        raise DerivedFileError(f"{path} is not the path of {metadata.file_key}")
-    key = parse_key(metadata.file_key)
+def _check_partition(file_key: str, records: Sequence[BaseModel]) -> None:
+    key = parse_key(file_key)
     for r in records:
         if isinstance(key, DerivedHourKey):
             at = getattr(r, "observed_at", None)
@@ -270,7 +274,46 @@ def _check_partition(
         else:
             ok = False
         if not ok:
-            raise DerivedFileError(f"a record does not belong in {metadata.file_key}")
+            raise DerivedFileError(f"a record does not belong in {file_key}")
+
+
+class Rows:
+    """Records of one contract bound for the file ``file_key``, held as
+    arrow rows: far smaller than the models, so a job can drop each batch
+    of models as soon as it is added."""
+
+    def __init__(self, model: type[BaseModel], file_key: str) -> None:
+        self.model = model
+        self.file_key = file_key
+        self.keys: list[NaturalKey] = []
+        self._schema = arrow_schema(model)
+        self._tables: list[pa.Table] = []
+
+    def __len__(self) -> int:
+        return len(self.keys)
+
+    def add(self, records: Sequence[BaseModel]) -> None:
+        """Add ``records``; each must be a ``model`` that belongs in the file."""
+        if not records:
+            return
+        if any(type(r) is not self.model for r in records):
+            raise DerivedFileError("a derived file holds records of one contract")
+        _check_partition(self.file_key, records)
+        self.keys += [natural_key(r) for r in records]
+        self._tables.append(
+            pa.Table.from_pylist([to_row(r) for r in records], schema=self._schema)
+        )
+
+    def table(self) -> pa.Table:
+        """Every row, in natural-key order. Raises on a repeated key."""
+        order = sorted(range(len(self.keys)), key=self.keys.__getitem__)
+        for a, b in pairwise(order):
+            if self.keys[a] == self.keys[b]:
+                raise DerivedFileError(
+                    f"two records share the natural key {self.keys[a]!r}"
+                )
+        table = pa.concat_tables(self._tables).take(pa.array(order, pa.int64()))
+        return table.combine_chunks()
 
 
 def write_records(
@@ -282,20 +325,24 @@ def write_records(
     atomically. The bytes are reproducible for a given pyarrow version."""
     if not records:
         raise DerivedFileError("a derived file holds at least one record")
-    model = type(records[0])
-    if any(type(r) is not model for r in records):
-        raise DerivedFileError("a derived file holds records of one contract")
-    if metadata.row_count != len(records):
+    rows = Rows(type(records[0]), metadata.file_key)
+    rows.add(records)
+    return write_rows(path, rows, metadata)
+
+
+def write_rows(path: Path, rows: Rows, metadata: DerivedFileMetadata) -> int:
+    """``write_records`` for rows already gathered in ``rows``."""
+    if not rows:
+        raise DerivedFileError("a derived file holds at least one record")
+    if rows.file_key != metadata.file_key:
+        raise DerivedFileError(f"rows for {rows.file_key}, not {metadata.file_key}")
+    if not path.as_posix().endswith(f"/{metadata.file_key}"):
+        raise DerivedFileError(f"{path} is not the path of {metadata.file_key}")
+    if metadata.row_count != len(rows):
         raise DerivedFileError("metadata row_count differs from the records")
     if metadata.layout_version != LAYOUT_VERSION:
         raise DerivedFileError("metadata names another layout version")
-    _check_partition(path, metadata, records)
-    keyed = sorted(((natural_key(r), r) for r in records), key=lambda kr: kr[0])
-    for (a, _), (b, _) in pairwise(keyed):
-        if a == b:
-            raise DerivedFileError(f"two records share the natural key {a!r}")
-    schema = arrow_schema(model).with_metadata(parquet_metadata(metadata))
-    table = pa.Table.from_pylist([to_row(r) for _, r in keyed], schema=schema)
+    table = rows.table().replace_schema_metadata(parquet_metadata(metadata))
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     # Every option that changes the bytes is pinned, defaults included.

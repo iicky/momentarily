@@ -435,7 +435,9 @@ Keys and rules:
 - Natural keys: VehicleObservation and TripUpdateObservation use
   `(fetch_id, entity_index)`. A trip id can repeat inside one payload, so it
   is not a key. AlertPresence uses `fetch_id`. AlertVersion uses
-  `(source, alert_id, content_digest)`. EquipmentObservation uses
+  `(source, alert_id, content_digest, first_seen)`: one row per run of
+  sightings, so a version that leaves and comes back is two rows (§4.2).
+  EquipmentObservation uses
   `(fetch_id, equipment_id, record_index)`.
 - An alert's end is **bounded, not guessed**. The version left the feed in
   `(last_seen, gone_by]`. When `unobserved` overlaps that bound, the end is
@@ -791,6 +793,154 @@ where listed here.
   bundles are 194 MB/day. Scaled by the §1.1 weekly-mean factor of 0.73 they
   are 142 MB/day, the figure §6 started from. Tick records are about
   9.4 MB/day, not the 3.6 MB first assumed.
+
+### 4.2 As built (slice 5)
+
+The derive job is `momentarily.model.observations.derive`. `storage` is the
+store interface (list a prefix, and get, put or delete a key). `bundle`
+reads tick bundles and blobs. `alert_index` builds the AlertVersion index.
+`run` derives one UTC day. `LocalStorage` maps keys to paths under a
+directory. `training.derive_observations` holds the R2 store, so the model
+package never imports boto3.
+
+```
+python -m momentarily.model.observations.derive --root <dir> --day YYYY-MM-DD \
+    [--out <dir>] [--hours H-H] [--overwrite] [--report report.json]
+murk exec -- uv run python -m training.derive_observations --day YYYY-MM-DD [...]
+```
+
+Both commands print one JSON report: fetches by outcome, fetches not decoded
+by reason (`unparseable`, `empty_body`, `not_stored`, `no_record`), per
+record type the inputs, rows, files and what happened to each file, every
+decode failure (fetch id, source, payload key and member, error), every
+missing or inconsistent input, and every conflicting file. Exit status 0
+means clean. Exit status 1 means a fetch failed to decode, an input is
+missing or inconsistent, or a file conflicts (see the overwrite rule). Exit
+status 2 means bad arguments or no `--root`. A day with no fetch observed in
+it writes nothing, reports `"status": "no_ticks"` and exits 0. `--hours`
+derives only those hourly files. The daily `alert_version` file needs the
+whole day.
+
+- **Joining an invocation.** Ticks and bundles are filed by `scheduled_at`,
+  records by `observed_at`. So the job also reads the hour before the day:
+  an invocation dispatched at 23:59:50 observes after midnight. Its records
+  go to the next day's 00 files, never to this day's. The fetches come from
+  the tick record. When the tick record is missing, the GTFS-RT fetches come
+  from the bundle index, and the minute's alerts and ENE fetches are lost
+  (§4). When both exist, each fetch in the index must be in the tick
+  unchanged, and each tick fetch with a member must be in the index. A
+  GTFS-RT body that arrived after the bundle was written is in the tick only.
+  Overlapping invocations of one minute are separate fetches, and all their
+  records are kept. A key the store lists but cannot return is a missing
+  input. The run goes on without it.
+- **What is decoded.** Only a stored body of an `ok` or `empty` fetch is
+  decoded. The report counts `unparseable` fetches, bodies that were not
+  stored, and sources with no layer-2 record (`ene_equipments`, Socrata, the
+  static GTFS HEAD). The recorder records a 200 with a zero-byte GTFS-RT body
+  as `empty` (its wire scan counts 0 entities in 0 bytes). That body is no
+  FeedMessage, because the header is required. So the job skips it as
+  `empty_body`: no record, no presence evidence, no failure. Any other
+  `DecodeError` is reported for its fetch and the run goes on. Decode
+  failures and input problems in the carry hour (below) appear in the
+  reports of both days, because both days' files depend on them.
+- **Memory.** Records go to arrow rows as soon as a fetch is decoded, and
+  each hour's files are written and released when the hour's last tick
+  folder is read. On the fixture (11 invocations) peak RSS fell from 513 MB
+  to 213–217 MB, with a 69 MB baseline. The rows held for the 11 invocations take
+  24 MB of arrow memory (trip updates 20 MB). Scaled to 60 invocations, an
+  hour holds about 130 MB of rows, and the peak is about 0.6 GB with the
+  copies the writer makes [inference, not measured on a full hour].
+- **Provenance.** `inputs` names every tick, bundle and blob a file's records
+  came from. The digest is the sha256 of the stored object (the gzip bytes
+  for bundles and blobs), not of the payload. `captured_at` is the latest
+  `observed_at` that key gave the file. So `built_at` is the latest
+  observation in the file. The `alert_version` file names every tick and
+  payload of its window's evidence.
+- **AlertVersion window and rows.** Day D's index covers
+  `[D 00:00 − 1 h, D+1 00:00)`. The carry is one hour before the day, and
+  nothing after. A version gets one row per *run*: a stretch of sightings
+  with no evidence (`ok` or `empty`, decoded) lacking it in between. A
+  version that leaves and comes back is two rows. The AlertVersion natural
+  key is now `(source, alert_id, content_digest, first_seen)` (§3.2). The
+  report counts such versions (`alert_versions_reappearing`). D's file holds
+  every run with a sighting in D, and every run whose `gone_by` falls in D.
+  A run seen and gone within the carry belongs to D−1. `absent_before` and
+  `gone_by` are the nearest evidence fetches of the same source before the
+  run's first and after its last sighting, null when the window has none.
+  `gone_kind` is `superseded` when the `gone_by` presence holds the same id
+  with another digest, else `removed`. So a run that ends with the alert
+  gone, or replaced by another alert, is `removed`. A run whose id flips to
+  other content is `superseded`, also when the first content comes back
+  later.
+- **Gaps.** The cron minute of a fetch is `scheduled_at // 60`. Two
+  consecutive evidence fetches more than one minute apart leave the seconds
+  strictly between them in `unobserved`. A failed fetch, a lost tick record
+  and a minute with no invocation all make such a gap. When `gone_by` is
+  null and the last evidence is before the window's last minute, the rest of
+  the window is unobserved too.
+- **Midnight.** A run that spans midnight is in both days' files. D's row
+  has `gone_by` null. D+1's row starts in its carry. If the run started in
+  the last hour of D, that row has the true `absent_before`. If it started
+  earlier, the row has `absent_before` null, and its sightings overlap D's
+  row in the carry hour, so a reader can join the two. A run whose last
+  sighting is in D's last hour and whose `gone_by` is after midnight is
+  closed in D+1's file. The one edge no file closes: no evidence for more
+  than the carry across midnight. Then D's row ends with `gone_by` null and a
+  trailing `unobserved` gap, and D+1's window holds none of its sightings.
+- **`numbered` alerts.** Their ids change every poll (§3.5). So nearly every
+  `numbered` version is seen once: `first_seen == last_seen`, `gone_by` the
+  next poll, `gone_kind` `removed`. The index infers no identity across ids.
+  Its `alert_type`, `created_at` and `updated_at` are null, because
+  `MessageToDict` keys the extension `[transit_realtime.mercury_alert]`.
+- **When a day is final.** The job reads nothing filed under D+1, so a
+  rebuild of D gives the same bytes whether D+1 exists or not. D's files are
+  final once every invocation dispatched before D+1 00:00 has written its
+  tick and bundle, a few minutes after midnight UTC (one Worker invocation).
+  A rebuild also needs D−1 22:00–24:00 and D unchanged in the store.
+- **Overwrite rule.** Each file is built in a staging directory and compared
+  with the stored file of the same key. No stored file: write it. Identical
+  bytes: skip it. A stored file with another `decoder_version`: replace it.
+  The new build has the same bytes under the stored file's `code_sha` and
+  `code_dirty`: skip it, because only the code provenance differs. Any other
+  difference, or a stored file that is not a readable derived file, is a
+  conflict: the job keeps the stored file, lists it and exits 1.
+  `--overwrite` replaces it. A stored file in the scope that the rebuild has
+  no rows for follows the same rule: deleted with `--overwrite` or another
+  `decoder_version`, else a conflict. The bytes also depend on the `pyarrow`
+  version (§5.1). After a `pyarrow` upgrade, rebuilds of old days conflict
+  until they run with `--overwrite`.
+- **Nightly wiring.** The last derive step of `prune-nightly.yml` (05:00 UTC)
+  derives the previous UTC day from R2. It runs after the prune, so a
+  failure cannot block it, and with `if: !cancelled()`, so an earlier failed
+  step does not skip it. A manual run with the `derive_day` input derives
+  that day instead, to recover a missed night. Until the recorder deploys,
+  the step is a no-op. The job timeout is now 45 minutes.
+- **Replay fixture.** `scripts/gen_recorded_hour_fixture.py` packages the
+  2026-10-20 sample payloads into the recorder's exact tick, bundle and blob
+  format: ten cron minutes of hour 14, every feed every minute, ENE once. It
+  synthesizes one HTTP 503, one overlapping invocation (3 s later, 3
+  timeouts) and one lost tick record, and documents each. The output is
+  25 objects, 1,638,618 bytes, and the generator is deterministic.
+  `tests/test_observation_derive.py` pins the canonical JSON of the derived
+  records per `DECODER_VERSION`, checks that a second run is byte-identical,
+  and rebuilds the recorder's own bundle from `tests/fixtures/recorder_output.json`
+  and the Worker test's bodies: every member hashes to its index entry.
+- **The fixture day derived.** 11 invocations (one from the bundle index
+  only), fetches 107 `ok`, 3 `timeout`, 1 `http_error`, 0 decode failures.
+
+  | Record | Rows | Files | Inputs |
+  |---|---|---|---|
+  | `vehicle` | 6,832 | 1 | 21 |
+  | `trip_update` | 7,967 | 1 | 21 |
+  | `feed_header` | 84 | 1 | 21 |
+  | `alert_presence` | 21 (10 alerts, 11 numbered) | 1 | 22 |
+  | `equipment` | 249 | 1 | 3 |
+  | `alert_version` | 190 (179 alerts, 11 numbered) | 1 | 22 |
+
+- **Cost.** Measured on the fixture on an M-series laptop: 2.1–2.8 s for 11
+  invocations, about 0.2–0.25 s each, almost all of it in the GTFS-RT decoder
+  and the parquet row encoding. A whole day is about 1,440 invocations, so
+  about 5–6 minutes of CPU plus about 2,900 R2 GETs [inference].
 
 ## 5. Backfill mapping
 

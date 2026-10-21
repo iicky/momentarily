@@ -11019,3 +11019,27 @@ surveyed every legacy object before mapping it.
 - The trace's `feed_digest` and `feed_etag` are the same pair in all 2,880
   objects that carry them. `archive/gtfs/` already holds that static feed
   identity, so layer 2 does not carry them.
+
+## 2026-10-20 derive-job-joins-and-overwrites
+
+origin: agent
+
+I built the layer-2 derive job and replayed the recorder's own test output
+through it.
+
+- The recorder records a 200 with a zero-byte GTFS-RT body as `empty`. The
+  decoder rejects it, because a FeedMessage needs its header. In
+  `tests/fixtures/recorder_output.json`, 1 of the 5 stored GTFS-RT bodies
+  (`g`) is such a body. The derive job skips it as `empty_body` (no record,
+  no alert evidence) rather than failing the day.
+- Holding a day-hour's decoded records as Pydantic models cost 513 MB peak
+  RSS for 11 invocations (baseline 69 MB). Converting each fetch's records
+  to arrow rows at once cut it to 215 MB, with byte-identical files.
+- A tick's GTFS-RT fetches and its bundle index are not always equal. A body
+  that reports after the bundle is written is in the tick only, with a
+  `store_error`. An equality join would call that bundle inconsistent. The
+  job checks that every indexed fetch is in the tick unchanged instead.
+- Derived bytes include `code_sha`. With "identical bytes or fail" as the
+  overwrite rule, every rebuild after a new commit would conflict: all 6
+  fixture files differed only there. The job rebuilds with the stored file's
+  `code_sha` and keeps the file when the bytes then match.

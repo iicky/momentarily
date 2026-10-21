@@ -1,7 +1,8 @@
 name: Archive + prune R2 (nightly)
 
 # Nightly R2 archive upkeep: store the static feed, DERIVE the traversal and
-# announced-window archives, then prune expired params rollback snapshots.
+# announced-window archives, prune expired params rollback snapshots, then
+# derive yesterday's recorded observations (model/observations/s1/derived/).
 #
 # RETENTION: every date-partitioned archive/ and v1/ stream is kept in full,
 # indefinitely, by owner decision. The raw captures record live feeds that
@@ -22,6 +23,11 @@ on:
   schedule:
     - cron: '0 5 * * *'  # 05:00 UTC daily. GHA cron is best-effort.
   workflow_dispatch:      # manual prune
+    inputs:
+      derive_day:
+        description: "UTC day (YYYY-MM-DD) for the observations derive step; empty = yesterday"
+        type: string
+        default: ""
 
 concurrency:
   group: prune-r2
@@ -38,7 +44,10 @@ jobs:
     permissions:
       contents: read
       issues: write
-    timeout-minutes: 15
+    # The observations derive decodes about 1,440 invocations a day; measured
+    # at about 0.24 s of CPU each, plus the R2 GETs (docs/model-observations.md
+    # §4.2).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
@@ -101,6 +110,25 @@ jobs:
       - name: Prune aged params rollback snapshots
         run: uv run python -m training.prune
         env:
+          MURK_KEY: ${{ secrets.MURK_KEY }}
+      # Layer-2 derive of the previous UTC day: the recorder's ticks, bundles
+      # and blobs to hourly parquet and the daily AlertVersion index. Last, so
+      # a failure here never blocks the prune, and it runs even when an
+      # earlier step failed: only one day is derived per night, so a skipped
+      # day is never retried on its own. Recover a missed day with a manual
+      # run and the derive_day input. A day is final once every invocation
+      # scheduled before midnight has written, minutes after 00:00 UTC;
+      # nothing filed under today is read. A day with no recorded ticks
+      # (before the recorder deploys) is a clean no-op. Rerunning a day keeps
+      # files whose content is unchanged and fails on a conflicting one;
+      # replace those by hand with --overwrite.
+      - name: Derive recorded observations (yesterday, or derive_day)
+        if: ${{ !cancelled() }}
+        run: |
+          uv run python -m training.derive_observations \
+            --day "${DERIVE_DAY:-$(date -u -d 'yesterday' +%F)}"
+        env:
+          DERIVE_DAY: ${{ inputs.derive_day }}
           MURK_KEY: ${{ secrets.MURK_KEY }}
       # A missed prune or failed archive-derive is invisible except for the
       # schedule-failure email; a tracking issue makes a dead nightly job loud.

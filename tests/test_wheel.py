@@ -28,6 +28,8 @@ _PROBE = """
 import sys
 from importlib.resources import files
 import momentarily
+import momentarily.model.events.match_index
+from momentarily.model.events.route_feed import load_route_feed
 import momentarily.model.network.build
 import momentarily.model.network.day_feed
 import momentarily.model.observations.columns
@@ -47,6 +49,7 @@ import momentarily.model.observations.legacy.predictions
 import momentarily.model.observations.legacy.trace
 decode = files("momentarily.model.observations.decode")
 assert decode.joinpath("nyct-subway.proto").is_file()
+assert load_route_feed()[0].routes
 assert "site-packages" in momentarily.__file__, momentarily.__file__
 stray = sorted(m for m in ("boto3", "botocore", "pyarrow", "training") if m in sys.modules)
 assert not stray, stray
@@ -88,6 +91,7 @@ def test_network_layer_runs_from_installed_wheel(tmp_path: Path) -> None:
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)}
     for argv in (
         [str(python), "-m", "momentarily.model.network", "--help"],
+        [str(python), "-m", "momentarily.model.events", "--help"],
         [str(python), "-c", _PROBE],
     ):
         proc = subprocess.run(

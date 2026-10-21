@@ -1,8 +1,9 @@
 # Data model, layer 3: events (`events/s1`) — scoping proposal
 
-Status: decided on 2026-10-21 (§9). Nothing here is built yet. The build
-plan (§10) starts with the match index and two data gates; deferred items
-are listed under Deferred.
+Status: decided on 2026-10-21 (§9). Slice 1, the match index, is built
+(§10, "As built (slice 1)"); nothing else is. The build plan (§10) starts
+with the match index and two data gates; deferred items are listed under
+Deferred.
 
 Layer 3 turns layer-2 observations into facts about trains. It answers
 questions such as these: which scheduled trip a realtime train is, which
@@ -1316,6 +1317,120 @@ Gate A is the last check before the schema is generated from them.
    - lookups agree with the prototype's `Net` on both builds;
    - the index is byte-identical on rebuild;
    - its size per day is reported.
+
+#### As built (slice 1)
+
+The index is `momentarily.model.events.match_index`. It is internal: it is
+not a public contract and has no JSON Schema, TypeScript or parquet layout.
+
+- **Command.** `python -m momentarily.model.events match-index --network
+  <layer-1 dir> --date YYYY-MM-DD [--date ...] [--build-id ID] --out <dir>
+  [--overwrite]` builds the index of each date from a local layer-1 output
+  directory. It prints one JSON line per date (key, the built index's
+  bytes, entry counts, and the outcome: `written`, `unchanged`, `replaced`
+  or `conflict`). Exit status 1 means a build failed or a file conflicts.
+- **Build choice.** Without `--build-id`, the build is the feed that
+  `day_feed_map` gives for the UTC day with the same date: `feed_id` when
+  verified, else `inferred_feed_id` (`build_basis` `verified`, `inferred`
+  or `explicit`). A service day runs from about 04:00 UTC on its date to
+  about 08:00 UTC the next day, so that UTC day holds most of it. A date the
+  map does not cover fails unless a build is named. The snapshot is checked
+  against the index's `content_digest` before use. A missing `index.json`,
+  day map or build file is a build error (exit 1). The local day map ends
+  on 2026-10-18 (the last archived traversal day), so recorded raw days
+  need `--build-id` until layer 1 extends the map every night; that is
+  separate work, not this slice.
+- **Key.** `model/events/s1/match_index/v<INDEX_VERSION>/<service_date>/<build_id>-<route_feed16>.json.gz`
+  (`momentarily.model.events.keys`; `route_feed16` is the first 16 hex of
+  the blake3 of `route_feed.json`). The index version, the build and the
+  table are in the key, so a new version, a new table or a changed build
+  choice gets a new key, not new bytes under the old one.
+- **Stored-file rule** (the layer-2 derive job's): no file, write it;
+  identical bytes, or bytes that differ only in the stored `code_sha` and
+  `code_dirty`, keep it (`unchanged`); any other difference, or an
+  unreadable file, is a `conflict`: the stored file is kept and the
+  command exits 1, unless `--overwrite` replaces it (`replaced`).
+- **Format.** `MatchIndexDocument` as canonical JSON (sorted keys,
+  compact), gzipped with mtime 0. The same inputs and code give the same
+  bytes; a second CLI run reports `unchanged`. `metadata` holds the key,
+  `INDEX_VERSION`, the `route_feed.json` digest, service date, time zone,
+  `day_origin` (`instant_of(date, 0)`), build, `build_basis`, day type,
+  entry counts and layer 1's `Provenance` (`inputs`: the network
+  `content_digest`, the `route_feed.json` digest and, when used, the day
+  map's; `built_at`: the network's; `period_start`: the service date).
+- **Contents.**
+  - `trips`: every trip active that day, sorted by id, with the stripped
+    key (static origin, route field, direction, path), block, route,
+    pattern, service, first departure and last arrival.
+  - `patterns`: every pattern of the build with its stop list, and for
+    patterns that run, the trips by first arrival and an arrival matrix
+    (per stop, per trip). Instants are `instant_of(service_date, s, tz)`.
+  - `platforms`, `active_service_ids`, day type and exception flag.
+  - `supply`: per route with 6X, 7X and FX folded into 6, 7 and F (riders
+    see the 6; the patterns keep the variants apart), trips in service per
+    epoch minute, from the minute of the first departure through the minute
+    of the last arrival. This is the prototype's rule (`m13_supply.py`,
+    `base_route`); `supply` folds the route it is asked for the same way.
+  - `route_feed`: the `RouteFeed` table.
+- **Lookups** (`MatchIndex`, built from a document in about 0.04 s for a
+  weekday): `realtime_key` (a realtime origin `o` hits static origin `o`,
+  then `o + 144000` flagged `wrapped`; a wrapped hit belongs to this
+  service day, the calendar day before the observation), `static_key`,
+  `origin_direction`, `arrival(trip, stop)`, `stop_times(pattern, stop)`
+  (sorted instants and trip ids), `patterns_of(route, direction)` (6X, 7X
+  and FX folded, as in the prototype), `pattern_stops`, `stop_position`,
+  `platforms`, `supply`, `supply_by_feed` and `feed_of`.
+  `candidate_service_dates(at, tz)` gives D−1, D and D+1. The index stores
+  arrivals only; scheduled departures at intermediate stops are not in it.
+- **`RouteFeed` source.** The table is measured, not assumed:
+  `scripts/gen_route_feed.py` counts the distinct trip ids each feed
+  published per route key in the layer-2 raw-lineage vehicle and
+  trip-update records of 2026-10-21 03:57–13:30 UTC (545,889 records,
+  Tuesday 10-20 23:57 EDT to Wednesday 09:30 EDT). A route key is a
+  published `route_id` or a
+  trip-id route field (`W` carries `N`, `Z` `J`, `6X` `6`, `SS` `SI`). The
+  majority feed is the route's feed. The table agrees with §5.1 except
+  that a feed can publish another feed's route: `ace` published 2 of 172 F
+  trips and 1 of 140 R trips, overnight (02:00–05:00 New York time). Each
+  entry keeps every feed's count, so a legacy
+  row's feed is the route's usual feed, not a proven one. The build fails
+  when an active route or trip-id route field has no entry. The window has
+  no weekend; rerun the script on a longer window as days accumulate.
+- **Agreement with `Net`.** Run on both full builds for 2026-07-03 (an
+  added Saturday-service Friday), 08-26 and 08-27 (the last day of
+  `2faf6350456df7f6` and the first of `606d9f640f5aad67` in the day map),
+  09-07 (Labor Day, Sunday service), 09-08, 09-15 (Tue), 09-19 (Sat), 09-20
+  (Sun), 10-19 and 10-31: all twelve lookup families (active services, id
+  keys, wrapped keys, origin and direction, trip fields, arrivals, sorted
+  stop times, patterns per route and direction, pattern stops, platforms,
+  supply per route and minute, candidate days) are equal for every route,
+  on both builds and all 10 dates. The committed test checks the same
+  families by digest on a route subset (H, SI, Z, 7X, FX; 101 KB per
+  build, gzipped).
+- **Generator input.** `scripts/gen_route_feed.py` reads raw-lineage
+  derived files only (`parquet.file_lineage`) and exits with a message on
+  a legacy-backfilled day, whose rows have no `source`.
+- **Wrap and DST.** Tested on a synthetic network on real 2026 DST
+  nights, outside the builds' range (05-26 to 10-31): 25:30 on 10-31 and
+  00:30 on 11-01 are both 05:30 UTC (the first 01:30), 26:30 on 10-31 is
+  06:30 UTC (the second 01:30), 02:30 on 03-08 is 06:30 UTC (01:30 EST),
+  and 26:30 on 03-07 is 07:30 UTC (03:30 EDT). A realtime `009000` seen
+  at 01:31 on 03-08 hits the 25:30 trip of 03-07, 60 s off, and the same
+  trip of 03-08 more than 12 h off.
+- **Size per day** (bytes gzipped / uncompressed, trips, stop times):
+
+  | Day | `2faf6350456df7f6` | `606d9f640f5aad67` |
+  |---|---|---|
+  | Weekday (09-15) | 637,569 / 5,176,289; 8,497; 238,724 | 637,590 / 5,179,827; 8,497; 238,724 |
+  | Saturday (09-19) | 406,261 / 3,794,851; 6,186; 169,429 | 406,250 / 3,796,271; 6,186; 169,429 |
+  | Sunday (09-20) | 376,730 / 3,443,280; 5,626; 154,778 | 376,735 / 3,444,468; 5,626; 154,778 |
+  | Labor Day (09-07) | 378,259 / 3,444,217; 5,626; 155,037 | 378,274 / 3,445,697; 5,626; 155,037 |
+  | Added Saturday (07-03) | 408,442 / 3,795,871; 6,186; 169,772 | 408,432 / 3,797,623; 6,186; 169,772 |
+
+  Every index also holds 218 patterns, 992 platforms and 30 `RouteFeed`
+  keys; supply covers 37,406 route-minutes on a weekday. The builds differ
+  only in the block prefix of 3,385 trip ids (`X` added), so their indexes
+  hold the same schedule under partly different ids.
 
 **Gate A: recorded raw days.** Run the prototype on recorded raw data
 from `<mirror>/model/observations/s1/` (ticks, `raw/gtfsrt` bundles,

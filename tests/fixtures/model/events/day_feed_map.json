@@ -1,0 +1,46 @@
+{
+  "days": {
+    "2026-08-26": {
+      "feed_id": null,
+      "feed_version": "20260807-H-rockaways-extension-removed",
+      "inferred_feed_id": "056d1fc821f26e859c41ffb227197bdd45dbf4a0c3ef41b3509a5ff6dda4602e",
+      "reason": "no feed digest stamped (collected before digest capture)",
+      "verified": false
+    },
+    "2026-08-27": {
+      "feed_id": null,
+      "feed_version": "20260826-X-long-term-supplement-trip-ids",
+      "inferred_feed_id": "2c9e69b82ac596a2fe660b56656509570cfba3c2e4c50be75eaf624eee1bc6f8",
+      "reason": "no feed digest stamped (collected before digest capture)",
+      "verified": false
+    },
+    "2026-09-07": {
+      "feed_id": null,
+      "feed_version": "20260826-X-long-term-supplement-trip-ids",
+      "inferred_feed_id": "2c9e69b82ac596a2fe660b56656509570cfba3c2e4c50be75eaf624eee1bc6f8",
+      "reason": "no feed digest stamped (collected before digest capture)",
+      "verified": false
+    },
+    "2026-09-15": {
+      "feed_id": "2c9e69b82ac596a2fe660b56656509570cfba3c2e4c50be75eaf624eee1bc6f8",
+      "feed_version": "20260826-X-long-term-supplement-trip-ids",
+      "inferred_feed_id": null,
+      "reason": null,
+      "verified": true
+    },
+    "2026-09-19": {
+      "feed_id": "2c9e69b82ac596a2fe660b56656509570cfba3c2e4c50be75eaf624eee1bc6f8",
+      "feed_version": "20260826-X-long-term-supplement-trip-ids",
+      "inferred_feed_id": null,
+      "reason": null,
+      "verified": true
+    },
+    "2026-09-20": {
+      "feed_id": "2c9e69b82ac596a2fe660b56656509570cfba3c2e4c50be75eaf624eee1bc6f8",
+      "feed_version": "20260826-X-long-term-supplement-trip-ids",
+      "inferred_feed_id": null,
+      "reason": null,
+      "verified": true
+    }
+  }
+}

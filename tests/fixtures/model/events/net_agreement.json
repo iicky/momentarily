@@ -1,0 +1,993 @@
+{
+ "candidate_days": [
+  [
+   1789444799,
+   [
+    "2026-09-13",
+    "2026-09-14",
+    "2026-09-15"
+   ]
+  ],
+  [
+   1789444800,
+   [
+    "2026-09-14",
+    "2026-09-15",
+    "2026-09-16"
+   ]
+  ],
+  [
+   1772953199,
+   [
+    "2026-03-07",
+    "2026-03-08",
+    "2026-03-09"
+   ]
+  ],
+  [
+   1772953200,
+   [
+    "2026-03-07",
+    "2026-03-08",
+    "2026-03-09"
+   ]
+  ],
+  [
+   1793511000,
+   [
+    "2026-10-31",
+    "2026-11-01",
+    "2026-11-02"
+   ]
+  ],
+  [
+   1793514600,
+   [
+    "2026-10-31",
+    "2026-11-01",
+    "2026-11-02"
+   ]
+  ],
+  [
+   1787803200,
+   [
+    "2026-08-26",
+    "2026-08-27",
+    "2026-08-28"
+   ]
+  ]
+ ],
+ "expected": {
+  "2faf6350456df7f6": {
+   "2026-07-03": {
+    "active": {
+     "blake3": "c36c101499645ac903c11f01b1cf52e7c94a54e4f85430ddb900902f20706a1b",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "d2493196943f923e827a5d7fcef1a0cc0bcb02cb7485a2354ea80cbd1900d289",
+     "n": 3189
+    },
+    "keys": {
+     "blake3": "f7e8c50452a5d157e5f45cd33d56818ff19d9ef3a76dc3f14258e8ff10be4895",
+     "n": 262
+    },
+    "meta": {
+     "blake3": "853ab9a687a1c2d4cd495062aae6cb05b729a3929174002d06d8099f69cbc667",
+     "n": 262
+    },
+    "origin_direction": {
+     "blake3": "299c95f00ac3c5e8174b6a19a7f4d1d7061933ca82ea6b7cf85fe8d596049063",
+     "n": 257
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "a4bbde2a6e535a28cd9cd0fa02ee47ca5844f587404119a6987edb9501a754ad",
+     "n": 69
+    },
+    "supply": {
+     "blake3": "ed2a5053deedd88c6e0bf56301babe7151d0cc1f00a63247b6d4d1f17264f065",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "e462c3a54ca949fbdb32cee0b8518d0203d9a0d88ec52aa312730a1e307c366a",
+     "n": 4
+    }
+   },
+   "2026-08-26": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "ffc437e03538c6c8337da643bf5bd221a73254bfd8aa821fe930ddf689384d50",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "2bd9b6f4313db8b133cc9d4128f662bd45664b8b29e9a43a09c68f0c2b7fa502",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "80c3401e8cbbdb2afad08ad09fde87d3a6bfbcfb445b348d23fd6b684d63897f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "a942e2c35ee5aca85a7a67ea93a5923856bf4ab1bccdcdf7d35e75a3727bc81f",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "e9779b55f1708e2d44fcbe1faf5848c969e7ec3dfd879f1e729a4643a4910bd2",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "efc6c5fe0fff1b58a49376dfa1f0197522693a18b2d3241b635e6e1cb3fa63d0",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-08-27": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "be7b008b6744495860323744e48f1c9a48436baced3775862b4aac572aa63b87",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "2bd9b6f4313db8b133cc9d4128f662bd45664b8b29e9a43a09c68f0c2b7fa502",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "80c3401e8cbbdb2afad08ad09fde87d3a6bfbcfb445b348d23fd6b684d63897f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "a942e2c35ee5aca85a7a67ea93a5923856bf4ab1bccdcdf7d35e75a3727bc81f",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "e6f3c918328b04bd8a9ef2c626eab2727069721f95570b2c6dbdafd662de3710",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "db59f676de5db8c750435e360abe50bea5d6cd2c5ae1efaf8f465f42789382f0",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-09-07": {
+    "active": {
+     "blake3": "a8e28f2eede08ed65668c8dae9e8f8b3a5e068eec7e7c513efdcf5f8a47c1431",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "399aeec41937c9f58d2178839383c03ca2129e3aaf7ce535937c8acbdfac06f1",
+     "n": 3005
+    },
+    "keys": {
+     "blake3": "5650019f5c0f4ac2ee9a29146b9e96782c68f1b6ab4f521a4ccba02f6004a637",
+     "n": 242
+    },
+    "meta": {
+     "blake3": "84fa6312181c17d814cb01ca3f2b88de42bdaacaa73beb7400a9b1546bb9460a",
+     "n": 242
+    },
+    "origin_direction": {
+     "blake3": "369adb51d86cceae9ea13ab04f3247a7d1a8d211560b5a37f97a032f966212f7",
+     "n": 226
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "f587c938270fb1ab07eea12be05c93fae13e9b1d7bafb910b436ba1d4902a570",
+     "n": 69
+    },
+    "supply": {
+     "blake3": "94e30dc501e2f10f9a153c0f25e1d3c8887f14c7cd26106aa9dab340c39a5bd4",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "c6e9e29e68df993efd25d382085464ad08ded86048ffb25d6811950f3df7a713",
+     "n": 4
+    }
+   },
+   "2026-09-08": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "d65fe262792dcb3117acf5c01a1958e2d1d2a8abd7852f3213c9b17a881bbe6d",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "2bd9b6f4313db8b133cc9d4128f662bd45664b8b29e9a43a09c68f0c2b7fa502",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "80c3401e8cbbdb2afad08ad09fde87d3a6bfbcfb445b348d23fd6b684d63897f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "a942e2c35ee5aca85a7a67ea93a5923856bf4ab1bccdcdf7d35e75a3727bc81f",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "692947c29f12d754699f24e180d31a4046dbb99b7c0408b9ee98c329551852cc",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "436a7cf61bbfa2120afbbe03541dfb4fc7710505f080acae8c35fdd980f4ac82",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-09-15": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "cf53e72bcfd8f05cf4b53e518b454dc0f36261a5f4e65b7691916be920f00ef5",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "2bd9b6f4313db8b133cc9d4128f662bd45664b8b29e9a43a09c68f0c2b7fa502",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "80c3401e8cbbdb2afad08ad09fde87d3a6bfbcfb445b348d23fd6b684d63897f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "a942e2c35ee5aca85a7a67ea93a5923856bf4ab1bccdcdf7d35e75a3727bc81f",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "6175c2820b6e61cb7da1b287edeab0d36441b3636b9932177d5d8ea2320466c5",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "47d00b6e86ee6240612ccd29f6a248fb449d31687ed8e94d669825d854e58372",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-09-19": {
+    "active": {
+     "blake3": "7a7e3a8d232120163e811206ba4d75f60d375bc3aabd76f7c8be9eb692b78e77",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "329a9771339884b8d9f04d69c801c8ede80348eee85f8ce8847a62432c03fea9",
+     "n": 2846
+    },
+    "keys": {
+     "blake3": "ffb64b165ec5dc6225ff95caf425b59342a1fc6d62dff8c19c49b49e3138dbb0",
+     "n": 262
+    },
+    "meta": {
+     "blake3": "2c2afcd40823a18003683883e28f3445660f88cdf7e48e8ab474a2aace7f8710",
+     "n": 262
+    },
+    "origin_direction": {
+     "blake3": "b1cc3958d2ab4220186c0dbea34fd7cfededd477027654a0275751934783fd9e",
+     "n": 257
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "806516fd7edd28c6e6b6c9761fe7ae7ff94df63325c80449e8e62b5b2ff0fd88",
+     "n": 52
+    },
+    "supply": {
+     "blake3": "758b7c37dcad7f04468e02b55f766b412f83169d384b576c7259e934eb3175a4",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "d0ec4d1ab94448d88242aa0296d54fbb9bdb0b8661df2da1eee993b03b907085",
+     "n": 4
+    }
+   },
+   "2026-09-20": {
+    "active": {
+     "blake3": "a46fc181673c094f60fca57a69b74461d60cb2adfa3904e08c3e4764f986ccdc",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "3108290d0b076b788d5e39d7580b407f5a315fe0ee17263e4b9a2c51edf964e9",
+     "n": 2746
+    },
+    "keys": {
+     "blake3": "da75ad9fdf902a402f5457ff970cbb93753d6e7efd76b6575be3633e9a38f8be",
+     "n": 242
+    },
+    "meta": {
+     "blake3": "f22594a017ce339d67e4f0d8e1d5a8eb0f858987b0de3ed8b52fef76a9000088",
+     "n": 242
+    },
+    "origin_direction": {
+     "blake3": "4d02357a4bf9fb9bbb97f09865fbd2b794e6de563ffaac1a83f1011aa407abda",
+     "n": 236
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "18e84b8393a22aa2c184351b38a4a3eb15514bce165a4abf907b77b9034ed4f9",
+     "n": 52
+    },
+    "supply": {
+     "blake3": "de4fbf062f14d98e6e0de544f3b13eab52e01fc32c9037674ac7f26a075413ce",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "b03dedca7894b4c2f20040b883dfb20f3a193ae277d773ae9f093ffbd3db7509",
+     "n": 4
+    }
+   },
+   "2026-10-19": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "210bfd159ec25edef9d2b7e4b46f307b034378633e2d142e92127ef39004cf60",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "2bd9b6f4313db8b133cc9d4128f662bd45664b8b29e9a43a09c68f0c2b7fa502",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "80c3401e8cbbdb2afad08ad09fde87d3a6bfbcfb445b348d23fd6b684d63897f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "a942e2c35ee5aca85a7a67ea93a5923856bf4ab1bccdcdf7d35e75a3727bc81f",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "62f660c8e6bc2dd649d250c477d45b31cf14404fce43dd0ce002d1f642e94f3d",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "63d9102370f81091e29d9ead202c82baf4ed6a12a9941ce53489fc7dde1b39fc",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-10-31": {
+    "active": {
+     "blake3": "7a7e3a8d232120163e811206ba4d75f60d375bc3aabd76f7c8be9eb692b78e77",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "1abf21c0e4f55a27d605928e7b546a91ff384c06a2b7653f81c504b8ecf62945",
+     "n": 2846
+    },
+    "keys": {
+     "blake3": "ffb64b165ec5dc6225ff95caf425b59342a1fc6d62dff8c19c49b49e3138dbb0",
+     "n": 262
+    },
+    "meta": {
+     "blake3": "2c2afcd40823a18003683883e28f3445660f88cdf7e48e8ab474a2aace7f8710",
+     "n": 262
+    },
+    "origin_direction": {
+     "blake3": "b1cc3958d2ab4220186c0dbea34fd7cfededd477027654a0275751934783fd9e",
+     "n": 257
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "4419fc8be34524505e221fec3a56c69d0a1d6aae0329c854396fc584241c0a00",
+     "n": 52
+    },
+    "supply": {
+     "blake3": "189bceb0f02bc6e6c69d5dfe26080edb20dfb868b5b9e78b34ee75d846c1b649",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "d0ec4d1ab94448d88242aa0296d54fbb9bdb0b8661df2da1eee993b03b907085",
+     "n": 4
+    }
+   }
+  },
+  "606d9f640f5aad67": {
+   "2026-07-03": {
+    "active": {
+     "blake3": "c36c101499645ac903c11f01b1cf52e7c94a54e4f85430ddb900902f20706a1b",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "d15e66fc15784649564eab6cfa06b7b576e8eecc9e938d3a9df172e1ebff5004",
+     "n": 3189
+    },
+    "keys": {
+     "blake3": "e894e05698fe34d1fbf3960d3bff429e970d08215afb6a2829a30a71ad90d874",
+     "n": 262
+    },
+    "meta": {
+     "blake3": "4427e7698f94b905e731ace9cc0339587be022573679a72ad83b2319671aa3e7",
+     "n": 262
+    },
+    "origin_direction": {
+     "blake3": "3c1090c8d108addacf89a88100234391ab8154a913f3405e4260c2dde4b67aa0",
+     "n": 257
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "e100162eb5cc46f4f18c68a0900f29fb390eca15990b8f7416858f2932cbcf6d",
+     "n": 69
+    },
+    "supply": {
+     "blake3": "ed2a5053deedd88c6e0bf56301babe7151d0cc1f00a63247b6d4d1f17264f065",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "d9e977f9b15d23d7618c78d688dadc88e8bddc206075d2536143625d4a5f261b",
+     "n": 4
+    }
+   },
+   "2026-08-26": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "4093df441f8e4476bf32a60642b41c386c55af8a4b910ea2095e6b95f22fbac9",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "174600f0d9f6aac6aa531cab9985ec421cee6591c68a082ef0730e8a536ac10f",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "bd83d573331afa8cb074b6f9a5ad747615d745ec4c17d51ab7ea8470cc43cd4f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "73a460b7f8a89e3375dde78f3d3c90e31ed21241c72237006f962365d68f0631",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "878a0679e42becbf8471ef6218dd9172c6952f48f47e77b7544a4c229bb1f4ed",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "efc6c5fe0fff1b58a49376dfa1f0197522693a18b2d3241b635e6e1cb3fa63d0",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-08-27": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "2a6bf63b7c8f0707a2706d04fda996dae9207fbb226f25aa4835cc273ba094e3",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "174600f0d9f6aac6aa531cab9985ec421cee6591c68a082ef0730e8a536ac10f",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "bd83d573331afa8cb074b6f9a5ad747615d745ec4c17d51ab7ea8470cc43cd4f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "73a460b7f8a89e3375dde78f3d3c90e31ed21241c72237006f962365d68f0631",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "4224053484d601a2b62a053e8022f7f7b2be654048705f60d435f1d0f6abb0b6",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "db59f676de5db8c750435e360abe50bea5d6cd2c5ae1efaf8f465f42789382f0",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-09-07": {
+    "active": {
+     "blake3": "a8e28f2eede08ed65668c8dae9e8f8b3a5e068eec7e7c513efdcf5f8a47c1431",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "5d02803de5eb3ae67e049e821cdd774f200d35e106149f39ebabba3bc693a11a",
+     "n": 3005
+    },
+    "keys": {
+     "blake3": "63669dbd3a2a2152a17cb52049c9f00ebc7cbf2d9164ca0ebd22557ff970ab7a",
+     "n": 242
+    },
+    "meta": {
+     "blake3": "2958db6722f3d948a896d10864518d1be4d810c059cf526f217be2ec03060a6f",
+     "n": 242
+    },
+    "origin_direction": {
+     "blake3": "d706075df1b6a7dcd62dfde14c036d81699b67aa276a743db763a4c21d85b384",
+     "n": 226
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "30d8d959ec34970a029d93a42867499f4a5aa713613df74b19fb60424d6917e6",
+     "n": 69
+    },
+    "supply": {
+     "blake3": "94e30dc501e2f10f9a153c0f25e1d3c8887f14c7cd26106aa9dab340c39a5bd4",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "603cdc797500ae22d6d600659ca1fbf53b3161ab9a8e933298fcbb328a5caf61",
+     "n": 4
+    }
+   },
+   "2026-09-08": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "a4f61322c669d0a68558d8e09d68ceb82e2fedc2a1993e76e934b0f96d2c736b",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "174600f0d9f6aac6aa531cab9985ec421cee6591c68a082ef0730e8a536ac10f",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "bd83d573331afa8cb074b6f9a5ad747615d745ec4c17d51ab7ea8470cc43cd4f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "73a460b7f8a89e3375dde78f3d3c90e31ed21241c72237006f962365d68f0631",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "be9f71e602ce06a0f75f9e5e22004d3f9fc4efa9646bd93c546e7cb5d930000a",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "436a7cf61bbfa2120afbbe03541dfb4fc7710505f080acae8c35fdd980f4ac82",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-09-15": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "a0b8e24ca6e1e8ad9a031a1b8d32d957f858bfbb80cd453dec87da40c9ad6593",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "174600f0d9f6aac6aa531cab9985ec421cee6591c68a082ef0730e8a536ac10f",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "bd83d573331afa8cb074b6f9a5ad747615d745ec4c17d51ab7ea8470cc43cd4f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "73a460b7f8a89e3375dde78f3d3c90e31ed21241c72237006f962365d68f0631",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "a6a09b884e46da47cb92b9adf80f06d60dd2c1b0434aca6afd5163dd6ddcbccb",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "47d00b6e86ee6240612ccd29f6a248fb449d31687ed8e94d669825d854e58372",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-09-19": {
+    "active": {
+     "blake3": "7a7e3a8d232120163e811206ba4d75f60d375bc3aabd76f7c8be9eb692b78e77",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "329a9771339884b8d9f04d69c801c8ede80348eee85f8ce8847a62432c03fea9",
+     "n": 2846
+    },
+    "keys": {
+     "blake3": "ffb64b165ec5dc6225ff95caf425b59342a1fc6d62dff8c19c49b49e3138dbb0",
+     "n": 262
+    },
+    "meta": {
+     "blake3": "2c2afcd40823a18003683883e28f3445660f88cdf7e48e8ab474a2aace7f8710",
+     "n": 262
+    },
+    "origin_direction": {
+     "blake3": "b1cc3958d2ab4220186c0dbea34fd7cfededd477027654a0275751934783fd9e",
+     "n": 257
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "806516fd7edd28c6e6b6c9761fe7ae7ff94df63325c80449e8e62b5b2ff0fd88",
+     "n": 52
+    },
+    "supply": {
+     "blake3": "758b7c37dcad7f04468e02b55f766b412f83169d384b576c7259e934eb3175a4",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "d0ec4d1ab94448d88242aa0296d54fbb9bdb0b8661df2da1eee993b03b907085",
+     "n": 4
+    }
+   },
+   "2026-09-20": {
+    "active": {
+     "blake3": "a46fc181673c094f60fca57a69b74461d60cb2adfa3904e08c3e4764f986ccdc",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "3108290d0b076b788d5e39d7580b407f5a315fe0ee17263e4b9a2c51edf964e9",
+     "n": 2746
+    },
+    "keys": {
+     "blake3": "da75ad9fdf902a402f5457ff970cbb93753d6e7efd76b6575be3633e9a38f8be",
+     "n": 242
+    },
+    "meta": {
+     "blake3": "f22594a017ce339d67e4f0d8e1d5a8eb0f858987b0de3ed8b52fef76a9000088",
+     "n": 242
+    },
+    "origin_direction": {
+     "blake3": "4d02357a4bf9fb9bbb97f09865fbd2b794e6de563ffaac1a83f1011aa407abda",
+     "n": 236
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "18e84b8393a22aa2c184351b38a4a3eb15514bce165a4abf907b77b9034ed4f9",
+     "n": 52
+    },
+    "supply": {
+     "blake3": "de4fbf062f14d98e6e0de544f3b13eab52e01fc32c9037674ac7f26a075413ce",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "b03dedca7894b4c2f20040b883dfb20f3a193ae277d773ae9f093ffbd3db7509",
+     "n": 4
+    }
+   },
+   "2026-10-19": {
+    "active": {
+     "blake3": "64857dd1977002c82a7e354a6dcf9982e9375bb5b1b05050152a461ee21e6010",
+     "n": 1
+    },
+    "arrivals": {
+     "blake3": "713a038c0c1f81f046212783e4ca8bc7310d6701a975f6a530be25b45d2e49ac",
+     "n": 5663
+    },
+    "keys": {
+     "blake3": "174600f0d9f6aac6aa531cab9985ec421cee6591c68a082ef0730e8a536ac10f",
+     "n": 436
+    },
+    "meta": {
+     "blake3": "bd83d573331afa8cb074b6f9a5ad747615d745ec4c17d51ab7ea8470cc43cd4f",
+     "n": 440
+    },
+    "origin_direction": {
+     "blake3": "73a460b7f8a89e3375dde78f3d3c90e31ed21241c72237006f962365d68f0631",
+     "n": 427
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "f6d6efde74ee9c90a2e9c672db70092d481a4cecc559f76fa7204a3295571901",
+     "n": 270
+    },
+    "supply": {
+     "blake3": "63d9102370f81091e29d9ead202c82baf4ed6a12a9941ce53489fc7dde1b39fc",
+     "n": 5
+    },
+    "wrapped": {
+     "blake3": "7d90429612a4a80acd535e899260a1a066f8feabc9dc9f75be260e898d126f5e",
+     "n": 4
+    }
+   },
+   "2026-10-31": {
+    "active": {
+     "blake3": "7a7e3a8d232120163e811206ba4d75f60d375bc3aabd76f7c8be9eb692b78e77",
+     "n": 2
+    },
+    "arrivals": {
+     "blake3": "1abf21c0e4f55a27d605928e7b546a91ff384c06a2b7653f81c504b8ecf62945",
+     "n": 2846
+    },
+    "keys": {
+     "blake3": "ffb64b165ec5dc6225ff95caf425b59342a1fc6d62dff8c19c49b49e3138dbb0",
+     "n": 262
+    },
+    "meta": {
+     "blake3": "2c2afcd40823a18003683883e28f3445660f88cdf7e48e8ab474a2aace7f8710",
+     "n": 262
+    },
+    "origin_direction": {
+     "blake3": "b1cc3958d2ab4220186c0dbea34fd7cfededd477027654a0275751934783fd9e",
+     "n": 257
+    },
+    "pattern_stops": {
+     "blake3": "2327a7682086b7e2193a10845ef1732e11e8ed92952097cc3e2bfb3fca34de15",
+     "n": 218
+    },
+    "patterns_of": {
+     "blake3": "4b5a92763d62de1b1c95466fbb176f6205511cef4d656bec68accc6b4e9bdf78",
+     "n": 52
+    },
+    "platforms": {
+     "blake3": "f59108d9af1f76eba5fe15f285a222cffb518b1cde0a0076e32cad40380f3ecc",
+     "n": 992
+    },
+    "stop_times": {
+     "blake3": "4419fc8be34524505e221fec3a56c69d0a1d6aae0329c854396fc584241c0a00",
+     "n": 52
+    },
+    "supply": {
+     "blake3": "189bceb0f02bc6e6c69d5dfe26080edb20dfb868b5b9e78b34ee75d846c1b649",
+     "n": 2
+    },
+    "wrapped": {
+     "blake3": "d0ec4d1ab94448d88242aa0296d54fbb9bdb0b8661df2da1eee993b03b907085",
+     "n": 4
+    }
+   }
+  }
+ },
+ "routes": [
+  "7X",
+  "FX",
+  "H",
+  "SI",
+  "Z"
+ ]
+}

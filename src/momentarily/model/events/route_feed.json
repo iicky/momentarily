@@ -1,0 +1,196 @@
+{
+  "routes": {
+    "1": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 159
+      }
+    },
+    "2": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 141
+      }
+    },
+    "3": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 123
+      }
+    },
+    "4": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 164
+      }
+    },
+    "5": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 104
+      }
+    },
+    "6": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 241
+      }
+    },
+    "6X": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 32
+      }
+    },
+    "7": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 203
+      }
+    },
+    "7X": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 49
+      }
+    },
+    "A": {
+      "feed": "ace",
+      "trips": {
+        "ace": 195
+      }
+    },
+    "B": {
+      "feed": "bdfm",
+      "trips": {
+        "bdfm": 78
+      }
+    },
+    "C": {
+      "feed": "ace",
+      "trips": {
+        "ace": 67
+      }
+    },
+    "D": {
+      "feed": "bdfm",
+      "trips": {
+        "bdfm": 223
+      }
+    },
+    "E": {
+      "feed": "ace",
+      "trips": {
+        "ace": 167
+      }
+    },
+    "F": {
+      "feed": "bdfm",
+      "trips": {
+        "ace": 2,
+        "bdfm": 170
+      }
+    },
+    "FS": {
+      "feed": "bdfm",
+      "trips": {
+        "bdfm": 103
+      }
+    },
+    "FX": {
+      "feed": "bdfm",
+      "trips": {
+        "bdfm": 2
+      }
+    },
+    "G": {
+      "feed": "g",
+      "trips": {
+        "g": 125
+      }
+    },
+    "GS": {
+      "feed": "numbered",
+      "trips": {
+        "numbered": 130
+      }
+    },
+    "H": {
+      "feed": "ace",
+      "trips": {
+        "ace": 80
+      }
+    },
+    "J": {
+      "feed": "jz",
+      "trips": {
+        "jz": 125
+      }
+    },
+    "L": {
+      "feed": "l",
+      "trips": {
+        "l": 192
+      }
+    },
+    "M": {
+      "feed": "bdfm",
+      "trips": {
+        "bdfm": 126
+      }
+    },
+    "N": {
+      "feed": "nqrw",
+      "trips": {
+        "nqrw": 178
+      }
+    },
+    "Q": {
+      "feed": "nqrw",
+      "trips": {
+        "nqrw": 141
+      }
+    },
+    "R": {
+      "feed": "nqrw",
+      "trips": {
+        "ace": 1,
+        "nqrw": 139
+      }
+    },
+    "SI": {
+      "feed": "si",
+      "trips": {
+        "si": 71
+      }
+    },
+    "SS": {
+      "feed": "si",
+      "trips": {
+        "si": 14
+      }
+    },
+    "W": {
+      "feed": "nqrw",
+      "trips": {
+        "nqrw": 50
+      }
+    },
+    "Z": {
+      "feed": "jz",
+      "trips": {
+        "jz": 6
+      }
+    }
+  },
+  "source": {
+    "lineage": "raw",
+    "observed_from": 1792555041,
+    "observed_to": 1792589425,
+    "records": [
+      "trip_update",
+      "vehicle"
+    ],
+    "rows": 545889
+  }
+}

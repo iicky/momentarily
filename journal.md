@@ -11118,3 +11118,19 @@ row and runs whose every row is old. On that definition min-cost
 assignment gives 95.19% (09-15) and 92.37% (10-19), and greedy gives 94.99%
 and 92.19%. 10-19 falls further because its 152 stale-only runs now take
 part in matching.
+
+## 2026-10-21 route-feed-not-a-function
+
+origin: agent
+
+The events plan (§5.1) gave `RouteFeed` as a fixed route-to-feed table.
+Measured on the first recorder hours (2026-10-21 03:57–13:30 UTC, 545,889
+raw vehicle and trip-update records), it is not a function of the route:
+`ace` published 2 of 172 F trips and 1 of 140 R trips, overnight
+(02:00–05:00 New York time). Every other route came from one feed, and the
+majority feed matches the plan's table for all 30 route keys. So a legacy
+row (no `source`) can only get the route's usual feed. The committed table
+keeps every feed's trip count per route key.
+
+- Trip-id route fields need their own keys: W trains carry `N`, Z carry
+  `J`, 6X carry `6` and SS carry `SI`.

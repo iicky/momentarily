@@ -12,7 +12,8 @@ from datetime import date, datetime, time
 from math import comb
 from zoneinfo import ZoneInfo
 
-from training.gtfs_static import HopKey, Timetable, timetable
+from momentarily.archive.traversals import EXACT, Traversal
+from momentarily.gtfs.static import HopKey, Timetable, timetable
 from training.planned_work import Window
 from training.segment_grade import (
     GRADED,
@@ -23,7 +24,6 @@ from training.segment_grade import (
     sign_test,
     summarise,
 )
-from training.trace import EXACT, Traversal
 from training.traversal import TraversalCell
 
 from .conftest import make_gtfs_zip

@@ -1,0 +1,22 @@
+lineage: struct<kind: string not null, raw: struct<payload_key: string not null, payload_member: int64, payload_sha256: string not null>, legacy: struct<archive: string not null, source_key: string not null, row_index: int64, period: struct<start: string not null, end: string> not null>> not null
+source: string not null
+alert_id: string not null
+content_digest: string not null
+entity: string not null
+alert_type: string
+created_at: int64
+updated_at: int64
+absent_before: int64
+absent_before__unknown: string
+first_seen: int64
+first_seen__unknown: string
+last_seen: int64
+last_seen__unknown: string
+gone_by: int64
+gone_by__unknown: string
+gone_kind: string
+gone_kind__unknown: string
+unobserved: list<struct<start: int64 not null, end: int64 not null> not null>
+unobserved__unknown: string
+window: struct<start: int64 not null, end: int64 not null>
+window__unknown: string

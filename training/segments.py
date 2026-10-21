@@ -15,7 +15,7 @@ Two Phase-3 primitives on top of the hierarchical segment baseline
   stays the live per-tick path.
 
 - canonical_adjacency: the modal to_stop for each (route, direction, from_stop)
-  in the observed cross-tick transitions. training.gtfs_static.load_successors
+  in the observed cross-tick transitions. momentarily.gtfs.static.load_successors
   (the static timetable) is the primary segment topology source now — this is
   the fallback for when that fetch fails, and elsewhere the `share` (modal
   count / all advances out of the stop) rides along as a reliability

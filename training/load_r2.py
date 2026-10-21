@@ -24,8 +24,6 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
-from blake3 import blake3
-
 from momentarily.hmm import schedule_bin, tod_bin
 from momentarily.mapping import LEGACY_SEVERITY_FLOOR, is_planned_work_id
 from training.eval_common import et_date, nearest_rank
@@ -106,7 +104,7 @@ def list_vehicle_keys(
     """Every vehicle-movement object key in the [start, end] window, in list
     order. The vehicle archive feeds the serialized movement_baseline and the EM
     normal-state advance prior, so its keys belong in the same input manifest the
-    alert keys fingerprint — see input_manifest_hash."""
+    alert keys fingerprint — see momentarily.provenance.input_manifest_hash."""
     keys: list[str] = []
     for d in date_range(start, end):
         keys.extend(list_keys(client, bucket, f"archive/vehicles/{d.isoformat()}/"))
@@ -126,20 +124,6 @@ def fetch_objects(
         for body in pool.map(_fetch, keys):
             bodies.append(body)
     return bodies
-
-
-def input_manifest_hash(keys: list[str]) -> str:
-    """BLAKE3 over the sorted object keys that fed a fit.
-
-    The archive is immutable and keys are timestamped, so the sorted key set is a
-    deterministic fingerprint of exactly which feed snapshots trained the model —
-    re-listing the same window reproduces the same digest. Empty key set hashes
-    the empty string."""
-    h = blake3()
-    for k in sorted(keys):
-        h.update(k.encode("utf-8"))
-        h.update(b"\n")
-    return h.hexdigest()
 
 
 def fetch_alert_versions(
@@ -771,7 +755,7 @@ def fetch_vehicle_metrics(
 
 # (route, direction, from_stop) -> count this trip's cross-tick outcome? Passed
 # where the caller wants the advance signal restricted to stops it is willing to
-# judge — see training.gtfs_static.terminals / through_stops, and the terminal
+# judge — see momentarily.gtfs.static.terminals / through_stops, and the terminal
 # layover mass they exist to keep out of the advance rate.
 StopFilter = Callable[[str, str, str], bool]
 

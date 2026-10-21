@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from momentarily.archive.traversals import EXACT, Traversal
 from training.journey_coverage import split_runs
-from training.trace import EXACT, TRIP_GAP_SECONDS, Traversal
+from training.trace import TRIP_GAP_SECONDS
 
 MIDNIGHT = int(datetime(2026, 9, 26, tzinfo=UTC).timestamp())
 

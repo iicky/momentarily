@@ -18,18 +18,23 @@ from typing import Any, cast
 
 import pytest
 
-from training.gtfs_static import FeedVersion
-from training.r2_client import R2Config
-from training.trace import EXACT, RIGHT, Traversal, traversals_from_trace
-from training.traversal_archive import (
+from momentarily.archive.traversals import (
+    EXACT,
     EXTRACTOR_VERSION,
     FIELDS,
+    RIGHT,
     SCHEMA_VERSION,
     DayProvenance,
     FeedDigestRange,
-    ReadResult,
+    Traversal,
     decode_day,
     encode_day,
+)
+from momentarily.gtfs.static import FeedVersion
+from training.r2_client import R2Config
+from training.trace import traversals_from_trace
+from training.traversal_archive import (
+    ReadResult,
     is_closed,
     key_for,
     read_days,

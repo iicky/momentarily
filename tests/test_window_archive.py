@@ -16,9 +16,9 @@ from typing import Any, cast
 
 import pytest
 
+from momentarily.archive.traversals import DayProvenance
 from training.planned_work import Window, windows_from_alerts
 from training.r2_client import R2Config
-from training.traversal_archive import DayProvenance
 from training.window_archive import (
     PARSER_VERSION,
     SCHEMA_VERSION,

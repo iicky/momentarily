@@ -63,9 +63,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import pairwise
 
-from momentarily.hmm import schedule_bin
-from training.eval_common import et_date, nearest_rank
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     GTFS_STATIC_URL,
     Calendar,
     base_route,
@@ -76,6 +74,8 @@ from training.gtfs_static import (
     successors,
     through_stops,
 )
+from momentarily.hmm import schedule_bin
+from training.eval_common import et_date, nearest_rank
 from training.trace import Passing
 
 # --- reference-stop selection ---

@@ -15,7 +15,7 @@ unmodified.
 
 --- The division map ---
 
-Source: the real NYCT static GTFS feed (`training.gtfs_static.GTFS_STATIC_URL`,
+Source: the real NYCT static GTFS feed (`momentarily.gtfs.static.GTFS_STATIC_URL`,
 `routes.txt`, fetched and inspected 2026-08-11) gives the definitive 29-row
 route_id space -- 28 rows with route_type "1" (subway) and one, SI, with
 route_type "2" (Staten Island Railway: administratively NYCT but never part
@@ -35,7 +35,7 @@ primary/secondary sources:
     verbatim where a route is named directly.
 
 Express variants (6X, 7X, FX) inherit their base route's division -- same
-rule as `gtfs_static.base_route` / worker's `baseRoute`, not a second one.
+rule as `gtfs.static.base_route` / worker's `baseRoute`, not a second one.
 
 Four assignments are flagged below because the FAQ documents mixed heritage
 or doesn't itemize the route by name; get these wrong and the whole test is

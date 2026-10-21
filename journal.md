@@ -10969,3 +10969,77 @@ prediction per recurring trip and dropped the rest (1.6M rows kept, against
 about 1.0M per day here). Its rates are close to this entry's (5-10 min
 within 60 s 0.565 vs 0.570) but its n and intervals are wrong. This entry's
 per-day reduction supersedes it.
+
+## 2026-10-20 numbered-alert-ids-and-silent-alert-edits
+
+origin: artifact
+
+Two findings from decoding the 2026-10-20 live sample (40 polls at 15 s) into
+layer-2 alert presence.
+
+The `numbered` GTFS-RT feed gives its Alert entities a per-poll sequence id,
+not a stable one. The single "Train delayed" alert came back as `000401` to
+`000417` across the 40 polls. A `numbered` alert id therefore does not
+identify an alert from one poll to the next, and a version index keyed on it
+starts a new version for the same alert every poll.
+
+The camsys alerts feed changes an alert's content without bumping
+`updated_at`. In the 14:36 UTC 2026-10-20 alerts payload, 170 of the
+`(id, updated_at)` pairs match an `archive/alerts/` object in the local
+mirror (2026-07-21 to 2026-10-20). For 6 of these, the content differs, and
+always in `active_period`. In 5, the feed had dropped periods that had
+already ended. In 1, the far-future end of the alert's only period had
+moved later. The archive keys on `(id, updated_at)`, so it missed these
+edits. A digest of the entity content records each one as a new version.
+## 2026-10-20 legacy-backfill-survey
+
+origin: agent
+
+I ran the backfill adapters over the whole R2 mirror of 2026-10-20. I
+surveyed every legacy object before mapping it.
+
+- `archive/trace` `scheduled_at` comes from Cloudflare's
+  `event.scheduledTime`. In practice that value is not the minute the cron
+  was meant for. None of the 3,330 mirrored trace objects has a
+  minute-aligned value, and 2,828 of them have the same value as
+  `observed_at`. The recorder's tick ids and keys take the same value, so a
+  consumer must not assume `scheduled_at % 60 == 0` or one tick per minute
+  (on 10-19 two invocations ran 5 s apart). The adapters keep the value
+  verbatim.
+- Negative results. There are 0 malformed objects in 188,891 objects across
+  eight archives. Every key agrees with its body (day folder, observed_at,
+  ENE hour, predictions `ts`). `archive/alerts` has 0 repeat sightings of an
+  identical entity digest, and 0 cases of one `(id, updated_at)` with two
+  contents, so 16,195 objects give 16,195 versions. All 13,609
+  `archive/alerts_liveness` objects are `success`. No ENE wall time falls in
+  a DST overlap or gap.
+- 18,141 stopped trace rows (1.0% of rows) have no `stop_seq`, because the
+  feed omitted `current_stop_sequence`. Missing here means omitted, not
+  unknown.
+- The trace's `feed_digest` and `feed_etag` are the same pair in all 2,880
+  objects that carry them. `archive/gtfs/` already holds that static feed
+  identity, so layer 2 does not carry them.
+
+## 2026-10-20 derive-job-joins-and-overwrites
+
+origin: agent
+
+I built the layer-2 derive job and replayed the recorder's own test output
+through it.
+
+- The recorder records a 200 with a zero-byte GTFS-RT body as `empty`. The
+  decoder rejects it, because a FeedMessage needs its header. In
+  `tests/fixtures/recorder_output.json`, 1 of the 5 stored GTFS-RT bodies
+  (`g`) is such a body. The derive job skips it as `empty_body` (no record,
+  no alert evidence) rather than failing the day.
+- Holding a day-hour's decoded records as Pydantic models cost 513 MB peak
+  RSS for 11 invocations (baseline 69 MB). Converting each fetch's records
+  to arrow rows at once cut it to 215 MB, with byte-identical files.
+- A tick's GTFS-RT fetches and its bundle index are not always equal. A body
+  that reports after the bundle is written is in the tick only, with a
+  `store_error`. An equality join would call that bundle inconsistent. The
+  job checks that every indexed fetch is in the tick unchanged instead.
+- Derived bytes include `code_sha`. With "identical bytes or fail" as the
+  overwrite rule, every rebuild after a new commit would conflict: all 6
+  fixture files differed only there. The job rebuilds with the stored file's
+  `code_sha` and keeps the file when the bytes then match.

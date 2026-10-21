@@ -1,0 +1,172 @@
+[
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/blob/2026-10-20/abababababababababababababababababababababababababababababababab.json.gz",
+      "payload_member": null,
+      "payload_sha256": "abababababababababababababababababababababababababababababababab"
+    },
+    "source": "alerts",
+    "alert_id": "lmm:alert:272668:26",
+    "content_digest": "ff8ebd5e56c54a075bc484ff980f00a9764d39ea19d5efb77a3e0cadbf39112a",
+    "entity": {
+      "id": "lmm:alert:272668:26",
+      "alert": {
+        "active_period": [
+          {
+            "start": 1792511804
+          }
+        ],
+        "informed_entity": [
+          {
+            "agency_id": "MTASBWY",
+            "route_id": "5",
+            "transit_realtime.mercury_entity_selector": {
+              "sort_order": "MTASBWY:5:26"
+            }
+          }
+        ],
+        "header_text": {
+          "translation": [
+            {
+              "text": "Downtown [2] trains are running express from Gun Hill Rd to E 180 St while we repair a broken rail near Burke Av.",
+              "language": "en"
+            },
+            {
+              "text": "<p>Downtown [2] trains are running express from <strong>Gun Hill Rd</strong> to <strong>E 180 St</strong> while we repair a broken rail near <strong>Burke Av</strong>.</p>",
+              "language": "en-html"
+            }
+          ]
+        },
+        "description_text": {
+          "translation": [
+            {
+              "text": "Expect downtown [5] delays while they share the tracks with rerouted trains.\nFor service to/from bypassed stations, take an uptown [2] train.",
+              "language": "en"
+            },
+            {
+              "text": "<p>Expect downtown [5] delays while they share the tracks with rerouted trains.</p><p>For service to/from bypassed stations, take an uptown [2] train.</p>",
+              "language": "en-html"
+            }
+          ]
+        },
+        "transit_realtime.mercury_alert": {
+          "created_at": 1792511804,
+          "updated_at": 1792511804,
+          "alert_type": "Delays",
+          "display_before_active": 0
+        }
+      }
+    },
+    "alert_type": "Delays",
+    "created_at": 1792511804,
+    "updated_at": 1792511804,
+    "absent_before": 1792511820,
+    "first_seen": 1792511880,
+    "last_seen": 1792514520,
+    "gone_by": 1792514580,
+    "gone_kind": "superseded",
+    "unobserved": [
+      {
+        "start": 1792512600,
+        "end": 1792512720
+      }
+    ],
+    "window": {
+      "start": 1792450800,
+      "end": 1792544400
+    }
+  },
+  {
+    "lineage": {
+      "kind": "legacy",
+      "archive": "archive/alerts",
+      "source_key": "archive/alerts/2026-10-20/1792511804-lmm_alert_272668_29.json",
+      "row_index": null,
+      "period": {
+        "start": "2026-07-21",
+        "end": null
+      }
+    },
+    "source": "alerts",
+    "alert_id": "lmm:alert:272668:29",
+    "content_digest": "a8d9ca42ca0a5ad0be627822b7d5f9206bcae960bb31c7decec3ce758926c53d",
+    "entity": {
+      "id": "lmm:alert:272668:29",
+      "alert": {
+        "active_period": [
+          {
+            "start": 1792511804
+          }
+        ],
+        "informed_entity": [
+          {
+            "agency_id": "MTASBWY",
+            "route_id": "2",
+            "transit_realtime.mercury_entity_selector": {
+              "sort_order": "MTASBWY:2:29"
+            }
+          }
+        ],
+        "header_text": {
+          "translation": [
+            {
+              "text": "Downtown [2] trains are running express from Gun Hill Rd to E 180 St while we repair a broken rail near Burke Av.",
+              "language": "en"
+            },
+            {
+              "text": "<p>Downtown [2] trains are running express from <strong>Gun Hill Rd</strong> to <strong>E 180 St</strong> while we repair a broken rail near <strong>Burke Av</strong>.</p>",
+              "language": "en-html"
+            }
+          ]
+        },
+        "description_text": {
+          "translation": [
+            {
+              "text": "Expect downtown [5] delays while they share the tracks with rerouted trains.\nFor service to/from bypassed stations, take an uptown [2] train.",
+              "language": "en"
+            },
+            {
+              "text": "<p>Expect downtown [5] delays while they share the tracks with rerouted trains.</p><p>For service to/from bypassed stations, take an uptown [2] train.</p>",
+              "language": "en-html"
+            }
+          ]
+        },
+        "transit_realtime.mercury_alert": {
+          "created_at": 1792511804,
+          "updated_at": 1792511804,
+          "alert_type": "Stops Skipped",
+          "display_before_active": 0
+        }
+      }
+    },
+    "alert_type": "Stops Skipped",
+    "created_at": 1792511804,
+    "updated_at": 1792511804,
+    "absent_before": {
+      "unknown": true,
+      "reason": "legacy archive/alerts keeps first sightings only"
+    },
+    "first_seen": 1792512000,
+    "last_seen": {
+      "unknown": true,
+      "reason": "legacy archive/alerts keeps first sightings only"
+    },
+    "gone_by": {
+      "unknown": true,
+      "reason": "legacy archive/alerts keeps first sightings only"
+    },
+    "gone_kind": {
+      "unknown": true,
+      "reason": "archive/alerts keeps first sightings only"
+    },
+    "unobserved": {
+      "unknown": true,
+      "reason": "archive/alerts keeps first sightings only"
+    },
+    "window": {
+      "unknown": true,
+      "reason": "archive/alerts keeps first sightings only"
+    }
+  }
+]

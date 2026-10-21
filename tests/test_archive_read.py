@@ -12,16 +12,16 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from momentarily.archive.traversals import (
+    EXTRACTOR_VERSION,
+    SCHEMA_VERSION,
+    DayProvenance,
+)
 from training.archive_read import (
     WINDOW_PUBLICATION_LOOKBACK_DAYS,
     Loaded,
     missing_days,
     utc_day,
-)
-from training.traversal_archive import (
-    EXTRACTOR_VERSION,
-    SCHEMA_VERSION,
-    DayProvenance,
 )
 from training.traversal_archive import key_for as traversal_key
 

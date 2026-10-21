@@ -38,15 +38,15 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from training.load_r2 import date_range, input_manifest_hash, list_alert_keys, list_keys
-from training.planned_work import Window, windows_from_alerts
-from training.provenance import code_provenance
-from training.r2_client import R2Config, get_object_bytes, load_config, make_client
-
 # Reused rather than re-declared: the two derived archives must answer the
 # "may these days be pooled" question the same way, and a second provenance type
 # would be a second convention that could drift from the first.
-from training.traversal_archive import ComparableKey, DayProvenance, is_closed
+from momentarily.archive.traversals import ComparableKey, DayProvenance
+from momentarily.provenance import code_provenance, input_manifest_hash
+from training.load_r2 import date_range, list_alert_keys, list_keys
+from training.planned_work import Window, windows_from_alerts
+from training.r2_client import R2Config, get_object_bytes, load_config, make_client
+from training.traversal_archive import is_closed
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client

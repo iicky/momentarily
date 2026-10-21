@@ -1,0 +1,370 @@
+{
+  "$defs": {
+    "CollectorBuild": {
+      "additionalProperties": false,
+      "properties": {
+        "code_dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when the build did not say.",
+          "title": "Code Dirty"
+        },
+        "code_sha": {
+          "title": "Code Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code_sha",
+        "code_dirty"
+      ],
+      "title": "CollectorBuild",
+      "type": "object"
+    },
+    "FeedFetch": {
+      "additionalProperties": false,
+      "description": "One HTTP attempt against one source, whatever its outcome.",
+      "properties": {
+        "body_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Decoded body length; null when no body was read.",
+          "title": "Body Bytes"
+        },
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when no headers arrived.",
+          "title": "Content Type"
+        },
+        "entity_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Top-level entities (GTFS-RT, alerts) or records (ENE, Socrata).",
+          "title": "Entity Count"
+        },
+        "fetch_id": {
+          "description": "f'{source}@{started_at_ms}'; unique per attempt.",
+          "title": "Fetch Id",
+          "type": "string"
+        },
+        "finished_at_ms": {
+          "anyOf": [
+            {
+              "description": "UTC epoch milliseconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null exactly on timeout.",
+          "title": "Finished At Ms"
+        },
+        "header_timestamp": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The payload's own build time (GTFS-RT or alerts header).",
+          "title": "Header Timestamp"
+        },
+        "http_date": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The response Date header.",
+          "title": "Http Date"
+        },
+        "http_etag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Http Etag"
+        },
+        "http_last_modified": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Http Last Modified"
+        },
+        "http_status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null when no response headers arrived. A timeout or network error after 2xx headers keeps the status that arrived.",
+          "title": "Http Status"
+        },
+        "method": {
+          "description": "HEAD only for gtfs_static.",
+          "enum": [
+            "GET",
+            "HEAD"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "ok",
+            "empty",
+            "unparseable",
+            "http_error",
+            "timeout",
+            "network_error"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "payload_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "R2 key holding the bytes; null if not stored.",
+          "title": "Payload Key"
+        },
+        "payload_member": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Member index inside a tick bundle (0 is the index); null for blobs.",
+          "title": "Payload Member"
+        },
+        "payload_sha256": {
+          "anyOf": [
+            {
+              "description": "Lowercase sha256 hex.",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "sha256 of the decoded body bytes; null when no body was read.",
+          "title": "Payload Sha256"
+        },
+        "scheduled_at": {
+          "description": "floor(event.scheduledTime / 1000): the invocation's dispatch instant, not minute-aligned.",
+          "minimum": 0,
+          "title": "Scheduled At",
+          "type": "integer"
+        },
+        "source": {
+          "enum": [
+            "ace",
+            "bdfm",
+            "g",
+            "jz",
+            "nqrw",
+            "l",
+            "numbered",
+            "si",
+            "alerts",
+            "ene_current",
+            "ene_upcoming",
+            "ene_equipments",
+            "gtfs_static",
+            "stations",
+            "entrances"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "started_at_ms": {
+          "description": "UTC epoch milliseconds.",
+          "minimum": 0,
+          "title": "Started At Ms",
+          "type": "integer"
+        },
+        "store_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why a body that was read was not stored; set exactly when payload_key is null.",
+          "title": "Store Error"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fetch_id",
+        "source",
+        "url",
+        "method",
+        "scheduled_at",
+        "started_at_ms",
+        "finished_at_ms",
+        "outcome",
+        "http_status",
+        "content_type",
+        "http_date",
+        "http_last_modified",
+        "http_etag",
+        "body_bytes",
+        "payload_sha256",
+        "payload_key",
+        "payload_member",
+        "header_timestamp",
+        "entity_count",
+        "store_error"
+      ],
+      "title": "FeedFetch",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One Worker invocation. No tick for a minute means the collector did\nnot run; a failed source shows as a fetch with its outcome.",
+  "properties": {
+    "collector": {
+      "$ref": "#/$defs/CollectorBuild"
+    },
+    "fetches": {
+      "items": {
+        "$ref": "#/$defs/FeedFetch"
+      },
+      "title": "Fetches",
+      "type": "array"
+    },
+    "finished_at_ms": {
+      "description": "UTC epoch milliseconds.",
+      "minimum": 0,
+      "title": "Finished At Ms",
+      "type": "integer"
+    },
+    "planned_sources": {
+      "description": "What this tick was due to fetch.",
+      "items": {
+        "enum": [
+          "ace",
+          "bdfm",
+          "g",
+          "jz",
+          "nqrw",
+          "l",
+          "numbered",
+          "si",
+          "alerts",
+          "ene_current",
+          "ene_upcoming",
+          "ene_equipments",
+          "gtfs_static",
+          "stations",
+          "entrances"
+        ],
+        "type": "string"
+      },
+      "title": "Planned Sources",
+      "type": "array"
+    },
+    "scheduled_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "Scheduled At",
+      "type": "integer"
+    },
+    "schema": {
+      "const": "observations/s1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "started_at_ms": {
+      "description": "UTC epoch milliseconds.",
+      "minimum": 0,
+      "title": "Started At Ms",
+      "type": "integer"
+    },
+    "tick_id": {
+      "description": "f'{scheduled_at}-{started_at_ms}'; retries keep both.",
+      "title": "Tick Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "tick_id",
+    "scheduled_at",
+    "started_at_ms",
+    "finished_at_ms",
+    "collector",
+    "planned_sources",
+    "fetches"
+  ],
+  "title": "CollectorTick",
+  "type": "object"
+}

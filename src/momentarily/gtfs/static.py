@@ -54,8 +54,9 @@ FETCH_TIMEOUT = httpx.Timeout(30.0)
 # Local HTTP-level cache for fetch_gtfs_zip.  Advisory: callers see identical
 # bytes whether they come from the wire or disk, and a missing directory or
 # corrupt sidecar falls through to a normal unconditional GET.
-# .cache/gtfs/ is gitignored.
-_CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache" / "gtfs"
+# .cache/gtfs/ at the checkout root, which the project's editable install
+# resolves to (src/momentarily/gtfs/ is three levels down); gitignored.
+_CACHE_DIR = Path(__file__).resolve().parents[3] / ".cache" / "gtfs"
 
 
 def _cache_stem(url: str) -> str:
@@ -207,7 +208,7 @@ def _trip_meta(raw: TextIO) -> dict[str, tuple[str, str]]:
 HopKey = tuple[str, str, str, str]
 
 
-def _gtfs_seconds(value: str) -> int | None:
+def gtfs_seconds(value: str) -> int | None:
     """HH:MM:SS since noon-minus-12h into seconds. Hours run past 24 for trips
     that cross midnight (25:14:00 is a real value in this feed), so this cannot
     use a time parser — it is deliberately plain arithmetic."""
@@ -320,7 +321,7 @@ class Calendar:
         return frozenset(running - self.removed.get(stamp, frozenset()))
 
 
-def _rows(zf: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
+def feed_rows(zf: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
     """Every row of an OPTIONAL feed file. GTFS lets a feed carry calendar.txt,
     calendar_dates.txt, or both, so an absent file is empty rather than fatal."""
     if name not in zf.namelist():
@@ -339,11 +340,11 @@ def read_calendar(zf: zipfile.ZipFile) -> Calendar:
             start=row["start_date"],
             end=row["end_date"],
         )
-        for row in _rows(zf, "calendar.txt")
+        for row in feed_rows(zf, "calendar.txt")
     )
     added: dict[str, set[str]] = defaultdict(set)
     removed: dict[str, set[str]] = defaultdict(set)
-    for row in _rows(zf, "calendar_dates.txt"):
+    for row in feed_rows(zf, "calendar_dates.txt"):
         target = added if row["exception_type"] == "1" else removed
         target[row["date"]].add(row["service_id"])
     return Calendar(
@@ -389,7 +390,7 @@ def _feed_date(value: str) -> date | None:
 
 def read_version(zf: zipfile.ZipFile) -> FeedVersion:
     """The feed's self-declared version window, from the optional feed_info.txt."""
-    rows = _rows(zf, "feed_info.txt")
+    rows = feed_rows(zf, "feed_info.txt")
     row = rows[0] if rows else {}
     return FeedVersion(
         version=row.get("feed_version") or "unknown",
@@ -630,7 +631,7 @@ def timetable(zf: zipfile.ZipFile) -> Timetable:
                     flush(current_trip, buf)
                 current_trip = trip_id
                 buf = []
-            buf.append((int(row[seq_col]), row[stop_col], _gtfs_seconds(row[arr_col])))
+            buf.append((int(row[seq_col]), row[stop_col], gtfs_seconds(row[arr_col])))
         if current_trip is not None:
             flush(current_trip, buf)
 
@@ -995,7 +996,7 @@ def rdp(
 
 def read_shapes(zf: zipfile.ZipFile) -> dict[str, list[tuple[float, float]]]:
     """shape_id → ordered [(lat, lon), ...] from shapes.txt."""
-    rows = _rows(zf, "shapes.txt")
+    rows = feed_rows(zf, "shapes.txt")
     if not rows:
         return {}
     by_shape: dict[str, list[tuple[int, float, float]]] = defaultdict(list)

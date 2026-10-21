@@ -1,0 +1,4 @@
+legacy_tick_id: string not null
+lineage: struct<kind: string not null, archive: string not null, source_key: string not null, row_index: int64, period: struct<start: string not null, end: string> not null> not null
+observed_at: int64 not null
+write_failures: map<string, int64 not null> not null

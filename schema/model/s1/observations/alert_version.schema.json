@@ -1,0 +1,393 @@
+{
+  "$defs": {
+    "Interval": {
+      "additionalProperties": false,
+      "description": "A half-open span of instants, ``[start, end)``.",
+      "properties": {
+        "end": {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "Interval",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LegacyLineage": {
+      "additionalProperties": false,
+      "description": "Read from a legacy archive object. What it lacks is ``Unknown`` on the\nrecord; layer 3 labels anything it derives from it as legacy-derived.",
+      "properties": {
+        "archive": {
+          "enum": [
+            "archive/trace",
+            "archive/trip_updates",
+            "archive/vehicles",
+            "archive/alerts",
+            "archive/alerts_liveness",
+            "archive/ene",
+            "archive/health",
+            "v1/predictions"
+          ],
+          "title": "Archive",
+          "type": "string"
+        },
+        "kind": {
+          "const": "legacy",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/LegacyPeriod"
+        },
+        "row_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position of the row in that object; null when it holds one.",
+          "title": "Row Index"
+        },
+        "source_key": {
+          "description": "The legacy object the record came from.",
+          "title": "Source Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "archive",
+        "source_key",
+        "row_index",
+        "period"
+      ],
+      "title": "LegacyLineage",
+      "type": "object"
+    },
+    "LegacyPeriod": {
+      "additionalProperties": false,
+      "description": "The UTC days ``[start, end)`` for which a legacy archive stands in for\nthe recorder's records.",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "description": "ISO date of a UTC calendar day (never a service day).",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.",
+          "title": "End"
+        },
+        "start": {
+          "description": "First UTC day the legacy archive covers.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "LegacyPeriod",
+      "type": "object"
+    },
+    "RawLineage": {
+      "additionalProperties": false,
+      "description": "Decoded from a stored raw payload.",
+      "properties": {
+        "kind": {
+          "const": "raw",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload_key": {
+          "description": "The tick bundle or blob holding the bytes.",
+          "title": "Payload Key",
+          "type": "string"
+        },
+        "payload_member": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bundle member; null for a blob.",
+          "title": "Payload Member"
+        },
+        "payload_sha256": {
+          "description": "Lowercase sha256 hex.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "payload_key",
+        "payload_member",
+        "payload_sha256"
+      ],
+      "title": "RawLineage",
+      "type": "object"
+    },
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One distinct alert content, and the window in which it was seen.\n\n\"Fetch\" below means a fetch with outcome ok or empty: an empty feed said\nthere were no alerts, which is evidence, not a gap. The version left the\nfeed in ``(last_seen, gone_by]``. Where ``unobserved`` overlaps that span,\nthe end is only known to lie in the wider span. ``gone_kind``\n``superseded`` means the same alert id continued with other content.\n``window`` is the presence window the index was built over (a UTC day\nplus carry). Legacy versions come from ``archive/alerts``.",
+  "properties": {
+    "absent_before": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Last fetch before first_seen without this version; null = first fetch of the window.",
+      "title": "Absent Before"
+    },
+    "alert_id": {
+      "title": "Alert Id",
+      "type": "string"
+    },
+    "alert_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The entity's mercury alert_type.",
+      "title": "Alert Type"
+    },
+    "content_digest": {
+      "description": "alert_content_digest(entity).",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Digest",
+      "type": "string"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The entity's mercury created_at.",
+      "title": "Created At"
+    },
+    "entity": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Verbatim feed entity.",
+      "title": "Entity",
+      "type": "object"
+    },
+    "first_seen": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "title": "First Seen"
+    },
+    "gone_by": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "First fetch after last_seen without this version; null = still present at window end.",
+      "title": "Gone By"
+    },
+    "gone_kind": {
+      "anyOf": [
+        {
+          "enum": [
+            "removed",
+            "superseded"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null exactly when gone_by is null. With gone_by Unknown: Unknown, or superseded when a later updated_at of the same id proves it.",
+      "title": "Gone Kind"
+    },
+    "last_seen": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "title": "Last Seen"
+    },
+    "lineage": {
+      "description": "Raw: the payload of the first sighting.",
+      "discriminator": {
+        "mapping": {
+          "legacy": "#/$defs/LegacyLineage",
+          "raw": "#/$defs/RawLineage"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RawLineage"
+        },
+        {
+          "$ref": "#/$defs/LegacyLineage"
+        }
+      ],
+      "title": "Lineage"
+    },
+    "source": {
+      "enum": [
+        "alerts",
+        "numbered"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "unobserved": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/Interval"
+          },
+          "type": "array"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "description": "Sorted, disjoint gaps inside [first_seen, gone_by) with no fetch.",
+      "title": "Unobserved"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The entity's mercury updated_at.",
+      "title": "Updated At"
+    },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Interval"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "title": "Window"
+    }
+  },
+  "required": [
+    "lineage",
+    "source",
+    "alert_id",
+    "content_digest",
+    "entity",
+    "alert_type",
+    "created_at",
+    "updated_at",
+    "absent_before",
+    "first_seen",
+    "last_seen",
+    "gone_by",
+    "gone_kind",
+    "unobserved",
+    "window"
+  ],
+  "title": "AlertVersion",
+  "type": "object"
+}

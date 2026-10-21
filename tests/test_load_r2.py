@@ -36,7 +36,6 @@ from training.load_r2 import (
     finalize_segment_baseline,
     finalize_segment_throughput,
     fold_segment_batch,
-    input_manifest_hash,
     movement_observation_fields,
     presence_mask_from_predictions,
     service_baseline_to_json,
@@ -260,33 +259,6 @@ def test_presence_mask_from_predictions_uses_primary_alert_type():
     assert mask.covers(T0)
     assert mask.covers(T0 + TICK)
     assert not mask.is_active("1", T0 + TICK)
-
-
-# --- input_manifest_hash: deterministic lineage fingerprint over object keys ---
-
-
-def test_manifest_hash_is_order_independent():
-    a = ["archive/alerts/2026-06-01/100.json", "archive/alerts/2026-06-01/200.json"]
-    assert input_manifest_hash(a) == input_manifest_hash(list(reversed(a)))
-
-
-def test_manifest_hash_changes_with_key_set():
-    base = ["archive/alerts/2026-06-01/100.json"]
-    added = [*base, "archive/alerts/2026-06-01/200.json"]
-    assert input_manifest_hash(base) != input_manifest_hash(added)
-
-
-def test_manifest_hash_is_blake3_hex():
-    h = input_manifest_hash(["archive/alerts/2026-06-01/100.json"])
-    assert len(h) == 64
-    assert all(c in "0123456789abcdef" for c in h)
-
-
-def test_manifest_hash_empty_is_stable():
-    assert input_manifest_hash([]) == input_manifest_hash([])
-    # A key boundary follows every key, so the empty set is NOT the same as a
-    # single empty-string key.
-    assert input_manifest_hash([]) != input_manifest_hash([""])
 
 
 # --- Per-(route,direction,tod_bin) advance-rate baseline ---

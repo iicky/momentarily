@@ -1,0 +1,65 @@
+[
+  {
+    "file": "numbered-1792507017657.pb.gz",
+    "source": "numbered",
+    "fetch_id": "numbered@1792507017657",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/14/1792506960-1792507017000.bin",
+    "payload_member": 3,
+    "payload_sha256": "842196ebb6d508dce2107f3b80cc154c1db3891fb3df1e1b80326096194b088c"
+  },
+  {
+    "file": "g-1792507017429.pb.gz",
+    "source": "g",
+    "fetch_id": "g@1792507017429",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/14/1792506960-1792507017000.bin",
+    "payload_member": 1,
+    "payload_sha256": "7668a2c08602e733d0c1d256ea0edf526a86223204dc62adde41d4ad38c95194"
+  },
+  {
+    "file": "l-1792507017609.pb.gz",
+    "source": "l",
+    "fetch_id": "l@1792507017609",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/14/1792506960-1792507017000.bin",
+    "payload_member": 2,
+    "payload_sha256": "74e07407e6c62b13a2964bb6b07911cbc84578230b24f52343bd7ee25021ebd2"
+  },
+  {
+    "file": "si-1792507017716.pb.gz",
+    "source": "si",
+    "fetch_id": "si@1792507017716",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/14/1792506960-1792507017000.bin",
+    "payload_member": 4,
+    "payload_sha256": "8d9f97dd967f1d794a86407be5530a013bc65547e6906e1467a20b70bfe8c1d9"
+  },
+  {
+    "file": "alerts-1792507017768.json.gz",
+    "source": "alerts",
+    "fetch_id": "alerts@1792507017768",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/blob/2026-10-20/3dd3e1713c69c6ad0f0a37edfd6f6a323a3b170eda450444ba7e98ddc3aebd49.json.gz",
+    "payload_member": null,
+    "payload_sha256": "3dd3e1713c69c6ad0f0a37edfd6f6a323a3b170eda450444ba7e98ddc3aebd49"
+  },
+  {
+    "file": "ene_current-1792507017910.json.gz",
+    "source": "ene_current",
+    "fetch_id": "ene_current@1792507017910",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/blob/2026-10-20/10712eb892cc176961e0acedb56169cd41a810666c2af9993bd853466659370b.json.gz",
+    "payload_member": null,
+    "payload_sha256": "10712eb892cc176961e0acedb56169cd41a810666c2af9993bd853466659370b"
+  },
+  {
+    "file": "ene_upcoming-1792507017956.json.gz",
+    "source": "ene_upcoming",
+    "fetch_id": "ene_upcoming@1792507017956",
+    "observed_at": 1792507017,
+    "payload_key": "model/observations/s1/raw/blob/2026-10-20/c0466eddd24d69ad44e73b6800bb5f72386b9c513e003d01988adf3e59ac973c.json.gz",
+    "payload_member": null,
+    "payload_sha256": "c0466eddd24d69ad44e73b6800bb5f72386b9c513e003d01988adf3e59ac973c"
+  }
+]

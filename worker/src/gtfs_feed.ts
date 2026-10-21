@@ -29,6 +29,8 @@
  * not CPU time, and none of it blocks the tick's own response.
  */
 
+import { fetchRaw, type FetchObserver } from './fetch';
+
 const GTFS_STATIC_URL = 'https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip';
 
 // The HEAD that gates every trace tick must stay cheap — 2s, not the 10s
@@ -196,21 +198,17 @@ function captureFeed(bucket: R2Bucket, etag: string): Promise<void> {
  * a pointer/HEAD match resolves the digest from R2 (no GET), a mismatch
  * returns the freshly observed etag with a null digest plus a detached
  * `capture` promise the caller waitUntil's, and a HEAD failure (network error
- * or timeout) returns both fields null with no capture.
+ * or timeout) returns both fields null with no capture. `observe` sees the
+ * HEAD attempt; the detached capture GET outlives the tick and is not reported.
  */
-export async function resolveFeedIdentity(bucket: R2Bucket): Promise<FeedResolution> {
-  let headEtag: string | null = null;
-  try {
-    const res = await fetch(GTFS_STATIC_URL, {
-      method: 'HEAD',
-      signal: AbortSignal.timeout(HEAD_TIMEOUT_MS),
-    });
-    if (res.ok) {
-      headEtag = res.headers.get('etag');
-    }
-  } catch {
-    headEtag = null;
-  }
+export async function resolveFeedIdentity(
+  bucket: R2Bucket,
+  observe?: FetchObserver,
+): Promise<FeedResolution> {
+  const head = await fetchRaw(GTFS_STATIC_URL, { method: 'HEAD' }, HEAD_TIMEOUT_MS);
+  observe?.(head);
+  const res = head.response;
+  const headEtag = res !== null && res.status >= 200 && res.status < 300 ? res.headers.get('etag') : null;
 
   if (headEtag === null) {
     return { identity: { digest: null, etag: null }, capture: null };

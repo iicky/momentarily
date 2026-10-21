@@ -1,0 +1,5 @@
+lineage: struct<kind: string not null, archive: string not null, source_key: string not null, row_index: int64, period: struct<start: string not null, end: string> not null> not null
+granularity: struct<scope: string not null, tick_seconds: int64 not null, content: string not null> not null
+observed_at: int64 not null
+route_id: string not null
+primary_alert_type: string

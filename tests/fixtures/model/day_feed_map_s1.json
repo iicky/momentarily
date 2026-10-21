@@ -1,0 +1,25 @@
+{
+  "days": {
+    "2026-06-02": {
+      "feed_id": null,
+      "feed_version": "20260601-fixture",
+      "inferred_feed_id": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
+      "reason": "no feed digest stamped (collected before digest capture)",
+      "verified": false
+    },
+    "2026-06-03": {
+      "feed_id": null,
+      "feed_version": "20260601-fixture",
+      "inferred_feed_id": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
+      "reason": "digest stamped on only part of the day (d1d5e575 1..2)",
+      "verified": false
+    },
+    "2026-06-04": {
+      "feed_id": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
+      "feed_version": "20260601-fixture",
+      "inferred_feed_id": null,
+      "reason": null,
+      "verified": true
+    }
+  }
+}

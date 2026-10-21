@@ -18,12 +18,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from momentarily.archive.traversals import (
+    EXACT,
+    INTERVAL,
+    RIGHT,
+    DayProvenance,
+    FeedDigestRange,
+    Traversal,
+)
+from momentarily.gtfs.static import Timetable, timetable
 from training.gtfs_archive import digest_of
-from training.gtfs_static import Timetable, timetable
 from training.journey import load_spans, read_spans, spans_from_traversals, write_spans
 from training.journey_types import SpanSample
-from training.trace import EXACT, INTERVAL, RIGHT, Traversal
-from training.traversal_archive import DayProvenance, FeedDigestRange, ReadResult
+from training.traversal_archive import ReadResult
 
 from .conftest import make_gtfs_bytes, make_gtfs_zip
 

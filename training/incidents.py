@@ -72,6 +72,7 @@ from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, cast
 
+from momentarily.gtfs.static import load_successors, through_stops
 from training.dwell import (
     MIN_SAMPLES_FOR_EMPIRICAL,
     DwellQuantiles,
@@ -79,7 +80,6 @@ from training.dwell import (
     compute_dwell_quantiles,
 )
 from training.eval import TransitionRecord
-from training.gtfs_static import load_successors, through_stops
 from training.hierarchical import PooledCell
 from training.load import TICK_SECONDS
 from training.load_r2 import (
@@ -161,7 +161,7 @@ def parse_topology(adjacency: AdjacencyDoc) -> dict[SegmentKey, list[SegmentKey]
 def topology_from_successors(
     succ: Mapping[tuple[str, str, str], list[tuple[str, int]]],
 ) -> dict[SegmentKey, list[SegmentKey]]:
-    """`gtfs_static.load_successors`' raw shape -> this module's segment-key
+    """`gtfs.static.load_successors`' raw shape -> this module's segment-key
     graph, for a caller that already has the static feed fetched (this
     module's own `main`) rather than the persisted adjacency doc."""
     graph: dict[SegmentKey, list[SegmentKey]] = {}
@@ -636,7 +636,7 @@ def segment_ticks_with_baseline(
 
     `counts_from_stop` restricts the window accumulation to admitted
     from_stops, same as movement_backfill's own copy — see
-    training.load_r2.StopFilter / training.gtfs_static.through_stops.
+    training.load_r2.StopFilter / momentarily.gtfs.static.through_stops.
     Applied here directly rather than left to a leaf missing from
     `baseline`, so the restriction holds regardless of whether the supplied
     baseline (self- or published-trained) has already been filtered.
@@ -808,7 +808,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("through", "all"),
         default="through",
         help="through: segment-window counting admits only stops with a "
-        "scheduled predecessor AND successor (training.gtfs_static."
+        "scheduled predecessor AND successor (momentarily.gtfs.static."
         "through_stops), excluding terminal layovers. all: count every stop "
         "(pre-filter behavior, for a direct comparison run).",
     )

@@ -66,17 +66,18 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from training.degradation_label import BIN_FN, build_labels
-from training.gtfs_static import (
+from momentarily.archive.traversals import EXACT, Traversal
+from momentarily.gtfs.static import (
     Timetable,
     base_route,
     fetch_gtfs_zip,
     successors,
     through_stops,
 )
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     timetable as parse_timetable,
 )
+from training.degradation_label import BIN_FN, build_labels
 from training.load import TICK_SECONDS
 from training.load_r2 import (
     MIN_MATCHED_TRIPS,
@@ -88,11 +89,7 @@ from training.load_r2 import (
     fetch_vehicle_metrics,
 )
 from training.r2_client import load_config, make_client
-from training.trace import (
-    EXACT,
-    Traversal,
-    scheduled_for,
-)
+from training.trace import scheduled_for
 
 # The label's two degraded states. "normal" is the only other value.
 DEGRADED = ("acute", "chronic")

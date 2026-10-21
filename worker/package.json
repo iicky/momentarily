@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "types": "murk exec -- wrangler types ./worker-configuration.d.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:model": "bun scripts/gen_model_types.ts"
   },
   "dependencies": {
     "zod": "^3.23.0"
@@ -23,6 +24,8 @@
     "@cloudflare/vitest-pool-workers": "^0.5.0",
     "@cloudflare/workers-types": "^4.20250101.0",
     "ajv": "^8.20.0",
+    "json-schema-to-typescript": "^16.0.0",
+    "miniflare": "3.20241230.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
     "wrangler": "^4.76.0"

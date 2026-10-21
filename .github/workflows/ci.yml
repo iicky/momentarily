@@ -244,7 +244,7 @@ jobs:
         if: steps.scope.outputs.rebuild == 'true'
         working-directory: trainer
       # deploy:ci writes .build-sha (gitignored) before the image build, which is
-      # how training/provenance.py stamps params.json from inside the container —
+      # how src/momentarily/provenance.py stamps params.json from inside the container —
       # .git is excluded from the image, so `git rev-parse` cannot run there.
       - name: Deploy trainer Worker
         if: steps.scope.outputs.rebuild == 'true'

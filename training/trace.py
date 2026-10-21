@@ -34,20 +34,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+from momentarily.archive.traversals import EXACT, INTERVAL, RIGHT, Traversal
+from momentarily.gtfs.static import Timetable, load_timetable
 from training.dwell import DwellSample
-from training.gtfs_static import Timetable, load_timetable
 from training.load_r2 import date_range, fetch_objects, list_keys
 from training.r2_client import R2Config, load_config, make_client
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
-
-# Censoring kinds on a Traversal. Named rather than boolean because the three
-# are statistically different and the survival machinery only handles two of
-# them (see to_dwell_samples).
-EXACT = "exact"  # both ends observed, consecutive stop_seq
-INTERVAL = "interval"  # an arrival was missed: n_hops covered in one span
-RIGHT = "right"  # in progress when the trip was last seen
 
 
 @dataclass(frozen=True)
@@ -104,42 +98,6 @@ class Passing:
     stop_id: str
     stop_seq: int | None
     at: int
-
-
-@dataclass(frozen=True)
-class Traversal:
-    """One trip's movement from one arrival to the next.
-
-    `at` is the arrival at from_stop — when the span started. It is what lets a
-    traversal be matched to a service day, and so to the timetable that was
-    actually running.
-
-    Two durations, because a 1-minute poll brackets rather than pins the hop:
-    `seconds` is arrival to arrival, which includes the dwell at from_stop and
-    is the quantity the baselines fit; `moving_seconds` runs from the first
-    sighting that had left from_stop, which starts the clock late and is
-    therefore a LOWER bound on travel. `moving_seconds` is None when the
-    departure was never observed, which is three quarters of the time.
-
-    `n_hops` is how many stops the span covered in the REALTIME feed's own stop
-    sequence: 1 is a station-to-station traversal, more means an arrival went
-    unobserved between polls and the individual hop times are only known to sum
-    to `seconds`. It is not the timetable's opinion — a train that bypasses a
-    station reports consecutive stops the schedule puts a station between, which
-    is what gtfs_static.Span.n_hops is for. `to_stop`/`n_hops` are None when the
-    traversal was still in progress the last time the trip was seen.
-    """
-
-    trip_id: str
-    route_id: str
-    direction: str | None
-    from_stop: str
-    to_stop: str | None
-    at: int
-    seconds: int
-    moving_seconds: int | None
-    n_hops: int | None
-    censoring: str
 
 
 @dataclass(frozen=True)

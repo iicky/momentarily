@@ -1,0 +1,1751 @@
+{
+  "build_id": "bab9b08b93df200b",
+  "complexes": [
+    {
+      "complex_id": "1",
+      "name": "Alpha",
+      "station_ids": [
+        "101"
+      ]
+    },
+    {
+      "complex_id": "2",
+      "name": "Bravo",
+      "station_ids": [
+        "102"
+      ]
+    },
+    {
+      "complex_id": "4",
+      "name": "Delta",
+      "station_ids": [
+        "104"
+      ]
+    },
+    {
+      "complex_id": "5",
+      "name": "Echo",
+      "station_ids": [
+        "105"
+      ]
+    },
+    {
+      "complex_id": "6",
+      "name": "Foxtrot",
+      "station_ids": [
+        "106"
+      ]
+    },
+    {
+      "complex_id": "900",
+      "name": "Charlie",
+      "station_ids": [
+        "103",
+        "201"
+      ]
+    }
+  ],
+  "feed": {
+    "feed_id": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
+    "feed_version": "20260601-fixture",
+    "valid_from": "2026-06-01",
+    "valid_to": "2026-07-01"
+  },
+  "pattern_segments": [
+    {
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "segment_id": "106M>104N",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "segment_id": "104N>103N",
+      "seq": 1
+    },
+    {
+      "pattern_id": "A-1-d402ec57731e",
+      "segment_id": "101S>102S",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-1-d402ec57731e",
+      "segment_id": "102S>103S",
+      "seq": 1
+    },
+    {
+      "pattern_id": "A-1-d402ec57731e",
+      "segment_id": "103S>104S",
+      "seq": 2
+    },
+    {
+      "pattern_id": "A-1-d402ec57731e",
+      "segment_id": "104S>106M",
+      "seq": 3
+    },
+    {
+      "pattern_id": "A-N-fbb7efff7232",
+      "segment_id": "105N>104N",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-N-fbb7efff7232",
+      "segment_id": "104N>103N",
+      "seq": 1
+    },
+    {
+      "pattern_id": "A-N-fbb7efff7232",
+      "segment_id": "103N>102N",
+      "seq": 2
+    },
+    {
+      "pattern_id": "A-N-fbb7efff7232",
+      "segment_id": "102N>101N",
+      "seq": 3
+    },
+    {
+      "pattern_id": "A-S-45f4d05ed81b",
+      "segment_id": "101S>102S",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-S-45f4d05ed81b",
+      "segment_id": "102S>103S",
+      "seq": 1
+    },
+    {
+      "pattern_id": "A-S-45f4d05ed81b",
+      "segment_id": "103S>104S",
+      "seq": 2
+    },
+    {
+      "pattern_id": "A-S-45f4d05ed81b",
+      "segment_id": "104S>105S",
+      "seq": 3
+    },
+    {
+      "pattern_id": "A-S-c2630636ca0a",
+      "segment_id": "101S>103S",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-S-c2630636ca0a",
+      "segment_id": "103S>104S",
+      "seq": 1
+    },
+    {
+      "pattern_id": "A-S-c2630636ca0a",
+      "segment_id": "104S>105S",
+      "seq": 2
+    },
+    {
+      "pattern_id": "A-x-744e9ee9c40b",
+      "segment_id": "106M>104N",
+      "seq": 0
+    },
+    {
+      "pattern_id": "A-x-744e9ee9c40b",
+      "segment_id": "104N>103N",
+      "seq": 1
+    },
+    {
+      "pattern_id": "A-x-744e9ee9c40b",
+      "segment_id": "103N>102N",
+      "seq": 2
+    },
+    {
+      "pattern_id": "A-x-744e9ee9c40b",
+      "segment_id": "102N>101N",
+      "seq": 3
+    },
+    {
+      "pattern_id": "B-N-f77936fb179c",
+      "segment_id": "201N>103N",
+      "seq": 0
+    },
+    {
+      "pattern_id": "B-N-f77936fb179c",
+      "segment_id": "103N>102N",
+      "seq": 1
+    },
+    {
+      "pattern_id": "B-S-304a9a02bbe1",
+      "segment_id": "102S>103S",
+      "seq": 0
+    },
+    {
+      "pattern_id": "B-S-304a9a02bbe1",
+      "segment_id": "103S>201S",
+      "seq": 1
+    }
+  ],
+  "patterns": [
+    {
+      "direction": {
+        "code": null,
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Charlie",
+      "n_trips": 1,
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "route_id": "A",
+      "shape_ids": [
+        "A..N05"
+      ],
+      "stops": [
+        "106M",
+        "104N",
+        "103N"
+      ]
+    },
+    {
+      "direction": {
+        "code": null,
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Foxtrot",
+      "n_trips": 1,
+      "pattern_id": "A-1-d402ec57731e",
+      "route_id": "A",
+      "shape_ids": [
+        "A..S04"
+      ],
+      "stops": [
+        "101S",
+        "102S",
+        "103S",
+        "104S",
+        "106M"
+      ]
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Alpha",
+      "n_trips": 3,
+      "pattern_id": "A-N-fbb7efff7232",
+      "route_id": "A",
+      "shape_ids": [
+        "A..N01"
+      ],
+      "stops": [
+        "105N",
+        "104N",
+        "103N",
+        "102N",
+        "101N"
+      ]
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "n_trips": 7,
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "shape_ids": [
+        "A..S01"
+      ],
+      "stops": [
+        "101S",
+        "102S",
+        "103S",
+        "104S",
+        "105S"
+      ]
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "n_trips": 2,
+      "pattern_id": "A-S-c2630636ca0a",
+      "route_id": "A",
+      "shape_ids": [
+        "A..S02",
+        "A..S03"
+      ],
+      "stops": [
+        "101S",
+        "103S",
+        "104S",
+        "105S"
+      ]
+    },
+    {
+      "direction": {
+        "code": null,
+        "direction_id": null,
+        "label": null
+      },
+      "headsign": "Alpha",
+      "n_trips": 1,
+      "pattern_id": "A-x-744e9ee9c40b",
+      "route_id": "A",
+      "shape_ids": [
+        "A..N04"
+      ],
+      "stops": [
+        "106M",
+        "104N",
+        "103N",
+        "102N",
+        "101N"
+      ]
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Bravo",
+      "n_trips": 3,
+      "pattern_id": "B-N-f77936fb179c",
+      "route_id": "B",
+      "shape_ids": [
+        "B..N01"
+      ],
+      "stops": [
+        "201N",
+        "103N",
+        "102N"
+      ]
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Golf",
+      "n_trips": 3,
+      "pattern_id": "B-S-304a9a02bbe1",
+      "route_id": "B",
+      "shape_ids": [
+        "B..S01"
+      ],
+      "stops": [
+        "102S",
+        "103S",
+        "201S"
+      ]
+    }
+  ],
+  "platforms": [
+    {
+      "direction_code": "N",
+      "direction_label": "Last Stop",
+      "name": "Alpha",
+      "station_id": "101",
+      "stop_id": "101N"
+    },
+    {
+      "direction_code": "S",
+      "direction_label": "Downtown",
+      "name": "Alpha",
+      "station_id": "101",
+      "stop_id": "101S"
+    },
+    {
+      "direction_code": "N",
+      "direction_label": "Uptown",
+      "name": "Bravo",
+      "station_id": "102",
+      "stop_id": "102N"
+    },
+    {
+      "direction_code": "S",
+      "direction_label": "Downtown",
+      "name": "Bravo",
+      "station_id": "102",
+      "stop_id": "102S"
+    },
+    {
+      "direction_code": "N",
+      "direction_label": "Uptown",
+      "name": "Charlie",
+      "station_id": "103",
+      "stop_id": "103N"
+    },
+    {
+      "direction_code": "S",
+      "direction_label": "Downtown",
+      "name": "Charlie",
+      "station_id": "103",
+      "stop_id": "103S"
+    },
+    {
+      "direction_code": "N",
+      "direction_label": "Manhattan",
+      "name": "Delta",
+      "station_id": "104",
+      "stop_id": "104N"
+    },
+    {
+      "direction_code": "S",
+      "direction_label": "Outbound",
+      "name": "Delta",
+      "station_id": "104",
+      "stop_id": "104S"
+    },
+    {
+      "direction_code": "N",
+      "direction_label": "Manhattan",
+      "name": "Echo",
+      "station_id": "105",
+      "stop_id": "105N"
+    },
+    {
+      "direction_code": "S",
+      "direction_label": "Last Stop",
+      "name": "Echo",
+      "station_id": "105",
+      "stop_id": "105S"
+    },
+    {
+      "direction_code": null,
+      "direction_label": "All trains",
+      "name": "Foxtrot",
+      "station_id": "106",
+      "stop_id": "106M"
+    },
+    {
+      "direction_code": "N",
+      "direction_label": "Uptown",
+      "name": "Golf",
+      "station_id": "201",
+      "stop_id": "201N"
+    },
+    {
+      "direction_code": "S",
+      "direction_label": "Brooklyn",
+      "name": "Golf",
+      "station_id": "201",
+      "stop_id": "201S"
+    }
+  ],
+  "provenance": {
+    "applied_retroactively": [
+      "stations"
+    ],
+    "built_at": 1781524800,
+    "captured_at": {
+      "stations": 1781524800
+    },
+    "code_dirty": null,
+    "code_sha": "fixture",
+    "inputs": {
+      "direction_overrides": "d3f684dce689efb3f8aa044a417db1b98ba265d4fc8ad7a04e07cec3dfa7108e",
+      "gtfs": "d1d5e575ef823e6ccd4fad116cae1524af5627b0d6dd4fc0d5996de4c9939895",
+      "stations": "9d1b661c98d562eee4c9fffa6fa9bd64fc588494b53e1477b474b0c3cf43d8f6"
+    },
+    "observed_from_utc_day": null,
+    "period_start": "2026-06-01",
+    "schema": "network/s1"
+  },
+  "routes": [
+    {
+      "color": "0062CF",
+      "long_name": "Alpha Express",
+      "route_id": "A",
+      "route_type": 1,
+      "short_name": "A",
+      "sort_order": 1,
+      "text_color": "FFFFFF"
+    },
+    {
+      "color": "FF6319",
+      "long_name": "Bravo Local",
+      "route_id": "B",
+      "route_type": 1,
+      "short_name": "B",
+      "sort_order": 2,
+      "text_color": "FFFFFF"
+    }
+  ],
+  "segments": [
+    {
+      "from_stop": "101S",
+      "pattern_ids": [
+        "A-1-d402ec57731e",
+        "A-S-45f4d05ed81b"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "101S>102S",
+      "to_stop": "102S"
+    },
+    {
+      "from_stop": "101S",
+      "pattern_ids": [
+        "A-S-c2630636ca0a"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "101S>103S",
+      "to_stop": "103S"
+    },
+    {
+      "from_stop": "102N",
+      "pattern_ids": [
+        "A-N-fbb7efff7232",
+        "A-x-744e9ee9c40b"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "102N>101N",
+      "to_stop": "101N"
+    },
+    {
+      "from_stop": "102S",
+      "pattern_ids": [
+        "A-1-d402ec57731e",
+        "A-S-45f4d05ed81b",
+        "B-S-304a9a02bbe1"
+      ],
+      "route_ids": [
+        "A",
+        "B"
+      ],
+      "segment_id": "102S>103S",
+      "to_stop": "103S"
+    },
+    {
+      "from_stop": "103N",
+      "pattern_ids": [
+        "A-N-fbb7efff7232",
+        "A-x-744e9ee9c40b",
+        "B-N-f77936fb179c"
+      ],
+      "route_ids": [
+        "A",
+        "B"
+      ],
+      "segment_id": "103N>102N",
+      "to_stop": "102N"
+    },
+    {
+      "from_stop": "103S",
+      "pattern_ids": [
+        "A-1-d402ec57731e",
+        "A-S-45f4d05ed81b",
+        "A-S-c2630636ca0a"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "103S>104S",
+      "to_stop": "104S"
+    },
+    {
+      "from_stop": "103S",
+      "pattern_ids": [
+        "B-S-304a9a02bbe1"
+      ],
+      "route_ids": [
+        "B"
+      ],
+      "segment_id": "103S>201S",
+      "to_stop": "201S"
+    },
+    {
+      "from_stop": "104N",
+      "pattern_ids": [
+        "A-0-8b47ed6bb45d",
+        "A-N-fbb7efff7232",
+        "A-x-744e9ee9c40b"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "104N>103N",
+      "to_stop": "103N"
+    },
+    {
+      "from_stop": "104S",
+      "pattern_ids": [
+        "A-S-45f4d05ed81b",
+        "A-S-c2630636ca0a"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "104S>105S",
+      "to_stop": "105S"
+    },
+    {
+      "from_stop": "104S",
+      "pattern_ids": [
+        "A-1-d402ec57731e"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "104S>106M",
+      "to_stop": "106M"
+    },
+    {
+      "from_stop": "105N",
+      "pattern_ids": [
+        "A-N-fbb7efff7232"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "105N>104N",
+      "to_stop": "104N"
+    },
+    {
+      "from_stop": "106M",
+      "pattern_ids": [
+        "A-0-8b47ed6bb45d",
+        "A-x-744e9ee9c40b"
+      ],
+      "route_ids": [
+        "A"
+      ],
+      "segment_id": "106M>104N",
+      "to_stop": "104N"
+    },
+    {
+      "from_stop": "201N",
+      "pattern_ids": [
+        "B-N-f77936fb179c"
+      ],
+      "route_ids": [
+        "B"
+      ],
+      "segment_id": "201N>103N",
+      "to_stop": "103N"
+    }
+  ],
+  "service_days": [
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-01",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-02",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-03",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-04",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-05",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Saturday"
+      ],
+      "date": "2026-06-06",
+      "day_type": "saturday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Sunday"
+      ],
+      "date": "2026-06-07",
+      "day_type": "sunday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-08",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-09",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-10",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-11",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-12",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Saturday"
+      ],
+      "date": "2026-06-13",
+      "day_type": "saturday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Sunday"
+      ],
+      "date": "2026-06-14",
+      "day_type": "sunday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-15",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-16",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-17",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-18",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Sunday"
+      ],
+      "date": "2026-06-19",
+      "day_type": "sunday",
+      "is_exception": true
+    },
+    {
+      "active_service_ids": [
+        "Saturday"
+      ],
+      "date": "2026-06-20",
+      "day_type": "saturday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Sunday"
+      ],
+      "date": "2026-06-21",
+      "day_type": "sunday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-22",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-23",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-24",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-25",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-26",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Saturday"
+      ],
+      "date": "2026-06-27",
+      "day_type": "saturday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Sunday"
+      ],
+      "date": "2026-06-28",
+      "day_type": "sunday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-29",
+      "day_type": "weekday",
+      "is_exception": false
+    },
+    {
+      "active_service_ids": [
+        "Weekday"
+      ],
+      "date": "2026-06-30",
+      "day_type": "weekday",
+      "is_exception": false
+    }
+  ],
+  "services": [
+    {
+      "added_dates": [],
+      "end": "2026-07-01",
+      "removed_dates": [],
+      "service_id": "Saturday",
+      "start": "2026-06-01",
+      "weekdays": [
+        "saturday"
+      ]
+    },
+    {
+      "added_dates": [
+        "2026-06-19"
+      ],
+      "end": "2026-07-01",
+      "removed_dates": [],
+      "service_id": "Sunday",
+      "start": "2026-06-01",
+      "weekdays": [
+        "sunday"
+      ]
+    },
+    {
+      "added_dates": [],
+      "end": "2026-07-01",
+      "removed_dates": [
+        "2026-06-19"
+      ],
+      "service_id": "Weekday",
+      "start": "2026-06-01",
+      "weekdays": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday"
+      ]
+    }
+  ],
+  "stations": [
+    {
+      "ada": "full",
+      "borough": "M",
+      "complex_id": "1",
+      "lat": 40.7,
+      "lon": -73.99,
+      "name": "Alpha",
+      "station_id": "101"
+    },
+    {
+      "ada": "none",
+      "borough": "M",
+      "complex_id": "2",
+      "lat": 40.71,
+      "lon": -73.99,
+      "name": "Bravo",
+      "station_id": "102"
+    },
+    {
+      "ada": "partial",
+      "borough": "M",
+      "complex_id": "900",
+      "lat": 40.72,
+      "lon": -73.99,
+      "name": "Charlie",
+      "station_id": "103"
+    },
+    {
+      "ada": "none",
+      "borough": "Bk",
+      "complex_id": "4",
+      "lat": 40.73,
+      "lon": -73.99,
+      "name": "Delta",
+      "station_id": "104"
+    },
+    {
+      "ada": "full",
+      "borough": "Bk",
+      "complex_id": "5",
+      "lat": 40.74,
+      "lon": -73.99,
+      "name": "Echo",
+      "station_id": "105"
+    },
+    {
+      "ada": "none",
+      "borough": "Q",
+      "complex_id": "6",
+      "lat": 40.75,
+      "lon": -73.99,
+      "name": "Foxtrot",
+      "station_id": "106"
+    },
+    {
+      "ada": "none",
+      "borough": "M",
+      "complex_id": "900",
+      "lat": 40.76,
+      "lon": -73.99,
+      "name": "Golf",
+      "station_id": "201"
+    }
+  ],
+  "system": {
+    "agency_id": "MTA NYCT",
+    "agency_name": "MTA New York City Transit",
+    "system_id": "nyct-subway",
+    "timezone": "America/New_York"
+  },
+  "trips": [
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Saturday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          28800,
+          28830
+        ],
+        [
+          "102S",
+          28920,
+          28950
+        ],
+        [
+          "103S",
+          29040,
+          29070
+        ],
+        [
+          "104S",
+          29160,
+          29190
+        ],
+        [
+          "105S",
+          29280,
+          29310
+        ]
+      ],
+      "trip_id": "A-Saturday-0800-local-S"
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Alpha",
+      "pattern_id": "A-N-fbb7efff7232",
+      "route_id": "A",
+      "service_id": "Saturday",
+      "shape_id": "A..N01",
+      "stop_times": [
+        [
+          "105N",
+          29400,
+          29430
+        ],
+        [
+          "104N",
+          29520,
+          29550
+        ],
+        [
+          "103N",
+          29640,
+          29670
+        ],
+        [
+          "102N",
+          29760,
+          29790
+        ],
+        [
+          "101N",
+          29880,
+          29910
+        ]
+      ],
+      "trip_id": "A-Saturday-0810-local-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Saturday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          32400,
+          32430
+        ],
+        [
+          "102S",
+          32520,
+          32550
+        ],
+        [
+          "103S",
+          32640,
+          32670
+        ],
+        [
+          "104S",
+          32760,
+          32790
+        ],
+        [
+          "105S",
+          32880,
+          32910
+        ]
+      ],
+      "trip_id": "A-Saturday-0900-local-S"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Sunday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          28800,
+          28830
+        ],
+        [
+          "102S",
+          28920,
+          28950
+        ],
+        [
+          "103S",
+          29040,
+          29070
+        ],
+        [
+          "104S",
+          29160,
+          29190
+        ],
+        [
+          "105S",
+          29280,
+          29310
+        ]
+      ],
+      "trip_id": "A-Sunday-0800-local-S"
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Alpha",
+      "pattern_id": "A-N-fbb7efff7232",
+      "route_id": "A",
+      "service_id": "Sunday",
+      "shape_id": "A..N01",
+      "stop_times": [
+        [
+          "105N",
+          29400,
+          29430
+        ],
+        [
+          "104N",
+          29520,
+          29550
+        ],
+        [
+          "103N",
+          29640,
+          29670
+        ],
+        [
+          "102N",
+          29760,
+          29790
+        ],
+        [
+          "101N",
+          29880,
+          29910
+        ]
+      ],
+      "trip_id": "A-Sunday-0810-local-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Sunday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          32400,
+          32430
+        ],
+        [
+          "102S",
+          32520,
+          32550
+        ],
+        [
+          "103S",
+          32640,
+          32670
+        ],
+        [
+          "104S",
+          32760,
+          32790
+        ],
+        [
+          "105S",
+          32880,
+          32910
+        ]
+      ],
+      "trip_id": "A-Sunday-0900-local-S"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          28800,
+          28830
+        ],
+        [
+          "102S",
+          28920,
+          28950
+        ],
+        [
+          "103S",
+          29040,
+          29070
+        ],
+        [
+          "104S",
+          29160,
+          29190
+        ],
+        [
+          "105S",
+          29280,
+          29310
+        ]
+      ],
+      "trip_id": "A-Weekday-0800-local-S"
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Alpha",
+      "pattern_id": "A-N-fbb7efff7232",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..N01",
+      "stop_times": [
+        [
+          "105N",
+          29400,
+          29430
+        ],
+        [
+          "104N",
+          29520,
+          29550
+        ],
+        [
+          "103N",
+          29640,
+          29670
+        ],
+        [
+          "102N",
+          29760,
+          29790
+        ],
+        [
+          "101N",
+          29880,
+          29910
+        ]
+      ],
+      "trip_id": "A-Weekday-0810-local-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-c2630636ca0a",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..S02",
+      "stop_times": [
+        [
+          "101S",
+          30600,
+          30630
+        ],
+        [
+          "103S",
+          30720,
+          30750
+        ],
+        [
+          "104S",
+          30840,
+          30870
+        ],
+        [
+          "105S",
+          30960,
+          30990
+        ]
+      ],
+      "trip_id": "A-Weekday-0830-express-S"
+    },
+    {
+      "direction": {
+        "code": null,
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Foxtrot",
+      "pattern_id": "A-1-d402ec57731e",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..S04",
+      "stop_times": [
+        [
+          "101S",
+          31500,
+          31530
+        ],
+        [
+          "102S",
+          31620,
+          31650
+        ],
+        [
+          "103S",
+          31740,
+          31770
+        ],
+        [
+          "104S",
+          31860,
+          31890
+        ],
+        [
+          "106M",
+          31980,
+          32010
+        ]
+      ],
+      "trip_id": "A-Weekday-0845-branch-S"
+    },
+    {
+      "direction": {
+        "code": null,
+        "direction_id": null,
+        "label": null
+      },
+      "headsign": "Alpha",
+      "pattern_id": "A-x-744e9ee9c40b",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..N04",
+      "stop_times": [
+        [
+          "106M",
+          31800,
+          31830
+        ],
+        [
+          "104N",
+          31920,
+          31950
+        ],
+        [
+          "103N",
+          32040,
+          32070
+        ],
+        [
+          "102N",
+          32160,
+          32190
+        ],
+        [
+          "101N",
+          32280,
+          32310
+        ]
+      ],
+      "trip_id": "A-Weekday-0850-branch-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          32400,
+          32430
+        ],
+        [
+          "102S",
+          32520,
+          32550
+        ],
+        [
+          "103S",
+          32640,
+          32670
+        ],
+        [
+          "104S",
+          32760,
+          32790
+        ],
+        [
+          "105S",
+          32880,
+          32910
+        ]
+      ],
+      "trip_id": "A-Weekday-0900-local-S"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-c2630636ca0a",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..S03",
+      "stop_times": [
+        [
+          "101S",
+          34200,
+          34230
+        ],
+        [
+          "103S",
+          34320,
+          34350
+        ],
+        [
+          "104S",
+          34440,
+          34470
+        ],
+        [
+          "105S",
+          34560,
+          34590
+        ]
+      ],
+      "trip_id": "A-Weekday-0930-express-S"
+    },
+    {
+      "direction": {
+        "code": null,
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Charlie",
+      "pattern_id": "A-0-8b47ed6bb45d",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..N05",
+      "stop_times": [
+        [
+          "106M",
+          35400,
+          35430
+        ],
+        [
+          "104N",
+          35520,
+          35550
+        ],
+        [
+          "103N",
+          35640,
+          35670
+        ]
+      ],
+      "trip_id": "A-Weekday-0950-shortturn-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Echo",
+      "pattern_id": "A-S-45f4d05ed81b",
+      "route_id": "A",
+      "service_id": "Weekday",
+      "shape_id": "A..S01",
+      "stop_times": [
+        [
+          "101S",
+          86280,
+          86310
+        ],
+        [
+          "102S",
+          86400,
+          86430
+        ],
+        [
+          "103S",
+          86520,
+          86550
+        ],
+        [
+          "104S",
+          86640,
+          86670
+        ],
+        [
+          "105S",
+          86760,
+          86790
+        ]
+      ],
+      "trip_id": "A-Weekday-2358-local-S"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Golf",
+      "pattern_id": "B-S-304a9a02bbe1",
+      "route_id": "B",
+      "service_id": "Saturday",
+      "shape_id": "B..S01",
+      "stop_times": [
+        [
+          "102S",
+          29100,
+          29130
+        ],
+        [
+          "103S",
+          29220,
+          29250
+        ],
+        [
+          "201S",
+          29340,
+          29370
+        ]
+      ],
+      "trip_id": "B-Saturday-0805-S"
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Bravo",
+      "pattern_id": "B-N-f77936fb179c",
+      "route_id": "B",
+      "service_id": "Saturday",
+      "shape_id": "B..N01",
+      "stop_times": [
+        [
+          "201N",
+          29700,
+          29730
+        ],
+        [
+          "103N",
+          29820,
+          29850
+        ],
+        [
+          "102N",
+          29940,
+          29970
+        ]
+      ],
+      "trip_id": "B-Saturday-0815-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Golf",
+      "pattern_id": "B-S-304a9a02bbe1",
+      "route_id": "B",
+      "service_id": "Sunday",
+      "shape_id": "B..S01",
+      "stop_times": [
+        [
+          "102S",
+          29100,
+          29130
+        ],
+        [
+          "103S",
+          29220,
+          29250
+        ],
+        [
+          "201S",
+          29340,
+          29370
+        ]
+      ],
+      "trip_id": "B-Sunday-0805-S"
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Bravo",
+      "pattern_id": "B-N-f77936fb179c",
+      "route_id": "B",
+      "service_id": "Sunday",
+      "shape_id": "B..N01",
+      "stop_times": [
+        [
+          "201N",
+          29700,
+          29730
+        ],
+        [
+          "103N",
+          29820,
+          29850
+        ],
+        [
+          "102N",
+          29940,
+          29970
+        ]
+      ],
+      "trip_id": "B-Sunday-0815-N"
+    },
+    {
+      "direction": {
+        "code": "S",
+        "direction_id": 1,
+        "label": null
+      },
+      "headsign": "Golf",
+      "pattern_id": "B-S-304a9a02bbe1",
+      "route_id": "B",
+      "service_id": "Weekday",
+      "shape_id": "B..S01",
+      "stop_times": [
+        [
+          "102S",
+          29100,
+          29130
+        ],
+        [
+          "103S",
+          29220,
+          29250
+        ],
+        [
+          "201S",
+          29340,
+          29370
+        ]
+      ],
+      "trip_id": "B-Weekday-0805-S"
+    },
+    {
+      "direction": {
+        "code": "N",
+        "direction_id": 0,
+        "label": null
+      },
+      "headsign": "Bravo",
+      "pattern_id": "B-N-f77936fb179c",
+      "route_id": "B",
+      "service_id": "Weekday",
+      "shape_id": "B..N01",
+      "stop_times": [
+        [
+          "201N",
+          29700,
+          29730
+        ],
+        [
+          "103N",
+          29820,
+          29850
+        ],
+        [
+          "102N",
+          29940,
+          29970
+        ]
+      ],
+      "trip_id": "B-Weekday-0815-N"
+    }
+  ]
+}

@@ -53,12 +53,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from training.gtfs_static import (
+from momentarily.archive.traversals import EXACT, Traversal
+from momentarily.gtfs.static import (
     HopKey,
     Timetable,
     fetch_gtfs_zip,
 )
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     timetable as parse_timetable,
 )
 from training.planned_work import (
@@ -66,7 +67,6 @@ from training.planned_work import (
     overlaps,
 )
 from training.progress import auc_from
-from training.trace import EXACT, Traversal
 from training.traversal import TraversalCell, deviation, traversal_baseline
 
 # Scored traversals each arm needs before a window is graded. Below it the

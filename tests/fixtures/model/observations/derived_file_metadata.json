@@ -1,0 +1,24 @@
+[
+  {
+    "schema": "observations/s1",
+    "file_key": "model/observations/s1/derived/vehicle/2026-10-20/16.parquet",
+    "layout_version": 2,
+    "decoder_version": "gtfsrt-1",
+    "row_count": 3,
+    "provenance": {
+      "code_sha": "91b9324c0ffee",
+      "code_dirty": false,
+      "schema": "observations/s1",
+      "inputs": {
+        "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin": "1e6ed65d77d6364eeaed5a745ba5c4985ae2b700dd85d7cf7f027bdf294a33fc"
+      },
+      "captured_at": {
+        "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin": 1792514520
+      },
+      "period_start": null,
+      "observed_from_utc_day": "2026-10-20",
+      "applied_retroactively": [],
+      "built_at": 1792514520
+    }
+  }
+]

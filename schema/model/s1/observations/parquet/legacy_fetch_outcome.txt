@@ -1,0 +1,9 @@
+legacy_fetch_id: string not null
+lineage: struct<kind: string not null, archive: string not null, source_key: string not null, row_index: int64, period: struct<start: string not null, end: string> not null> not null
+source: string not null
+observed_at: int64 not null
+scheduled_at: int64
+scheduled_at__unknown: string
+succeeded: bool not null
+last_success_at: int64
+last_success_at__unknown: string

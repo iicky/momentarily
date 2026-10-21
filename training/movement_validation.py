@@ -90,8 +90,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from momentarily.gtfs.static import load_topology, through_stops
 from training.degradation_label import AT_BASELINE_LOOKBACK_TICKS, BIN_FN, build_labels
-from training.gtfs_static import load_topology, through_stops
 from training.load import TICK_SECONDS
 from training.load_r2 import (
     Disruption,

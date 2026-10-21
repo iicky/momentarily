@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from tests.conftest import make_gtfs_zip
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     rdp,
     read_shapes,
     route_shapes,
     shapes_to_json,
 )
+from tests.conftest import make_gtfs_zip
 
 # Two trips on route A, shape_id "shA_N" northbound, "shA_S" southbound.
 # One trip on route 1, shape_id "sh1_N" northbound.

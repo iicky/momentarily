@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from momentarily.archive.traversals import EXACT, INTERVAL, Traversal
 from training.planned_work import (
     GRADED,
     HEADWAY_ONLY,
@@ -27,7 +28,6 @@ from training.planned_work import (
     unknown_types,
     windows_from_alerts,
 )
-from training.trace import EXACT, INTERVAL, Traversal
 
 T0 = 1_786_552_200
 HOUR = 3600

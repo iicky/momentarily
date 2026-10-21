@@ -1,0 +1,6 @@
+lineage: struct<kind: string not null, payload_key: string not null, payload_member: int64, payload_sha256: string not null> not null
+fetch_id: string not null
+source: string not null
+observed_at: int64 not null
+header_timestamp: int64
+entries: list<struct<alert_id: string not null, content_digest: string not null, updated_at: int64> not null> not null

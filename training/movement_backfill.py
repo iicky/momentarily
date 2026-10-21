@@ -57,6 +57,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+from momentarily.gtfs.static import load_successors, through_stops
 from training.eval import (
     NOT_NORMAL,
     TICK_SECONDS,
@@ -64,7 +65,6 @@ from training.eval import (
     PredictionRecord,
     load_predictions,
 )
-from training.gtfs_static import load_successors, through_stops
 from training.load_r2 import (
     StopFilter,
     build_movement_series_by_direction,
@@ -176,7 +176,7 @@ def segment_ticks_from_vehicle_bodies(
 
     `counts_from_stop` restricts both the window accumulation and the
     baseline to leaves whose from_stop it admits — see training.load_r2.
-    StopFilter / training.gtfs_static.through_stops. A terminal leaf gets
+    StopFilter / momentarily.gtfs.static.through_stops. A terminal leaf gets
     neither accumulated counts nor a baseline cell, so it's never classified.
     """
     series = build_segment_series(bodies)
@@ -288,7 +288,7 @@ def resolve_stop_filter(scope: str) -> StopFilter | None:
     "all" returns None (count every stop — the pre-filter numbers) without a
     fetch. "through" fetches the static GTFS topology and restricts counting
     to (route, direction, stop) triples with both a scheduled predecessor and
-    successor (training.gtfs_static.through_stops) — a chain endpoint or a
+    successor (momentarily.gtfs.static.through_stops) — a chain endpoint or a
     stop the timetable never names stalls by schedule, not disruption, and
     would otherwise pollute the advance signal. Mirrors publish_params.py's
     static_topology: a fetch failure degrades to None with the reason
@@ -574,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=("through", "all"),
         default="through",
         help="through: vehicle-derived counting admits only stops with a "
-        "scheduled predecessor AND successor (training.gtfs_static."
+        "scheduled predecessor AND successor (momentarily.gtfs.static."
         "through_stops), excluding terminal layovers. all: count every stop "
         "(pre-filter behavior, for a direct comparison run). The "
         "published-condition source has no per-stop counts and is unaffected.",

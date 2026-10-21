@@ -32,9 +32,9 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from momentarily.mapping import TRUTH_VERSION
+from momentarily.provenance import code_provenance
 from training.drift import unmapped_alert_type_drift
 from training.eval_common import snap_tick
-from training.provenance import code_provenance
 from training.r2_client import R2Config, get_object_bytes, load_config, make_client
 
 if TYPE_CHECKING:

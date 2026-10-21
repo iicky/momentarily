@@ -193,7 +193,7 @@ export type AdvanceBaselineCell = z.infer<typeof AdvanceBaselineCellSchema>;
 export type MovementBaseline = z.infer<typeof MovementBaselineSchema>;
 
 // route -> direction -> stop ids with both a scheduled predecessor and a
-// scheduled successor (training.gtfs_static.through_stops). Co-versioned
+// scheduled successor (momentarily.gtfs.static.through_stops). Co-versioned
 // with movement_baseline — same trainer run, same fit — so the two update
 // or fall back together. Flattened to `${route}|${direction}|${stop}` keys
 // below, the shape deriveRouteMovementMetric (vehicles.ts) tests per trip.
@@ -233,8 +233,8 @@ const TrainedParamsWrapperSchema = z.object({
   movement_baseline: z.unknown().optional(),
   // Validated separately too; malformed or absent falls back to null (count
   // every stop) rather than dropping the whole params upload. Co-versioned
-  // with movement_baseline — see gtfs_static.through_stops in
-  // training/gtfs_static.py and the StopFilter training/load_r2.py builds
+  // with movement_baseline — see gtfs.static.through_stops in
+  // src/momentarily/gtfs/static.py and the StopFilter training/load_r2.py builds
   // from it.
   movement_through_stops: z.unknown().optional(),
   // Validated separately too, so a malformed service baseline degrades the
@@ -420,7 +420,7 @@ export function parseTrainedParams(data: unknown): TrainedParams | null {
 
   // Through-stop set for the movement channel, co-versioned with
   // movement_baseline. Absent or malformed => null, never an empty set — see
-  // TrainedParams.throughStops above. Mirrors training/gtfs_static.through_stops
+  // TrainedParams.throughStops above. Mirrors momentarily.gtfs.static.through_stops
   // and the StopFilter training/load_r2.py builds from it;
   // deriveRouteMovementMetric (vehicles.ts) applies the same filter live.
   let throughStops: ReadonlySet<string> | null = null;

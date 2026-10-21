@@ -437,7 +437,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         choices=("through", "all"),
         default="through",
         help="through: the peer-comparison scorecard admits only stops with "
-        "a scheduled predecessor AND successor (training.gtfs_static."
+        "a scheduled predecessor AND successor (momentarily.gtfs.static."
         "through_stops), excluding terminal layovers. all: count every stop "
         "(pre-filter behavior, for a direct comparison run). movement_truth "
         "always counts every stop regardless — see build_movement_truth's "

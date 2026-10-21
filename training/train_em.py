@@ -36,6 +36,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from momentarily.gtfs.static import RDP_TOLERANCE, stops_to_json, through_stops
 from momentarily.hmm import (
     STATES,
     EmissionParams,
@@ -47,6 +48,7 @@ from momentarily.hmm import (
     service_responsibility,
 )
 from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, LEGACY_SEVERITY_FLOOR
+from momentarily.provenance import input_manifest_hash
 from training.drift import build_input_profile
 from training.dwell import (
     DwellQuantiles,
@@ -55,7 +57,6 @@ from training.dwell import (
     compute_dwell_quantiles_by_alert,
     compute_dwell_quantiles_by_cause,
 )
-from training.gtfs_static import RDP_TOLERANCE, stops_to_json, through_stops
 from training.load import TICK_SECONDS, TickObservation, fill_quiet_ticks
 from training.load_r2 import (
     SERVICE_MIN_NIGHTS,
@@ -73,7 +74,6 @@ from training.load_r2 import (
     fetch_objects,
     fetch_trip_update_metrics,
     fetch_vehicle_metrics,
-    input_manifest_hash,
     list_alert_keys,
     list_vehicle_keys,
     movement_observation_fields,

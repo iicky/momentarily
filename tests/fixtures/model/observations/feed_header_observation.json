@@ -1,0 +1,153 @@
+[
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 1,
+      "payload_sha256": "d59fdb149b5a73c5ac6b2337bbfeb3cfeee1c7ebd75ea19f027b518177a99387"
+    },
+    "fetch_id": "ace@1792514520416",
+    "source": "ace",
+    "observed_at": 1792514520,
+    "gtfs_realtime_version": "1.0",
+    "incrementality": null,
+    "header_timestamp": 1792514497,
+    "feed_version": null,
+    "nyct_feed_header": {
+      "nyct_subway_version": "1.0",
+      "trip_replacement_periods": [
+        {
+          "route_id": "A",
+          "replacement_period": {
+            "start": null,
+            "end": 1792518097
+          }
+        },
+        {
+          "route_id": "C",
+          "replacement_period": {
+            "start": null,
+            "end": 1792518097
+          }
+        },
+        {
+          "route_id": "E",
+          "replacement_period": {
+            "start": null,
+            "end": 1792518097
+          }
+        },
+        {
+          "route_id": "H",
+          "replacement_period": {
+            "start": null,
+            "end": 1792518096
+          }
+        }
+      ]
+    }
+  },
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 2,
+      "payload_sha256": "2804bad6fe94a55f18b2b37e300919a5fd517b95aa81e95db574c0ba069a3740"
+    },
+    "fetch_id": "l@1792514520416",
+    "source": "l",
+    "observed_at": 1792514520,
+    "gtfs_realtime_version": "1.0",
+    "incrementality": 0,
+    "header_timestamp": 1792514502,
+    "feed_version": null,
+    "nyct_feed_header": {
+      "nyct_subway_version": "1.0",
+      "trip_replacement_periods": [
+        {
+          "route_id": "L",
+          "replacement_period": {
+            "start": 1792514502,
+            "end": 1792516302
+          }
+        }
+      ]
+    }
+  },
+  {
+    "lineage": {
+      "kind": "raw",
+      "payload_key": "model/observations/s1/raw/gtfsrt/2026-10-20/16/1792514520-1792514520412.bin",
+      "payload_member": 3,
+      "payload_sha256": "16c9077e647ff0bb0345504d959b43acb1d31953ed67d29fe3c60b404246d0fc"
+    },
+    "fetch_id": "numbered@1792514520416",
+    "source": "numbered",
+    "observed_at": 1792514521,
+    "gtfs_realtime_version": "1.0",
+    "incrementality": null,
+    "header_timestamp": 1792514508,
+    "feed_version": null,
+    "nyct_feed_header": {
+      "nyct_subway_version": "1.0",
+      "trip_replacement_periods": [
+        {
+          "route_id": "1",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "2",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "3",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "4",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "5",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "6",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "7",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        },
+        {
+          "route_id": "S",
+          "replacement_period": {
+            "start": null,
+            "end": 1792514508
+          }
+        }
+      ]
+    }
+  }
+]

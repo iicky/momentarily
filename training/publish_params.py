@@ -19,10 +19,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from botocore.exceptions import ClientError
 
-from momentarily.hmm import EmissionParams, HMMParams
-from training.dwell import DwellQuantiles
-from training.gtfs_archive import digest_of
-from training.gtfs_static import (
+from momentarily.gtfs.static import (
     RoutePattern,
     SegmentKey,
     dominant_successor,
@@ -32,6 +29,10 @@ from training.gtfs_static import (
     route_shapes,
     shapes_to_json,
 )
+from momentarily.hmm import EmissionParams, HMMParams
+from momentarily.provenance import code_provenance
+from training.dwell import DwellQuantiles
+from training.gtfs_archive import digest_of
 from training.headway import (
     SCHEDULED_HEADWAY_NOTE,
     load_gtfs_zip,
@@ -56,7 +57,6 @@ from training.prov import (
     ManifestFacts,
     build_trainer_run,
 )
-from training.provenance import code_provenance
 from training.r2_client import (
     R2Config,
     get_object_bytes,
@@ -429,7 +429,7 @@ def static_topology() -> tuple[
     try:
         data = fetch_gtfs_zip()
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            from training.gtfs_static import read_version, route_patterns, successors
+            from momentarily.gtfs.static import read_version, route_patterns, successors
 
             succ = successors(zf)
             pats = route_patterns(zf)
@@ -590,7 +590,7 @@ def write_segment_params(
             "cadence_seconds": SEGMENT_CADENCE_SECONDS,
             # Which code produced this doc, matching params.json/eval.json — the
             # off-Worker consumers (viz) read the topology and its ordering, so
-            # they can name the tree that built it. See training/provenance.py.
+            # they can name the tree that built it. See src/momentarily/provenance.py.
             "provenance": code_provenance(),
             "min_share": MIN_SHARE,
             "topology_source": topology_source,

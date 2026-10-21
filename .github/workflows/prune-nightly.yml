@@ -2,7 +2,8 @@ name: Archive + prune R2 (nightly)
 
 # Nightly R2 archive upkeep: store the static feed, DERIVE the traversal and
 # announced-window archives, prune expired params rollback snapshots, then
-# derive yesterday's recorded observations (model/observations/s1/derived/).
+# derive yesterday's recorded observations (model/observations/s1/derived/),
+# and extend the layer-1 network day map and builds (model/network/s1/).
 #
 # RETENTION: every date-partitioned archive/ and v1/ stream is kept in full,
 # indefinitely, by owner decision. The raw captures record live feeds that
@@ -129,6 +130,21 @@ jobs:
             --day "${DERIVE_DAY:-$(date -u -d 'yesterday' +%F)}"
         env:
           DERIVE_DAY: ${{ inputs.derive_day }}
+          MURK_KEY: ${{ secrets.MURK_KEY }}
+      # Layer 1: extend model/network/s1/day_feed_map.json through yesterday
+      # from the recorder's gtfs_static HEAD ETags joined to the static-feed
+      # captures (archive/gtfs/by_etag/), and build any feed the map names
+      # that has no build yet (docs/model-network.md). It resumes after the
+      # map's last day, so a missed night is caught up by the next run; a day
+      # already mapped is never rewritten. Builds are never replaced, and the
+      # index and map only by extensions of themselves: a conflict writes
+      # nothing and fails the step. Prints object keys only.
+      - name: Extend the network day map and build new feeds
+        if: ${{ !cancelled() }}
+        # About 1,440 tick GETs a day plus, rarely, a 5.6 MB zip and a build.
+        timeout-minutes: 20
+        run: uv run python -m training.network_update
+        env:
           MURK_KEY: ${{ secrets.MURK_KEY }}
       # A missed prune or failed archive-derive is invisible except for the
       # schedule-failure email; a tracking issue makes a dead nightly job loud.

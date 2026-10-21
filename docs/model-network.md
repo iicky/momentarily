@@ -90,6 +90,79 @@ The build fails, and lists every problem, when any of these is true:
 - a trip does not resolve to exactly one pattern;
 - a pattern's segments do not chain from end to end.
 
+## Keeping the map current (`update`, nightly)
+
+The `day-feed-map` backfill reads `archive/traversals/`, which ends on
+2026-10-18. Later days are added by `update`, which never reads traversals.
+Its evidence, for each UTC day:
+
+- the `gtfs_static` HEAD in every recorder tick under
+  `model/observations/s1/ticks/<day>/` (docs/model-observations.md §4.1): the
+  strong ETag the static feed URL served at that tick's `scheduled_at`. A
+  failed HEAD, a weak or missing ETag, or a tick that does not parse is no
+  evidence for that minute;
+- the static-feed capture records `archive/gtfs/by_etag/<etag>.json`
+  (`{"digest": ...}`). The Worker (`worker/src/gtfs_feed.ts`) writes one when
+  a HEAD ETag differs from `archive/gtfs/latest.json`, keyed on the ETag of
+  the GET that fetched the bytes, after storing `archive/gtfs/<digest>.zip`.
+  The nightly `training.gtfs_archive` writes the same layout.
+
+The join is ETag to `feed_id` through `by_etag`, accepted only when the zip it
+names is held. Two ETags that name the same digest are one feed (the same
+bytes served again). The capture records carry no time, and `latest.json`
+only names the newest feed, so the ticks are the time series and the captures
+only the join.
+
+| Evidence on the day | Entry |
+| --- | --- |
+| one feed; no gap between successful HEADs, or from midnight to the first and the last to the next midnight, over `MAX_GAP_S` (15 min) | verified, `feed_id` |
+| one feed, but a gap over 15 min | unverified, `inferred_feed_id` = that feed |
+| more than one feed (a change during the day) | unverified, no feed |
+| an ETag with no capture record, no held zip, or a zip that does not read | unverified, no feed |
+| ticks, but no successful HEAD (the reason counts unreadable ticks) | unverified, no feed |
+| no ticks | unverified, no feed |
+
+The reason names the spans (`<feed8> <first>..<last>` in epoch seconds), as
+the backfill does for a partly stamped day. A mid-day change is handled as
+the backfill handles a day spanning two digests: no feed, no lead. The
+recorder's measured cadence is 60 s (2026-10-21, 03:57 to 13:30 UTC: 573 of
+578 gaps 60 s, the rest 0 s retries); 15 min leaves room for short outages.
+
+`update` appends every day after the map's last one through `--through`
+(default yesterday, UTC). It never rewrites a mapped day, so a day added
+before it was complete stays as it was recorded; run it on finished days. It
+then builds every feed that the map names (`feed_id` or `inferred_feed_id`)
+and that has no `index.json` entry, from `archive/gtfs/<feed_id>.zip`
+(checked against its digest), with no overrides, the newest
+`stations-*.json` already in the output (by `retrieved_at`; the builder needs
+no fresh snapshot), and the updated map as `--day-feed-map`. A failure stays
+with its feed: a feed that does not build (for any error) is reported, the
+map is still extended and published, the step exits 1, and the next run
+retries the build. A captured zip that does not read is reported the same
+way, and its days stay without a feed.
+
+Writes never replace different bytes. A build file already present is kept
+when it holds the same network (another commit's provenance) and is a
+conflict otherwise. `index.json` and `day_feed_map.json` may only be replaced
+by a document that keeps every existing entry unchanged. All checks run
+before the first write; on a conflict nothing is written and the step exits
+1. Builds are written first, then the index, then the map. In R2 a build is
+put with `If-None-Match: *`, so one written by another run after the check
+is also a conflict (exit 1, the index and map unwritten). A rerun with the
+same inputs writes nothing.
+
+```sh
+# Local: both roots use the R2 key layout (a bucket mirror).
+uv run python -m momentarily.model.network update --source MIRROR --out ROOT \
+    [--through YYYY-MM-DD]
+# Nightly, against R2 (.github/workflows/prune-nightly.yml):
+uv run python -m training.network_update
+```
+
+The nightly step runs even when an earlier step failed (`!cancelled()`),
+and resumes after the map's last day, so a missed night is caught up. It
+prints day lines, build ids and object keys only.
+
 ## Regenerating the contracts
 
 ```sh

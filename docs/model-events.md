@@ -1336,10 +1336,10 @@ not a public contract and has no JSON Schema, TypeScript or parquet layout.
   about 08:00 UTC the next day, so that UTC day holds most of it. A date the
   map does not cover fails unless a build is named. The snapshot is checked
   against the index's `content_digest` before use. A missing `index.json`,
-  day map or build file is a build error (exit 1). The local day map ends
-  on 2026-10-18 (the last archived traversal day), so recorded raw days
-  need `--build-id` until layer 1 extends the map every night; that is
-  separate work, not this slice.
+  day map or build file is a build error (exit 1). Layer 1 now extends the
+  map every night from recorder evidence (docs/model-network.md, "Keeping
+  the map current"); a day it leaves without a feed (2026-10-19 and 10-20,
+  before the recorder ran) still needs `--build-id`.
 - **Key.** `model/events/s1/match_index/v<INDEX_VERSION>/<service_date>/<build_id>-<route_feed16>.json.gz`
   (`momentarily.model.events.keys`; `route_feed16` is the first 16 hex of
   the blake3 of `route_feed.json`). The index version, the build and the

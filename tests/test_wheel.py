@@ -32,6 +32,7 @@ import momentarily.model.events.match_index
 from momentarily.model.events.route_feed import load_route_feed
 import momentarily.model.network.build
 import momentarily.model.network.day_feed
+import momentarily.model.network.update
 import momentarily.model.observations.columns
 import momentarily.model.observations.contracts
 import momentarily.model.observations.decode

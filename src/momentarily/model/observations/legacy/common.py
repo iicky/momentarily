@@ -25,27 +25,46 @@ from momentarily.model.observations.contracts import (
     LegacyLineage,
     LegacyPeriod,
 )
-from momentarily.model.observations.keys import utc_day
+from momentarily.model.observations.keys import (
+    RECORDER_CUTOVER,
+    REPLACED_PERIOD_END,
+    utc_day,
+)
 
-DECODER_VERSION = "legacy-1"
+DECODER_VERSION = "legacy-2"
 
 
-def _period(start: str) -> LegacyPeriod:
-    return LegacyPeriod.model_validate({"start": start, "end": None})
+def _period(start: str, end: str | None) -> LegacyPeriod:
+    return LegacyPeriod.model_validate({"start": start, "end": end})
 
 
 # The first UTC day each archive holds, read from the mirror on 2026-10-20.
-# ``end`` stays null until the recorder writes the replacing record.
-PERIODS: dict[LegacyArchive, LegacyPeriod] = {
-    "archive/trace": _period("2026-08-12"),
-    "archive/trip_updates": _period("2026-06-15"),
-    "archive/vehicles": _period("2026-06-21"),
-    "archive/alerts": _period("2026-07-21"),
-    "archive/alerts_liveness": _period("2026-09-02"),
-    "archive/ene": _period("2026-07-21"),
-    "archive/health": _period("2026-09-11"),
-    "v1/predictions": _period("2026-07-21"),
+_STARTS: dict[LegacyArchive, str] = {
+    "archive/trace": "2026-08-12",
+    "archive/trip_updates": "2026-06-15",
+    "archive/vehicles": "2026-06-21",
+    "archive/alerts": "2026-07-21",
+    "archive/alerts_liveness": "2026-09-02",
+    "archive/ene": "2026-07-21",
+    "archive/health": "2026-09-11",
+    "v1/predictions": "2026-07-21",
 }
+# Periods of the legacy-only records, which nothing replaces: ``end`` null.
+PERIODS: dict[LegacyArchive, LegacyPeriod] = {
+    a: _period(start, None) for a, start in _STARTS.items()
+}
+# Periods of the records the recorder writes from ``RECORDER_CUTOVER`` on
+# (vehicles from the trace, equipment from ENE, alert versions).
+REPLACED_PERIODS: dict[LegacyArchive, LegacyPeriod] = {
+    a: _period(_STARTS[a], REPLACED_PERIOD_END)
+    for a in ("archive/trace", "archive/ene", "archive/alerts")
+}
+
+
+def replaced(at: int) -> bool:
+    """Whether the recorder, not a legacy archive, owns a record observed at
+    ``at``."""
+    return at >= RECORDER_CUTOVER
 
 
 class MalformedObjectError(ValueError):
@@ -95,13 +114,17 @@ def unknown(reason: str) -> Unknown:
     return found
 
 
-def lineage(archive: LegacyArchive, key: str, row_index: int | None) -> LegacyLineage:
+def lineage(
+    archive: LegacyArchive, key: str, row_index: int | None, *, replaceable: bool
+) -> LegacyLineage:
+    """``replaceable``: the record is one the recorder writes from the
+    cutover on, so its period ends there."""
     return LegacyLineage(
         kind="legacy",
         archive=archive,
         source_key=key,
         row_index=row_index,
-        period=PERIODS[archive],
+        period=(REPLACED_PERIODS if replaceable else PERIODS)[archive],
     )
 
 

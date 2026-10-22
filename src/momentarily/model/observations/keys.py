@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal, get_args
 
 PREFIX = "model/observations/s1/"
@@ -70,6 +70,23 @@ def utc_day(instant: int) -> str:
 
 def _utc_hour(instant: int) -> str:
     return f"{_utc(instant).hour:02d}"
+
+
+# The recorder took over from the legacy archives at this instant, 2026-10-21
+# 04:00:00 UTC (it went live at 03:57:19; the owner chose the next hour).
+# Every record type the recorder writes is legacy-backed when observed before
+# it and raw-derived from it on. Hour-aligned, so no hourly file has two
+# writers. Both the derive job and the legacy backfill read it from here.
+RECORDER_CUTOVER = 1_792_555_200
+assert RECORDER_CUTOVER % 3600 == 0
+# The UTC day of the cutover. Daily ``alert_version`` files of days before it
+# are the legacy backfill's, from it on the derive job's.
+RECORDER_CUTOVER_DAY = utc_day(RECORDER_CUTOVER)
+# ``LegacyPeriod.end`` of every archive the recorder replaces: the first UTC
+# day the archive no longer covers at all.
+REPLACED_PERIOD_END = (
+    date.fromisoformat(RECORDER_CUTOVER_DAY) + timedelta(days=1)
+).isoformat()
 
 
 def _check_day(day: str) -> None:

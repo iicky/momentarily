@@ -27,6 +27,7 @@ from momentarily.model.observations.contracts import (
     LegacyArchive,
     alert_content_digest,
 )
+from momentarily.model.observations.keys import RECORDER_CUTOVER_DAY, utc_day
 from momentarily.model.observations.legacy.common import (
     Emitted,
     LegacyObject,
@@ -40,6 +41,7 @@ from momentarily.model.observations.legacy.common import (
     lineage,
     load_json,
     match_key,
+    replaced,
     unknown,
 )
 
@@ -96,9 +98,13 @@ def _updated_at(s: Sighting) -> int | None:
 
 def versions(sightings: Iterable[Sighting]) -> list[Emitted]:
     """One AlertVersion per distinct ``(alert_id, content_digest)``, in
-    first-sighting order."""
+    first-sighting order. Sightings from the recorder cutover on are not
+    read. A version first seen on the cutover's UTC day is not emitted: the
+    derive job owns that day's ``alert_version`` file, and its index re-sights
+    every version still present at the cutover."""
     groups: dict[tuple[str, str], list[Sighting]] = {}
-    for s in sorted(sightings, key=lambda s: (s.source.observed_at, s.source.key)):
+    kept = (s for s in sightings if not replaced(s.source.observed_at))
+    for s in sorted(kept, key=lambda s: (s.source.observed_at, s.source.key)):
         groups.setdefault((s.alert_id, s.digest), []).append(s)
     by_id: dict[str, list[Sighting]] = {}
     for (alert_id, _), seen in groups.items():
@@ -106,6 +112,8 @@ def versions(sightings: Iterable[Sighting]) -> list[Emitted]:
     out: list[Emitted] = []
     for seen in groups.values():
         first = seen[0]
+        if utc_day(first.source.observed_at) >= RECORDER_CUTOVER_DAY:
+            continue
         inputs = [s.source for s in seen]
         updated = _updated_at(first)
         later = [
@@ -117,7 +125,7 @@ def versions(sightings: Iterable[Sighting]) -> list[Emitted]:
             proof = min(later, key=lambda s: (_updated_at(s), s.source.observed_at))
             inputs.append(proof.source)
         record = AlertVersion(
-            lineage=lineage(ARCHIVE, first.source.key, None),
+            lineage=lineage(ARCHIVE, first.source.key, None, replaceable=True),
             source="alerts",
             alert_id=first.alert_id,
             content_digest=first.digest,

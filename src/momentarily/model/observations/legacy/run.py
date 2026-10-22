@@ -10,10 +10,17 @@ add to it, so a run holds about one day of daily records and one hour of
 hourly ones. Hourly files close on the archive's watermark (an object's key
 bounds the time of every later record), daily files at the end of their day.
 
+The recorder owns every record it writes from ``keys.RECORDER_CUTOVER`` on:
+the adapters emit vehicles, equipment and alert versions observed before it
+only, and alert versions of days before its UTC day only. The legacy-only
+records continue past it.
+
 A malformed object is skipped and listed in the report; a record a contract
 rejects stops the run. A stored file at a target key that is not a readable
-legacy file (raw lineage, read from its provenance, or unreadable) is kept
-and listed as a conflict, never overwritten.
+legacy file (raw lineage, read from its provenance, or unreadable) is kept,
+never overwritten. A raw file at a key wholly before the cutover is listed
+as ``obsolete`` (the derive job prunes it on request), any other as a
+conflict.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ from momentarily.model.observations.contracts import (
     VehicleObservation,
 )
 from momentarily.model.observations.keys import (
+    RECORDER_CUTOVER,
     DailyRecord,
     DerivedDayKey,
     DerivedHourKey,
@@ -117,6 +125,9 @@ class Report:
     records: dict[str, RecordStats]
     files: list[str]
     conflicts: list[str] = field(default_factory=list[str])
+    obsolete: list[str] = field(default_factory=list[str])
+    """Raw-lineage files at keys the backfill owns (before the recorder
+    cutover): kept, not written; ``derive --prune-obsolete`` removes them."""
 
 
 @dataclass
@@ -196,21 +207,25 @@ class _Writer:
             if b.end <= before and (archive is None or b.archives == {archive}):
                 self._write(key, self._open.pop(key))
 
-    def _foreign(self, key: str) -> bool:
-        """Whether a file stored under ``key`` is not a readable legacy
-        derived file (raw lineage, or unreadable)."""
+    def _stored_lineage(self, key: str) -> str | None:
+        """The lineage of a file stored under ``key`` (``unreadable`` when it
+        is not a readable derived file); None when there is none."""
         path = self._out / key
         if not path.is_file():
-            return False
+            return None
         try:
             meta = read_file_metadata(path.read_bytes())
         except (pa.ArrowException, KeyError, ValueError):
-            return True
-        return file_lineage(meta) != "legacy"
+            return "unreadable"
+        return file_lineage(meta) or "mixed"
 
     def _write(self, key: str, bucket: _Bucket) -> None:
         self._written.add(key)
-        if self._foreign(key):
+        stored = self._stored_lineage(key)
+        if stored == "raw" and bucket.end <= RECORDER_CUTOVER:
+            self._report.obsolete.append(key)
+            return
+        if stored not in (None, "legacy"):
             self._report.conflicts.append(key)
             return
         t0 = time.perf_counter()

@@ -531,10 +531,18 @@ The build follows §3.1–3.3 except where listed here.
   EquipmentObservation `outage_start` and `estimated_return` (ambiguous or
   unparseable ET wall times).
 - **Legacy period** (decision 5, applied to every legacy record):
-  `start` is the first UTC day the archive covers, `end` (exclusive) the
-  first UTC day the recorder wrote the replacing record, null until it has.
-  Both are checked as calendar dates. A legacy record whose day falls outside
-  its period is rejected.
+  `start` is the first UTC day the archive covers. The period stays
+  date-granular, so its parquet layout is the same for raw and legacy
+  records. The handover instant is the published constant
+  `keys.RECORDER_CUTOVER`, 2026-10-21T04:00:00Z (decision 10). A record the
+  recorder also writes (VehicleObservation, EquipmentObservation,
+  AlertVersion) has `end` 2026-10-22 (`keys.REPLACED_PERIOD_END`, the first
+  UTC day the archive no longer covers at all), and is rejected when observed
+  (`first_seen` for an AlertVersion) at or after the cutover. A legacy-only
+  record (LegacyFetchOutcome, LegacyRouteAlertState, LegacyCollectorHealth)
+  has `end` null and goes on past the cutover, because no recorder record
+  replaces it. Any other `end` is rejected. Both bounds are checked as
+  calendar dates. A legacy record whose day is before `start` is rejected.
 - **`LegacyRouteAlertState`** has a `v1/predictions` lineage (`source_key`
   is the prediction object holding its tick, `row_index` its line) and a
   `granularity` of fixed literals: `scope: "route"`, `tick_seconds: 300`,
@@ -807,7 +815,7 @@ package never imports boto3.
 
 ```
 python -m momentarily.model.observations.derive --root <dir> --day YYYY-MM-DD \
-    [--out <dir>] [--hours H-H] [--overwrite] [--report report.json]
+    [--out <dir>] [--hours H-H] [--overwrite] [--prune-obsolete] [--report report.json]
 murk exec -- uv run python -m training.derive_observations --day YYYY-MM-DD [...]
 ```
 
@@ -815,7 +823,9 @@ Both commands print one JSON report: fetches by outcome, fetches not decoded
 by reason (`unparseable`, `empty_body`, `not_stored`, `no_record`), per
 record type the inputs, rows, files and what happened to each file, every
 decode failure (fetch id, source, payload key and member, error), every
-missing or inconsistent input, and every conflicting file. Exit status 0
+missing or inconsistent input, every conflicting file, the fetches dropped
+before the recorder cutover (`dropped_before_cutover`, by source) and the
+obsolete raw files (`obsolete`, `obsolete_pruned`). Exit status 0
 means clean. Exit status 1 means a fetch failed to decode, an input is
 missing or inconsistent, or a file conflicts (see the overwrite rule). Exit
 status 2 means bad arguments or no `--root`. A day with no fetch observed in
@@ -859,7 +869,8 @@ needs the whole day.
   observation in the file. The `alert_version` file names every tick and
   payload of its window's evidence.
 - **AlertVersion window and rows.** Day D's index covers
-  `[D 00:00 − 1 h, D+1 00:00)`. The carry is one hour before the day, and
+  `[D 00:00 − 1 h, D+1 00:00)`, and never starts before the recorder cutover
+  (below). The carry is one hour before the day, and
   nothing after. A version gets one row per *run*: a stretch of sightings
   with no evidence (`ok` or `empty`, decoded) lacking it in between. A
   version that leaves and comes back is two rows. The AlertVersion natural
@@ -916,6 +927,25 @@ needs the whole day.
   `--overwrite`. Rows built for its key are a conflict and the job exits 1;
   if the rebuild has no rows for it, it is kept, listed in `foreign_kept`
   and the exit status is unaffected.
+- **Recorder cutover** (decision 10). The job derives raw records from
+  `keys.RECORDER_CUTOVER` (2026-10-21T04:00:00Z) on; the legacy backfill owns
+  everything observed before it. Fetches observed in the asked hours before
+  the cutover are neither decoded nor alert evidence, and are counted in
+  `dropped_before_cutover`. On 2026-10-21 that is the recorder's first three
+  minutes, 03:57–03:59, whose bytes stay in R2. No hourly file before 04:00
+  is written. The daily `alert_version` file of 10-21 is the job's: its
+  window is `[10-21 04:00, 10-22 00:00)`, with no carry, so a version present
+  at 04:00 has `absent_before` null. The legacy backfill owns the daily files
+  of the days before 10-21, and the job builds no index for them. A stored
+  raw file in the asked day and hours that lies wholly before the cutover
+  (and the day's `alert_version` file when the whole day does) is listed in
+  `obsolete`. Only `--prune-obsolete` deletes it, `--overwrite` never does,
+  and neither affects the exit status. A legacy file there is left alone and
+  not listed. Rebuilding 10-21 after this change needs
+  `--overwrite --prune-obsolete`: the stored `alert_version` file was built
+  over the old window (a conflict otherwise), and the stored hour-03 files
+  are obsolete. The tests derive the 2026-10-20 replay fixture with the
+  cutover moved to 0, because it predates the real one.
 - **Nightly wiring.** The last derive step of `prune-nightly.yml` (05:00 UTC)
   derives the previous UTC day from R2. It runs after the prune, so a
   failure cannot block it, and with `if: !cancelled()`, so an earlier failed
@@ -997,11 +1027,54 @@ the report, and makes the CLI exit 1. A missing mirror exits 2. A record that
 a contract rejects stops the run. A file at a target key whose provenance
 inputs are not all legacy archive objects (a raw-lineage file the derive job
 wrote), or that is not a readable derived file, is never overwritten: it is
-kept, listed under `conflicts` in the report, and makes the CLI exit 1.
+kept, listed in the report, and makes the CLI exit 1. A raw file at a key
+that lies wholly before the recorder cutover is listed under `obsolete`
+(the derive job's `--prune-obsolete` deletes it; rerun the backfill after),
+any other under `conflicts`.
+
+**Recorder cutover** (decision 10). The backfill owns every record observed
+before `keys.RECORDER_CUTOVER`, 2026-10-21T04:00:00Z, and the recorder
+everything from it on:
+
+- **Hourly.** `trace` emits vehicles and `ene` emits equipment only for
+  objects observed before 04:00, so the backfill's last hourly files are
+  `derived/vehicle/2026-10-21/03.parquet` and
+  `derived/equipment/2026-10-21/03.parquet`. Raw files start at hour 04.
+- **Daily `alert_version`.** The backfill owns the days before 2026-10-21,
+  the derive job 10-21 on, so no daily key has two writers. `alerts` reads
+  no sighting from 04:00 on, so a later `updated_at` seen after the cutover
+  no longer proves `superseded`. It emits no version first seen on 10-21.
+  That loses the legacy first sightings of 10-21 00:00–04:00. Over the 90
+  full mirror days the legacy archive first-sighted a mean of 25.2 versions
+  a day in that window (median 23.5, max 45, 2,265 in all). 922 of them
+  (40.7%, about 10 a day) were superseded by another legacy version of the
+  same id before 04:00. The mirror holds no 10-21 legacy objects, so the same
+  share on 10-21 is an estimate. Their content
+  is in no derived file; the archive objects stay in R2. The rest, when
+  still present at 04:00, are re-sighted by the derive job with the same
+  content. Only `first_seen` is coarser: it becomes the 04:00 sighting with
+  `absent_before` null, instead of a 5-minute legacy sighting. In the local
+  10-21 index, 176 `alerts` versions are present at 04:00. 151 of them are
+  also in a legacy file of an earlier day, so nothing is lost for them. 25
+  are not, 2 of them with an `updated_at` in 00:00–04:00. The mirror's
+  last legacy alert sighting is at 2026-10-20 01:50:20 UTC, so R2's archive
+  may first-sight some of the 23 others on 10-20.
+- **The recorder's first minutes.** The raw fetches of 03:57–03:59 (3 per
+  source, 30 in all) are dropped from derived output. That drops 3 `alerts`
+  versions (2 superseded and 1 removed at 04:00:21) and 3 `numbered` ones
+  that the old 10-21 index held and no legacy file holds. Rebuilt over the
+  new window, the 10-21 index has 1,899 rows (791 `alerts`, 1,108
+  `numbered`) instead of 1,905.
+- **Legacy-only records** (`legacy_fetch_outcome`,
+  `legacy_route_alert_state`, `legacy_collector_health`) keep `end` null and
+  go on past the cutover, because no recorder record replaces them. The
+  `trace` and `ene` fetch outcomes after 04:00 are kept too.
 
 **Legacy periods.** Each `start` is the first UTC day folder of the archive
-in the mirror of 2026-10-20. `end` is null. The values are constants
-(`legacy.common.PERIODS`), so a partial input cannot move them. For
+in the mirror of 2026-10-20. `end` is 2026-10-22 for the vehicle, equipment
+and alert-version records (`legacy.common.REPLACED_PERIODS`) and null for the
+legacy-only records (`legacy.common.PERIODS`). The values are constants, so a
+partial input cannot move them. For
 `archive/alerts`, `archive/ene` and `v1/predictions` the start is the oldest
 surviving day, not the first day written. The Worker wrote these archives
 from about 2026-05-13, and the days before 07-21 were pruned before history
@@ -1077,6 +1150,19 @@ files).
 | `legacy_fetch_outcome` | 128 | 42,362,836 | 5.0 |
 | `legacy_route_alert_state` | 92 | 11,139,853 | 4.7 |
 | `legacy_collector_health` | 40 | 20,843,935 | 0.3 |
+
+**Rerun at the cutover** (2026-10-22, `legacy-2`, into a tree that also held
+the 104 raw-derived 10-21 files). Each run took about 130 s and exited 0,
+with no conflict and no obsolete file. The mirror's legacy archives end on
+10-20, so the counts are those above: the vehicle files end at
+`2026-10-19/23`, the equipment files at `2026-10-20/01`, and the alert-version
+files at 10-20. The two runs were byte-identical (sha256 of all 2,654 files).
+All 104 raw 10-21 files were unchanged. Over the same tree, the derive job for
+10-21 listed 4 obsolete hour-03 files (`vehicle`, `trip_update`,
+`feed_header`, `alert_presence`; ENE had no fetch in 03:57–03:59) and 1
+conflict: the `alert_version` file, built over the old window. With
+`--overwrite --prune-obsolete` it deleted the 4 files, replaced the index,
+left the 99 hourly files from 04 on unchanged, and exited 0.
 
 ## 6. Retention and storage cost
 
@@ -1166,10 +1252,11 @@ by age.
 5. **`LegacyRouteAlertState`: decided, with a condition.** Kept as a lossy
    legacy contract. Every record states that it is legacy and for which dates:
    its source (`v1/predictions`), the source's granularity (route, 5-minute
-   tick, presence only), and the legacy period it belongs to (2026-07-21 up to
-   the first day the recorder wrote `AlertPresence`). Layer 3 uses it only for
-   dates without `AlertPresence`, and labels any bound it produces as derived
-   from legacy data.
+   tick, presence only), and the legacy period it belongs to (from
+   2026-07-21; `end` null, because no recorder record replaces it, so it
+   continues past the cutover of decision 10). Layer 3 uses it only for
+   instants without `AlertPresence` (before 2026-10-21T04:00:00Z), and labels
+   any bound it produces as derived from legacy data.
 6. **GTFS-RT decoder: decided.** Google's `gtfs-realtime-bindings` plus the
    MTA's `nyct-subway.proto`, compiled with `protoc` and vendored into the
    package, with present-but-unmodelled fields recorded in `unmodeled_fields`
@@ -1182,6 +1269,12 @@ by age.
    to a product.
 9. **Cutover: deferred.** Decide after 30 days of the recorder running side by
    side with the current archives.
+10. **Layer-2 handover: decided 2026-10-22.** The recorder went live at
+    2026-10-21 03:57:19 UTC. Layer 2 hands over at exactly
+    2026-10-21T04:00:00Z (`keys.RECORDER_CUTOVER`): legacy archives back
+    every record observed before it, the recorder's raw payloads every record
+    from it on. The raw minutes 03:57–03:59 are dropped from derived output,
+    and their bytes stay in R2 (§4.2, §5.1). Decision 9 is unchanged.
 
 ## 9. Step 2 build plan
 

@@ -80,12 +80,14 @@ export interface LegacyLineage {
   source_key: string;
 }
 /**
- * The UTC days ``[start, end)`` for which a legacy archive stands in for
- * the recorder's records.
+ * The UTC days from ``start`` for which a legacy archive stands in for
+ * the recorder's records. Date-granular: when ``end`` is set, the archive
+ * stops at the recorder cutover, 2026-10-21T04:00:00Z, on the day before
+ * ``end``.
  */
 export interface LegacyPeriod {
   /**
-   * Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.
+   * Exclusive: the first UTC day the archive no longer covers at all; it stops at the recorder cutover (2026-10-21T04:00:00Z) on the day before. Null for records the recorder does not write.
    */
   end: string | null;
   /**

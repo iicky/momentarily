@@ -5,7 +5,8 @@ Object: ``archive/ene/<YYYY-MM-DD>/<HH>0000-<source>.json`` holding
 ``{observed_at, source, payload}``: the last successful fetch of that UTC
 hour, re-serialized. ``ene_current`` and ``ene_upcoming`` hold outage
 records; ``ene_equipments`` is the catalog, which layer 2 keeps raw only, so
-it yields the fetch outcome alone. Failed fetches left no object.
+it yields the fetch outcome alone. Failed fetches left no object. An object
+observed from ``keys.RECORDER_CUTOVER`` on yields its fetch outcome only.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from momentarily.model.observations.legacy.common import (
     lineage,
     load_json,
     match_key,
+    replaced,
     unknown,
 )
 
@@ -92,7 +94,7 @@ def _record(
     outage_local = record.get("outagedate")
     return_local = record.get("estimatedreturntoservice")
     return EquipmentObservation(
-        lineage=lineage(ARCHIVE, key, index),
+        lineage=lineage(ARCHIVE, key, index, replaceable=True),
         fetch_id=_NO_FETCH,
         source=source,
         observed_at=observed_at,
@@ -120,14 +122,15 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
     source = obj.source(observed_at)
     out: list[Emitted] = []
     equipment = _EQUIPMENT.get(name)
-    if equipment is not None:
+    # From the cutover the recorder's raw payloads hold the outage records.
+    if equipment is not None and not replaced(observed_at):
         out = [
             Emitted(_record(obj.key, equipment, i, observed_at, value), (source,))
             for i, value in enumerate(payload)
         ]
     outcome = LegacyFetchOutcome(
         legacy_fetch_id=f"{obj.key}#{name}",
-        lineage=lineage(ARCHIVE, obj.key, None),
+        lineage=lineage(ARCHIVE, obj.key, None, replaceable=False),
         source="ene_equipments" if equipment is None else equipment,
         observed_at=observed_at,
         scheduled_at=_WALL_CLOCK_ONLY,

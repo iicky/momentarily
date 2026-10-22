@@ -2,13 +2,15 @@
 
     python -m momentarily.model.observations.derive --root <dir> \\
         --day YYYY-MM-DD [--out <dir>] [--hours H-H] [--overwrite] \\
-        [--report report.json]
+        [--prune-obsolete] [--report report.json]
 
 ``--root`` holds the bucket's keys as paths (``model/observations/s1/...``);
 derived files go under ``--out`` (default: ``--root``) with the same keys.
 Prints a JSON report: fetches by outcome, what was not decoded and why, per
 record type the inputs, rows and files (and what happened to each file),
-every decode failure, and every missing or inconsistent input. Exit status:
+every decode failure, every missing or inconsistent input, the fetches
+dropped before the recorder cutover and the obsolete raw files (deleted only
+with ``--prune-obsolete``). Exit status:
 0 clean (a day with no recorded ticks is a clean no-op), 1 when a fetch
 failed to decode, an input is missing or inconsistent, or an existing file
 conflicts, 2 on bad arguments or a missing root.

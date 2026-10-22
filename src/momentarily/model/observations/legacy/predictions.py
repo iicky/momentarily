@@ -58,7 +58,7 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
         if get_int(doc, "ts", where) != observed_at:
             raise MalformedObjectError(f"{where} belongs to another tick")
         record = LegacyRouteAlertState(
-            lineage=lineage(ARCHIVE, obj.key, i),
+            lineage=lineage(ARCHIVE, obj.key, i, replaceable=False),
             granularity=_GRANULARITY,
             observed_at=observed_at,
             route_id=get_str(doc, "route", where),

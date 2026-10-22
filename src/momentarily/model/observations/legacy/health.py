@@ -43,7 +43,7 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
     counts = {name: get_int(failures, name, where) for name in failures}
     record = LegacyCollectorHealth(
         legacy_tick_id=f"archive/health@{observed_at}",
-        lineage=lineage(ARCHIVE, obj.key, None),
+        lineage=lineage(ARCHIVE, obj.key, None, replaceable=False),
         observed_at=observed_at,
         write_failures=counts,
     )

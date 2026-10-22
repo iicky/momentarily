@@ -9,7 +9,8 @@ vehicle_ts}``. The Worker merged all eight feeds, folded the route
 kept ``stop_seq`` only for stopped vehicles. So a row keeps ``trip_id``,
 ``stop_id``, ``vehicle_ts`` and, when stopped, ``current_status`` 1 and the
 stop sequence; everything else is ``Unknown``. The folded route and the
-direction are not kept: neither is a published value.
+direction are not kept: neither is a published value. An object observed
+from ``keys.RECORDER_CUTOVER`` on yields its fetch outcomes only.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from momentarily.model.observations.legacy.common import (
     lineage,
     load_json,
     match_key,
+    replaced,
     unknown,
 )
 from momentarily.model.observations.legacy.fresh_feeds import (
@@ -85,7 +87,7 @@ def _vehicle(
         nyct_direction=_TRIP_ONLY,
     )
     return VehicleObservation(
-        lineage=lineage(ARCHIVE, key, row_index),
+        lineage=lineage(ARCHIVE, key, row_index, replaceable=True),
         fetch_id=_NO_FETCH,
         source=_NO_FEED,
         observed_at=observed_at,
@@ -111,9 +113,14 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
     check_day(obj.key, m["day"], scheduled_at)
     source = obj.source(observed_at)
     rows = as_list(doc.get("rows"), f"{obj.key}.rows")
-    out = [
-        Emitted(_vehicle(obj.key, i, observed_at, row), (source,))
-        for i, row in enumerate(rows)
-    ]
+    # From the cutover the recorder's raw payloads hold the vehicles.
+    out = (
+        []
+        if replaced(observed_at)
+        else [
+            Emitted(_vehicle(obj.key, i, observed_at, row), (source,))
+            for i, row in enumerate(rows)
+        ]
+    )
     out += feed_outcomes(ARCHIVE, source, scheduled_at, fresh_feeds(doc, obj.key))
     return out

@@ -461,9 +461,18 @@ service at the stop:
 - `inferred_passage`: a pattern stop between two observed stops that the
   feed never named (1.5% of on-pattern events). The train went past or
   through s, or around it on a reroute. Service is unknown.
+  - Flag `plan_dropped` (basis `trip_update`): the run's trip update
+    removed s more than 60 s before its predicted arrival. The timed
+    prune comes 32–47 s *after* that time. The flag marks a **planned**
+    skip announced live. It says nothing about unplanned skips of stops
+    that stay listed, which no feed signal detects (§10, Gate A/B
+    results).
 
-Only `stopped` is evidence of passenger service. The other two never
-close a rider-service gap (§4).
+Only `stopped` ("next" family) and `reported_planned` ("last" family,
+owner decision 2026-10-22, §10 Gate A/B results) are evidence of passenger
+service. `reported_planned` is weaker: a train that skips a listed stop
+without a plan change still produces it. `reported_not_stopped` and
+`inferred_passage` never close a rider-service gap (§4).
 
 - **Arrival** (`stopped` only).
   - "last" family: `(previous observation, first observation at s]`.
@@ -1024,7 +1033,8 @@ class StopEvent(Model):
     departure_basis: Literal["vehicle", "next_arrival"] | None
     dwell: DurationBound | Unknown | None    # Unknown for the "last" family (§3.2)
     flags: list[Literal["order_violation", "reported_after_bound", "reported_widened_after",
-                        "held_old_timestamp", "first_of_run", "liveness_uncertain"]]
+                        "held_old_timestamp", "first_of_run", "liveness_uncertain",
+                        "plan_dropped"]]   # trip update removed the stop > 60 s before its predicted arrival (§3.2)
 
 class SegmentTraversal(Model):
     run_id: str
@@ -1226,6 +1236,13 @@ evidence of listed or cancelled numbered and L trips, and a direct
 staleness signal. B-division dwell is not lost relative to raw: neither
 lineage observes it.
 
+**Cutover (owner decision, 2026-10-22).** Raw lineage replaces legacy at
+2026-10-21T04:00Z, at hour granularity. Layer-2 hours before it are
+legacy, and hours from it are raw. A separate change revises the layer-2
+contract for this. Service day 10-20 therefore mixes both lineages: its
+runs after 00:00 ET on 10-21 are raw. Layer 3 never builds one run from
+both (§6), so a run that crosses the cutover is split there.
+
 ## 9. Decisions
 
 The owner accepted all ten recommendations on 2026-10-21. Each is marked
@@ -1251,17 +1268,24 @@ The owner accepted all ten recommendations on 2026-10-21. Each is marked
    Alternative: look for another departure signal, such as
    `vehicle_timestamp` while a train stands at a stop. That would need
    raw data and an independent check.
-5. **One-to-one tier-5 assignment. Decided:** min-cost
-   maximum-cardinality. The reason is narrow: it stops two runs from
-   claiming one scheduled trip. It does not deduplicate physical trains,
-   because a losing run stays a run. Rider-gap attribution comes from the
-   observed pattern fit (§2.3, §4), not from the scheduled trip. So the
-   decision mainly affects each run's service day and its lateness against
-   the schedule. With retained tails (§2.2), the match rate falls from
-   97.7% to 95.2% (09-15) and from 96.9% to 92.4% (10-19); greedy gives
-   95.0% and 92.2%. A match rate is not accuracy (§2.3). Open: what the
-   losers are, and an order constraint. The matching slice grades it with
-   a withheld-input evaluation (§10).
+5. **One-to-one tier-5 assignment. Decided, revised on 2026-10-22:**
+   min-cost assignment with a leave-unassigned cost equal to the 900 s
+   tier-5 tolerance. The time check is made at the first common stop after
+   the pattern origin, because trains wait at the origin terminal.
+   - The first decision (2026-10-21) was maximum cardinality. On the
+     10-21 withheld-input probe it gave 70.0% accuracy. The revised rule
+     gives 83.4%, at 92.7% precision. The day's match rate goes from
+     94.49% to 94.37% (§10, Gate A/B results).
+   - The reason for one-to-one is narrow: it stops two runs from claiming
+     one scheduled trip. It does not deduplicate physical trains, because
+     a losing run stays a run. Rider-gap attribution comes from the
+     observed pattern fit (§2.3, §4), not from the scheduled trip. So the
+     decision mainly affects each run's service day and its lateness
+     against the schedule.
+   - The legacy-day figures in §2.3 (95.2% on 09-15 and 92.4% on 10-19)
+     were measured with maximum cardinality and are not re-measured. A
+     match rate is not accuracy (§2.3). Open: what the unassigned runs
+     are, and an order constraint.
 6. **Thresholds. Decided:**
    - run gap 30 min (the result is insensitive between 10 min and 4 h);
    - old-timestamp row at more than 300 s of `vehicle_timestamp` age; a
@@ -1611,6 +1635,695 @@ gaps there are then marked `service_not_separable`, never shown as a
 service difference. The `stopped` value is kept only where Gate B shows
 a difference. The contract gains `"unknown"` in `ServiceEvidence` and
 the flag on Headway and OpenState.
+
+#### Gate A/B results (recorded raw days)
+
+Measured on 2026-10-21 and 2026-10-22 with throwaway scripts in `<work>/step3_gates/`
+(the prototype of `step3_scope/`, run on recorder data). Inputs:
+
+- the production derive output for one UTC day: `vehicle`, `trip_update`
+  and `feed_header`, plus the tick records and bundle indexes for
+  coverage;
+- network `606d9f640f5aad67`, the inferred build that `day_feed_map`
+  gives for 10-21. The slice-1 CLI built the match index for 10-21
+  (`inferred`, 638,157 bytes, 8,497 trips) and for 10-20 (`--build-id`,
+  because the map has no feed for 10-20).
+
+Rules: the raw placeholder rule, and rows from `stale_header` fetches
+dropped. Runs split at 30 minutes and keep their stale tails (§2.2). Tiers
+1–4 run first, then min-cost one-to-one tier 5. Pattern fitting does not
+use the match. Bounds follow §3.2, with the `reported − 1` widening. All
+recorded rows of the UTC day are one input window. A run's service day
+comes from its match.
+
+**2026-10-21 (Wednesday).** The recorder started at 03:57:19 UTC (23:57
+ET on 10-20), so the UTC day covers service day 10-21 from 00:00 to 20:00
+ET, and the last 3 minutes of 10-20. The day has 1,208 invocations (1,207
+tick records, plus one invocation that only a bundle index records) and
+9,664 GTFS-RT fetches, all `ok`. There are 684,798 vehicle rows. 10,240 of
+them come from stale-header fetches and are dropped. Placeholders are
+34.9% of the rest. Against the raw rule, the legacy placeholder rule misses
+5,764 placeholder rows and flags 151 real rows.
+
+| Gate A | 2026-10-21 | 2026-10-22 |
+|---|---|---|
+| Runs | 7,550 | 8,848 |
+| Match rate, independent | 97.25% | 96.21% |
+| Match rate, min-cost maximum cardinality (greedy) | 94.49% (94.26%) | 94.35% (94.03%) |
+| Match rate, accepted decision-5 matcher | 94.37% | 94.21% |
+| Tiers after min-cost: T1 / T2 / T3 / T4 / T5 | 4,626 / 1,310 / 159 / 143 / 896 (of 1,104 tier-5 runs) | 5,198 / 1,618 / 217 / 186 / 1,129 (of 1,294) |
+| Unmatched | 416 | 500 |
+| Id-tier double claims | 160 | 133 |
+| Stale-only runs | 134 | 30 |
+| One trip id at two stops in one poll | 17 runs, 508 polls. Each run has 2 `train_id`s, so all 17 split | 17 runs, 555 polls. 16 split by `train_id`, 1 has one |
+| Live pattern fit (fresh runs): one / several / none | 46.1% / 49.1% / 4.9% | 45.8% / 48.0% / 6.3% |
+
+Unmatched classes after min-cost assignment:
+- `unscheduled`: 199 (189 moving, 5 stationary, 5 stale-only);
+- tier-5 runs that lost the assignment: 208 (125 moving, 18 stationary,
+  65 stale-only);
+- `service_day_mismatch` 4, `path_code_differs` 2, `unparseable_id` 3.
+
+By trip-id route field, most are on the 6 (107) and D (107), then J 26,
+E 25 and Q 22. Runs first seen 00:00–01:00 ET match least often (239 of
+329). In that hour, B-division and SIR trains reappear when the frozen
+feeds resume at 00:37.
+
+**Bounds** (seconds, p50 / p90 / p99, share ≤ 60 s and ≤ 120 s):
+
+| Bound | "last" | "next" |
+|---|---|---|
+| arrival (n 87,700 / 65,215) | 60 / 69 / 179 · 65.1% · 97.5% | 60 / 64 / 121 · 67.4% · 98.9% |
+| arrival, after widening | 60 / 70 / 179 | 60 / 65 / 121 |
+| departure | next arrival only: 180 / 300 / 601 | 60 / 69 / 141 |
+| stop-to-stop | 120 / 163 / 300 | 120 / 134 / 184 |
+| dwell, run time | `Unknown` (decision 4) | 120 / 134 / 207 and 119 / 123 / 181 |
+
+- The p50 is 60 s, as on the legacy days. Only about 65% of arrival bounds
+  are ≤ 60 s (legacy: 89–98%). The recorder's `observed_at` is the fetch
+  finish time, which jitters by a few seconds around the minute.
+- Share of duration bounds with a lower end of 0: dwell, "next" 88.8%;
+  run time, "next" 80.6%; stop-to-stop 23.7% ("last") and 30.7% ("next").
+- Reported times:
+  - "last": 98.7% fall inside the arrival bracket, 0.8% before it
+    (median 6 s) and 0.45% after it (396, flagged `reported_after_bound`);
+  - numbered: 95.1% inside and 4.9% before (median 3 s);
+  - `l` reports are excluded (§3.1).
+- 3,590 ("last") and 1,581 ("next") arrivals are `first_of_run`.
+- There are 11,584 `reported_not_stopped` and 5,624 `inferred_passage`
+  events.
+- 1,558 of 152,915 arrival bounds overlap an uncovered stretch.
+
+**Coverage** (§5.1, keyed to fetch instants). Seconds per state, from the
+first fetch (03:57:21 UTC) to the last:
+
+| Feed | covered | `stale_header` | `no_invocation` | bytes not stored |
+|---|---|---|---|---|
+| `ace` | 68,677 | 2,399 | 922 | 121 |
+| `bdfm`, `nqrw` | 68,681 | 2,399 | 918 | 121 |
+| `g` | 68,434 | 2,399 | 1,165 | 121 |
+| `jz` | 68,560 | 2,399 | 1,039 | 121 |
+| `si` | 68,799 | 2,399 | 800 | 121 |
+| `l` | 71,198 | 0 | 800 | 121 |
+| `numbered` | 71,082 | 0 | 916 | 121 |
+
+Every uncovered stretch, and its cause:
+
+| Stretch (UTC) | Feeds | State | Cause |
+|---|---|---|---|
+| 03:57:21–04:37:20 (2,399 s) | `ace` `bdfm` `g` `jz` `nqrw` `si` | `stale_header` | The upstream freeze. 40 fetches per feed, header stuck at 03:22:04–03:22:10, 39 identical payloads in a row. `l` and `numbered` stay covered |
+| 06:57–06:59:30 (124–129 s) | all | `no_invocation` | the 06:56 and 06:58 invocations started 66 s and 83 s late |
+| 08:40–08:42:48 (146–147 s) | all | `no_invocation` | the 08:41 invocation started 171 s late |
+| 09:08:07–09:10:23 (136–137 s) | all | `no_invocation` | the 09:08 and 09:09 invocations ran twice each, 108–266 s late |
+| 11:07–11:09:42 (141 s) | all | `no_invocation` | the 11:08 invocation started 83 s late |
+| 13:11:22–13:13:23 (121 s) | `ace` `bdfm` `g` `jz` `nqrw` | `no_invocation` | the 13:12 invocation started 132 s late. The gap is 120 s, so covered, on the other 3 feeds |
+| 15:18–15:20 (121 s) | `g` `jz` `numbered` | `no_invocation` | the 15:19 invocation started 64 s late. 120 s on the other 5 feeds |
+| 19:02:21–19:04:22 (121 s) | `g` | `no_invocation` | **the missing 19:03 invocation** (no tick, no bundle). On the other 7 feeds the gap is exactly 120 s, so they read `covered` |
+| 19:33:21–19:35:22 (121 s) | all | bytes not stored | **invocation `1792611259`**: all 8 fetches `ok`, the bundle PUT failed (`store_error`), so nothing decodes. No failed fetch lies inside, so the §5.1 states would call it `no_invocation` |
+| 20:04–20:06:27 (125–126 s) | all | `no_invocation` | the 20:05 invocation started 142 s late |
+| 20:52–20:54:23 (122–123 s) | all | `no_invocation` | the 20:53 invocation started 65 s late |
+
+- The 5 duplicate invocations and the bundle-only one (11:01, started
+  142 s late) are good fetches and change nothing.
+- On each feed, 27–30 other gaps of 93–120 s between good fetches, all
+  from late invocations, read `covered`.
+- Outside the freeze, every fetch's header was at most 30 s old. 6–15
+  fetches per feed carried a header that had not advanced. Each came less
+  than 10 s after the previous fetch (overlapping or late invocations).
+- No real service change reads as missing data. Every uncovered stretch is
+  the freeze, a late or missing invocation, or the lost bundle. No fresh
+  fetch had zero trains: the fewest real vehicles in a fresh fetch were 1
+  (`si`), 2 (`g`) and 4 (`l`, `jz`). Routes that do not run overnight
+  leave their feeds `covered`, because the rule reads no counts.
+
+**Service day.** 7,134 matched runs: 6,870 on service day 10-21 and 264 on
+10-20, trains still running after midnight. 37 of the 264 are wrapped ids,
+all matched to 10-20.
+- `start_date` against the local date of the matched trip's first
+  scheduled departure:
+  - 7,046 runs agree with the service date;
+  - 74 trips scheduled at 24:00 or later carry the service date + 1, as
+    §2.4 expects;
+  - 12 disagree (`start_date_mismatch`), 11 of them first seen
+    00:00–01:00 ET and 10 of them tier 5;
+  - 2 runs carry no single `start_date`.
+- The `id_origin` rule, scored on the matched runs, is wrong for 63 of
+  7,134. For runs first seen 00:00–04:00 ET it is wrong for 61 of 587
+  (10.4%): 34 wrapped ids and 27 tier-5 runs.
+- Unmatched runs: 151 get `service_date_ambiguous` (parseable id, first
+  seen 00:00–04:00 ET), 262 get `id_origin` with no flag, and 3 get the
+  clock rule.
+- Midnight: this UTC day holds only the first 37 minutes after 10-20's
+  midnight, and the B division is frozen through them. Service day 10-21's
+  own midnight lies in UTC day 10-22.
+
+**Identity probe** (§10 slice 4, withheld-input evaluation).
+- Setup:
+  - The matcher sees the trip id's route field and direction, the
+    observed stops and times, and the raw placeholder rule. It does not
+    see the origin, path, `start_time`, `start_date` or `train_id`.
+  - Every run goes through tier 5 and one min-cost one-to-one assignment.
+  - Label: the run's full tier 1–4 match, kept only when `start_date`
+    agrees with it. This labels 6,234 runs and excludes 4.
+- Accuracy: **4,365 of 6,234 (70.0%)**. The service day is right for
+  5,644 of the 5,654 labelled runs that got a trip. By feed:
+  - `si` 94.2%, `g` 94.2%, `ace` 88.8%, `bdfm` 87.3%;
+  - `jz` 73.4%, `numbered` 63.2%, `nqrw` 62.6%, `l` 23.0%.
+- Confusion classes:
+  - **chain shift** 945: the run got a neighbour's trip because another
+    labelled run took its own;
+  - **no candidate** 410:
+    - 141 W trains (id field `N`) and 9 Z trains (field `J`), whose route's
+      patterns the route field does not reach;
+    - 258 runs whose observed stop order fits none of the field's
+      patterns;
+  - **fragmentation** 149: one train split into runs that share a label;
+  - **extra train** 161: a run without a label took the trip, or the run
+    lost a contested trip;
+  - **overtaking** (pairwise swap) 73;
+  - **sustained lateness** beyond the 15-minute tolerance: 73;
+  - **nearer trip preferred** 35;
+  - **competing service dates** 10;
+  - **label not a candidate** (pattern fit) 12;
+  - **equal costs** 1.
+- Of the 1,289 runs that got a wrong trip:
+  - 615 lost a label trip that was **nearer** than the trip they got.
+    Maximum cardinality forces the cascade;
+  - 581 got a nearer trip than the label. The median cost was 77 s
+    against 351 s for the label;
+  - for 92, the label trip was not a candidate.
+- The label is independent of the probe's inputs. The check compares the
+  label trip's origin minute with the departure minute (HHMM) that
+  `train_id` encodes.
+  - Exact minute, no wrap: 6,178 of 6,234 (99.1%).
+  - The other 56 are trips that start at 24:00 or later, which `train_id`
+    writes as clock time. Taken modulo 24 h, all 6,234 agree.
+  - The probe's pick disagrees with `train_id` (modulo 24 h, ±1 minute)
+    for 1,286 of its 1,289 wrong picks.
+  - The independent verification run reports 98.9% and 1,288 under its
+    own definition, which was not reproduced here.
+- The probe is harder than production, because it has tier 5 only. The
+  label trip is among the probe's candidates for 90.9% of labelled runs
+  (91.6% with the anchor below). This "label among candidates" share caps
+  its accuracy.
+- Assignment variants on the same input (accuracy on labelled runs; share
+  of labelled runs given a trip; precision among those):
+
+  | Variant | Accuracy | Given a trip | Precision |
+  |---|---|---|---|
+  | as specified: maximum cardinality, timed at the first common stop | 70.0% | 90.7% | 77.2% |
+  | timed at the first common stop after the pattern origin | 74.8% | 90.8% | 82.4% |
+  | that, plus a "leave unassigned" cost of 300 s | 81.8% | 88.2% | 92.8% |
+  | 600 s | 82.6% | 89.6% | 92.2% |
+  | **900 s** (the tier-5 tolerance) | **83.4%** | 90.0% | 92.7% |
+  | 1,800 s | 82.7% | 90.3% | 91.6% |
+  | 10,000 s | 78.7% | 90.7% | 86.8% |
+  | 900 s, timed at the first common stop | 73.7% | 89.8% | 82.1% |
+
+  - Runs first seen at their origin terminal wait there before departure,
+    so a time check at the origin picks an earlier trip. Moving the
+    anchor mainly helps `l` and `numbered`.
+  - A leave-unassigned cost stops the maximum-cardinality cascade. It
+    trades chain shifts for unassigned runs.
+  - The independent verification run also simulated tier 5 in a
+    production-like setting. It reports raw tier 5 rising from 84.5% to
+    87.8%, and legacy from 82.1% to 85.7% [not re-measured here].
+- **Decision 5, revised by the owner on 2026-10-22:** min-cost
+  assignment with a leave-unassigned cost equal to the 900 s tolerance,
+  timed at the first common stop after the pattern origin. The day's
+  production match rate moves from 94.49% to 94.37% (887 tier-5 runs
+  assigned instead of 896).
+
+Hard cases for the owner's spot-check (as-specified probe; times ET on
+10-21 unless marked; L = label, P = probe result):
+
+| # | Run, first–last seen | L | P | Why it is hard |
+|---|---|---|---|---|
+| 1 | `054700_7..S` 08:56–09:48 | `054700_7..S97R`, −662 s, T2 | `053950_7..S97R`, −212 s | first seen at its origin (701S) 11 minutes before departure. The earlier trip looks nearer, and the chain shifts |
+| 2 | `038500_B..S65R` 06:26–07:53 | `038500_B..S65R`, +50 s, T1 | unassigned, 0 candidates | its observed stop order fits no B pattern, so tier 5 has nothing |
+| 3 | `063000_6..N01X002` 10:27–11:18 | `063000_6..N01R`, −176 s, T3 | `062600_6..N03R`, +64 s | a 6X express id. Another run shares the label |
+| 4 | `047450_6..S03R` 07:52–08:49 | `047450_6..S03R`, −190 s, T1 | unassigned | contested at rush hour. Another run took the trip |
+| 5 | `048000_3..S06R` 08:01–09:10 | `048000_3..S06R`, −18 s, T1 | `047200_3..S06R`, +462 s | a run without a label took its trip |
+| 6 | `071050_L..S` 11:45–12:28 | `071050_L..S01R`, −321 s, T2 | `071450_L..S01R`, −561 s | swaps with the following L. The id has an empty path |
+| 7 | `137900_J..N41R` 00:37–00:39 | `137900_J..N41R` (10-20), +2,750 s, T1 | unassigned | first seen when the freeze ended, at its origin 46 minutes after its 22:59 departure |
+| 8 | `060600_7..S` 09:57–10:58 | `060600_7..S97R`, −542 s, T2 | `059600_7..S97R`, +58 s | the same terminal-wait effect as #1 |
+| 9 | `050300_5..S` 08:47–08:52 | `050300_5..S14R`, −94 s, T2 | unassigned | a fragment of 2 stops (222S, 416S). Another run of the same train holds the trip |
+| 10 | `132300_F..S` 00:37 | `132300_F..S74R` (10-20), +3,380 s, T2 | `137600_F..S20R` (10-20), −460 s | seen once, at the terminal D43S, right after the freeze |
+| 11 | `138150_M..S25R` 00:37–00:41 | `138150_M..S25R` (10-20), +4,220 s, T1 | `001500_M..S30R` (10-21), +560 s | seen only at M01S after the freeze. The probe picks the next service day |
+| 12 | `038650_N..S34R` 06:28–07:52 | `038650_N..S34R`, +5 s, T1 | unassigned, 1 candidate | ran local via R31S–R36S in Brooklyn, off its scheduled pattern |
+| 13 | `101450_J..N47R` 16:54–17:44 | `101450_J..N47R`, −24 s, T1 | `100650_J..N45R`, +456 s | a Z train (`train_id` 1Z) with `J` in its id. The skip-stop label is not a candidate |
+| 14 | `052400_L..S` 08:43–09:18 | `052400_L..S01R`, −75 s, T2 | `052150_L..S01R`, +75 s | equal costs: halfway between two trips |
+| 15 | `119850_1..N15R` 19:59 | `119850_1..N15R`, −44 s, T1 | `121100_1..N15R`, −794 s | seen once at the window end. The chain pushes it 13 minutes off |
+
+**Live pattern attribution** (every run with a fresh row; 134 stale-only
+and 3 unparseable runs left out):
+- all 7,413 runs: 3,415 fit one pattern (46.1%), 3,638 several (49.1%)
+  and 360 none (4.9%);
+- the 1,221 runs with no tier 1–4 match: 389 one (31.9%), 715 several
+  (58.6%) and 117 none (9.6%);
+- 305 of 7,070 matched runs have a matched pattern that is not among their
+  compatible patterns (deviations).
+
+**Gate B.** Id-anchored runs (tiers 1–4), fresh rows. "Skipped stops" are
+the stops that another route's pattern runs between two consecutive stops
+of the matched pattern, such as local stops between two express stops.
+Interior blocks exclude each run's first and last block.
+
+| Feed | Rows STOPPED_AT | Interior stop blocks with a STOPPED_AT row | Express hops (skipped stops passed) | Reports at a skipped stop (listed in the previous poll's trip update) | Stop changes listed in the previous trip update |
+|---|---|---|---|---|---|
+| `ace` | 99.99% | 20,818 of 20,818 | 3,460 (8,635) | 62 (60) | 21,748 of 21,769 |
+| `bdfm` | 99.98% | 23,449 of 23,449 | 1,423 (4,813) | 12 (11) | 24,303 of 24,336 |
+| `jz` | 99.95% | 3,550 of 3,550 | 206 (312) | 6 (6) | 3,706 of 3,709 |
+| `nqrw` | 99.97% | 16,932 of 16,932 | 694 (1,372) | 9 (9) | 17,504 of 17,541 |
+| `si` | 90.2% (INCOMING_AT 7.6%, absent 2.3%, at run ends only) | 1,803 of 1,803 | 19 (206) | 0 | 1,932 of 1,933 |
+| `g` | 100% | 3,938 of 3,938 | 0 | 0 | 4,166 of 4,171 |
+| `numbered` | 47.2% | 49,772 of 58,344 (85.3%) | 4,978 (14,491) | 192 (191), 45 never stopped | 60,600 of 60,628 |
+| `l` | 65.3% | 7,490 of 8,522 (87.9%) | 0 | 0 | 8,954 of 8,955 |
+
+- Status is no test on these feeds. Every interior stop block on the six
+  "last" feeds shows STOPPED_AT, as §3.1 says it must, so the status says
+  nothing either way.
+- The test is whether a train is reported at a stop that its pattern
+  skips. Per skipped stop passed, it happens for 0.72% (`ace`), 0.25%
+  (`bdfm`), 1.9% (`jz`), 0.66% (`nqrw`) and 0% (`si`, 206 passed).
+  - 86 of the 89 such reports were stops that the trip update listed:
+    trains replanned to run local, for example E trains at F04S–F05S and
+    an N train via R31S–R36S.
+  - Only 3 reports (`ace` 2, `bdfm` 1) fall at a stop that both the pattern
+    and the trip update skip.
+  - So these feeds do not report **planned** passes, and they separate
+    them from stops.
+- What no data can test is an **unplanned** pass of a stop that the trip
+  update still lists. It would look like a stop. [inference: no ground
+  truth was available.]
+- `g` has no express hops, so the test does not apply to it.
+- `numbered` and `l` show no difference either. `numbered` is reported at
+  1.3% of skipped stops passed (192 of 14,491), the same order as the B
+  division. Its never-STOPPED_AT blocks are 82.5% single polls (`l`
+  92.8%). That fits 60 s sampling missing short dwells. It is not shown
+  to be pass-through evidence.
+- Verdict (**owner decision, 2026-10-22**):
+  - `ace`, `bdfm`, `g`, `jz`, `nqrw` and `si` carry
+    `service_evidence = "reported_planned"`. It means "the train reached
+    a stop that its trip update plans". It is reliable for planned passes,
+    and it cannot detect unplanned passes of listed stops (see below).
+    `g` has no express hops, so its value is untested.
+  - `reported_planned` is **not** the same evidence as `stopped`.
+    Service-scope Headway and OpenState records built from it carry
+    `reported_planned` and are never folded into `stopped`. A train that
+    skips a listed stop without a plan change, for example during a
+    suspension or a reroute, can reset such a gap. Layer 5 treats it as
+    weaker evidence than `stopped`.
+  - The rejected alternative was the Gate B paragraph's `unknown` plus
+    `service_not_separable`. It would treat planned passes, which these
+    feeds do separate, as unknown too.
+  - `numbered` and `l`: keep `stopped`, as specified.
+
+**Can an unplanned skip of a listed stop be detected?** (10-21, "last"
+family, assigned trips, fresh fetches.) Three candidate signals were
+measured.
+
+1. **NYCT tracks.** `nyct_actual_track` is present on 99.9–100% of
+   stop-time updates on the six "last" feeds and `l`, and on 4.75% on
+   `numbered`.
+   - On the "last" feeds it never differs from `nyct_scheduled_track`: 0
+     of about 4.07 million updates.
+   - When a track changes between polls, both fields change together, so
+     the feed is replanning (`ace` 961 poll pairs, `bdfm` 2,006, `nqrw`
+     1,448). In 35–40% of those pairs, stops also leave the list in the
+     same poll.
+   - Examples, all plan changes announced from a few minutes to over an
+     hour ahead, with both fields changing together:
+     - A trains `049050_A..S57R` and `052350_A..S57R` at A46S–A55S: A3 to
+       A1 in Brooklyn (which track is the express was not checked);
+     - A trains `061050_A..N54R` and `062400_A..N54R` at A24N–A32N: A4 to
+       A2 in Manhattan;
+     - D trains `063750_D..S07R`, `068650_D..S07R` and `070250_D..S07R` at
+       R31S and R36S: F3 to F1;
+     - F trains at F24S and F27S: B1 to B3, on several trips.
+   - So the track fields restate the plan. Because actual and scheduled
+     never differ, they carry no information beyond what the feed already
+     plans.
+   - On `numbered`, actual differs from scheduled for 8.7% of the
+     updates that carry it, 99% of them at the first listed stop: a real
+     platform assignment, on the "next" family only. `l`: 1,067 updates
+     on 11 trips.
+2. **Trip-update edits.** The timed prune drops a stop 79–86 s (p50)
+   after its predicted arrival on the "last" feeds (p1 45–48 s on the B
+   division). A stop removed while its predicted arrival is still more
+   than 60 s ahead is a replan:
+   - 620 such drops sit mid-list (a stop before and a stop after them stay
+     listed), on at most 216 trips. 595 of them (96%) are never reported by
+     the vehicle afterwards, and 25 are.
+   - So an early drop reliably flags a **planned** skip, which
+     `reported_planned` already handles. It flags nothing about stops
+     the trip update keeps listing.
+3. **Run time across a stop.** Between two consecutive vehicle reports A
+   and C, a planned stop B can go unreported:
+   - still listed when the train reached C ("listed until passing"):
+     `ace` 1.3%, `g` 1.8%, `bdfm` 2.3%, `jz` 2.4%, `nqrw` 3.4% and `si` 3.5%
+     of planned stops passed;
+   - dropped from the list first: 0.05–0.3%.
+   - The "listed until passing" cases have an A→C time 58 s (median)
+     shorter than trains reported at B on the same segment within 2 h. For
+     stoppers, the IQR of A→C around its segment median is −7.5 to +36.5 s.
+   - At least part of that difference comes from the selection: a train
+     reported at B has at least one more 60 s poll between A and C. Only
+     20% of stoppers fall 30 s or more below their segment median, against
+     64% of these cases. At 60 s polling that gap cannot be told apart from
+     sampling, so the run time does not identify skips event by event.
+
+Conclusion: **no signal flags an unplanned skip live** on these feeds.
+- Tracks and trip-update edits show only plan changes.
+- Run time does not separate a skip from a short dwell that falls between
+  two polls.
+- The 1.3–3.5% of listed stops passed unreported is an upper bound on
+  unplanned skips. Without ground truth, the share that is real skips,
+  and the precision and recall of any detector, cannot be measured.
+- §3 and §6 already carry these stops: an unreported listed stop between
+  two reports is an `inferred_passage`, with no service evidence, and it
+  never closes a service gap.
+- No `skip_suspected` flag is proposed, because no basis has measurable
+  precision. Layer 4 normals may later estimate the rate per segment from
+  many events.
+- StopEvent flag `plan_dropped` (adopted 2026-10-22) marks an
+  early-dropped stop: basis `trip_update`, 96% consistent with no later
+  vehicle report. It records a planned skip, not an unplanned one.
+
+**Contract verdict (10-21).** Three results change §6 (items 1, 2 and 4),
+and one revises a decision (item 3):
+1. **Coverage.** The combined §5.1 rule:
+   - Presence is a set over `scheduled_at` slots. An invocation recorded
+     only in a bundle index counts, and duplicate invocations do no harm.
+   - A slot with no invocation is `no_invocation`, from the previous good
+     fetch to the next, whatever the gap (19:03 has a 120 s gap).
+   - Independently, a gap of more than 120 s between good fetches is
+     uncovered. Late invocations left gaps of 116–147 s, for example
+     20:11, 20:25 and 20:49.
+   - A fetch whose bytes were not stored makes its stretch `not_stored`
+     (19:34). `CoverageInterval.state` gains `"not_stored"`; this is the
+     contract change.
+   - `stale_header` is decided by header age above 120 s, from the first
+     stale fetch. It never starts at the stuck header time (03:22), which
+     is earlier than any evidence.
+
+   Uncovered seconds on 10-21 under the combined rule:
+
+   | Feed | Uncovered | `stale_header` | `no_invocation` (slot) | gap > 120 s | `not_stored` |
+   |---|---|---|---|---|---|
+   | `ace` | 3,558 | 2,399 | 120 | 918 | 121 |
+   | `bdfm`, `nqrw` | 3,557 | 2,399 | 120 | 917 | 121 |
+   | `g` | 3,679 | 2,399 | 121 | 1,038 | 121 |
+   | `jz` | 3,678 | 2,399 | 120 | 1,038 | 121 |
+   | `si` | 3,434 | 2,399 | 120 | 794 | 121 |
+   | `l` | 1,035 | 0 | 120 | 794 | 121 |
+   | `numbered` | 1,156 | 0 | 120 | 915 | 121 |
+2. **Gate B (decided 2026-10-22).** `ServiceEvidence` gains
+   `reported_planned` for the "last" family. `StopEvent.arrival`,
+   `departure` and `departure_basis` must allow it as well as `stopped`.
+   Service headways and OpenState carry it and never fold it into
+   `stopped`. The slice-2 Headway rejection test must accept it.
+3. **Decision 5 (revised 2026-10-22):** the leave-unassigned assignment
+   above (not a field).
+4. **`plan_dropped` (adopted 2026-10-22).** `StopEvent.flags` gains
+   `plan_dropped`, with basis `trip_update`: the trip update removed this
+   listed stop more than 60 s before its predicted arrival (§3.2). On
+   10-21, 595 of 620 such mid-list drops had no later vehicle report.
+
+Nothing else in §6 changes: bounds, TripMatch, service-day fields and
+`start_date_mismatch` hold as specified.
+
+**2026-10-22 (Thursday, the first complete recorder day).** Same scripts
+and rules, with the accepted decision-5 matcher wherever the text says
+"accepted". The day map has no entry for 10-22 yet, so the match index was
+built with `--build-id 606d9f640f5aad67` (`explicit`, 637,383 bytes, 8,497
+trips). The UTC day covers 20:00 ET on 10-21 to 20:00 ET on 10-22, so it
+holds service day 10-21's midnight. Input:
+- 1,434 invocations and 11,552 GTFS-RT fetches, all `ok`; 8 of them
+  were not stored (one invocation, 15:52). The derive report's 2
+  timeouts are not GTFS-RT fetches.
+- No stale header.
+- 792,486 vehicle rows, of which 33.96% are placeholders. The legacy rule
+  misses 6,693 placeholder rows and flags 183 real rows.
+
+Gate A figures for both days are in the table above. Bounds on 10-22
+(p50 / p90 / p99, share ≤ 120 s):
+- arrival: "last" 60 / 80 / 181 · 95.9% (n 97,763), and "next" 60 / 63 / 135
+  · 98.4% (n 79,182);
+- departure: "next" 60 / 72 / 161, and "last" (next arrival only) 180 / 301
+  / 657;
+- stop-to-stop: 120 / 178 / 302 ("last") and 120 / 139 / 207 ("next");
+- dwell and run time, "next": 120 / 139 / 235 and 119 / 123 / 181. Their
+  shares with a lower end of 0 are 87.7% and 80.1%;
+- reported times inside the arrival bracket: 98.3% ("last") and 95.0%
+  (numbered).
+
+Unmatched classes on 10-22 (500, maximum cardinality):
+- `unscheduled` 314 (1 stationary);
+- tier-5 runs that lost the assignment 165 (15 stationary, 5 stale-only);
+- `service_day_mismatch` 14, `unknown_route` 5, `id_time_off` 1,
+  `unparseable_id` 1.
+
+By route field the most are D 133 and 6 106, as on 10-21. The evening
+hours 21:00–23:00 ET match least often (85–90%).
+
+**Coverage on 10-22** (the combined rule of the contract verdict).
+Missing slots: 09:21–09:22, 19:14–19:15 and 21:41–21:42 UTC, each 2
+consecutive minutes with no tick and no bundle.
+
+| Feed | Uncovered s | `no_invocation` | gap > 120 s | `not_stored` |
+|---|---|---|---|---|
+| `ace` | 3,223 | 724 | 2,378 | 121 |
+| `bdfm` | 3,099 | 724 | 2,255 | 120 |
+| `g` | 3,095 | 723 | 2,251 | 121 |
+| `jz` | 3,098 | 723 | 2,254 | 121 |
+| `nqrw` | 2,984 | 726 | 2,137 | 121 |
+| `si` | 2,980 | 723 | 2,136 | 121 |
+| `l` | 2,985 | 725 | 2,139 | 121 |
+| `numbered` | 2,979 | 723 | 2,135 | 121 |
+
+Stretches (UTC) and their causes:
+- `no_invocation`, about 240 s each on all 8 feeds: 09:19–09:23,
+  19:12–19:16 and 21:39–21:43. Each holds a 2-minute hole, and the
+  neighbouring invocations also started 63–221 s late.
+- `not_stored`: 15:51–15:53 on all 8 feeds, 120–121 s. One invocation's
+  bundle was lost.
+- `gap_over_120s`, 121–179 s, from late invocations. 14 of them hit all 8
+  feeds: 05:04, 05:16, 07:54, 09:17, 11:10, 13:15, 13:20, 13:32, 14:28,
+  14:59, 18:59, 20:21, 20:52, 22:10, and 19:43 on 7 feeds. 18:44 hits 5
+  feeds and 00:59 only `ace`. The invocations started 62–848 s late.
+- Not one stretch comes from train counts. All are recorder delays or
+  losses: 19–21 stretches per feed, against 8–11 on 10-21.
+
+**Service day on 10-22.** 8,348 matched runs:
+- 6,765 belong to service day 10-22 and 1,583 to 10-21, which is still
+  running after 20:00 ET.
+- `start_date`:
+  - 8,344 agree, including 77 trips scheduled at 24:00 or later that
+    carry the service date + 1;
+  - 4 are `start_date_mismatch` (3 tier 5, 1 tier 1);
+  - none has more than one `start_date`.
+- The `id_origin` rule is wrong for 56 of 8,348. For runs first seen
+  00:00–04:00 ET it is wrong for 54 of 469 (11.5%): 38 wrapped ids and 16
+  tier-5 runs.
+- Unmatched: 91 `service_date_ambiguous`, 408 `id_origin`, and 1 clock
+  rule.
+
+**Across the 10-21/10-22 midnight.** Both UTC days were run as one input
+window, with the accepted matcher:
+- 15,971 runs; the per-day runs total 16,398. 406 runs cross 00:00 UTC
+  (20:00 ET), and a per-UTC-day build would split them in two. 401 of
+  them match.
+- The window's match rate is 94.17%. Service day 10-21 is complete in it:
+  8,023 matched runs, against 261 on 10-20 and 6,756 on 10-22.
+- 174 runs cross local midnight. 142 match service day 10-21, 2 match
+  10-22 and 1 matches 10-20; 29 are unmatched.
+- 560 runs are first seen 00:00–04:00 ET on 10-22:
+  - 82 match 10-21, 38 of them wrapped ids and 24 tier 5;
+  - 386 match 10-22;
+  - 92 are unmatched and flagged `service_date_ambiguous`.
+  - `start_date` agrees for 464 of the 468 matched. The `id_origin` rule
+    is wrong for 54 of them.
+- Two-day `start_date_mismatch`: 16 runs, 13 of them tier 5.
+- Wrapped ids: 37 matched 10-20 and 39 matched 10-21. Each sits on the
+  day before its calendar date, as §2.4 requires.
+
+**Identity probe on 10-22.** 7,218 labelled runs (1 excluded):
+
+| Matcher | Accuracy | Given a trip | Precision | Label among candidates |
+|---|---|---|---|---|
+| maximum cardinality, timed at the first common stop | 68.7% | 90.8% | 75.6% | 90.7% |
+| **accepted**: 900 s leave-unassigned, timed after the origin | **83.1%** | 90.1% | 92.3% | 91.3% |
+
+- With the accepted matcher, the service day is right for 6,501 of 6,501.
+- By feed: `si` 100%, `l` 96.6%, `g` 95.6%, `jz` 91.7%, `ace` 89.5%,
+  `bdfm` 85.5%, `numbered` 81.1%, `nqrw` 58.9%.
+- The largest error classes: 551 runs with no candidate (W and Z ids and
+  off-pattern order, as on 10-21), 318 chain shifts and 80 contested
+  trips.
+- The accepted matcher's production match rate is 94.21% (94.35% with
+  maximum cardinality). On 10-21 it is 94.37%.
+
+**Gate B on 10-22.** Reports at skipped stops, per skipped stop passed:
+- `ace` 75 of 8,517 (0.88%), `bdfm` 19 of 5,184 (0.37%), `jz` 6 of 317
+  (1.9%), `si` 0 of 154.
+- `nqrw` 122 of 1,676 (7.3%). 121 of the 122 were listed in the previous
+  trip update: a replanned local running [inference: planned work, alerts
+  not checked].
+- Only 6 reports (`ace` 2, `bdfm` 3, `nqrw` 1) fall at a stop that both
+  the pattern and the trip update skip.
+- `g` again has no express hops.
+- `numbered`: 163 of 17,189 (0.95%). Interior blocks never stopped:
+  `numbered` 15.1% and `l` 11.3%.
+- The 10-21 verdict holds: `reported_planned` for the B division and
+  `si`, untested on `g`, and `stopped` for `numbered` and `l`.
+
+**Skip signals on 10-22:**
+- **Tracks.** `nyct_actual_track` never differs from
+  `nyct_scheduled_track` on the "last" feeds: 0 of about 4.78 million
+  updates. Track changes between polls are replans: `ace` 1,905 poll
+  pairs, `bdfm` 2,299, `nqrw` 1,858. On `numbered`, 15,580 updates
+  differ.
+- **Trip-update edits.** The timed prune lags the predicted arrival by
+  79–87 s (p50). 577 "last"-family stops were dropped mid-list more than
+  60 s early, on at most 125 trips:
+  - 538 (93%) were never reported afterwards;
+  - 18 were reported later;
+  - 21 had already been reported before the drop.
+- **Run time.** Listed stops passed unreported are 2.0–4.7% of planned
+  stops passed (`ace` 2.0%, `g` 2.0%, `bdfm` 2.8%, `jz` 2.8%, `nqrw` 4.2%,
+  `si` 4.7%). Their A→C time is 30 s below the stopper median (median).
+  50% of them are ≥ 30 s below, against 21% of stoppers.
+- The 10-21 conclusion holds: no signal flags an unplanned skip live.
+
+**Contract verdict (10-22): no further contract change.** The 10-21
+changes cover the day. The coverage rule caught all three 2-minute holes,
+which a 120 s gap alone would have reported as long late gaps. Gate B,
+bounds and service-day results repeat 10-21.
+
+**Weekend and DST days** (10-24 Sat, 10-25 Sun, 11-01 Sun with the
+fall-back at 06:00 UTC, 11-02 Mon). Each day was derived locally from the
+mirror with main `953144d`. Layer 1 came from the mirrored
+`model/network/s1/`.
+- Builds:
+  - 10-24 and 10-25: `606d9f640f5aad67`, from the day map (`verified`).
+  - 11-01: `2c06219240445181` (feed `acb12271`, "20261028-fall-2026-pick"),
+    from the day map (`verified`).
+  - 11-02: `2c06219240445181` by `--build-id`, because the day map has no
+    entry for 11-02 yet.
+  - 10-31, the day before the DST night: `606d9f640f5aad67` by
+    `--build-id` (see the defect below).
+- The prototype matched the 11-01 and 11-02 days against a merged
+  network: `606d9f640f5aad67` for service days up to 10-31 and
+  `2c06219240445181` from 11-01, with service ids kept apart per build.
+- Derive caveats:
+  - 10-31's derive reported 194 missing alert blobs, because the mirror
+    was still copying. Vehicle and trip-update files are complete.
+  - 11-01's first derive missed 120 carry-hour bundles. A rerun of hour
+    00 after the mirror finished gave the same bytes (`unchanged`).
+
+**Layer-1 and match-index defect (for the owner).** The day map gives
+feed `acb12271` for 10-29, 10-30 and 10-31, the feed that was live on
+those days. That feed's calendar starts on 11-01. So the match-index CLI
+fails for those dates without `--build-id`: "2026-10-30 is not a service
+day of build 2c06219240445181" (the same for 10-29 and 10-31), and exits
+1. It does not produce an index with zero trips. With `--build-id
+606d9f640f5aad67`, 10-30 has 8,497 trips (weekday). 10-28 has no feed in
+the day map. The build choice must fall back to the build whose calendar
+covers the date. A separate change will fix it.
+
+| Gate A | 10-24 Sat | 10-25 Sun | 11-01 Sun (DST) | 11-02 Mon |
+|---|---|---|---|---|
+| Vehicle rows, placeholder share | 552,331, 36.9% | 485,995, 38.7% | 504,242, 34.8% | 836,703, 30.7% |
+| Runs | 6,794 | 6,185 | 5,525 | 8,154 |
+| Match rate, independent | 95.60% | 93.94% | 95.08% | 98.10% |
+| Match rate, min-cost maximum cardinality | 90.83% | 88.04% | 92.78% | 96.58% |
+| Match rate, accepted decision-5 matcher | 90.64% | 87.78% | 92.69% | 96.38% |
+| Tiers T1 / T2 / T3 / T4 / T5 (maximum cardinality) | 2,811 / 1,009 / 461 / 207 / 1,683 | 1,957 / 991 / 437 / 221 / 1,839 | 3,311 / 535 / 389 / 64 / 827 | 5,740 / 1,017 / 106 / 27 / 985 |
+| Unmatched | 623 | 740 | 399 | 279 |
+| Most unmatched, by route field | 4 173, G 105, M 92, D 71, GS 69 | 4 234, M 136, G 127, D 70, GS 60 | D 97, A 93, C 43, L 31 | 6 62, D 54, A 25 |
+| Arrival bound p50 / p90 / p99, "last" | 60 / 68 / 181 | 60 / 119 / 321 | 60 / 61 / 121 | 60 / 61 / 179 |
+| `start_date` agree / mismatch | 6,169 / 1 | 5,437 / 8 | 5,047 / 78 | 7,859 / 15 |
+| `id_origin` wrong, first seen 00:00–04:00 ET | 62 of 501 | 65 of 535 | 60 of 517 | 62 of 521 |
+| `service_date_ambiguous` | 116 | 136 | 145 | 18 |
+| Live pattern fit: one / several / none | 43.6 / 49.1 / 7.3% | 41.1 / 51.0 / 7.9% | 44.8 / 48.2 / 7.1% | 47.8 / 48.3 / 3.9% |
+
+- On weekends the match rate is 2–6 points below the weekdays. Most
+  unmatched runs are on routes with weekend changes: the 4, G, M, D and GS.
+  [inference: planned work. The alerts were not checked.] The coverage of
+  10-25 also loosens its bounds (p90 119 s).
+- 73 of 11-01's 78 `start_date_mismatch` runs are 6 trains seen
+  08:00–17:00 ET. They carry `start_date` 20261102 on Sunday trips of
+  11-01 and match at tiers 1 and 4. The feed misdated them, and the check
+  flags them as designed.
+
+**DST night, service days 10-31 and 11-01** (both UTC days as one window,
+accepted matcher). The table shows id-tier matches (tiers 1–4) by the hour
+of the trip's scheduled first departure. The offset is the observed time
+minus the `instant_of` instant at the first common stop:
+
+| Service day, GTFS hour | Runs | Median offset | Within ±900 s | Near −3,600 s | Near +3,600 s |
+|---|---|---|---|---|---|
+| 10-31, 23:xx | 143 | −22 s | 97.9% | 0 | 0 |
+| 10-31, 24:xx | 56 | −28 s | 98.2% | 0 | 0 |
+| 10-31, 25:xx | 14 | +51 s | 85.7% | 0 | 14.3% |
+| 10-31, 26:xx | 2 | +3,572 s | 0 | 0 | 100% |
+| 11-01, 00:xx | 59 | −3,600 s | 0 | 98.3% | 0 |
+| 11-01, 01:xx | 100 | −3,580 s | 9.0% | 84.0% | 0 |
+| 11-01, 02:xx–05:xx | 430 | −22 to −33 s | 91–94% | 0 | 0 |
+
+- The feed runs the night on the **local wall clock**, not on
+  `instant_of`'s noon − 12 h origin:
+  - E `001400_E..S04R`, GTFS 00:14 on 11-01 (`start_time` 00:14:00): first
+    seen at 04:14 UTC (00:14 EDT). `instant_of` puts it at 05:14 UTC.
+  - A `012200_A..N09R` (`start_time` 02:02:00, static 26:02 on 10-31):
+    first seen at 07:02 UTC (02:02 EST). `instant_of` puts it at 06:02 UTC.
+  - From 02:00 on 11-01 the two conventions agree.
+- Id tiers (time check ±2 h) still match these trips and give the right
+  service day. Their `start_date` agrees, and 44 wrapped ids correctly
+  match 10-31. But about 160 runs carry an offset that is wrong by one
+  hour.
+- Tier 5 (±15 min) cannot find the right trip in that window. It matches
+  trips one hour away. Runs first seen in the 01:00 ET hour match 144 of
+  238 on 11-01, against 85–96% in the other night hours (00:00–05:00 ET).
+- §2.4's "not verified" note on DST is now measured, and it fails.
+  Proposed fix, pending the owner (a layer-1 convention):
+  - Place scheduled times for matching on the service date's local wall
+    clock: local date + HH:MM:SS, rolling past 24:00 into the next date.
+  - In the repeated hour use the first occurrence, as the feed did.
+  - Keep `instant_of` only where the GTFS definition is needed.
+  - The spring-forward night (03-08) is not measured.
+
+**Coverage on the new days** (combined rule):
+- **10-24:** 1,440 invocations, none missing. 5–7 late gaps of 121–147 s
+  per feed, 630–874 s uncovered per feed.
+- **10-25:** 1,399 invocations; the 41 missing minutes fall between 13:36
+  and 23:50 UTC, not only in 13:36–19:01.
+  - 20 `no_invocation` stretches of 77–409 s on all 8 feeds, 4,352–4,356 s
+    per feed. Late invocations of up to 3,748 s sit around them.
+  - 26 late gaps, 3,731–4,451 s per feed. In total 8,086–8,804 s
+    uncovered per feed.
+  - Also one `jz` timeout at 14:40 (`fetch_failed`, 101 s), and an `l`
+    `stale_header` at 08:55 (407 s).
+- **11-01:** 1,440 invocations, none missing. Every feed except `l` is
+  `covered` all day.
+  - Around the fall-back (05:30–07:00 UTC) there are 90 invocations. The
+    largest `ace` fetch gap is 61 s and the oldest header 13 s. The
+    recorder's UTC cron does not see the clock change.
+  - `l`: `stale_header` at 05:31 and 05:42 (240 s each), and 10:43
+    (1,081 s). Only the L header stood still; the cause is unknown.
+- **11-02:** 1,440 invocations.
+  - `fetch_failed` 22:04 on `ace`, `l` and `numbered` (timeouts, 120 s).
+  - One `empty` `numbered` fetch at 12:27: HTTP 200 with zero bytes,
+    counted as not good, 120 s.
+  - One late gap of 122 s.
+- No uncovered stretch comes from train counts.
+
+**Contract verdict (weekend and DST).** One rule change is needed, in §2.4
+and the layer-1 matching convention: scheduled instants on the local wall
+clock for matching, as above. The match-index build choice is a code
+defect, not a contract change. Bounds, service-day fields and coverage
+states hold.
 
 6. **Headways and OpenState** (both scopes, both evidence levels, both
    ambiguity series, bootstrap from scheduled supply). Acceptance:

@@ -1,9 +1,10 @@
 # Data model, layer 3: events (`events/s1`) — scoping proposal
 
-Status: decided on 2026-10-21 (§9). Slice 1, the match index, and slice 2,
-the contracts, are built (§10, "As built (slice 1)" and "As built
-(slice 2)"); nothing else is. The build plan (§10) starts with the match
-index and two data gates; deferred items are listed under Deferred.
+Status: decided on 2026-10-21 (§9). Slice 1, the match index, slice 2, the
+contracts, and slice 3, coverage with the event file writer, are built
+(§10, "As built (slice 1)" to "As built (slice 3)"); nothing else is. The
+build plan (§10) starts with the match index and two data gates; deferred
+items are listed under Deferred.
 
 Layer 3 turns layer-2 observations into facts about trains. It answers
 questions such as these: which scheduled trip a realtime train is, which
@@ -1727,6 +1728,120 @@ built.
        `suspect_stale`, never `stale_header` or `fetch_failed`;
    - on 09-15, 10-19 and 08-12 the only uncovered stretches are the
      transport events in §5.1, and there is no `suspect_stale`.
+
+#### As built (slice 3)
+
+Coverage is `momentarily.model.events.coverage`; the event file writer and
+its metadata are `momentarily.model.events.files`.
+
+- **Rule.** The combined rule of the 10-21 verdict, keyed to fetch
+  instants (`observed_at` = `finished_at_ms // 1000`, a timeout's start).
+  Per feed, the stretch `[a, b)` between consecutive good fetches takes the
+  first state that applies: `fetch_failed`, `not_stored` or `stale_header`
+  (a fetch of that kind inside, in that order); `no_invocation` (a
+  scheduled slot with no invocation in `[a, b)`, else `b − a > 120 s`);
+  `suspect_stale` (legacy); `covered`. Adjacent stretches with one state
+  merge.
+  - Raw good fetch: outcome `ok` or `empty`, a non-empty stored body, a
+    layer-2 `FeedHeaderObservation`, and a header at most 120 s old when
+    observed. `empty` counts because train counts never make coverage.
+    A body that was stored and parsed but has no header row is
+    `fetch_failed` and counted as `undecoded_fetches`.
+  - Missing slots are steps of 60 s inside a longer gap between distinct
+    `scheduled_at` values, so the rule needs no cron phase. Tick records
+    and bundle-index-only invocations both count.
+  - A stale episode in mid-day is `stale_header` from the last good fetch
+    before it to the first good fetch after it, the same stretch as every
+    other state (and the prototype's). Only where no good fetch precedes it
+    (the start of a lineage's evidence, as at 04:00 on 10-21) does it begin
+    at the first stale fetch, and after the last good fetch it ends at the
+    last stale one. It never starts at the stuck header time. Where the
+    inputs hold no fetch on one side the state is `Unknown`, with the
+    reason.
+  - Legacy `suspect_stale`: both ends lie in a run of 3 or more consecutive
+    good trace objects whose non-empty row set for the feed (trip, stop,
+    `vehicle_timestamp`; §2.2 legacy placeholders excluded; feed by
+    `RouteFeed` on the trip id) is identical. A failed object breaks the
+    run, and empty sets never count.
+- **Cutover.** Raw coverage reads only fetches observed at or after
+  `observations.keys.RECORDER_CUTOVER` (2026-10-21T04:00:00Z), and legacy
+  only trace objects observed before it. So the 10-21 raw file starts at
+  04:00:00, and the 10-21 legacy file ends there. A raw day before the
+  cutover day, or a legacy day after it, is a usage error.
+- **Day files.** Each file tiles its UTC day (from or to the cutover on
+  10-21). The hour on each side is read so a stretch crossing 00:00Z gets
+  its state before it is split. A neighbouring raw hour whose
+  `feed_header` file is missing is left out (`dropped_edge_hours`), and
+  the edge becomes `Unknown`; one for an hour of the day itself is a
+  missing input. The legacy backfill writes no vehicle file for an hour
+  whose trace objects hold no rows at all, so an absent legacy vehicle
+  hour reads as zero rows (fresh, empty polls); the day's
+  `legacy_fetch_outcome` file is required.
+  - A day built before the next day's hour 00 exists in layer 2 ends in
+    `Unknown` after its last fetch. Rebuilt once that hour exists, its
+    content differs, so the rebuild conflicts without `--overwrite`. The
+    nightly wiring (slice 7) must run after the next day's hour 00 is
+    derived, or rebuild with `--overwrite`.
+- **File metadata.** `EventFileMetadata` (exported as
+  `events/event_file_metadata`, with TS) holds the file key,
+  `layout_version`, `builder_version` (`COVERAGE_VERSION = 1`), the row
+  count and layer 1's `Provenance`. Inputs are every object read: tick
+  records, bundles read for lost ticks, layer-2 files, and on legacy days
+  the packaged `RouteFeed` table. Each input's `captured_at` is the latest
+  instant of data it holds; `built_at` is the latest of those. The
+  `RouteFeed` table is listed in `applied_retroactively` on legacy days,
+  because it was measured on raw data after them. It lives in `files`, not
+  `contracts`, because `keys` imports `contracts`.
+- **Writer.** Layer 2's pinned writer settings
+  (`observations.parquet.write_parquet`), rows sorted by natural key
+  (coverage: source, interval start). The overwrite rule is layer 2's:
+  identical bytes, or bytes that differ only in `code_sha`/`code_dirty`,
+  are kept; a file of another `builder_version` is replaced (as layer 2
+  replaces on a `DECODER_VERSION` change); any other difference is a
+  conflict unless `--overwrite`. A stored file whose metadata names
+  another key is never replaced. The lineage is in the key, so a build
+  never writes under the other lineage's keys. Layer 2's file bytes are
+  unchanged by the shared settings (a test pins them).
+- **CLI.** `python -m momentarily.model.events coverage --root <store>
+  --out <dir> --day D [--lineage raw|legacy] [--overwrite] [--report
+  PATH]`. Without `--lineage` it builds every lineage that holds the day.
+  It prints a JSON report per lineage: invocations, missing slots, and
+  per feed the seconds by state, `no_invocation` split into missing slot
+  and late, `Unknown` seconds and the interval count. Exit 1: a missing or
+  inconsistent input (nothing is written) or a conflict. Exit 2: a bad day
+  or a lineage that does not hold it.
+- **Replays** (local mirror, read only). Transport-uncovered seconds per
+  feed:
+  - 10-22 reproduces the Gate A/B table exactly on every feed and column
+    (`ace` 3,223 = 724 slot + 2,378 late + 121 `not_stored`, ... `numbered`
+    2,979). The day's last 39–40 s are `Unknown`: the local store has no
+    10-23 layer-2 files.
+  - 10-21 from 04:00 reproduces the `no_invocation` (slot 120–121, late
+    794–1,038) and `not_stored` (121) columns exactly. `stale_header` is
+    2,220 s, not 2,399, on the six frozen feeds: 2,399 − 2,220 = 179 s =
+    159 s before the cutover (the table counted from the first fetch at
+    03:57:21) + 20 s `Unknown` (04:00:00 to the first raw fetch at
+    04:00:20, on every feed). So `ace` is 3,379 uncovered, against 3,558;
+    `l` and `numbered` are 1,035 and 1,156, as in the table.
+  - Legacy 09-15: one 180 s `no_invocation` on every feed (the 2 missing
+    trace minutes) and 120 s `fetch_failed` on `numbered`. 10-19: none
+    (the 99 s gap is covered). 08-12 (a partial day): none. No
+    `suspect_stale` on any of the three days.
+  - Two builds of each day give identical bytes; a rerun reports
+    `unchanged`.
+  - The raw day files are 0.7–0.9 MB, almost all of it the provenance
+    (about 1,440 tick inputs); the 166–314 rows take a few kB.
+- **Fixtures and tests.** `tests/test_events_coverage.py`: a scripted
+  recorder store (a timeout, a missing tick, a stuck header, a late
+  invocation 99 s after the previous fetch, an unstored body, a
+  bundle-only invocation, across 00:00Z); the frozen-feed excerpt
+  `tests/fixtures/model/events/frozen_feed/` (four real invocations
+  03:59:19–04:02:19 on 10-21, cut by `scripts/gen_frozen_feed_fixture.py`
+  and derived by the layer-2 job in the test), which gives `stale_header`
+  on the six frozen feeds and `covered` on `l` and `numbered`; legacy
+  cases on synthetic trace objects run through the layer-2 backfill; and
+  the writer's overwrite rule.
+
 4. **Runs, pattern fitting, trip matching and supply** (placeholders,
    censored stale tails, duplicate-trip-id split with tracks, split-run
    join, `compatible_pattern_ids`, tiers 1–5, min-cost one-to-one tier 5,

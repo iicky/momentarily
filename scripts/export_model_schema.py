@@ -30,6 +30,7 @@ from momentarily.model.events.contracts import (
     SupplyObservation,
     TripMatch,
 )
+from momentarily.model.events.files import EventFileMetadata
 from momentarily.model.network.contracts import (
     DayFeedMap,
     NetworkIndex,
@@ -85,6 +86,7 @@ DOCUMENTS: dict[str, type[BaseModel]] = {
     "events/open_state": OpenState,
     "events/coverage_interval": CoverageInterval,
     "events/supply_observation": SupplyObservation,
+    "events/event_file_metadata": EventFileMetadata,
 }
 
 

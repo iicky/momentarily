@@ -11373,3 +11373,25 @@ the spring-forward gap is unresolved as a whole.
 - Replay of 72 id-tier runs crossing 02:00 on 11-01: the first stop after
   02:00 is within 15 min for 61 when the trip is anchored, against 47 when
   each stop is placed on the wall clock.
+
+## 2026-11-03 events-coverage-replay
+
+origin: agent
+
+Layer-3 coverage (combined rule of the 10-21 verdict) replayed on the local
+mirror. 10-22 reproduces the Gate A/B uncovered seconds exactly on all 8
+feeds (`ace` 3,223 = 724 missing slot + 2,378 late + 121 not stored). 10-21
+from the 04:00 cutover reproduces every column except `stale_header`: 2,220 s,
+not 2,399, on the six frozen feeds, because the gate counted from the
+recorder's first fetch at 03:57:21 and raw coverage starts at the cutover
+(04:00:00 to the first fetch at 04:00:20 is `Unknown`).
+
+- Not obvious: every recorded `scheduled_at` is `hh:mm:19` (36,651 of 36,651
+  ticks and bundles), not minute-aligned. Missing slots are found from gaps
+  between distinct `scheduled_at` values, so the rule does not depend on
+  that phase.
+- Legacy 09-15, 10-19 and 08-12 give only the §5.1 transport events (09-15:
+  180 s `no_invocation` on every feed, 120 s `fetch_failed` on `numbered`)
+  and no `suspect_stale`.
+- A raw coverage day file is 0.7–0.9 MB, almost all provenance: about 1,440
+  tick inputs, each with its digest. The 166–314 interval rows take a few kB.

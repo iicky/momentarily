@@ -2,7 +2,7 @@
 
     python -m momentarily.model.observations.legacy --mirror <mirror-root> \\
         --out <out-root> [--from YYYY-MM-DD] [--through YYYY-MM-DD] \\
-        [--overwrite] [--report report.json]
+        [--overwrite] [--report report.json] [--failure-report failures.md]
 
 Writes ``<out>/model/observations/s1/derived/...`` (local only; R2 is
 ``python -m training.legacy_backfill``) for the UTC days ``--from`` through
@@ -12,6 +12,11 @@ replaced, conflicting and obsolete), then, per archive, objects read, rows,
 malformed objects and time, and per record, files and bytes. ``--report``
 also writes that report as JSON, with every malformed object's key and
 reason, every conflicting file and its reason and every obsolete file.
+``--failure-report`` writes the aborted days, the objects that aborted them
+(key and reason), conflicts, obsolete files and quarantined objects as
+Markdown. An object the reviewed quarantine file (``quarantine.py``) lists
+with the sha256 of its bytes is read as absent and named in the files it
+could have filled.
 
 A stored file is never deleted. A file the derive job wrote (raw lineage),
 or an unreadable one, is never overwritten: it is kept and listed as a
@@ -21,8 +26,8 @@ with the same content is kept as unchanged; one with other content is a
 conflict unless ``--overwrite`` replaces it. Exit status: 0 clean, 1 when
 an object was malformed or unreadable (every day that reads it is aborted
 and left unwritten) or any file conflicted or was obsolete (the rest is still
-written), 2 when the mirror does not exist or the range
-is empty.
+written), 2 when the mirror does not exist, the range is empty or the
+``--failure-report`` directory does not exist.
 """
 
 from __future__ import annotations

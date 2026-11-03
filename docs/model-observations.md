@@ -1016,7 +1016,7 @@ writes any record type; the derive job is meant to reuse it.
 ```
 python -m momentarily.model.observations.legacy --mirror <mirror-root> \
     --out <out-root> [--from YYYY-MM-DD] [--through YYYY-MM-DD] \
-    [--overwrite] [--report report.json]
+    [--overwrite] [--report report.json] [--failure-report failures.md]
 ```
 
 The CLI reads the mirror (local) and writes
@@ -1026,8 +1026,13 @@ was added. `vehicle` and `equipment` files are hourly by `observed_at`.
 records are daily by `observed_at`. A malformed object aborts every day
 that reads it, as an unreadable one does (see **Unreadable and malformed
 objects** below), is listed in the report with its reason, and makes the
-CLI exit 1. A missing mirror, or `--from` after `--through`, exits 2. A
-record that a contract rejects stops the run.
+CLI exit 1, unless the reviewed quarantine file lists it (see
+**Quarantine** below). A missing mirror, or `--from` after `--through`,
+exits 2. A record that a contract rejects stops the run.
+`--failure-report` also writes the run's failures as Markdown: each aborted
+day with the object that aborted it, each unreadable or malformed object
+with its reason, conflicts, obsolete files and the quarantined objects read
+as absent. It holds keys, counts and reasons only.
 
 **Days.** The run covers the UTC days `--from` through `--through`, by
 default every day the mirror holds. It reads one day at a time: each
@@ -1100,6 +1105,69 @@ version depends on every sighting. (Review fix, 2026-11-03: until then a
 malformed object was skipped and its days written without it, silently
 when it was read only as lead-in. The mirror held no malformed object.)
 
+**Quarantine.** Most objects before the recorder cutover have no source to
+rebuild them from, so without a way past them one bad object would block
+every range that reads it forever (review finding BF-2, 2026-11-03).
+`src/momentarily/model/observations/legacy/quarantine.json` is a reviewed,
+committed list of objects to exclude:
+
+```json
+{"objects": [{"key": "archive/trace/2026-09-15/1789512720.json",
+              "sha256": "<sha256 of the stored bytes>",
+              "reason": "not JSON; no source to rebuild it from",
+              "added": "2026-11-03"}]}
+```
+
+Each entry needs exactly these four fields, a legacy archive key, 64
+lowercase hex digits and a `YYYY-MM-DD` day, and no key is listed twice;
+otherwise every run fails before it reads anything. A listed object whose
+stored bytes still hash to the listed sha256 is read as absent:
+
+- Its days are written without it. The report lists it under `excluded`
+  with its reason, and the run does not fail for it.
+- Its absence is never silent. Every file it could have filled names it,
+  with its sha256 and reason, under a second key-value metadata key of the
+  parquet footer, `momentarily.observations.excluded`
+  (`parquet.EXCLUDED_METADATA_KEY`, read with `parquet.read_excluded`).
+  The column layout and `DerivedFileMetadata` are unchanged, and a file
+  that excludes nothing has no such key, so its bytes are as before. The
+  files named are those of the record types its archive fills (an
+  `archive/trace` object: `vehicle` and `legacy_fetch_outcome`) whose span
+  starts at or after the start of its folder day (its key is not trusted
+  for a later bound: its bytes are not what the archive writes) and ends
+  no later than the end of that day, or of the next day
+  for `archive/trace`. An `archive/alerts` object is named in every
+  `alert_version` file of the run, because every version depends on every
+  sighting. A day whose only object of a record type is excluded has no
+  file of that type to name it; the report still lists it.
+- Legacy coverage (docs/model-events.md §5.1) reads the names from the
+  `legacy_fetch_outcome` files. The stretch that holds an excluded trace
+  object's scheduled minute is `Unknown` (reason `excluded from layer 2
+  (quarantined): <key>`), not `covered` and not `no_invocation`.
+
+A listed object whose bytes hash to anything else has changed since the
+review. It fails as a malformed object does, with the two hashes as its
+reason. An unlisted malformed object still aborts its days.
+
+**Repairing an aborted day.** A failed run of the workflow opens, or
+comments on, the issue "Legacy backfill is failing". It names each aborted
+day and each unreadable or malformed object with its reason.
+
+1. Read the object's reason in the issue. "Listed but could not be read" is
+   a store error: rerun the range, and go on only if it persists.
+2. Check whether a source exists to rebuild the object: another copy (a
+   local mirror), or, from the recorder cutover (2026-10-21T04:00Z) on, the
+   recorder's ticks and bundles for the same minutes. If one does, restore
+   the object from it and rerun the range.
+3. If none does, add the object to `quarantine.json` with the sha256 of
+   its stored bytes, the reason and today's date, in a reviewed commit.
+4. Rerun the affected range: the days the issue names. For an
+   `archive/trace` object that is its day and the next. A file already
+   stored for those days (every `alert_version` file of the run, for an
+   `archive/alerts` object) now differs in its footer and is a conflict:
+   rerun with `overwrite` to replace it. Close the issue once the run
+   passes.
+
 **Against R2.** `training.legacy_backfill` runs the same backfill with R2 as
 both the source and the output. It uses the derive job's `R2Storage`, with 8
 concurrent GETs. `--from` and `--through` are required. `--through` must
@@ -1110,7 +1178,8 @@ next day:
 
 ```
 murk exec -- uv run python -m training.legacy_backfill \
-    --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json]
+    --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json] \
+    [--failure-report failures.md]
 ```
 
 On GitHub Actions, run the manually dispatched workflow
@@ -1120,7 +1189,10 @@ On GitHub Actions, run the manually dispatched workflow
 listed object, and LISTs and GETs each target key under
 `model/observations/s1/derived/`. It PUTs only new keys (conditional) and,
 with `overwrite`, legacy files whose content differs. It never deletes. It
-prints keys and counts only.
+prints keys and counts only. When it fails, its last step opens the issue
+"Legacy backfill is failing", or comments on the open one, with the run
+link and the `--failure-report` contents, as `prune-nightly.yml` does for
+its own failures.
 
 The legacy-only records continue past the cutover. To write a later day's
 `legacy_fetch_outcome`, `legacy_route_alert_state` and
@@ -1234,7 +1306,9 @@ was kept.
   order, and a duplicate key rejected. Every writer option that affects the
   bytes is pinned: format version, data page version and size, dictionary,
   statistics, compression and level. The key-value metadata holds the arrow
-  schema and the `DerivedFileMetadata`. The writer rejects an output path
+  schema and the `DerivedFileMetadata`, and, on a legacy file written
+  without a quarantined object, `momentarily.observations.excluded`
+  (**Quarantine** above). The writer rejects an output path
   that does not end in `file_key`, and any record outside the file's hour or
   day. The bytes are reproducible for a given `pyarrow` version. `pyarrow`
   has no upper bound, and `uv.lock` pins the version. The bytes also depend

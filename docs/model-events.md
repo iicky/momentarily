@@ -906,6 +906,15 @@ What counts as a good fetch differs by lineage:
     (`suspect_s` on each bound). Nothing treats it as a transport failure,
     and it never turns a suspension into missing data.
   - Legacy days are history only, so no live display depends on it.
+  - A trace object that layer 2 left out because it is quarantined
+    (docs/model-observations.md §5.1, **Quarantine**) is named in the
+    footer of the `legacy_fetch_outcome` files it could have filled. The
+    stretch that holds its scheduled minute is `Unknown`, with the reason
+    `excluded from layer 2 (quarantined): <key>`, because its fetches are
+    not known. It is never `covered`, and never `no_invocation`, because
+    the invocation ran: its minute joins the slot grid, so it is no
+    missing slot. The report lists such objects under `excluded_inputs`.
+    No stored coverage file changes, so `COVERAGE_VERSION` stays 2.
   - Measured with every trace object that holds at least one vehicle row
     included, zero rows for a feed counted, and no row floor: no episode
     of 3 or more identical sets on any feed on 08-12, 09-15 or 10-19. The

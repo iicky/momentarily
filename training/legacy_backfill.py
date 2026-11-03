@@ -1,7 +1,8 @@
 """Backfill the legacy archives in R2 into derived parquet files in R2.
 
     murk exec -- uv run python -m training.legacy_backfill \\
-        --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json]
+        --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json] \\
+        [--failure-report failures.md]
 
 Reads ``archive/trace``, ``archive/trip_updates``, ``archive/vehicles``,
 ``archive/alerts``, ``archive/alerts_liveness``, ``archive/ene``,

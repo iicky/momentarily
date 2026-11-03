@@ -5,7 +5,9 @@ A file holds records of one contract, in the layout ``columns`` derives and
 ``schema/model/s1/observations/parquet/`` pins, sorted by natural key, with
 one ``DerivedFileMetadata`` in its key-value metadata. Compression, row
 groups and every other writer setting are fixed here, and ``built_at`` comes
-from the inputs, so the same records and inputs give the same bytes.
+from the inputs, so the same records and inputs give the same bytes. A legacy
+file written without a quarantined object also names that object under
+``EXCLUDED_METADATA_KEY`` (absent when nothing was excluded).
 """
 
 # pyarrow-stubs leave some generics unknown (Field item types, Schema
@@ -14,11 +16,12 @@ from the inputs, so the same records and inputs give the same bytes.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal, cast, get_args
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -75,6 +78,15 @@ DATA_PAGE_SIZE = 1 << 20
 NaturalKey = tuple[str | int, ...]
 FileLineage = Literal["raw", "legacy"]
 _LEGACY_PREFIXES = tuple(f"{a}/" for a in get_args(LegacyArchive))
+
+EXCLUDED_METADATA_KEY = "momentarily.observations.excluded"
+"""Key-value metadata key of the objects a file was written without: canonical
+JSON ``{key: {"sha256": ..., "reason": ...}}``. Not part of
+``DerivedFileMetadata``, so the contract and every stored file stay as they
+are."""
+
+Excluded = Mapping[str, tuple[str, str]]
+"""Objects a file was written without: key -> (sha256, reason)."""
 
 
 class DerivedFileError(ValueError):
@@ -283,6 +295,37 @@ def read_file_metadata(data: bytes) -> DerivedFileMetadata:
     return read_parquet_metadata(meta.metadata or {})
 
 
+def read_excluded(data: bytes) -> dict[str, tuple[str, str]]:
+    """The objects a derived file was written without, from its footer
+    alone (``EXCLUDED_METADATA_KEY``); empty when it names none. Raises
+    ``ValueError`` when the entry is not the JSON the writer stores."""
+    kv = pq.read_metadata(pa.BufferReader(data)).metadata or {}
+    value = kv.get(EXCLUDED_METADATA_KEY.encode())
+    if value is None:
+        return {}
+    doc = json.loads(value)
+    if not isinstance(doc, dict):
+        raise ValueError(f"{EXCLUDED_METADATA_KEY} is not an object")
+    out: dict[str, tuple[str, str]] = {}
+    for key, entry in cast(dict[str, object], doc).items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{EXCLUDED_METADATA_KEY}: {key} is not an object")
+        fields = cast(dict[str, object], entry)
+        sha, reason = fields.get("sha256"), fields.get("reason")
+        if set(fields) != {"sha256", "reason"} or not (
+            isinstance(sha, str) and isinstance(reason, str)
+        ):
+            raise ValueError(f"{EXCLUDED_METADATA_KEY}: {key} needs sha256, reason")
+        out[key] = (sha, reason)
+    return out
+
+
+def _excluded_metadata(excluded: Excluded) -> dict[str, str]:
+    doc = {k: {"sha256": s, "reason": r} for k, (s, r) in sorted(excluded.items())}
+    text = json.dumps(doc, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return {EXCLUDED_METADATA_KEY: text}
+
+
 def _partition_day(record: BaseModel, key: DerivedDayKey) -> bool:
     """Whether ``record`` belongs in the daily file ``key``."""
     if isinstance(record, AlertVersion):
@@ -353,20 +396,29 @@ class Rows:
 
 
 def write_records(
-    path: Path, records: Sequence[BaseModel], metadata: DerivedFileMetadata
+    path: Path,
+    records: Sequence[BaseModel],
+    metadata: DerivedFileMetadata,
+    excluded: Excluded | None = None,
 ) -> int:
     """Write ``records`` (one contract) to ``path``, which must end in
     ``metadata.file_key``, in natural-key order, and return the file size.
     Every record must belong in the file's hour or day. Replaces ``path``
-    atomically. The bytes are reproducible for a given pyarrow version."""
+    atomically. The bytes are reproducible for a given pyarrow version.
+    ``excluded``: the objects the file was written without, if any."""
     if not records:
         raise DerivedFileError("a derived file holds at least one record")
     rows = Rows(type(records[0]), metadata.file_key)
     rows.add(records)
-    return write_rows(path, rows, metadata)
+    return write_rows(path, rows, metadata, excluded)
 
 
-def write_rows(path: Path, rows: Rows, metadata: DerivedFileMetadata) -> int:
+def write_rows(
+    path: Path,
+    rows: Rows,
+    metadata: DerivedFileMetadata,
+    excluded: Excluded | None = None,
+) -> int:
     """``write_records`` for rows already gathered in ``rows``."""
     if not rows:
         raise DerivedFileError("a derived file holds at least one record")
@@ -378,7 +430,10 @@ def write_rows(path: Path, rows: Rows, metadata: DerivedFileMetadata) -> int:
         raise DerivedFileError("metadata row_count differs from the records")
     if metadata.layout_version != LAYOUT_VERSION:
         raise DerivedFileError("metadata names another layout version")
-    table = rows.table().replace_schema_metadata(parquet_metadata(metadata))
+    kv = parquet_metadata(metadata)
+    if excluded:
+        kv |= _excluded_metadata(excluded)
+    table = rows.table().replace_schema_metadata(kv)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     write_parquet(table, tmp)

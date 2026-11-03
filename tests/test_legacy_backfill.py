@@ -4,6 +4,7 @@ conditional put, and reads that go one day at a time."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -12,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from botocore.exceptions import ClientError
 
@@ -22,7 +25,15 @@ from momentarily.model.observations.keys import (
     utc_day,
 )
 from momentarily.model.observations.legacy.__main__ import main as local_main
+from momentarily.model.observations.legacy.cli import failure_report
+from momentarily.model.observations.legacy.quarantine import (
+    Entry,
+    QuarantineError,
+    load,
+    parse,
+)
 from momentarily.model.observations.legacy.run import Report, run
+from momentarily.model.observations.parquet import read_excluded
 from training.derive_observations import R2Storage
 from training.legacy_backfill import main as r2_main
 from training.legacy_backfill import unsettled
@@ -350,6 +361,9 @@ def test_the_local_cli_resumes_and_takes_a_range(tmp_path: Path) -> None:
     args = ["--mirror", str(MIRROR), "--out", str(tmp_path)]
     assert local_main([*args, "--from", "2026-09-17", "--through", "2026-09-17"]) == 0
     assert {k.split("/")[-1] for k in _local(tmp_path)} == {"2026-09-17.parquet"}
+    missing = tmp_path / "missing" / "failures.md"
+    assert local_main([*args, "--failure-report", str(missing)]) == 2
+    assert {k.split("/")[-1] for k in _local(tmp_path)} == {"2026-09-17.parquet"}
     assert local_main(args) == 0
     whole = tmp_path / "whole"
     assert local_main(["--mirror", str(MIRROR), "--out", str(whole)]) == 0
@@ -474,6 +488,173 @@ def test_a_malformed_alert_sighting_writes_nothing() -> None:
     assert report.aborted == [("archive/alerts", key)]
     assert [k for k, _ in report.archives["archive/alerts"].failures] == [key]
     assert fake.derived() == {}
+
+
+def _quarantine(key: str, body: bytes) -> dict[str, Entry]:
+    sha = hashlib.sha256(body).hexdigest()
+    return {key: Entry(key, sha, "no source to rebuild it from", "2026-11-03")}
+
+
+def _record(key: str) -> str:
+    return key.removeprefix(DERIVED).split("/")[0]
+
+
+def _rows(data: bytes) -> pa.Table:
+    table = pq.read_table(pa.BufferReader(data))  # pyright: ignore[reportUnknownMemberType]
+    return table.replace_schema_metadata(None)
+
+
+@pytest.mark.parametrize(
+    "scheduled",
+    [
+        MIDNIGHT - 68 * 60,  # 22:52, in its folder day
+        MIDNIGHT + 3600,  # a key minute after its folder day
+        MIDNIGHT - 5 * 86400,  # and one days before it
+    ],
+)
+def test_a_quarantined_trace_object_is_absent_and_named_in_every_file_it_could_fill(
+    scheduled: int,
+) -> None:
+    """A malformed minute filed under DAY, quarantined with its bytes'
+    sha256: both days that read it are written with the rows they hold
+    without it, and exactly the trace-fed files of its folder day and the
+    next name it, whatever minute its key names; every other file is the
+    one a store without the object gives."""
+    after = "2026-09-17"
+    objects = _midnight()
+    key = f"archive/trace/{DAY}/{scheduled}.json"
+    objects[key] = b"{not-json"
+    fake = _FakeS3(objects)
+    report = _backfill(fake, DAY, after, quarantined=_quarantine(key, objects[key]))
+    assert not report.failed, report
+    assert report.aborted == []
+    assert [k for k, _ in report.excluded] == [key]
+    absent = _FakeS3(_midnight())
+    _backfill(absent, DAY, after)
+    assert fake.derived().keys() == absent.derived().keys()
+    named: set[str] = set()
+    for k, data in fake.derived().items():
+        excluded = read_excluded(data)
+        if not excluded:
+            assert data == absent.derived()[k], k
+            continue
+        assert list(excluded) == [key], k
+        assert excluded[key][0] == hashlib.sha256(objects[key]).hexdigest()
+        assert _rows(data).equals(_rows(absent.derived()[k])), k
+        named.add(k)
+    assert named == {
+        k
+        for k in fake.derived()
+        if _record(k) in ("vehicle", "legacy_fetch_outcome")
+        and _day_of(k) in (DAY, NEXT)
+    }
+    assert DerivedDayKey("legacy_fetch_outcome", DAY).key in named
+    assert DerivedDayKey("legacy_fetch_outcome", NEXT).key in named
+
+
+def test_a_quarantined_object_changed_since_review_aborts_its_days() -> None:
+    objects, key = _late_malformed()
+    quarantined = _quarantine(key, b"the reviewed bytes")
+    report = _backfill(_FakeS3(objects), DAY, NEXT, quarantined=quarantined)
+    assert report.failed
+    assert report.aborted == [(DAY, key), (NEXT, key)]
+    assert [k for k, _ in report.archives["archive/trace"].failures] == [key]
+    assert report.excluded == []
+
+
+def test_an_unlisted_malformed_object_still_aborts_its_days() -> None:
+    """Another object of the day is quarantined and read as absent; the
+    malformed one is not listed, so both days that read it are aborted."""
+    objects, key = _late_malformed()
+    quarantined = _quarantine(TRACE, objects[TRACE])
+    report = _backfill(_FakeS3(objects), DAY, NEXT, quarantined=quarantined)
+    assert report.aborted == [(DAY, key), (NEXT, key)]
+    assert [k for k, _ in report.excluded] == [TRACE]
+
+
+_GOOD = {
+    "key": TRACE,
+    "sha256": "0" * 64,
+    "reason": "no source to rebuild it from",
+    "added": "2026-11-03",
+}
+
+
+def test_the_committed_quarantine_file_is_valid() -> None:
+    """The workflow reads it on every run: a bad commit must fail here."""
+    load()
+
+
+@pytest.mark.parametrize(
+    "objects",
+    [
+        [_GOOD, _GOOD],
+        [_GOOD | {"sha256": "0" * 63}],
+        [_GOOD | {"sha256": "A" * 64}],
+        [_GOOD | {"key": "model/observations/s1/derived/x.parquet"}],
+        [_GOOD | {"key": "archive/trace/"}],
+        [_GOOD | {"reason": " "}],
+        [_GOOD | {"added": "2026-11-3"}],
+        [_GOOD | {"note": "extra"}],
+        [{k: v for k, v in _GOOD.items() if k != "reason"}],
+    ],
+)
+def test_a_quarantine_entry_must_be_complete_distinct_and_exact(
+    objects: list[dict[str, str]],
+) -> None:
+    assert parse(json.dumps({"objects": [_GOOD]}).encode()) == {TRACE: Entry(**_GOOD)}
+    with pytest.raises(QuarantineError):
+        parse(json.dumps({"objects": objects}).encode())
+
+
+def test_quarantine_leaves_the_days_that_never_read_the_object_unchanged() -> None:
+    objects, key = _late_malformed()
+    later = "2026-09-17"  # its lead-in reads 09-16, not the 09-15 object
+    fake = _FakeS3(objects)
+    report = _backfill(fake, later, quarantined=_quarantine(key, objects[key]))
+    assert report.excluded == []
+    plain = _FakeS3(objects)
+    _backfill(plain, later, quarantined={})
+    assert fake.derived() == plain.derived()
+    assert fake.derived()
+
+
+def test_a_quarantined_alert_sighting_is_named_in_every_alert_version_file() -> None:
+    key = "archive/alerts/2026-07-22/1784592096-lmm_alert_556649.json"
+    objects = _fixture()
+    objects[key] = b"{not-json"
+    fake = _FakeS3(objects)
+    quarantined = _quarantine(key, objects[key])
+    report = _backfill(fake, "2026-07-21", "2026-07-22", quarantined=quarantined)
+    assert not report.failed, report
+    absent = dict(objects)
+    del absent[key]
+    plain = _FakeS3(absent)
+    _backfill(plain, "2026-07-21", "2026-07-22")
+    assert fake.derived().keys() == plain.derived().keys()
+    for k, data in fake.derived().items():
+        if _record(k) == "alert_version":
+            assert list(read_excluded(data)) == [key], k
+            assert _rows(data).equals(_rows(plain.derived()[k])), k
+        else:
+            assert data == plain.derived()[k], k
+
+
+def test_the_failure_report_names_each_aborted_day_and_object_with_its_reason() -> None:
+    objects, key = _late_malformed()
+    report = _backfill(_FakeS3(objects), DAY, NEXT, quarantined={})
+    [(_, reason)] = report.archives["archive/trace"].failures
+    text = failure_report(report)
+    for needle in (DAY, NEXT, key, reason):
+        assert needle in text, needle
+
+
+@pytest.mark.usefixtures("no_sleep")
+def test_the_failure_report_names_an_unreadable_alert_sighting() -> None:
+    key = "archive/alerts/2026-07-22/1784592096-lmm_alert_556649.json"
+    fake = _Missing(_fixture(), key, times=None)
+    text = failure_report(_backfill(fake, "2026-07-21", "2026-07-22"))
+    assert key in text
 
 
 def test_without_a_last_day_the_files_after_the_last_held_day_are_written(

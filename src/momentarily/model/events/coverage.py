@@ -37,7 +37,10 @@ fetch and after its last, the fetches that are not good make one stretch
 with the state of rule 1, so an episode at the start of the evidence is
 ``stale_header`` from its first stale fetch. Where the inputs hold no fetch
 on one side (before the lineage's first fetch, after the last one read) the
-state is ``Unknown``.
+state is ``Unknown``. So is every stretch that holds the scheduled minute of
+a trace object layer 2 left out (a quarantined object, named in its files'
+``EXCLUDED_METADATA_KEY``): its fetches are unknown, so neither ``covered``
+nor ``no_invocation`` holds there, and its minute is no missing slot.
 
 A day's file covers exactly the UTC day: the neighbouring hours are read so
 that a stretch crossing 00:00Z gets its state, then every stretch is clipped
@@ -106,7 +109,12 @@ from momentarily.model.observations.keys import (
     parse_key,
     utc_day,
 )
-from momentarily.model.observations.parquet import file_lineage, read_file_metadata
+from momentarily.model.observations.legacy.trace import watermark as trace_minute
+from momentarily.model.observations.parquet import (
+    file_lineage,
+    read_excluded,
+    read_file_metadata,
+)
 
 COVERAGE_VERSION = 2
 """Bump when the rules change what a file holds. 2: slot presence keyed to
@@ -133,6 +141,9 @@ Cause = Literal["fetch", "missing_slot", "late", "suspect", "covered", "unknown"
 NO_EARLIER_FETCH = "no earlier fetch of this lineage in the inputs"
 NO_LATER_FETCH = "no later fetch of this lineage in the inputs"
 NO_FETCH = "no fetch of this feed in the inputs"
+EXCLUDED = "excluded from layer 2 (quarantined): "
+"""The reason of a stretch around an excluded trace object, before its key."""
+_TRACE = "archive/trace/"
 
 RowKey = tuple[str, str | None, int | None]
 """A legacy row as the staleness proxy compares it: trip, stop, timestamp."""
@@ -161,6 +172,8 @@ class Evidence:
     window: tuple[int, int]
     slots: Sequence[int]
     polls: dict[GtfsRtSource, list[Poll]]
+    excluded: Sequence[tuple[int, str]] = ()
+    """``(scheduled_at, key)`` of each trace object layer 2 left out."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,9 +229,13 @@ def _feed_stretches(
     grid: Sequence[int],
     missing: Sequence[int],
     window: tuple[int, int],
+    excluded: Sequence[tuple[int, str]],
 ) -> list[_Stretch]:
     """The stretches of one feed tiling ``window``, before merging. ``grid``:
-    the sorted cron slots; ``missing``: those no invocation was recorded for."""
+    the sorted cron slots; ``missing``: those no invocation was recorded for;
+    ``excluded``: ``(scheduled_at, key)`` of the trace objects layer 2 left
+    out, each turning the stretch that holds it ``Unknown`` (judged before
+    clipping, so one just outside the window still counts)."""
     w0, w1 = window
     if not polls:
         return [_Stretch(w0, w1, None, "unknown", NO_FETCH)]
@@ -259,6 +276,10 @@ def _feed_stretches(
         out.append(_Stretch(polls[goods[-1]].at, last, _transport(tail), "fetch"))
     if last < w1:
         out.append(_Stretch(last, w1, None, "unknown", NO_LATER_FETCH))
+    for n, s in enumerate(out):
+        gone = next((k for at, k in excluded if s.start <= at < s.end), None)
+        if gone is not None:
+            out[n] = _Stretch(s.start, s.end, None, "unknown", EXCLUDED + gone)
     clipped = [
         _Stretch(max(s.start, w0), min(s.end, w1), s.state, s.cause, s.reason)
         for s in out
@@ -304,7 +325,10 @@ def coverage_intervals(
             fetches=bisect_left(ats, w1) - bisect_left(ats, w0)
         )
         merged: list[_Stretch] = []
-        for s in _feed_stretches(polls, grid, missing, evidence.window):
+        stretches = _feed_stretches(
+            polls, grid, missing, evidence.window, evidence.excluded
+        )
+        for s in stretches:
             length = s.end - s.start
             if s.state is None:
                 stats.unknown_s += length
@@ -359,6 +383,9 @@ class CoverageReport:
     """Raw fetches stored and parsed whose header layer 2 did not decode."""
     unattributed_rows: int = 0
     """Legacy rows whose trip id names no ``RouteFeed`` route."""
+    excluded_inputs: list[str] = field(default_factory=list[str])
+    """Legacy trace objects of the window's neighbourhood that layer 2 left
+    out (quarantined); their stretches are ``Unknown``."""
     dropped_edge_hours: list[int] = field(default_factory=list[int])
     """Neighbouring hours left out because their layer-2 file is missing:
     raw ``feed_header``, legacy ``vehicle``."""
@@ -405,6 +432,8 @@ class _Inputs:
         self.storage = storage
         self.report = report
         self.read: dict[str, tuple[str, int]] = {}
+        self.excluded: dict[str, tuple[str, str]] = {}
+        """Objects the derived files read were written without."""
 
     def get(self, key: str) -> bytes | None:
         try:
@@ -437,6 +466,7 @@ class _Inputs:
                 pa.BufferReader(data)
             ).to_pylist()
             records = [from_row(model, r) for r in rows]
+            excluded = read_excluded(data)
         except (pa.ArrowException, KeyError, ValueError) as err:
             self.inconsistent(key, f"not a readable derived file: {err}")
             return None
@@ -444,6 +474,7 @@ class _Inputs:
             self.inconsistent(key, f"not a {lineage}-lineage file")
             return None
         self.keep(key, data, meta.provenance.built_at)
+        self.excluded |= excluded
         return records
 
 
@@ -684,7 +715,14 @@ def legacy_evidence(
             polls[feed].append(
                 Poll(obj.observed_at, kind, frozenset(obj.rows.get(feed, ())))
             )
-    slots = sorted({o.scheduled_at for o in objects.values()})
+    excluded = sorted(
+        (trace_minute(k), k) for k in inputs.excluded if k.startswith(_TRACE)
+    )
+    excluded = [(at, k) for at, k in excluded if span[0] <= at < span[1]]
+    report.excluded_inputs = [k for _, k in excluded]
+    slots = sorted(
+        {o.scheduled_at for o in objects.values()} | {at for at, _ in excluded}
+    )
     report.invocations = sum(
         window[0] <= o.scheduled_at < window[1] for o in objects.values()
     )
@@ -697,7 +735,7 @@ def legacy_evidence(
         s for s in missing_slots(slots) if window[0] <= s < window[1]
     ]
     inputs.read[ROUTE_FEED_INPUT] = (route_feed_digest, route_feed.source.observed_to)
-    return Evidence("legacy", window, slots, polls), inputs.read
+    return Evidence("legacy", window, slots, polls, excluded), inputs.read
 
 
 def _legacy_rows(

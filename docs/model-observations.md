@@ -1015,22 +1015,113 @@ writes any record type; the derive job is meant to reuse it.
 
 ```
 python -m momentarily.model.observations.legacy --mirror <mirror-root> \
-    --out <out-root> [--report report.json]
+    --out <out-root> [--from YYYY-MM-DD] [--through YYYY-MM-DD] \
+    [--overwrite] [--report report.json]
 ```
 
-The CLI reads the mirror (local only) and writes
+The CLI reads the mirror (local) and writes
 `<out>/model/observations/s1/derived/...` with the existing `keys`; no key
 was added. `vehicle` and `equipment` files are hourly by `observed_at`.
 `alert_version` files are daily by `first_seen`. The three legacy-only
 records are daily by `observed_at`. A malformed object is skipped, listed in
-the report, and makes the CLI exit 1. A missing mirror exits 2. A record that
-a contract rejects stops the run. A file at a target key whose provenance
-inputs are not all legacy archive objects (a raw-lineage file the derive job
-wrote), or that is not a readable derived file, is never overwritten: it is
-kept, listed in the report, and makes the CLI exit 1. A raw file at a key
-that lies wholly before the recorder cutover is listed under `obsolete`
-(the derive job's `--prune-obsolete` deletes it; rerun the backfill after),
-any other under `conflicts`.
+the report, and makes the CLI exit 1. A missing mirror, or `--from` after
+`--through`, exits 2. A record that a contract rejects stops the run.
+
+**Days.** The run covers the UTC days `--from` through `--through`, by
+default every day the mirror holds. It reads one day at a time: each
+archive's objects listed under that day's folder, in key order. It prints
+one line per finished day (objects read, malformed, files written, unchanged,
+replaced, conflicting, obsolete, seconds), then the per-archive and
+per-record summary. It writes only the files of its own days, so a day's
+files have the same bytes whichever range covers it. A trace object is filed
+under its `scheduled_at` day, but its records carry `observed_at`, a few
+seconds later. So a minute scheduled just before midnight fills the next
+day's hour-00 `vehicle` file and its `legacy_fetch_outcome` file. The first
+day of a range therefore also reads the trace objects scheduled in the hour
+before it. With `--through`, files after that day are listed as `deferred`
+and not written. Without it, they are written, as the whole-mirror run always
+did.
+If a trace object filed more than an hour before midnight reaches the next
+day, the run stops, because a range would miss its records. `archive/alerts`
+is read in full up to the cutover's day before the first day, because
+versioning needs every sighting (about 16,000 objects); a range that starts
+on or after 2026-10-21 skips it.
+
+**Writes.** Each file is compared with the file stored under its key:
+
+- No file: written. On R2 this is a conditional put (`If-None-Match: *`).
+  If another run created the key in the meantime, R2 refuses the put (412).
+  The file is then kept as unchanged when it holds the same content, and
+  otherwise reported as a conflict and kept.
+- A file whose provenance inputs are not all legacy archive objects (a
+  raw-lineage file the derive job wrote, or a mixed one), or that is not a
+  readable derived file, is never overwritten, even with `--overwrite`. A
+  raw file at a key that lies wholly before the recorder cutover is listed
+  under `obsolete` (the derive job's `--prune-obsolete` deletes it; rerun
+  the backfill after), any other under `conflicts`.
+- A legacy file with the same bytes, or bytes that differ only in
+  `code_sha` and `code_dirty` (the derive job's rule: this build, rendered
+  under the stored file's values, gives its bytes), is kept as `unchanged`.
+  A rerun therefore writes nothing, also on a later commit, so an
+  interrupted run resumes by being rerun.
+- A legacy file with other content is a conflict, kept, unless
+  `--overwrite` replaces it.
+
+Nothing is ever deleted. A conflict or an obsolete file makes the CLI exit 1;
+the other files are still written.
+
+**Unreadable objects.** The archives are never pruned, so a listed object
+that the store does not return is a store error, not bad data.
+`R2Storage.get` retries R2's spurious not-found answers (5 attempts, with
+backoff). If an object still cannot be read, its day is aborted. A day's
+files are rendered as they close but stored only when the whole day has
+been read, so nothing of an aborted day is written. The report lists the day and the
+key, the CLI exits 1, and the run goes on with the next day, which starts as
+a new range would (with the lead-in). If an `archive/alerts` object cannot be
+read, the run stops before any day and writes nothing.
+
+**Against R2.** `training.legacy_backfill` runs the same backfill with R2 as
+both the source and the output. It uses the derive job's `R2Storage`, with 8
+concurrent GETs. `--from` and `--through` are required. `--through` must
+have ended at least 30 minutes ago (exit 2 otherwise), because the Worker
+writes a day's last objects after 00:00 UTC:
+
+```
+murk exec -- uv run python -m training.legacy_backfill \
+    --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json]
+```
+
+On GitHub Actions, run the manually dispatched workflow
+`.github/workflows/legacy-backfill.yml` with the inputs `from`, `through` and
+`overwrite` (default false). The timeout is 360 minutes. In R2 it lists
+`archive/alerts/` once and each archive's day folder once a day, GETs every
+listed object, and LISTs and GETs each target key under
+`model/observations/s1/derived/`. It PUTs only new keys (conditional) and,
+with `overwrite`, legacy files whose content differs. It never deletes. It
+prints keys and counts only.
+
+The legacy-only records continue past the cutover. To write a later day's
+`legacy_fetch_outcome`, `legacy_route_alert_state` and
+`legacy_collector_health` files, rerun the workflow for that day. No nightly
+step does this yet.
+
+Expected time. This is an estimate: it was not measured on Actions. A
+synthetic full trace day (1,440 fixture objects of 430 rows, 619,200
+vehicle rows) ran locally on an M-series laptop in 63 s: the adapter took
+30 s and the 24 `vehicle` writes 33 s. A rerun that skips every file took
+67 s, because every file is still rendered to compare its bytes. Real
+trace objects average
+554 rows, so a real trace day needs about 80 s of CPU. A day also needs about
+5,000 GETs: trace, health and liveness about 1,440 each, and the 5-minute
+archives 288 each. They run 8 at a time ahead of the adapters, so at an
+assumed 50–100 ms a GET they overlap the CPU time. On a hosted runner, which
+is slower than the laptop, a trace day should take about 2 minutes. A day
+after the cutover (no vehicles) takes well under 1 minute. Reading
+`archive/alerts` takes a few minutes once per run. From 06-15 through 11-01
+(70 trace days before the cutover, 11 after it, and 58 earlier days with only
+the 5-minute archives), a run should take about 2.5–3 hours, inside the
+360-minute limit. Dispatch it in two or more ranges for margin. A rerun of a
+range resumes where the earlier run stopped.
 
 **Recorder cutover** (decision 10). The backfill owns every record observed
 before `keys.RECORDER_CUTOVER`, 2026-10-21T04:00:00Z, and the recorder

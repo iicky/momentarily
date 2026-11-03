@@ -1,14 +1,28 @@
-"""Backfill every legacy archive of a local R2 mirror into derived parquet
-files under ``<out>/model/observations/s1/derived/``.
+"""Backfill the legacy archives of a store (a local mirror or R2) into
+derived parquet files under ``model/observations/s1/derived/`` of a store.
 
-The mirror holds the bucket's keys as paths. Objects are read one UTC day at
-a time, every archive in turn, and each record goes to the file its contract
-is partitioned into (``keys``): vehicles and equipment hourly by
-``observed_at``; alert versions daily by ``first_seen``; the legacy-only
-records daily by ``observed_at``. A file is written once nothing later can
-add to it, so a run holds about one day of daily records and one hour of
-hourly ones. Hourly files close on the archive's watermark (an object's key
-bounds the time of every later record), daily files at the end of their day.
+The source holds the bucket's keys (``derive.storage``). A run covers a range
+of UTC days, by default every day the source holds, one day at a time: every
+archive's objects of that day in turn, listed under the day's folder. Each
+record goes to the file its contract is partitioned into (``keys``): vehicles
+and equipment hourly by ``observed_at``; alert versions daily by
+``first_seen``; the legacy-only records daily by ``observed_at``. A file is
+written once nothing later can add to it, so a run holds about one day of
+daily records and one hour of hourly ones. Hourly files close on the
+archive's watermark (an object's key bounds the time of every later record),
+daily files at the end of their day.
+
+A run writes the files of the days in its range only, so a day's files are
+the same whichever range covers it. A trace object is filed under the day of
+its ``scheduled_at`` but its records are observed at ``observed_at``,
+seconds later, so the last minutes of a day can fill the next day's first
+hour: the first day of a range also reads the trace objects of the hour
+before it (``Source.lead``), and files after an explicit last day are left
+unwritten (``deferred``). Without a last day, the run writes those too, as a
+run over a whole mirror always has. A trace object filed earlier than that
+which still reaches the
+next day stops the run. Alert versions need every sighting (``alerts``), so
+the whole ``archive/alerts`` up to the recorder cutover's day is read first.
 
 The recorder owns every record it writes from ``keys.RECORDER_CUTOVER`` on:
 the adapters emit vehicles, equipment and alert versions observed before it
@@ -16,19 +30,41 @@ only, and alert versions of days before its UTC day only. The legacy-only
 records continue past it.
 
 A malformed object is skipped and listed in the report; a record a contract
-rejects stops the run. A stored file at a target key that is not a readable
-legacy file (raw lineage, read from its provenance, or unreadable) is kept,
-never overwritten. A raw file at a key wholly before the cutover is listed
-as ``obsolete`` (the derive job prunes it on request), any other as a
-conflict.
+rejects stops the run. A listed object the store does not return (after the
+store's retries) is a store error, not bad data: its day is aborted, nothing
+of it is written, the report lists it and the run goes on with the next day
+as a new range would. Files are rendered as they close and stored only once
+their day is complete.
+
+**Writing.** A file is compared with what the store holds under its key:
+
+* nothing: written with ``put_new``, which refuses a key written meanwhile;
+  such a file is then compared again, so a concurrent writer is never
+  overwritten;
+* a raw-lineage file (the derive job's, read from its provenance), a mixed
+  one, or an unreadable one: kept, never overwritten. A raw file at a key
+  wholly before the cutover is listed as ``obsolete`` (the derive job prunes
+  it on request), any other as a conflict;
+* a legacy file with identical bytes, or bytes that differ only in the code
+  provenance (``code_sha``, ``code_dirty``: this build rendered under the
+  stored file's values gives its bytes): unchanged, kept;
+* a legacy file with other content: a conflict, kept, unless ``overwrite``
+  replaces it.
+
+Nothing is ever deleted. A rerun over the same objects and code skips every
+file, so an interrupted run resumes where it stopped.
 """
 
 from __future__ import annotations
 
+import tempfile
 import time
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from datetime import date
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
+from itertools import islice
 from pathlib import Path
 
 import pyarrow as pa
@@ -36,6 +72,7 @@ from pydantic import BaseModel
 
 from momentarily.model.observations.contracts import (
     AlertVersion,
+    DerivedFileMetadata,
     EquipmentObservation,
     LegacyArchive,
     LegacyCollectorHealth,
@@ -43,8 +80,10 @@ from momentarily.model.observations.contracts import (
     LegacyRouteAlertState,
     VehicleObservation,
 )
+from momentarily.model.observations.derive.storage import ConditionalStorage, Storage
 from momentarily.model.observations.keys import (
     RECORDER_CUTOVER,
+    RECORDER_CUTOVER_DAY,
     DailyRecord,
     DerivedDayKey,
     DerivedHourKey,
@@ -75,17 +114,23 @@ from momentarily.model.observations.parquet import (
 
 Adapter = Callable[[LegacyObject], list[Emitted]]
 
+_DAY_SECONDS = 86400
+_NEVER = 2**62
+
 
 @dataclass(frozen=True)
 class Source:
     archive: LegacyArchive
     adapt: Adapter
     watermark: Callable[[str], int] | None
+    lead: int = 0
+    """Seconds before a day whose objects (by ``watermark``) may hold records
+    of that day; 0 when every record is in its object's day folder."""
 
 
 # Day order within a run; the alerts archive is read up front (alerts.py).
 SOURCES: tuple[Source, ...] = (
-    Source("archive/trace", trace.adapt, trace.watermark),
+    Source("archive/trace", trace.adapt, trace.watermark, lead=3600),
     Source("archive/trip_updates", fresh_feeds.adapt, None),
     Source("archive/vehicles", fresh_feeds.adapt, None),
     Source("archive/alerts_liveness", alerts_liveness.adapt, None),
@@ -100,13 +145,12 @@ ARCHIVES: tuple[LegacyArchive, ...] = (
     *(s.archive for s in SOURCES[3:]),
 )
 
-_DAY_SECONDS = 86400
-
 
 @dataclass
 class ArchiveStats:
     inputs: int = 0
     rows: dict[str, int] = field(default_factory=dict[str, int])
+    """Rows bound for files of the run's days."""
     failures: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
     seconds: float = 0.0
 
@@ -120,14 +164,56 @@ class RecordStats:
 
 
 @dataclass
+class DayReport:
+    day: str
+    objects: int
+    malformed: int
+    written: int
+    unchanged: int
+    replaced: int
+    conflicts: int
+    obsolete: int
+    seconds: float
+    aborted: str | None = None
+    """The listed object that could not be read; nothing of the day was
+    written."""
+
+
+@dataclass
 class Report:
     archives: dict[str, ArchiveStats]
     records: dict[str, RecordStats]
     files: list[str]
-    conflicts: list[str] = field(default_factory=list[str])
+    """Files written, new or ``replaced``."""
+    unchanged: list[str] = field(default_factory=list[str])
+    replaced: list[str] = field(default_factory=list[str])
+    conflicts: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    """(key, reason): stored files kept that this run would have changed."""
     obsolete: list[str] = field(default_factory=list[str])
     """Raw-lineage files at keys the backfill owns (before the recorder
     cutover): kept, not written; ``derive --prune-obsolete`` removes them."""
+    deferred: list[str] = field(default_factory=list[str])
+    """Files after the range that its last day's objects begin: not written;
+    the run that covers their day writes them."""
+    days: list[DayReport] = field(default_factory=list[DayReport])
+    aborted: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    """(day, key): days left unwritten because a listed object could not be
+    read (``archive/alerts`` for the up-front read, which stops the run)."""
+
+    @property
+    def failed(self) -> bool:
+        malformed = any(a.failures for a in self.archives.values())
+        return bool(malformed or self.conflicts or self.obsolete or self.aborted)
+
+
+class MissingObjectError(Exception):
+    """A listed object the store did not return, even after retries. The
+    archives are never pruned, so this is a transient store error, not bad
+    data."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"{key} is listed but could not be read")
+        self.key = key
 
 
 @dataclass
@@ -174,22 +260,63 @@ def _partition(record: BaseModel) -> tuple[str, str, int]:
             raise TypeError(f"{type(record).__name__} has no legacy partition")
 
 
+@dataclass(frozen=True)
+class _Staged:
+    """A rendered file not yet stored."""
+
+    key: str
+    record: str
+    rows: int
+    end: int
+    data: bytes
+    seconds: float
+    same_as: bytes | None
+    """The stored file, when it differs from ``data`` in code provenance
+    alone (decided at render time, while the records are held)."""
+
+
+def _stored_metadata(data: bytes) -> DerivedFileMetadata | None:
+    try:
+        return read_file_metadata(data)
+    except (pa.ArrowException, KeyError, ValueError):
+        return None
+
+
 class _Writer:
     def __init__(
-        self, out: Path, code_sha: str, code_dirty: bool | None, report: Report
+        self,
+        out: ConditionalStorage,
+        code: tuple[str, bool | None],
+        overwrite: bool,
+        span: tuple[int, int],
+        staging: Path,
+        report: Report,
     ) -> None:
         self._out = out
-        self._code = (code_sha, code_dirty)
+        self._code = code
+        self._overwrite = overwrite
+        self._span = span
+        self._staging = staging
         self._report = report
         self._open: dict[str, _Bucket] = {}
         self._written: set[str] = set()
+        self._pending: list[_Staged] = []
 
-    def add(self, archive: str, emitted: Iterable[Emitted]) -> None:
+    def _in_span(self, end: int) -> bool:
+        return self._span[0] < end <= self._span[1]
+
+    def add(self, archive: str, emitted: Iterable[Emitted], by: int | None) -> None:
+        """``by``: no record may be in a file that ends after it."""
         rows = self._report.archives[archive].rows
         for e in emitted:
             key, name, end = _partition(e.record)
             if key in self._written:
                 raise RuntimeError(f"{archive} adds to {key} after it was written")
+            if by is not None and end > by:
+                raise RuntimeError(
+                    f"{archive}: {e.inputs[0].key} adds to {key}, after the day "
+                    "it is filed under and before the lead-in a range reads"
+                )
             bucket = self._open.get(key)
             if bucket is None:
                 bucket = self._open[key] = _Bucket(name, end)
@@ -197,76 +324,189 @@ class _Writer:
             bucket.archives.add(archive)
             for s in e.inputs:
                 bucket.inputs[s.key] = (s.sha256, s.observed_at)
-            rows[name] = rows.get(name, 0) + 1
+            if self._in_span(end):
+                rows[name] = rows.get(name, 0) + 1
 
     def flush(self, before: int, archive: str | None = None) -> None:
-        """Write every file whose span ends by ``before``; with ``archive``,
-        only the files that archive alone fills."""
+        """Render every file whose span ends by ``before``; with ``archive``,
+        only the files that archive alone fills. A file before the run's
+        days (filled by the lead-in) is dropped. Rendered files reach the
+        store at ``commit``."""
         for key in sorted(self._open):
             b = self._open[key]
             if b.end <= before and (archive is None or b.archives == {archive}):
-                self._write(key, self._open.pop(key))
+                self._written.add(key)
+                self._open.pop(key)
+                if self._in_span(b.end):
+                    self._stage(key, b)
 
-    def _stored_lineage(self, key: str) -> str | None:
-        """The lineage of a file stored under ``key`` (``unreadable`` when it
-        is not a readable derived file); None when there is none."""
-        path = self._out / key
-        if not path.is_file():
+    def defer(self) -> None:
+        """Leave every file still open (after the run's days) unwritten."""
+        self._report.deferred += sorted(self._open)
+        self._open.clear()
+
+    def discard(self, start: int) -> None:
+        """Drop everything not yet committed and start over at ``start``, as
+        a new range would."""
+        self._open.clear()
+        self._pending.clear()
+        self._written.clear()
+        self._span = (start, self._span[1])
+
+    def _render(
+        self, key: str, bucket: _Bucket, code: tuple[str, bool | None]
+    ) -> bytes:
+        meta = file_metadata(
+            key, DECODER_VERSION, len(bucket.records), bucket.inputs, *code
+        )
+        path = self._staging / key
+        write_records(path, bucket.records, meta)
+        data = path.read_bytes()
+        path.unlink()
+        return data
+
+    def _same_as(self, key: str, bucket: _Bucket, data: bytes) -> bytes | None:
+        """The stored legacy file under ``key`` when it is this file built
+        by other code: its bytes equal this build's under its own
+        ``code_sha`` and ``code_dirty`` (the derive job's rule)."""
+        stored = self._stored(key)
+        if stored is None or stored == data:
+            return None
+        meta = _stored_metadata(stored)
+        if meta is None or file_lineage(meta) != "legacy":
+            return None
+        code = (meta.provenance.code_sha, meta.provenance.code_dirty)
+        if code == self._code or self._render(key, bucket, code) != stored:
+            return None
+        return stored
+
+    def _stage(self, key: str, bucket: _Bucket) -> None:
+        t0 = time.perf_counter()
+        data = self._render(key, bucket, self._code)
+        same_as = self._same_as(key, bucket, data)
+        seconds = time.perf_counter() - t0
+        self._pending.append(
+            _Staged(
+                key,
+                bucket.record,
+                len(bucket.records),
+                bucket.end,
+                data,
+                seconds,
+                same_as,
+            )
+        )
+
+    def commit(self) -> None:
+        """Store every rendered file."""
+        for staged in self._pending:
+            self._store(staged)
+        self._pending.clear()
+
+    def _stored(self, key: str) -> bytes | None:
+        # List first: R2Storage.get retries a missing key for seconds.
+        if key not in self._out.list(key):
             return None
         try:
-            meta = read_file_metadata(path.read_bytes())
-        except (pa.ArrowException, KeyError, ValueError):
-            return "unreadable"
-        return file_lineage(meta) or "mixed"
+            return self._out.get(key)
+        except KeyError:
+            return None
 
-    def _write(self, key: str, bucket: _Bucket) -> None:
-        self._written.add(key)
-        stored = self._stored_lineage(key)
-        if stored == "raw" and bucket.end <= RECORDER_CUTOVER:
-            self._report.obsolete.append(key)
-            return
-        if stored not in (None, "legacy"):
-            self._report.conflicts.append(key)
-            return
+    def _conflict(self, key: str, reason: str) -> None:
+        self._report.conflicts.append((key, reason))
+
+    def _store(self, s: _Staged) -> None:
         t0 = time.perf_counter()
-        meta = file_metadata(
-            key, DECODER_VERSION, len(bucket.records), bucket.inputs, *self._code
-        )
-        size = write_records(self._out / key, bucket.records, meta)
-        stats = self._report.records.setdefault(bucket.record, RecordStats())
+        stored = self._stored(s.key)
+        if stored is None:
+            if self._out.put_new(s.key, s.data):
+                self._count(s, t0)
+            elif self._stored(s.key) == s.data:
+                self._report.unchanged.append(s.key)
+            else:
+                self._conflict(s.key, "written by another run meanwhile")
+            return
+        meta = _stored_metadata(stored)
+        lineage = None if meta is None else file_lineage(meta) or "mixed"
+        if lineage == "raw" and s.end <= RECORDER_CUTOVER:
+            self._report.obsolete.append(s.key)
+        elif lineage != "legacy":
+            self._conflict(s.key, f"stored file is {lineage or 'unreadable'}")
+        elif stored in (s.data, s.same_as):
+            self._report.unchanged.append(s.key)
+        elif self._overwrite:
+            self._out.put(s.key, s.data)
+            self._report.replaced.append(s.key)
+            self._count(s, t0)
+        else:
+            self._conflict(s.key, "stored legacy file differs (--overwrite replaces)")
+
+    def _count(self, s: _Staged, t0: float) -> None:
+        stats = self._report.records.setdefault(s.record, RecordStats())
         stats.files += 1
-        stats.rows += len(bucket.records)
-        stats.bytes += size
-        stats.seconds += time.perf_counter() - t0
-        self._report.files.append(key)
+        stats.rows += s.rows
+        stats.bytes += len(s.data)
+        stats.seconds += s.seconds + time.perf_counter() - t0
+        self._report.files.append(s.key)
 
 
-def _listing(mirror: Path, archive: str) -> dict[str, list[Path]]:
-    """Objects of ``archive`` by UTC day folder, in key order."""
-    root = mirror / archive
-    if not root.is_dir():
-        return {}
-    days: dict[str, list[Path]] = {}
-    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
-        days[folder.name] = sorted(p for p in folder.iterdir() if p.is_file())
-    return days
+def _folder(archive: str, key: str) -> str | None:
+    """The day folder of ``key`` under ``archive``; None when it has none."""
+    folder, slash, _ = key.removeprefix(f"{archive}/").partition("/")
+    return folder if slash else None
 
 
-def _read(mirror: Path, path: Path) -> LegacyObject:
-    return LegacyObject(path.relative_to(mirror).as_posix(), path.read_bytes())
+def _is_day(text: str) -> bool:
+    try:
+        return date.fromisoformat(text).isoformat() == text
+    except ValueError:
+        return False
 
 
-def _alert_versions(mirror: Path, stats: ArchiveStats) -> dict[str, list[Emitted]]:
+def _fetch(source: Storage, keys: list[str], readers: int) -> Iterator[LegacyObject]:
+    """Each key's object, in order, with at most ``2 * readers`` read
+    ahead. Raises ``MissingObjectError`` for a key the store does not return
+    (``R2Storage.get`` retries R2's spurious not-found answers first)."""
+
+    def get(key: str) -> LegacyObject:
+        try:
+            return LegacyObject(key, source.get(key))
+        except KeyError as err:
+            raise MissingObjectError(key) from err
+
+    if readers <= 1:
+        yield from map(get, keys)
+        return
+    todo = iter(keys)
+    with ThreadPoolExecutor(readers) as pool:
+        ahead: deque[Future[LegacyObject]] = deque(
+            pool.submit(get, k) for k in islice(todo, 2 * readers)
+        )
+        while ahead:
+            yield ahead.popleft().result()
+            for k in islice(todo, 1):
+                ahead.append(pool.submit(get, k))
+
+
+def _alert_versions(
+    source: Storage, stats: ArchiveStats, readers: int
+) -> dict[str, list[Emitted]]:
+    """Alert versions by the day of their first sighting, from every
+    ``archive/alerts`` object filed up to the recorder cutover's day (none
+    after it is read: ``alerts.versions``)."""
     t0 = time.perf_counter()
+    keys = [
+        k
+        for k in source.list(f"{ALERTS}/")
+        if (day := _folder(ALERTS, k)) is not None and day <= RECORDER_CUTOVER_DAY
+    ]
     sightings: list[alerts.Sighting] = []
-    for paths in _listing(mirror, ALERTS).values():
-        for path in paths:
-            obj = _read(mirror, path)
-            stats.inputs += 1
-            try:
-                sightings.append(alerts.parse(obj))
-            except MalformedObjectError as err:
-                stats.failures.append((obj.key, str(err)))
+    for obj in _fetch(source, keys, readers):
+        stats.inputs += 1
+        try:
+            sightings.append(alerts.parse(obj))
+        except MalformedObjectError as err:
+            stats.failures.append((obj.key, str(err)))
     by_day: dict[str, list[Emitted]] = {}
     for e in alerts.versions(sightings):
         first = e.record.first_seen if isinstance(e.record, AlertVersion) else None
@@ -279,30 +519,171 @@ def _alert_versions(mirror: Path, stats: ArchiveStats) -> dict[str, list[Emitted
     return by_day
 
 
-def run(mirror: Path, out: Path, code_sha: str, code_dirty: bool | None) -> Report:
-    """Backfill every legacy archive under ``mirror`` into ``out``."""
-    report = Report({a: ArchiveStats() for a in ARCHIVES}, {}, [])
-    writer = _Writer(out, code_sha, code_dirty, report)
-    versions = _alert_versions(mirror, report.archives[ALERTS])
-    listings = {s.archive: _listing(mirror, s.archive) for s in SOURCES}
-    days = sorted(set(versions).union(*listings.values()))
-    for day in days:
-        for source in SOURCES:
-            stats = report.archives[source.archive]
-            for path in listings[source.archive].get(day, []):
-                t0 = time.perf_counter()
-                obj = _read(mirror, path)
+def held_days(source: Storage) -> tuple[str, str] | None:
+    """The first and last UTC day folder of any legacy archive in ``source``;
+    None when it holds none. Lists every archive in full."""
+    days = {
+        day
+        for archive in ARCHIVES
+        for key in source.list(f"{archive}/")
+        if (day := _folder(archive, key)) is not None and _is_day(day)
+    }
+    return (min(days), max(days)) if days else None
+
+
+def _calendar(first: str, last: str) -> list[str]:
+    start, end = date.fromisoformat(first), date.fromisoformat(last)
+    return [(start + timedelta(n)).isoformat() for n in range((end - start).days + 1)]
+
+
+class _Run:
+    def __init__(self, source: Storage, writer: _Writer, report: Report, readers: int):
+        self._source = source
+        self._writer = writer
+        self._report = report
+        self._readers = readers
+
+    def objects(self, src: Source, keys: list[str], end: int | None) -> None:
+        """Adapt ``keys`` of ``src``, filed under the day that ends at
+        ``end``, in order. ``end`` None: the lead-in, whose objects the run
+        of their own day counts and reports."""
+        stats = self._report.archives[src.archive]
+        t0 = time.perf_counter()
+        for obj in _fetch(self._source, keys, self._readers):
+            key = obj.key
+            if end is not None:
                 stats.inputs += 1
+            try:
+                emitted = src.adapt(obj)
+            except MalformedObjectError as err:
+                if end is not None:
+                    stats.failures.append((key, str(err)))
+                continue
+            if not emitted:
+                continue
+            # Only an object within ``lead`` of its day's end reaches the next.
+            by = end
+            if src.lead and src.watermark is not None and end is not None:
+                by = None if src.watermark(key) >= end - src.lead else end
+            self._writer.add(src.archive, emitted, by)
+            if src.watermark is not None:
+                self._writer.flush(src.watermark(key), src.archive)
+        stats.seconds += time.perf_counter() - t0
+
+    def lead_in(self, day: str) -> None:
+        """The objects filed before ``day`` that may hold records of it."""
+        start = _day_start(day)
+        before = utc_day(start - 1)
+        for src in SOURCES:
+            if not src.lead or src.watermark is None:
+                continue
+            keys: list[str] = []
+            for key in self._source.list(f"{src.archive}/{before}/"):
                 try:
-                    emitted = source.adapt(obj)
-                except MalformedObjectError as err:
-                    stats.failures.append((obj.key, str(err)))
-                    emitted = []
-                writer.add(source.archive, emitted)
-                stats.seconds += time.perf_counter() - t0
-                if source.watermark is not None and emitted:
-                    writer.flush(source.watermark(obj.key), source.archive)
-        writer.add(ALERTS, versions.get(day, []))
-        writer.flush(_day_start(day) + _DAY_SECONDS)
-    writer.flush(2**62)
+                    if src.watermark(key) >= start - src.lead:
+                        keys.append(key)
+                except MalformedObjectError:
+                    pass  # the run that covers ``before`` reports it
+            self.objects(src, keys, None)
+        self._writer.flush(start)
+
+    def day(self, day: str, versions: list[Emitted]) -> None:
+        end = _day_start(day) + _DAY_SECONDS
+        for src in SOURCES:
+            self.objects(src, self._source.list(f"{src.archive}/{day}/"), end)
+        self._writer.add(ALERTS, versions, None)
+        self._writer.flush(end)
+
+
+class _Tally:
+    """A day's share of the report's running totals."""
+
+    def __init__(self, report: Report) -> None:
+        self._report = report
+        self._t0 = time.perf_counter()
+        self._at = self._now()
+
+    def _now(self) -> tuple[int, ...]:
+        r = self._report
+        return (
+            sum(a.inputs for a in r.archives.values()),
+            sum(len(a.failures) for a in r.archives.values()),
+            len(r.files) - len(r.replaced),
+            len(r.unchanged),
+            len(r.replaced),
+            len(r.conflicts),
+            len(r.obsolete),
+        )
+
+    def day(self, day: str) -> DayReport:
+        n = [b - a for a, b in zip(self._at, self._now(), strict=True)]
+        return DayReport(day, *n, seconds=time.perf_counter() - self._t0)
+
+
+def run(
+    source: Storage,
+    out: ConditionalStorage,
+    code_sha: str,
+    code_dirty: bool | None,
+    *,
+    first: str | None = None,
+    last: str | None = None,
+    overwrite: bool = False,
+    readers: int = 1,
+    on_day: Callable[[DayReport], None] | None = None,
+) -> Report:
+    """Backfill the legacy archives in ``source`` into ``out``, for the UTC
+    days ``first`` through ``last`` (default: the days ``source`` holds).
+    ``readers`` objects are read concurrently; ``on_day`` sees each day's
+    report as it ends. Without ``last`` every file is written, including
+    those after the last day held; with it, those are ``deferred``."""
+    report = Report({a: ArchiveStats() for a in ARCHIVES}, {}, [])
+    open_end = last is None
+    if first is None or last is None:
+        held = held_days(source)
+        if held is None:
+            return report
+        first, last = first or held[0], last or held[1]
+    days = _calendar(first, last)
+    if not days:
+        return report
+    end = _NEVER if open_end else _day_start(days[-1]) + _DAY_SECONDS
+    try:
+        versions = (
+            _alert_versions(source, report.archives[ALERTS], readers)
+            if days[0] < RECORDER_CUTOVER_DAY
+            else {}
+        )
+    except MissingObjectError as err:
+        report.aborted.append((ALERTS, err.key))
+        return report
+    with tempfile.TemporaryDirectory(prefix="legacy-") as staging:
+        span = (_day_start(days[0]), end)
+        writer = _Writer(
+            out, (code_sha, code_dirty), overwrite, span, Path(staging), report
+        )
+        job = _Run(source, writer, report, readers)
+        lead_in = True
+        for day in days:
+            tally = _Tally(report)
+            try:
+                if lead_in:
+                    job.lead_in(day)
+                job.day(day, versions.pop(day, []))
+            except MissingObjectError as err:
+                # Nothing of the day is stored; the next day starts afresh.
+                writer.discard(_day_start(day) + _DAY_SECONDS)
+                report.aborted.append((day, err.key))
+                report.days.append(replace(tally.day(day), aborted=err.key))
+                lead_in = True
+            else:
+                writer.commit()
+                report.days.append(tally.day(day))
+                lead_in = False
+            if on_day is not None:
+                on_day(report.days[-1])
+        if open_end:
+            writer.flush(_NEVER)
+            writer.commit()
+        writer.defer()
     return report

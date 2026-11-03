@@ -350,9 +350,37 @@ service day is the previous one.
   local date of the matched trip's first scheduled departure. A run that
   disagrees is flagged `start_date_mismatch`. On the daytime `step2`
   sample, all 501 matched runs agree.
-- **DST.** GTFS seconds are placed with `instant_of(service_date, s, tz)`,
-  which counts from noon − 12 h. On 2026-11-01 that origin is 01:00 EDT, not
-  midnight. No measured day crosses a DST change [not verified].
+- **DST (decided 2026-11-03; anchor rule after review).** For matching, each
+  trip is anchored at its first departure on the New York wall clock, not
+  on GTFS's noon − 12 h origin: the service date's local midnight plus the
+  first departure's seconds read as wall time, with 24:00 or later rolling
+  into the next calendar date the same way (`wall_instant_of`,
+  `WALL_CLOCK_VERSION` 1, in `momentarily.model.conventions`). Every other
+  stop of the trip is the anchor plus its elapsed scheduled time since the
+  first departure. The realtime feeds start trips on the wall clock
+  (measured on 2026-11-01, Gate A/B results), and trains that span the
+  change run straight through it: 69 of 71 events crossing 02:00 on 11-01
+  were within 600 s of the scheduled run time (median excess +1 s), with
+  no mid-trip hold of 50 minutes or more. Placing each stop on the wall
+  clock separately would put a one-hour gap inside those trips. Layer 1's
+  `instant_of` keeps the GTFS meaning for its other consumers; the two
+  agree except on DST nights.
+  - **Fall back.** A first departure in the repeated 01:00–01:59 is its
+    first occurrence (EDT). On 2026-11-01, 00:14 is 04:14 UTC (`instant_of`:
+    05:14) and 01:30 is 05:30 UTC (06:30); a trip departing 01:59 reaches a
+    stop scheduled 02:01 at 06:01 UTC. On 10-31, 25:30 is 05:30 UTC
+    (unchanged) and a trip departing 26:30 is 02:30 EST, 07:30 UTC (06:30).
+  - **Spring forward.** A trip whose first departure does not exist on the
+    wall clock (02:00–02:59 on the spring-forward date, including 26:xx of
+    the service date before) is **unresolved**, never clamped: clamping
+    would collapse ordering and headways. It has no instants, so tier-5
+    matching, lateness and scheduled supply leave it out; the id tiers
+    still match it. A trip that departs before the gap runs on by elapsed
+    time. The rule is provisional until a spring-forward night is measured
+    (2027-03-14; 2026-03-08 is outside the recorded data).
+  - Every trip whose UTC offset differs between its first departure and
+    last arrival is flagged `spans_dst_transition`, so that measurement can
+    check them. A new rule bumps `WALL_CLOCK_VERSION` and `INDEX_VERSION`.
 
 ### 2.5 Measured
 
@@ -1396,30 +1424,43 @@ not a public contract and has no JSON Schema, TypeScript or parquet layout.
   compact), gzipped with mtime 0. The same inputs and code give the same
   bytes; a second CLI run reports `unchanged`. `metadata` holds the key,
   `INDEX_VERSION`, the `route_feed.json` digest, service date, time zone,
-  `day_origin` (`instant_of(date, 0)`), build, `build_basis`, day type,
-  entry counts and layer 1's `Provenance` (`inputs`: the network
-  `content_digest`, the `route_feed.json` digest and, when used, the day
-  map's; `built_at`: the network's; `period_start`: the service date).
+  `day_origin` (`wall_instant_of(date, 0)`, local midnight),
+  `wall_clock_version`, build, `build_basis`, day type, entry counts
+  (`unresolved_stop_times`, `unresolved_trips` and `trips_spanning_dst`
+  among them) and layer 1's `Provenance`
+  (`inputs`: the network `content_digest`, the `route_feed.json` digest
+  and, when used, the day map's; `built_at`: the network's;
+  `period_start`: the service date).
 - **Contents.**
   - `trips`: every trip active that day, sorted by id, with the stripped
     key (static origin, route field, direction, path), block, route,
-    pattern, service, first departure and last arrival.
+    pattern, service, first departure, last arrival and
+    `spans_dst_transition`.
   - `patterns`: every pattern of the build with its stop list, and for
-    patterns that run, the trips by first arrival and an arrival matrix
-    (per stop, per trip). Instants are `instant_of(service_date, s, tz)`.
+    patterns that run, the trips by scheduled first arrival and an arrival
+    matrix (per stop, per trip). Each trip is anchored at its first
+    departure, `wall_instant_of(service_date, s, tz)` (§2.4: the New York
+    wall clock, first occurrence in the repeated fall-back hour), and every
+    other time is the anchor plus elapsed scheduled time. A trip whose first
+    departure does not exist on the wall clock (spring forward) is
+    unresolved: `null` in the matrix and in its first departure and last
+    arrival. Index version 2 and earlier used `instant_of` per stop.
   - `platforms`, `active_service_ids`, day type and exception flag.
   - `supply`: per route with 6X, 7X and FX folded into 6, 7 and F (riders
     see the 6; the patterns keep the variants apart), trips in service per
     epoch minute, from the minute of the first departure through the minute
     of the last arrival. This is the prototype's rule (`m13_supply.py`,
     `base_route`); `supply` folds the route it is asked for the same way.
+    An unresolved trip is in no minute.
   - `route_feed`: the `RouteFeed` table.
 - **Lookups** (`MatchIndex`, built from a document in about 0.04 s for a
   weekday): `realtime_key` (a realtime origin `o` hits static origin `o`,
   then `o + 144000` flagged `wrapped`; a wrapped hit belongs to this
   service day, the calendar day before the observation), `static_key`,
-  `origin_direction`, `arrival(trip, stop)`, `stop_times(pattern, stop)`
-  (sorted instants and trip ids), `patterns_of(route, direction)` (6X, 7X
+  `origin_direction`, `arrival(trip, stop)` (None also for an unresolved
+  trip), `stop_times(pattern, stop)` (sorted instants and trip ids of the
+  resolved trips),
+  `patterns_of(route, direction)` (6X, 7X
   and FX folded, as in the prototype), `pattern_stops`, `stop_position`,
   `platforms`, `supply`, `supply_by_feed` and `feed_of`.
   `candidate_service_dates(at, tz)` gives D−1, D and D+1. The index stores
@@ -1448,26 +1489,50 @@ not a public contract and has no JSON Schema, TypeScript or parquet layout.
   supply per route and minute, candidate days) are equal for every route,
   on both builds and all 10 dates. The committed test checks the same
   families by digest on a route subset (H, SI, Z, 7X, FX; 101 KB per
-  build, gzipped).
+  build, gzipped). That comparison was at index version 2; `Net`, like
+  version 2, placed times with `instant_of`. From version 3, the full
+  builds' 10-31 differs from `Net` only in the 175 stop times of the 3
+  trips departing at 26:xx, which the wall clock moves (below). The subset
+  routes have none, so the committed test is unchanged.
 - **Generator input.** `scripts/gen_route_feed.py` reads raw-lineage
   derived files only (`parquet.file_lineage`) and exits with a message on
   a legacy-backfilled day, whose rows have no `source`.
-- **Wrap and DST.** Tested on a synthetic network on real 2026 DST
-  nights, outside the builds' range (05-26 to 10-31): 25:30 on 10-31 and
-  00:30 on 11-01 are both 05:30 UTC (the first 01:30), 26:30 on 10-31 is
-  06:30 UTC (the second 01:30), 02:30 on 03-08 is 06:30 UTC (01:30 EST),
-  and 26:30 on 03-07 is 07:30 UTC (03:30 EDT). A realtime `009000` seen
-  at 01:31 on 03-08 hits the 25:30 trip of 03-07, 60 s off, and the same
-  trip of 03-08 more than 12 h off.
-- **Size per day** (bytes gzipped / uncompressed, trips, stop times):
+- **Wrap and DST.** Tested on a synthetic network on real DST nights, the
+  2026 fall back and the 2027 spring forward. Fall back: 00:14 on 11-01 is
+  04:14 UTC; 01:30 on 11-01 and 25:30 on 10-31 are both 05:30 UTC (the
+  first 01:30); a trip departing 01:59 on 11-01 reaches its 02:01 stop at
+  06:01 UTC and is flagged `spans_dst_transition`; 26:30 on 10-31 is 07:30
+  UTC (02:30 EST); at 06:31 UTC (the second 01:31) no trip is in service.
+  Spring forward: on 2027-03-14 01:59 is 06:59 UTC with its later stops at
+  07:01 and 07:03 UTC (flagged), and 03:00 is 07:00 UTC; trips departing
+  02:30 on 03-14 and 26:30 on 03-13 are unresolved (null, in no
+  `stop_times` and no supply minute); resolved times keep schedule order.
+  A realtime `009000` seen at 01:31 on 2027-03-14 hits, wrapped, the 25:30
+  trip of 03-13, 60 s off, and the same trip of 03-14 more than 12 h off.
+- **What the wall clock changes on the mirrored layer-1 root** (every
+  active stop time of every service day of the three builds, against
+  `instant_of`): 10-31 (both summer builds), 175 of 169,429 move +3,600 s
+  (the 3 trips departing at 26:xx); 11-01 (`2c06219240445181`), 4,887 of
+  154,778 move −3,600 s (190 trips departing before 02:00). The same build
+  also covers the 2027 spring forward: on 03-13, 175 stop times of 3
+  trips are unresolved; on 03-14, 4,887 move +3,600 s and 3,572 of 127
+  trips are unresolved. No other date changes. Trips flagged
+  `spans_dst_transition`: 32 on 10-31 and 03-13, 77 on 11-01 and 03-14.
+- **Replay on 11-01** (gate matches of 10-31 and 11-01, throwaway script):
+  of 72 id-tier runs whose trip departs before 02:00 and runs past it, the
+  first stop seen after 02:00 is within 15 minutes of the anchored
+  schedule for 61, against 47 with each stop placed on the wall clock
+  separately.
+- **Size per day** at index version 3 (bytes gzipped / uncompressed,
+  trips, stop times):
 
   | Day | `2faf6350456df7f6` | `606d9f640f5aad67` |
   |---|---|---|
-  | Weekday (09-15) | 637,569 / 5,176,289; 8,497; 238,724 | 637,590 / 5,179,827; 8,497; 238,724 |
-  | Saturday (09-19) | 406,261 / 3,794,851; 6,186; 169,429 | 406,250 / 3,796,271; 6,186; 169,429 |
-  | Sunday (09-20) | 376,730 / 3,443,280; 5,626; 154,778 | 376,735 / 3,444,468; 5,626; 154,778 |
-  | Labor Day (09-07) | 378,259 / 3,444,217; 5,626; 155,037 | 378,274 / 3,445,697; 5,626; 155,037 |
-  | Added Saturday (07-03) | 408,442 / 3,795,871; 6,186; 169,772 | 408,432 / 3,797,623; 6,186; 169,772 |
+  | Weekday (09-15) | 638,065 / 5,422,795; 8,497; 238,724 | 638,077 / 5,426,333; 8,497; 238,724 |
+  | Saturday (09-19) | 406,538 / 3,974,338; 6,186; 169,429 | 406,535 / 3,975,758; 6,186; 169,429 |
+  | Sunday (09-20) | 376,997 / 3,606,527; 5,626; 154,778 | 376,999 / 3,607,715; 5,626; 154,778 |
+  | Labor Day (09-07) | 378,601 / 3,607,464; 5,626; 155,037 | 378,603 / 3,608,944; 5,626; 155,037 |
+  | Added Saturday (07-03) | 408,803 / 3,975,358; 6,186; 169,772 | 408,800 / 3,977,110; 6,186; 169,772 |
 
   Every index also holds 218 patterns, 992 platforms and 30 `RouteFeed`
   keys; supply covers 37,406 route-minutes on a weekday. The builds differ
@@ -1587,8 +1652,10 @@ contracts slice proceeds unchanged.
      - a run cut by the input window gives `window_end`;
      - an unmatched run seen at 00:30 gets its `id_origin` date with
        `service_date_ambiguous`;
-     - **DST**: trips on 2026-11-01 and 2026-03-08 service days, including
-       one past 24:00, get the instants that `instant_of` defines, and are
+     - **DST**: trips on the 2026-11-01 and 2027-03-14 service days and
+       the days before, including ones past 24:00, get the anchored
+       wall-clock instants of §2.4 (unresolved when departing in the
+       spring-forward gap), and are
        matched on the right day;
    - a rebuild is byte-identical.
 5. **Stop events, traversals and dwell** (per-family rules, service
@@ -2293,6 +2360,12 @@ minus the `instant_of` instant at the first common stop:
   - In the repeated hour use the first occurrence, as the feed did.
   - Keep `instant_of` only where the GTFS definition is needed.
   - The spring-forward night (03-08) is not measured.
+  - Decided on 2026-11-03 and built in index version 3 (§2.4), as a
+    matching convention in the match index rather than a change to layer
+    1's builds. After review, trips are anchored at their first departure
+    and run on by elapsed time, since trains ran straight through the
+    change; trips departing at a spring-forward time that does not exist
+    are unresolved until a spring-forward night is measured.
 
 **Coverage on the new days** (combined rule):
 - **10-24:** 1,440 invocations, none missing. 5–7 late gaps of 121–147 s

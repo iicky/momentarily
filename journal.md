@@ -11330,3 +11330,46 @@ A/B results".
     in the 01:00 ET hour match.
 - 10-25 lost 41 minutes of invocations, which gave 4,352–4,356 s of
   `no_invocation` per feed. On 11-01 coverage around 06:00 UTC is clean.
+
+## 2026-11-03 match-index-wall-clock-dst
+
+origin: agent
+
+The match index now places scheduled times on the New York wall clock
+(index version 3). Measured against `instant_of` on the mirrored layer-1
+root, over every active stop time of every service day of the three builds:
+
+- 10-31, both summer builds: 840 of 169,429 stop times move +3,600 s (682
+  at 26:xx, 158 at 27:xx). The H, SI, Z, 7X and FX trips have none, so the
+  prototype-agreement digests for 10-31 are unchanged.
+- 11-01, `2c06219240445181`: 3,394 of 154,778 move −3,600 s (1,003 at
+  00:xx, 2,391 at 01:xx).
+- Not obvious: the same build runs to 2027-05-15, so it already covers the
+  2027 spring forward. On 03-13, 158 at 27:xx move −3,600 s and 682 at
+  26:xx are unresolved. On 03-14, 3,394 at 00:xx–01:xx move +3,600 s and
+  3,067 at 02:xx are unresolved. No other date changes.
+- On the fall-back night, a trip that runs through 02:00 gets an hour
+  between its 01:59 (EDT) and 02:01 (EST) stops, so its supply span covers
+  the repeated hour.
+
+## 2026-11-03 match-index-wall-clock-dst-correction
+
+origin: agent
+
+Correction to `match-index-wall-clock-dst` above. Review measured that
+trains spanning the 11-01 fall-back ran straight through it (69 of 71
+events crossing 02:00 within 600 s of the scheduled run time). Placing each
+stop on the wall clock separately put a false one-hour gap inside those
+trips. The index now anchors each trip at its first departure on the wall
+clock and places later stops by elapsed scheduled time. A trip departing in
+the spring-forward gap is unresolved as a whole.
+
+- Changed against `instant_of`: 10-31, 175 stop times of 3 trips (+3,600 s),
+  not 840; 11-01, 4,887 of 190 trips (−3,600 s), not 3,394. On 2027-03-13,
+  175 stop times of 3 trips are unresolved; on 03-14, 4,887 move +3,600 s
+  and 3,572 of 127 trips are unresolved.
+- Trips flagged `spans_dst_transition`: 32 on 10-31 and 03-13, 77 on 11-01
+  and 03-14.
+- Replay of 72 id-tier runs crossing 02:00 on 11-01: the first stop after
+  02:00 is within 15 min for 61 when the trip is anchored, against 47 when
+  each stop is placed on the wall clock.

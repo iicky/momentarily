@@ -8,7 +8,11 @@ Time
     1st's service day.
   * ``GtfsSeconds`` — seconds after "noon minus 12 h" on the service day (the
     GTFS rule, which keeps the arithmetic right across DST changes). Values at
-    or past 86400 are legal: 24:04:00 is 86640.
+    or past 86400 are legal: 24:04:00 is 86640. ``instant_of`` places them by
+    that rule. Trip matching anchors each trip's first departure on the local
+    wall clock instead (``wall_instant_of``), because the realtime feeds start
+    trips on it, and places the trip's other stops by elapsed scheduled time;
+    the two agree except on DST nights.
 
 Intervals
   Every range is half-open, ``[start, end)``: ``start`` is included and
@@ -25,7 +29,7 @@ Missing data
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Annotated, Any, ClassVar, Literal
 from zoneinfo import ZoneInfo
 
@@ -70,6 +74,32 @@ def instant_of(service_date: str, gtfs_seconds: int, tz: str) -> int:
     day = date.fromisoformat(service_date)
     noon = datetime.combine(day, time(12), tzinfo=ZoneInfo(tz))
     return int(noon.timestamp()) - 43200 + gtfs_seconds
+
+
+# Bump when wall_instant_of's rule changes (for example the spring-forward
+# rule, once a spring-forward night has been measured).
+WALL_CLOCK_VERSION = 1
+
+
+def wall_instant_of(service_date: str, gtfs_seconds: int, tz: str) -> int | None:
+    """The Instant of ``gtfs_seconds`` on a service day, read as wall time.
+
+    The time is the service date's local midnight plus ``gtfs_seconds`` as
+    wall-clock time; 24:00 or later rolls into the next calendar date the same
+    way. A wall time that occurs twice (the repeated hour when clocks fall
+    back) is its first occurrence. A wall time that does not exist (the hour
+    skipped when clocks spring forward) is unresolved: None, never clamped.
+    Version ``WALL_CLOCK_VERSION``.
+    """
+    days, rest = divmod(gtfs_seconds, 86400)
+    wall = datetime.combine(
+        date.fromisoformat(service_date) + timedelta(days=days), time()
+    ) + timedelta(seconds=rest)
+    zone = ZoneInfo(tz)
+    instant = int(wall.replace(tzinfo=zone, fold=0).timestamp())
+    if datetime.fromtimestamp(instant, zone).replace(tzinfo=None) != wall:
+        return None
+    return instant
 
 
 class ContractDefaultError(TypeError):

@@ -32,6 +32,7 @@ import gzip
 import io
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,9 +65,11 @@ from momentarily.model.observations.contracts import GtfsRtSource
 SCHEMA_ID = "events/s1"
 
 # Bump whenever a change alters the index built from the same inputs.
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 
-BuildBasis = Literal["verified", "inferred", "explicit"]
+BuildBasis = Literal[
+    "live", "live_inferred", "previous_covering", "covering_unmapped", "explicit"
+]
 
 
 class MatchIndexBuildError(ValueError):
@@ -130,8 +133,10 @@ class MatchIndexMetadata(Model):
     feed_id: str
     build_basis: BuildBasis = Field(
         description=(
-            "How the build was chosen: the day map's verified feed, its "
-            "inferred feed, or named by the caller."
+            "How the build was chosen: the feed the day map gives as live "
+            "(verified, or inferred), an earlier-published feed because the "
+            "live one schedules nothing that day, the latest feed published "
+            "by a day the map names no feed for, or named by the caller."
         )
     )
     day_type: DayType
@@ -160,18 +165,51 @@ class BuildChoice:
     basis: BuildBasis
 
 
+def schedules(net: NetworkSnapshot, service_date: str) -> bool:
+    """Whether the build has a service running on ``service_date``, from its
+    calendar (``service_days``), not from feed_info's declared dates."""
+    return any(
+        d.date == service_date and d.active_service_ids for d in net.service_days
+    )
+
+
+def publication_order(day_map: DayFeedMap) -> dict[str, str]:
+    """Every feed the day map names (``feed_id`` or ``inferred_feed_id``),
+    mapped to the first UTC day it names it, in that order. A day names at
+    most one feed, so the order is total."""
+    first: dict[str, str] = {}
+    for day in sorted(day_map.days):
+        entry = day_map.days[day]
+        feed = entry.feed_id or entry.inferred_feed_id
+        if feed is not None and feed not in first:
+            first[feed] = day
+    return first
+
+
 def select_build(
     service_date: str,
     index: NetworkIndex,
     day_map: DayFeedMap | None,
     build_id: str | None = None,
+    *,
+    snapshot: Callable[[str], NetworkSnapshot],
 ) -> BuildChoice:
-    """The layer-1 build for a service day.
+    """The layer-1 build that schedules a service day.
 
-    With ``build_id``, that build. Otherwise the feed the day map gives the
-    UTC day of the same date: its verified ``feed_id``, else its
-    ``inferred_feed_id``. A service day runs from about 04:00 UTC on its date
-    to about 08:00 UTC the next day, so that UTC day holds most of it.
+    The day map answers which feed was live on a UTC day; this answers which
+    build schedules a service date. With ``build_id``, that build. Otherwise
+    the feed the day map gives the UTC day of the same date (its verified
+    ``feed_id``, else its ``inferred_feed_id``), when its calendar has
+    service that day (basis ``live`` or ``live_inferred``). A service day
+    runs from about 04:00 UTC on its date to about 08:00 UTC the next day,
+    so that UTC day holds most of it. The MTA publishes a feed days before
+    its calendar starts, so the live feed may schedule nothing yet; then the
+    most recently published earlier built feed whose calendar has service
+    that day (``previous_covering``). A day the map names no feed for (a
+    mid-day change, or unverified with no lead) takes the most recently
+    published built feed first named on or before that day whose calendar
+    has service that day (``covering_unmapped``). Publication order is
+    ``publication_order``. ``snapshot`` loads the build of a feed_id.
     """
     if build_id is not None:
         found = [(fid, e) for fid, e in index.feeds.items() if e.build_id == build_id]
@@ -183,18 +221,55 @@ def select_build(
     entry = day_map.days.get(service_date)
     if entry is None:
         raise MatchIndexBuildError([f"day map has no entry for {service_date}"])
+    published = publication_order(day_map)
+
+    def latest_covering(candidates: list[str]) -> tuple[str, str] | None:
+        for feed_id in reversed(candidates):
+            built = index.feeds.get(feed_id)
+            if built is None:
+                raise MatchIndexBuildError(
+                    [
+                        f"feed {feed_id}, a candidate for {service_date}, is not "
+                        "built, so whether it schedules that day is unknown"
+                    ]
+                )
+            if schedules(snapshot(feed_id), service_date):
+                return feed_id, built.build_id
+        return None
+
+    basis: BuildBasis
     if entry.feed_id is not None:
-        feed_id, basis = entry.feed_id, "verified"
+        live, basis = entry.feed_id, "live"
     elif entry.inferred_feed_id is not None:
-        feed_id, basis = entry.inferred_feed_id, "inferred"
+        live, basis = entry.inferred_feed_id, "live_inferred"
     else:
-        raise MatchIndexBuildError(
-            [f"day map names no feed for {service_date}: {entry.reason}"]
+        found_unmapped = latest_covering(
+            [f for f, first in published.items() if first <= service_date]
         )
-    built = index.feeds.get(feed_id)
+        if found_unmapped is None:
+            raise MatchIndexBuildError(
+                [
+                    f"day map names no feed for {service_date} ({entry.reason}) "
+                    "and no built feed published by then schedules it"
+                ]
+            )
+        return BuildChoice(*found_unmapped, "covering_unmapped")
+    built = index.feeds.get(live)
     if built is None:
-        raise MatchIndexBuildError([f"feed {feed_id} of {service_date} is not built"])
-    return BuildChoice(feed_id, built.build_id, basis)
+        raise MatchIndexBuildError([f"feed {live} of {service_date} is not built"])
+    if schedules(snapshot(live), service_date):
+        return BuildChoice(live, built.build_id, basis)
+    order = list(published)
+    found_earlier = latest_covering(order[: order.index(live)])
+    if found_earlier is None:
+        raise MatchIndexBuildError(
+            [
+                f"no build schedules {service_date}: the live feed {live} "
+                f"(build {built.build_id}) has no service that day, nor has any "
+                "built feed published before it"
+            ]
+        )
+    return BuildChoice(*found_earlier, "previous_covering")
 
 
 def read_network_index(root: Path) -> NetworkIndex:
@@ -213,19 +288,17 @@ def read_day_map(path: Path) -> tuple[DayFeedMap, str]:
     return DayFeedMap.model_validate_json(raw), blake3.blake3(raw).hexdigest()
 
 
-def read_network(
-    root: Path, choice: BuildChoice, index: NetworkIndex
-) -> NetworkSnapshot:
-    """The build's snapshot from a layer-1 output directory, checked against
-    the index's ``content_digest``."""
-    path = root / f"{choice.build_id}.json.gz"
+def read_network(root: Path, feed_id: str, index: NetworkIndex) -> NetworkSnapshot:
+    """The build of ``feed_id`` from a layer-1 output directory, checked
+    against the index's ``content_digest``."""
+    entry = index.feeds[feed_id]
+    path = root / f"{entry.build_id}.json.gz"
     if not path.is_file():
         raise MatchIndexBuildError([f"no network build file {path}"])
     data = gzip.decompress(path.read_bytes())
-    expected = index.feeds[choice.feed_id].content_digest
-    if blake3.blake3(data).hexdigest() != expected:
+    if blake3.blake3(data).hexdigest() != entry.content_digest:
         raise MatchIndexBuildError(
-            [f"{choice.build_id}.json.gz does not match its index content_digest"]
+            [f"{entry.build_id}.json.gz does not match its index content_digest"]
         )
     return NetworkSnapshot.model_validate_json(data)
 

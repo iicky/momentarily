@@ -163,6 +163,21 @@ The nightly step runs even when an earlier step failed (`!cancelled()`),
 and resumes after the map's last day, so a missed night is caught up. It
 prints day lines, build ids and object keys only.
 
+## Live feed versus scheduling build
+
+The map records which feed was live (served by the MTA) on each UTC day; it
+is evidence and is never corrected afterwards. It does not say which build
+schedules a service date: the MTA publishes a feed days before its calendar
+starts. The fall 2026 pick (feed `acb12271…`, build `2c06219240445181`,
+service from 2026-11-01) was live from 10-29, so the map gives it for 10-29
+to 10-31, while only the previous feed (build `606d9f640f5aad67`, service
+through 10-31) schedules those days. A consumer that needs the build for a
+service date applies the rule in docs/model-events.md §10 ("As built (slice
+1)", Build choice): the live feed when its build has service that date,
+else the most recently published earlier build that has; on a day the map
+names no feed for, the most recently published build, among feeds first
+named by that day, that has service that date.
+
 ## Regenerating the contracts
 
 ```sh

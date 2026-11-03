@@ -496,7 +496,8 @@ def _day(feed_id: str | None, inferred: str | None) -> DayFeed:
 def test_select_build_reads_the_day_map_and_refuses_what_it_cannot_resolve(
     tmp_path: Path,
 ) -> None:
-    index = read_network_index(_root(tmp_path))
+    root = _root(tmp_path)
+    index = read_network_index(root)
     unbuilt = "f" * 64
     day_map = DayFeedMap(
         days={
@@ -506,24 +507,148 @@ def test_select_build_reads_the_day_map_and_refuses_what_it_cannot_resolve(
             "2026-08-02": _day(unbuilt, None),
         }
     )
-    assert select_build("2026-09-15", index, day_map) == BuildChoice(
-        NEW_FEED, "606d9f640f5aad67", "verified"
+
+    def snapshot(feed_id: str) -> NetworkSnapshot:
+        return read_network(root, feed_id, index)
+
+    def select(
+        service_date: str, dm: DayFeedMap | None, build: str | None = None
+    ) -> BuildChoice:
+        return select_build(service_date, index, dm, build, snapshot=snapshot)
+
+    assert select("2026-09-15", day_map) == BuildChoice(
+        NEW_FEED, "606d9f640f5aad67", "live"
     )
-    assert select_build("2026-08-26", index, day_map) == BuildChoice(
-        OLD_FEED, "2faf6350456df7f6", "inferred"
+    assert select("2026-08-26", day_map) == BuildChoice(
+        OLD_FEED, "2faf6350456df7f6", "live_inferred"
     )
-    assert select_build("2026-08-26", index, None, "606d9f640f5aad67") == BuildChoice(
+    assert select("2026-08-26", None, "606d9f640f5aad67") == BuildChoice(
         NEW_FEED, "606d9f640f5aad67", "explicit"
     )
     for service_date, dm, build in [
         ("2026-10-21", day_map, None),  # not in the map
-        ("2026-08-01", day_map, None),  # the map names no feed
+        ("2026-08-01", day_map, None),  # no map feed, and none published by then
         ("2026-08-02", day_map, None),  # the feed is not built
         ("2026-09-15", None, None),  # no map and no build named
         ("2026-09-15", day_map, "0000000000000000"),  # unknown build
     ]:
         with pytest.raises(MatchIndexBuildError):
-            select_build(service_date, index, dm, build)
+            select(service_date, dm, build)
+
+
+def test_a_feed_live_before_its_calendar_starts_leaves_those_days_to_the_previous_feed(
+    tmp_path: Path,
+) -> None:
+    # The new feed is live from 09-15 but its calendar starts on 09-18, as the
+    # MTA's fall 2026 pick was live from 10-29 with service from 11-01.
+    root = _root(tmp_path)
+    index = read_network_index(root)
+    old, _ = _network("2faf6350456df7f6")
+    full, _ = _network("606d9f640f5aad67")
+    new = full.model_copy(
+        update={
+            "service_days": [d for d in full.service_days if d.date >= "2026-09-18"]
+        }
+    )
+    nets = {OLD_FEED: old, NEW_FEED: new}
+    live = ["2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-11-05"]
+    day_map = DayFeedMap(
+        days={"2026-09-01": _day(OLD_FEED, None)}
+        | {d: _day(NEW_FEED, None) for d in live}
+    )
+    chosen = {
+        d: select_build(d, index, day_map, snapshot=nets.__getitem__) for d in live[:4]
+    }
+    assert chosen == {
+        "2026-09-15": BuildChoice(OLD_FEED, "2faf6350456df7f6", "previous_covering"),
+        "2026-09-16": BuildChoice(OLD_FEED, "2faf6350456df7f6", "previous_covering"),
+        "2026-09-17": BuildChoice(OLD_FEED, "2faf6350456df7f6", "previous_covering"),
+        "2026-09-18": BuildChoice(NEW_FEED, "606d9f640f5aad67", "live"),
+    }
+    # The chosen build really schedules the day it was chosen for.
+    assert _index(old, "2026-09-15").trips
+    # Neither build's calendar reaches 11-05.
+    with pytest.raises(MatchIndexBuildError):
+        select_build("2026-11-05", index, day_map, snapshot=nets.__getitem__)
+
+
+def test_the_fallback_skips_non_covering_feeds_and_refuses_an_unbuilt_one(
+    tmp_path: Path,
+) -> None:
+    # Three feeds: OLD schedules 09-15; MID and LATE start their calendars
+    # on 09-20. 09-15 is unverified with LATE as its lead.
+    index = read_network_index(_root(tmp_path))
+    old, _ = _network("2faf6350456df7f6")
+    full, _ = _network("606d9f640f5aad67")
+    later = full.model_copy(
+        update={
+            "service_days": [d for d in full.service_days if d.date >= "2026-09-20"]
+        }
+    )
+    mid_feed, late_feed = "a" * 64, "b" * 64
+    entry = index.feeds[NEW_FEED]
+    feeds = {
+        OLD_FEED: index.feeds[OLD_FEED],
+        mid_feed: entry.model_copy(update={"build_id": "1111111111111111"}),
+        late_feed: entry.model_copy(update={"build_id": "2222222222222222"}),
+    }
+    nets = {OLD_FEED: old, mid_feed: later, late_feed: later}
+    day_map = DayFeedMap(
+        days={
+            "2026-09-01": _day(OLD_FEED, None),
+            "2026-09-05": _day(mid_feed, None),
+            "2026-09-10": _day(late_feed, None),
+            "2026-09-15": _day(None, late_feed),
+        }
+    )
+
+    def select(feeds: dict[str, Any]) -> BuildChoice:
+        return select_build(
+            "2026-09-15",
+            index.model_copy(update={"feeds": feeds}),
+            day_map,
+            snapshot=nets.__getitem__,
+        )
+
+    assert select(feeds) == BuildChoice(
+        OLD_FEED, "2faf6350456df7f6", "previous_covering"
+    )
+    # MID unbuilt: it might schedule 09-15, so OLD is not taken in its place.
+    with pytest.raises(MatchIndexBuildError):
+        select({f: e for f, e in feeds.items() if f != mid_feed})
+
+
+def test_a_day_the_map_names_no_feed_for_takes_the_latest_feed_published_by_then(
+    tmp_path: Path,
+) -> None:
+    # 09-14 and 09-16 are mid-day changes (no feed in the map), like 10-28.
+    index = read_network_index(_root(tmp_path))
+    old, _ = _network("2faf6350456df7f6")
+    new, _ = _network("606d9f640f5aad67")
+    nets = {OLD_FEED: old, NEW_FEED: new}
+    unmapped = ["2026-08-31", "2026-09-14", "2026-09-16", "2026-11-05"]
+    day_map = DayFeedMap(
+        days={
+            "2026-09-01": _day(OLD_FEED, None),
+            "2026-09-15": _day(NEW_FEED, None),
+        }
+        | {d: _day(None, None) for d in unmapped}
+    )
+
+    def select(service_date: str) -> BuildChoice:
+        return select_build(service_date, index, day_map, snapshot=nets.__getitem__)
+
+    # Both builds schedule 09-14, but the new feed was first named on 09-15.
+    assert select("2026-09-14") == BuildChoice(
+        OLD_FEED, "2faf6350456df7f6", "covering_unmapped"
+    )
+    assert select("2026-09-16") == BuildChoice(
+        NEW_FEED, "606d9f640f5aad67", "covering_unmapped"
+    )
+    # No feed published by 08-31; no build's calendar reaches 11-05.
+    for service_date in ("2026-08-31", "2026-11-05"):
+        with pytest.raises(MatchIndexBuildError):
+            select(service_date)
 
 
 def test_missing_layer1_files_are_build_errors(tmp_path: Path) -> None:
@@ -535,7 +660,7 @@ def test_missing_layer1_files_are_build_errors(tmp_path: Path) -> None:
     (root / "2faf6350456df7f6.json.gz").unlink()
     index = read_network_index(root)
     with pytest.raises(MatchIndexBuildError):
-        read_network(root, BuildChoice(OLD_FEED, "2faf6350456df7f6", "explicit"), index)
+        read_network(root, OLD_FEED, index)
     argv = ["match-index", "--network", str(tmp_path / "none"), "--date", "2026-09-15"]
     assert events_main([*argv, "--out", str(tmp_path / "o")]) == 1
 

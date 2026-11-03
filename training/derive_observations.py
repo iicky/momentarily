@@ -23,9 +23,14 @@ from training.r2_client import get_object_bytes, load_config, make_client
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
+# PreconditionFailed: the key exists. ConditionalRequestConflict: another
+# conditional write of the key is in flight.
+_NOT_NEW = frozenset({"PreconditionFailed", "412", "ConditionalRequestConflict"})
+
 
 class R2Storage:
-    """The derive job's ``Storage`` over one R2 bucket."""
+    """``Storage`` over one R2 bucket, for the derive job and the legacy
+    backfill (``training.legacy_backfill``)."""
 
     def __init__(self, client: S3Client, bucket: str) -> None:
         self._client = client
@@ -54,6 +59,25 @@ class R2Storage:
             Body=data,
             ContentType="application/vnd.apache.parquet",
         )
+
+    def put_new(self, key: str, data: bytes) -> bool:
+        # A conditional put: R2 refuses it (412) when the key exists, so a
+        # file written since the caller looked is never replaced.
+        try:
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=key,
+                Body=data,
+                ContentType="application/vnd.apache.parquet",
+                IfNoneMatch="*",
+            )
+        except ClientError as err:
+            code = err.response.get("Error", {}).get("Code")
+            status = err.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code in _NOT_NEW or status in (409, 412):
+                return False
+            raise
+        return True
 
     def delete(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)

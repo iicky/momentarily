@@ -11148,3 +11148,185 @@ derived file (the archive objects stay). Dropping the recorder's own first
 minutes (03:57–03:59) loses 3 more `alerts` versions, all gone at 04:00:21,
 and the rebuilt 10-21 index has 1,899 rows instead of 1,905. Of the 176
 `alerts` versions present at 04:00, 151 are also in an earlier legacy file.
+
+## 2026-11-02 legacy-trace-crosses-midnight
+
+origin: agent
+
+A legacy `archive/trace` object is filed under the UTC day of its
+`scheduled_at`, but its vehicles and fetch outcomes carry `observed_at`.
+A minute scheduled at 23:59:40 and observed at 00:00:10 therefore fills the
+next day's hour-00 `vehicle` file and its daily `legacy_fetch_outcome` file.
+A backfill over a day range that simply flushes everything at the end
+writes a partial next-day file, and the run that later covers that day sees
+different bytes and reports a conflict. The ranged backfill reads the trace
+objects of the hour before its first day and, when given a last day, leaves
+files after it unwritten. Timing on a synthetic full trace day (1,440
+objects, 619,200 vehicle rows, M-series laptop): 63 s to write, 67 s for a
+rerun that skips every file, because the skip still renders each file to
+compare bytes.
+## 2026-11-02 live-feed-is-not-the-scheduling-feed
+
+origin: agent
+
+A feed being live does not mean it schedules the day. The MTA's fall 2026
+pick (build `2c06219240445181`, `feed_info` 2026-11-01..2027-05-16) was
+served from 2026-10-28 and is the day map's verified feed for 10-29, 10-30
+and 10-31, but its `service_days` start on 11-01. The previous feed (build
+`606d9f640f5aad67`, service days 2026-05-26..10-31) is the only build that
+schedules those three days: taking the build straight from the day map gave
+no service day at all for them. Choosing by calendar coverage, with the
+previous feed as fallback, gives 8,497 trips on 10-29 and 10-30 and 6,186 on
+Saturday 10-31 from `606d9f640f5aad67`, then 5,626 on Sunday 11-01 from
+`2c06219240445181`. 10-28 itself has no map feed (the HEAD ETag alternated
+between the two feeds about every minute from 1793205619 on), so it still
+needs a named build.
+
+## 2026-11-02 unmapped-days-resolve-by-coverage
+
+origin: agent
+
+Correction to the entry above: 10-28 no longer needs a named build. A day
+the map names no feed for now takes the most recently published built feed
+first named by that day whose calendar has service that date. On the
+mirrored root 10-28 gets `606d9f640f5aad67` (8,497 trips): the fall pick
+was first named on 10-29, and its calendar starts 11-01 anyway.
+## 2026-10-21 events-layer-gates-first-raw-day
+
+origin: artifact
+
+Gates A and B of the events plan (§10) ran on the first recorded raw UTC
+day, 2026-10-21 (service day 10-21 from 00:00 to 20:00 ET). Results are in
+`docs/model-events.md`, "Gate A/B results".
+
+- Matching: 7,550 runs. 97.25% match independently, and 94.49% with
+  min-cost one-to-one tier 5 (greedy 94.26%).
+- The coverage rule misses two of the day's three transport events:
+  - the missing 19:03 invocation leaves a gap of exactly 120 s, so 7 of 8
+    feeds read `covered`;
+  - the 19:34 invocation whose bundle was not stored has no state of its
+    own. The plan's states would call it `no_invocation`.
+  - The frozen-feed start (stale header 03:57–04:37 UTC on six feeds) is
+    classified as planned.
+- Negative results:
+  - The withheld-input identity probe matches 70.0% of 6,234 labelled runs
+    to the right trip (`l` 23%, `numbered` 63%). 615 of the 1,289 wrong
+    runs lost a nearer trip to the maximum-cardinality cascade.
+  - Anchoring the time check past the origin terminal and allowing
+    "unassigned" at 600 s raises it to 82.6%.
+  - Status does not separate a stop from a pass-through on `ace`, `bdfm`,
+    `jz`, `nqrw`, `si` and `g`: 100% of interior stop blocks are
+    STOPPED_AT. Those feeds report only stops the trip update plans.
+  - Arrival bounds ≤ 60 s are only about 65% on recorder data (legacy:
+    89–98%). Fetch-finish jitter causes it, and the p50 stays 60 s.
+
+## 2026-10-21 events-layer-gate-b-correction
+
+origin: artifact
+
+Correction to `events-layer-gates-first-raw-day` above. Its Gate B line
+("status does not separate a stop from a pass-through") rests on a
+statistic that is true by construction: "last"-family feeds report every
+stop as STOPPED_AT. The informative test is reports at stops that the
+pattern skips: 0.25–1.9% per skipped stop passed on the B division and 0%
+on `si`. Only 3 of those reports fall at stops that the trip update also
+skips. So these feeds do not report planned passes. An unplanned pass of
+a stop the trip update lists cannot be tested. `g` has no express hops.
+`numbered` and `l` show no clear difference either: 1.3% of skipped stops
+are reported, and their never-stopped blocks are 83% and 93% single polls.
+The proposal is now a distinct evidence value for the B division and
+`si`, and `stopped` for `numbered` and `l`.
+
+## 2026-10-22 events-layer-owner-decisions-and-skip-signals
+
+origin: artifact
+
+The owner decided three things on 2026-10-22: decision 5 now uses min-cost
+assignment with a 900 s leave-unassigned cost, timed after the pattern
+origin; B-division and `si` service evidence is `reported_planned`, weaker
+than `stopped`; and raw lineage replaces legacy at 2026-10-21T04:00Z.
+
+Negative result, on 10-21: no feed signal detects a B-division or `si`
+train that skips a stop its trip update still lists.
+- `nyct_actual_track` never differs from `nyct_scheduled_track` on the six
+  "last" feeds (0 of 4.07 million stop-time updates). Track changes are
+  replans, with both fields changing together.
+- A stop dropped from the trip update more than 60 s before its predicted
+  time is a planned skip: 595 of 620 mid-list drops are never reported.
+- 1.3–3.5% of planned stops are passed unreported while still listed.
+  Their A→C time is 58 s shorter than stoppers', which is one poll
+  interval and comes from the selection, not from a skipped dwell.
+
+## 2026-10-22 events-layer-skip-runtime-correction
+
+origin: artifact
+
+Correction to `events-layer-owner-decisions-and-skip-signals` above. The
+58 s faster A→C time of listed-until-passing stops is not shown to be pure
+selection. 64% of those hops are 30 s or more below the stopper median,
+against 20% of stoppers. At 60 s polling, a real skip cannot be told apart
+from a short dwell missed between polls. With no ground truth, the
+precision and recall of any skip detector cannot be measured. The
+conclusion stands: no live signal for unplanned skips.
+
+## 2026-10-22 events-layer-gates-first-full-day
+
+origin: artifact
+
+Gates A and B ran again on 2026-10-22, the first complete recorded UTC day.
+Results are in `docs/model-events.md`, "Gate A/B results". No further
+contract change came out of it.
+
+- Matching: 8,848 runs. 96.21% match independently and 94.35% with
+  maximum cardinality. The accepted decision-5 matcher gives 94.21%.
+- With the accepted matcher the identity probe is 83.1% accurate, at 92.3%
+  precision; maximum cardinality gives 68.7%.
+- Coverage: three 2-minute holes with no invocation (09:21, 19:14 and
+  21:41 UTC), one lost bundle (15:52), and 15 late-invocation gaps of
+  121–179 s. No stale header. No uncovered stretch comes from train
+  counts.
+- Midnight: across both days as one window, 174 runs cross local
+  midnight, and 142 of them match service day 10-21. 38 wrapped ids
+  correctly match 10-21. `start_date` agrees for 464 of 468 runs first
+  seen 00:00–04:00 ET.
+- Negative results:
+  - `nyct_actual_track` again never differs from `nyct_scheduled_track`
+    on the "last" feeds (0 of about 4.78 million updates).
+  - `nqrw` reported 122 of 1,676 skipped stops (7.3%, against 0.66% on
+    10-21). 121 of them were in the trip update, so it was replanned local
+    running, not unplanned skips.
+  - The `id_origin` rule is wrong for 11.5% of matched runs first seen
+    00:00–04:00 ET.
+
+## 2026-10-22 events-layer-first-full-day-gap-count
+
+origin: artifact
+
+Correction to `events-layer-gates-first-full-day` above. 10-22 had 17
+late-invocation gaps of 121–179 s, not 15. 14 of them hit all 8 feeds,
+one hit 7, one hit 5 and one only `ace`.
+
+## 2026-10-22 events-layer-gates-weekend-and-dst
+
+origin: artifact
+
+Gate A and coverage ran on 10-24 (Sat), 10-25 (Sun), 11-01 (DST
+fall-back) and 11-02 (Mon). Results are in `docs/model-events.md`, "Gate
+A/B results".
+
+- Match rate (min-cost, maximum cardinality): 10-24 90.83%, 10-25 88.04%,
+  11-01 92.78%, 11-02 96.58%. Weekend misses cluster on the 4, G, M, D and
+  GS.
+- The day map gives feed `acb12271` for 10-29 to 10-31, but its calendar
+  starts on 11-01. The match-index CLI therefore fails for those dates
+  unless a build is named.
+- Negative result: on the DST night NYCT runs scheduled times on the local
+  wall clock, not on the GTFS noon − 12 h origin that `instant_of` uses.
+  - Id-tier trips scheduled 00:00–01:59 on 11-01 are seen a median 3,600 s
+    early (159 runs).
+  - 10-31's 26:xx trips are seen 3,600 s late (2 runs).
+  - From 02:00 the two agree.
+  - Tier 5 cannot match the affected trips. Only 144 of 238 runs first seen
+    in the 01:00 ET hour match.
+- 10-25 lost 41 minutes of invocations, which gave 4,352–4,356 s of
+  `no_invocation` per feed. On 11-01 coverage around 06:00 UTC is clean.

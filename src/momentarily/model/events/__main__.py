@@ -6,7 +6,9 @@
 
 ``--network`` is a layer-1 output directory (``index.json``,
 ``<build_id>.json.gz``, and by default ``day_feed_map.json``). The build of
-each date comes from the day map unless ``--build-id`` names one. Each index
+each date is the live feed's per the day map, or an earlier one when the live
+feed schedules nothing that day (``match_index.select_build``), unless
+``--build-id`` names one. Each index
 is written to ``<out>/<key>`` (see ``keys``), and one JSON line per date is
 printed: key, the built index's bytes and uncompressed bytes, entry counts, and the outcome
 (``written``, ``unchanged``, ``replaced`` or ``conflict``; see
@@ -54,13 +56,20 @@ def _cmd_match_index(args: argparse.Namespace) -> int:
     route_feed, route_feed_digest = load_route_feed()
     code = code_provenance()
     networks: dict[str, NetworkSnapshot] = {}
+
+    def snapshot(feed_id: str) -> NetworkSnapshot:
+        net = networks.get(feed_id)
+        if net is None:
+            net = networks[feed_id] = read_network(root, feed_id, index)
+        return net
+
     status = 0
     for service_date in args.dates:
         try:
-            choice = select_build(service_date, index, day_map, args.build_id)
-            net = networks.get(choice.build_id)
-            if net is None:
-                net = networks[choice.build_id] = read_network(root, choice, index)
+            choice = select_build(
+                service_date, index, day_map, args.build_id, snapshot=snapshot
+            )
+            net = snapshot(choice.feed_id)
             doc = build_match_index(
                 service_date,
                 IndexInputs(

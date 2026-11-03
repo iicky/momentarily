@@ -290,6 +290,40 @@ def test_scripted_fetch_failure_missing_tick_and_stale_header(
     }
 
 
+def _ace(slots: list[int], ats: list[int]) -> list[tuple[int, int, str]]:
+    """``ace``'s stretches over the hour from ``D0`` when good fetches finish
+    at ``ats`` and invocations were recorded for ``slots``."""
+    evidence = coverage_module.Evidence(
+        "raw",
+        (D0, D0 + 3600),
+        sorted(set(slots)),
+        {"ace": [coverage_module.Poll(at, "good") for at in sorted(ats)]},
+    )
+    records, _ = coverage_module.coverage_intervals(evidence)
+    return _feed(records, "ace")[1:-1]
+
+
+def test_a_late_retry_fills_no_slot_before_its_own_fetches() -> None:
+    """Slot 5 (00:05:19) never ran on time, and its fetches around it are
+    120 s apart. A retry of it 40 minutes later finishes in slot 45: it fills
+    that slot's window, never slot 5's, so the hole stays no_invocation. A
+    late fetch of slot 1 that finishes inside slot 5's window does fill it."""
+    slots = [D0 + 19 + 60 * k for k in range(60)]
+    on_time = [s + 2 for s in slots]
+    hole = (on_time[4], on_time[6], "no_invocation")
+    never = [t for k, t in enumerate(on_time) if k != 5]
+    assert hole in _ace([s for k, s in enumerate(slots) if k != 5], never)
+    retried = [*never, slots[5] + 2402]
+    assert hole in _ace(slots, retried)
+    # A retry of slot 1, 250 s late, finishes 10 s into slot 5's window.
+    filled = [*never, slots[1] + 250]
+    assert {s for _, _, s in _ace(slots, filled)} == {"covered"}
+    # Slot 5 started 61 s late and finished after slot 6's fetch: its own
+    # window held no fetch, so the 120 s between its neighbours is a hole.
+    late = [*never, slots[5] + 64]
+    assert hole in _ace(slots, late)
+
+
 def test_every_record_holds_its_fetches_and_the_day_is_tiled(
     scripted: Path, tmp_path: Path
 ) -> None:
@@ -514,11 +548,35 @@ def test_a_stationary_fresh_feed_gives_suspect_stale_only(tmp_path: Path) -> Non
     assert report.feeds["numbered"].uncovered_s == 0
 
 
-def test_an_hour_of_rowless_trace_objects_has_no_vehicle_file_and_stays_covered(
+def test_a_missing_vehicle_hour_fails_instead_of_reading_as_empty_polls(
+    tmp_path: Path,
+) -> None:
+    """A lost vehicle file must not turn the frozen run's suspect_stale into
+    covered: layer 2 records no hour as holding zero rows, so an hour with a
+    fresh trace object needs its file, and nothing is written without it."""
+    mirror = tmp_path / "mirror"
+    for k in range(6):
+        at = L0 + 60 * k
+        ts, stop = (L0 + 30, "R01S") if 1 <= k <= 4 else (at - 10, f"R0{k}S")
+        _trace(mirror, k, [_row("070000_1..S03R", stop, ts)], ALL_FEEDS)
+    store = tmp_path / "store"
+    legacy_run.run(LocalStorage(mirror), LocalStorage(store), *CODE)
+    key = DerivedHourKey("vehicle", L0).key
+    (store / key).unlink()
+    out = tmp_path / "out"
+    report = _build(store, out, LEGACY_DAY, "legacy")
+    assert report.failed
+    assert [p.key for p in report.missing_inputs] == [key]
+    assert not (out / UtcDayKey("legacy", "coverage", LEGACY_DAY).key).exists()
+
+
+def test_an_hour_of_rowless_trace_objects_is_a_missing_input(
     tmp_path: Path,
 ) -> None:
     """The backfill writes no vehicle file for an hour whose trace objects
-    hold no rows at all; those objects are fresh, empty polls."""
+    hold no rows at all. Coverage cannot tell that from a lost file, so the
+    hour is a missing input. An hour whose objects hold no fresh feed needs
+    no file: its polls are failed fetches, whatever their rows."""
     mirror = tmp_path / "mirror"
     for k in range(-3, 3):  # 11:57 to 12:02; hour 11 holds rows, hour 12 none
         rows = (
@@ -527,17 +585,24 @@ def test_an_hour_of_rowless_trace_objects_has_no_vehicle_file_and_stays_covered(
         _trace(mirror, k, rows, ALL_FEEDS)
     store = tmp_path / "store"
     legacy_run.run(LocalStorage(mirror), LocalStorage(store), *CODE)
-    assert not (store / DerivedHourKey("vehicle", L0).key).exists()
-    out = tmp_path / "out"
-    report = _build(store, out, LEGACY_DAY, "legacy")
+    key = DerivedHourKey("vehicle", L0).key
+    assert not (store / key).exists()
+    report = _build(store, tmp_path / "out", LEGACY_DAY, "legacy")
+    assert [p.key for p in report.missing_inputs] == [key]
+
+    mirror2, store2 = tmp_path / "mirror2", tmp_path / "store2"
+    for k in range(-3, 3):
+        rows = (
+            [_row("072000_A..S55R", f"A{20 + k}S", L0 + 60 * k - 20)] if k < 0 else []
+        )
+        _trace(mirror2, k, rows, ALL_FEEDS if k < 0 else [])
+    legacy_run.run(LocalStorage(mirror2), LocalStorage(store2), *CODE)
+    report = _build(store2, tmp_path / "out2", LEGACY_DAY, "legacy")
     assert not report.failed, report
     t = [L0 + 60 * k for k in range(-3, 3)]
-    for feed in ("ace", "g"):
-        assert _feed(_intervals(out, "legacy", LEGACY_DAY), feed)[1] == (
-            t[0],
-            t[-1],
-            "covered",
-        )
+    assert (t[-4], t[-1], "fetch_failed") in _feed(
+        _intervals(tmp_path / "out2", "legacy", LEGACY_DAY), "ace"
+    )
 
 
 # --- the writer --------------------------------------------------------------------
@@ -550,12 +615,31 @@ def test_a_new_builder_version_replaces_the_stored_file(
     key = UtcDayKey("raw", "coverage", DAY).key
     _build(scripted, out, DAY, "raw")
     before = (out / key).read_bytes()
-    monkeypatch.setattr(coverage_module, "COVERAGE_VERSION", 2)
+    newer = coverage_module.COVERAGE_VERSION + 1
+    monkeypatch.setattr(coverage_module, "COVERAGE_VERSION", newer)
     report = _build(scripted, out, DAY, "raw")
     assert (report.outcome, report.failed) == ("replaced", False)
     _, meta = read_records((out / key).read_bytes(), CoverageInterval)
-    assert meta.builder_version == 2
+    assert meta.builder_version == newer
     assert (out / key).read_bytes() != before
+
+
+def test_an_older_builder_never_replaces_a_newer_file(
+    scripted: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rollback or an old checkout runs the same command: the newer
+    builder's file stays, with or without ``overwrite``."""
+    out = tmp_path / "out"
+    key = UtcDayKey("raw", "coverage", DAY).key
+    current = coverage_module.COVERAGE_VERSION
+    monkeypatch.setattr(coverage_module, "COVERAGE_VERSION", current + 1)
+    _build(scripted, out, DAY, "raw")
+    newer = (out / key).read_bytes()
+    monkeypatch.setattr(coverage_module, "COVERAGE_VERSION", current)
+    for overwrite in (False, True):
+        report = _build(scripted, out, DAY, "raw", overwrite=overwrite)
+        assert (report.outcome, report.failed) == ("conflict", True)
+        assert (out / key).read_bytes() == newer
 
 
 # sha256 of a layer-2 feed_header file written from the observation fixture

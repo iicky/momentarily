@@ -6,6 +6,15 @@
  * window-end tail and the next day's checkpoint of a nightly build). Never
  * a closed record. ``current_gap`` is finite at ``as_of``; ``eventual`` is
  * the still-open headway, right-censored from ``current_gap.lo``.
+ *
+ * ``current_gap`` is exact (§4): with the last passing in ``(after, by]``,
+ * ``lo = max(0, as_of - max(by, e))`` and ``hi = as_of - after - 1``, where
+ * ``e`` is ``uncovered_until`` (an uncovered interval of the feed ended
+ * after the last passing, so a train may have passed unseen) and drops
+ * out when null. ``scheduled_no_observation`` reads ``since`` for ``by``
+ * and has no ``hi``. ``uncovered_until`` is set exactly when the flag
+ * ``uncovered_since`` is; ``as_of`` while the feed is still uncovered,
+ * which gives ``lo = 0``.
  */
 export interface OpenState {
   /**
@@ -72,9 +81,13 @@ export interface OpenState {
    */
   source: 'ace' | 'bdfm' | 'g' | 'jz' | 'nqrw' | 'l' | 'numbered' | 'si';
   stop_id: string;
+  /**
+   * End of the last uncovered interval of the feed after the last passing (after since with no passing), as_of while still uncovered; null when none. Set exactly with the uncovered_since flag.
+   */
+  uncovered_until: number | null;
 }
 /**
- * [as_of - by, as_of - after - 1], with an outage-adjusted lo (§4).
+ * Exactly [as_of - max(by, uncovered_until), as_of - after - 1], lo clamped at 0 (§4); since for by with no observation.
  */
 export interface GapInterval {
   hi: number | null;

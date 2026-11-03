@@ -143,7 +143,7 @@
     },
     "GapInterval": {
       "additionalProperties": false,
-      "description": "Current elapsed gap at an evaluation instant; integer seconds, both\nends inclusive. ``hi`` null only when the last passing is left-censored,\nor for ``scheduled_no_observation``.",
+      "description": "Current elapsed gap at an evaluation instant; integer seconds, both\nends inclusive. ``hi`` null only when the last passing is left-censored,\nor for ``scheduled_no_observation``. ``OpenState`` fixes both ends (\u00a74):\nexactly ``[as_of - by, as_of - after - 1]`` with no outage.",
       "properties": {
         "hi": {
           "anyOf": [
@@ -171,7 +171,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Right-censored state at one instant (the live store, \u00a77; also the\nwindow-end tail and the next day's checkpoint of a nightly build). Never\na closed record. ``current_gap`` is finite at ``as_of``; ``eventual`` is\nthe still-open headway, right-censored from ``current_gap.lo``.",
+  "description": "Right-censored state at one instant (the live store, \u00a77; also the\nwindow-end tail and the next day's checkpoint of a nightly build). Never\na closed record. ``current_gap`` is finite at ``as_of``; ``eventual`` is\nthe still-open headway, right-censored from ``current_gap.lo``.\n\n``current_gap`` is exact (\u00a74): with the last passing in ``(after, by]``,\n``lo = max(0, as_of - max(by, e))`` and ``hi = as_of - after - 1``, where\n``e`` is ``uncovered_until`` (an uncovered interval of the feed ended\nafter the last passing, so a train may have passed unseen) and drops\nout when null. ``scheduled_no_observation`` reads ``since`` for ``by``\nand has no ``hi``. ``uncovered_until`` is set exactly when the flag\n``uncovered_since`` is; ``as_of`` while the feed is still uncovered,\nwhich gives ``lo = 0``.",
   "properties": {
     "ambiguity_set": {
       "anyOf": [
@@ -205,7 +205,7 @@
     },
     "current_gap": {
       "$ref": "#/$defs/GapInterval",
-      "description": "[as_of - by, as_of - after - 1], with an outage-adjusted lo (\u00a74)."
+      "description": "Exactly [as_of - max(by, uncovered_until), as_of - after - 1], lo clamped at 0 (\u00a74); since for by with no observation."
     },
     "direction": {
       "enum": [
@@ -393,6 +393,20 @@
     "stop_id": {
       "title": "Stop Id",
       "type": "string"
+    },
+    "uncovered_until": {
+      "anyOf": [
+        {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "End of the last uncovered interval of the feed after the last passing (after since with no passing), as_of while still uncovered; null when none. Set exactly with the uncovered_since flag.",
+      "title": "Uncovered Until"
     }
   },
   "required": [
@@ -407,6 +421,7 @@
     "last_event",
     "last_event_evidence",
     "since",
+    "uncovered_until",
     "stop_id",
     "route_id",
     "direction",

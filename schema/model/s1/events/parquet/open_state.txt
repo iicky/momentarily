@@ -9,6 +9,7 @@ compatible_pattern_ids: list<string not null> not null
 last_event: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64>
 last_event_evidence: string
 since: int64 not null
+uncovered_until: int64
 stop_id: string not null
 route_id: string not null
 direction: string not null

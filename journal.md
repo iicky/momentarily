@@ -11395,3 +11395,28 @@ recorder's first fetch at 03:57:21 and raw coverage starts at the cutover
   and no `suspect_stale`.
 - A raw coverage day file is 0.7–0.9 MB, almost all provenance: about 1,440
   tick inputs, each with its digest. The 166–314 interval rows take a few kB.
+
+## 2026-11-03 events-coverage-retry-slots
+
+origin: agent
+
+Review fix to the coverage rule above. Slot presence was a set over
+`scheduled_at`, so a cron retry of a skipped minute, even 40 minutes later,
+made the slot present and a genuine 120 s hole read `covered`. A slot is now
+present for a feed only when a good fetch of that feed finished inside its
+own minute `[S, S + 60)`; a late invocation fills only the minute its
+fetches finish in. `COVERAGE_VERSION` is 2.
+
+- Rejected: counting an invocation only when it started within 60 s of its
+  slot. On 10-22 that also flags 42–106 s stretches whose slot minute held
+  a fetch from another late invocation.
+- Replays: the missing-slot and not-stored columns are unchanged on 10-21
+  and 10-22, and the late column grows by 1,740–2,190 s per feed (`ace` on
+  10-22: 3,223 → 4,959 uncovered). Each added stretch is 70–120 s around a
+  slot whose own invocation started 60 s to 53 minutes late, so no fetch
+  finished in that minute. 52 of 1,444 invocations on 10-22 started a minute
+  or more late. Legacy days are unchanged (every trace object is observed
+  within 50 s of its slot).
+- A legacy vehicle hour that holds a fresh trace object is now required:
+  layer 2 records nothing that tells a row-less hour from a lost file, and a
+  lost file had turned `suspect_stale` into `covered`.

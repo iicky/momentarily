@@ -14,14 +14,19 @@ import gzip
 import json
 import random
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from momentarily.archive.traversals import DayProvenance, FeedDigestRange
-from momentarily.model.conventions import ContractDefaultError, Model, instant_of
+from momentarily.model.conventions import (
+    ContractDefaultError,
+    Model,
+    instant_of,
+    wall_instant_of,
+)
 from momentarily.model.network.__main__ import BuildConflictError, write_build
 from momentarily.model.network.build import (
     BUILDER_VERSION,
@@ -162,6 +167,42 @@ def test_instant_of_follows_the_noon_minus_12h_rule(
     service_date: str, seconds: int, expected: int
 ) -> None:
     assert instant_of(service_date, seconds, "America/New_York") == expected
+
+
+@pytest.mark.parametrize(
+    ("service_date", "wall", "tz", "utc"),
+    [
+        # Spring forward, New York: 01:59:59 EST is the last second before the
+        # gap; 02:00:00 to 02:59:59 do not exist; 03:00:00 is EDT.
+        ("2027-03-14", "01:59:59", "America/New_York", "2027-03-14T06:59:59"),
+        ("2027-03-14", "02:00:00", "America/New_York", None),
+        ("2027-03-14", "02:59:59", "America/New_York", None),
+        ("2027-03-14", "03:00:00", "America/New_York", "2027-03-14T07:00:00"),
+        # 26:30 on 03-13 rolls into 02:30 on 03-14: unresolved too.
+        ("2027-03-13", "26:30:00", "America/New_York", None),
+        # Fall back: 01:00:00 to 01:59:59 occur twice; the first (EDT) wins.
+        ("2026-11-01", "00:59:59", "America/New_York", "2026-11-01T04:59:59"),
+        ("2026-11-01", "01:00:00", "America/New_York", "2026-11-01T05:00:00"),
+        ("2026-11-01", "01:59:59", "America/New_York", "2026-11-01T05:59:59"),
+        ("2026-11-01", "02:00:00", "America/New_York", "2026-11-01T07:00:00"),
+        ("2026-10-31", "25:30:00", "America/New_York", "2026-11-01T05:30:00"),
+        # Another zone, with its change at 01:00 UTC.
+        ("2027-03-28", "01:30:00", "Europe/London", None),
+        ("2027-03-28", "02:00:00", "Europe/London", "2027-03-28T01:00:00"),
+        ("2026-10-25", "01:30:00", "Europe/London", "2026-10-25T00:30:00"),
+        ("2026-10-25", "02:00:00", "Europe/London", "2026-10-25T02:00:00"),
+    ],
+)
+def test_wall_instant_of_reads_the_wall_clock_at_dst_boundaries(
+    service_date: str, wall: str, tz: str, utc: str | None
+) -> None:
+    h, m, s = (int(x) for x in wall.split(":"))
+    expected = (
+        None
+        if utc is None
+        else int(datetime.fromisoformat(utc).replace(tzinfo=UTC).timestamp())
+    )
+    assert wall_instant_of(service_date, h * 3600 + m * 60 + s, tz) == expected
 
 
 # --- determinism ----------------------------------------------------------

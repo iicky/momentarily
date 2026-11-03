@@ -1,0 +1,112 @@
+[
+  {
+    "as_of": 1792616260,
+    "lineage": "raw",
+    "source": "jz",
+    "kind": "open_run",
+    "run_id": "raw:jz:101450_J..N47R@1792616046#0",
+    "last_event_seq": 3,
+    "pattern_attribution": "scheduled_trip",
+    "compatible_pattern_ids": [
+      "Z-N-bfb91b97d742"
+    ],
+    "last_event": {
+      "after": 1792616167,
+      "by": 1792616228,
+      "reported": 1792616221,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "last_event_evidence": "reported_planned",
+    "since": 1792616228,
+    "stop_id": "M20N",
+    "route_id": "Z",
+    "direction": "N",
+    "scope": null,
+    "pattern_id": "Z-N-bfb91b97d742",
+    "evidence": null,
+    "ambiguity_set": null,
+    "current_gap": {
+      "lo": 32,
+      "hi": 92
+    },
+    "eventual": {
+      "lo": 32,
+      "hi": null,
+      "censoring": "right",
+      "reported": null,
+      "uncovered_s": null
+    },
+    "flags": []
+  },
+  {
+    "as_of": 1792616400,
+    "lineage": "raw",
+    "source": "jz",
+    "kind": "open_headway",
+    "run_id": null,
+    "last_event_seq": null,
+    "pattern_attribution": null,
+    "compatible_pattern_ids": [],
+    "last_event": {
+      "after": 1792616046,
+      "by": 1792616107,
+      "reported": 1792616101,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "last_event_evidence": "reported_planned",
+    "since": 1792616107,
+    "stop_id": "M22N",
+    "route_id": "Z",
+    "direction": "N",
+    "scope": "pattern",
+    "pattern_id": "Z-N-bfb91b97d742",
+    "evidence": "service",
+    "ambiguity_set": "certain",
+    "current_gap": {
+      "lo": 293,
+      "hi": 353
+    },
+    "eventual": {
+      "lo": 293,
+      "hi": null,
+      "censoring": "right",
+      "reported": null,
+      "uncovered_s": null
+    },
+    "flags": []
+  },
+  {
+    "as_of": 1792584000,
+    "lineage": "raw",
+    "source": "jz",
+    "kind": "scheduled_no_observation",
+    "run_id": null,
+    "last_event_seq": null,
+    "pattern_attribution": null,
+    "compatible_pattern_ids": [],
+    "last_event": null,
+    "last_event_evidence": null,
+    "since": 1792583100,
+    "stop_id": "G05S",
+    "route_id": "Z",
+    "direction": "S",
+    "scope": "pattern",
+    "pattern_id": "Z-S-3d2ca68fddb4",
+    "evidence": "service",
+    "ambiguity_set": "certain",
+    "current_gap": {
+      "lo": 900,
+      "hi": null
+    },
+    "eventual": {
+      "lo": 900,
+      "hi": null,
+      "censoring": "right",
+      "reported": null,
+      "uncovered_s": null
+    },
+    "flags": []
+  }
+]

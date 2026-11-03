@@ -1,0 +1,423 @@
+{
+  "$defs": {
+    "DurationBound": {
+      "additionalProperties": false,
+      "description": "Interval-censored duration in seconds; consumers fit distributions\nacross events, never per-event midpoints. Nothing in layer 3 is\nleft-censored: a left-censored start or an open end gives ``censoring =\n\"right\"`` with ``hi`` null.",
+      "properties": {
+        "censoring": {
+          "enum": [
+            "none",
+            "right"
+          ],
+          "title": "Censoring",
+          "type": "string"
+        },
+        "hi": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null exactly when censoring is right.",
+          "title": "Hi"
+        },
+        "lo": {
+          "description": "Clamped at 0.",
+          "minimum": 0,
+          "title": "Lo",
+          "type": "integer"
+        },
+        "reported": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Difference of the two events' reported times, when both are kept.",
+          "title": "Reported"
+        },
+        "uncovered_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of the span not covered; null exactly when right-censored.",
+          "title": "Uncovered S"
+        }
+      },
+      "required": [
+        "lo",
+        "hi",
+        "censoring",
+        "reported",
+        "uncovered_s"
+      ],
+      "title": "DurationBound",
+      "type": "object"
+    },
+    "EventBound": {
+      "additionalProperties": false,
+      "description": "Feed-supported bound: the event happened in ``(after, by]``, integer\nUTC seconds, exclusive below. ``after`` null is left-censored. ``after <\nby`` strictly. A kept ``reported`` satisfies ``after < reported <= by``\n(an earlier report widens ``after`` to ``reported - 1``, \u00a73.2).",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive; null = left-censored.",
+          "title": "After"
+        },
+        "by": {
+          "description": "Inclusive.",
+          "minimum": 0,
+          "title": "By",
+          "type": "integer"
+        },
+        "reported": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The feed's own time, kept only inside (after, by].",
+          "title": "Reported"
+        },
+        "suspect_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of (after, by] in legacy suspect_stale; null when after is null and on raw records.",
+          "title": "Suspect S"
+        },
+        "uncovered_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of (after, by] not covered; null when after is null.",
+          "title": "Uncovered S"
+        }
+      },
+      "required": [
+        "after",
+        "by",
+        "reported",
+        "uncovered_s",
+        "suspect_s"
+      ],
+      "title": "EventBound",
+      "type": "object"
+    },
+    "GapInterval": {
+      "additionalProperties": false,
+      "description": "Current elapsed gap at an evaluation instant; integer seconds, both\nends inclusive. ``hi`` null only when the last passing is left-censored,\nor for ``scheduled_no_observation``.",
+      "properties": {
+        "hi": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Hi"
+        },
+        "lo": {
+          "minimum": 0,
+          "title": "Lo",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "lo",
+        "hi"
+      ],
+      "title": "GapInterval",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Right-censored state at one instant (the live store, \u00a77; also the\nwindow-end tail and the next day's checkpoint of a nightly build). Never\na closed record. ``current_gap`` is finite at ``as_of``; ``eventual`` is\nthe still-open headway, right-censored from ``current_gap.lo``.",
+  "properties": {
+    "ambiguity_set": {
+      "anyOf": [
+        {
+          "enum": [
+            "certain",
+            "with_ambiguous"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Pattern scope: one clock per series.",
+      "title": "Ambiguity Set"
+    },
+    "as_of": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "As Of",
+      "type": "integer"
+    },
+    "compatible_pattern_ids": {
+      "description": "open_run: the live pattern fit, sorted, which may exclude a matched pattern; [] otherwise.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Compatible Pattern Ids",
+      "type": "array"
+    },
+    "current_gap": {
+      "$ref": "#/$defs/GapInterval",
+      "description": "[as_of - by, as_of - after - 1], with an outage-adjusted lo (\u00a74)."
+    },
+    "direction": {
+      "enum": [
+        "N",
+        "S"
+      ],
+      "title": "Direction",
+      "type": "string"
+    },
+    "eventual": {
+      "$ref": "#/$defs/DurationBound",
+      "description": "The still-open headway: censoring right, hi null, lo = current_gap.lo."
+    },
+    "evidence": {
+      "anyOf": [
+        {
+          "enum": [
+            "service",
+            "physical"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null for open_run.",
+      "title": "Evidence"
+    },
+    "flags": {
+      "description": "Sorted and distinct.",
+      "items": {
+        "enum": [
+          "ambiguous_patterns_only",
+          "possibly_stale",
+          "uncovered_since"
+        ],
+        "type": "string"
+      },
+      "title": "Flags",
+      "type": "array"
+    },
+    "kind": {
+      "enum": [
+        "open_run",
+        "open_headway",
+        "scheduled_no_observation"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "last_event": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventBound"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null only for scheduled_no_observation."
+    },
+    "last_event_evidence": {
+      "anyOf": [
+        {
+          "enum": [
+            "stopped",
+            "reported_planned",
+            "reported_not_stopped",
+            "inferred_passage"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Service evidence of last_event; null exactly when it is.",
+      "title": "Last Event Evidence"
+    },
+    "last_event_seq": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "open_run only: StopEvent.seq of the last event.",
+      "title": "Last Event Seq"
+    },
+    "lineage": {
+      "enum": [
+        "raw",
+        "legacy"
+      ],
+      "title": "Lineage",
+      "type": "string"
+    },
+    "pattern_attribution": {
+      "anyOf": [
+        {
+          "enum": [
+            "scheduled_trip",
+            "unique_fit",
+            "ambiguous",
+            "off_pattern"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "open_run only; scheduled_trip when matched (tiers 1-4 live).",
+      "title": "Pattern Attribution"
+    },
+    "pattern_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "open_run: the matched pattern or the unique fit; clocks: set exactly at pattern scope.",
+      "title": "Pattern Id"
+    },
+    "route_id": {
+      "title": "Route Id",
+      "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "open_run only.",
+      "title": "Run Id"
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "enum": [
+            "route",
+            "pattern"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null for open_run.",
+      "title": "Scope"
+    },
+    "since": {
+      "description": "Start of the open interval (\u00a74 initialization).",
+      "minimum": 0,
+      "title": "Since",
+      "type": "integer"
+    },
+    "source": {
+      "description": "The run's feed (open_run) or the route's feed (clocks).",
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "stop_id": {
+      "title": "Stop Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "as_of",
+    "lineage",
+    "source",
+    "kind",
+    "run_id",
+    "last_event_seq",
+    "pattern_attribution",
+    "compatible_pattern_ids",
+    "last_event",
+    "last_event_evidence",
+    "since",
+    "stop_id",
+    "route_id",
+    "direction",
+    "scope",
+    "pattern_id",
+    "evidence",
+    "ambiguity_set",
+    "current_gap",
+    "eventual",
+    "flags"
+  ],
+  "title": "OpenState",
+  "type": "object"
+}

@@ -1,0 +1,197 @@
+[
+  {
+    "run_id": "raw:jz:101450_J..N47R@1792616046#0",
+    "seq": 1,
+    "service_date": "2026-10-21",
+    "lineage": "raw",
+    "source": "jz",
+    "source_basis": "published",
+    "family": "last",
+    "stop_id": "M22N",
+    "pattern_id": "Z-N-bfb91b97d742",
+    "pattern_index": 1,
+    "pattern_attribution": "scheduled_trip",
+    "service_evidence": "reported_planned",
+    "arrival": {
+      "after": 1792616046,
+      "by": 1792616107,
+      "reported": 1792616101,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "departure": {
+      "after": 1792616046,
+      "by": 1792616228,
+      "reported": null,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "passage": null,
+    "departure_basis": "next_arrival",
+    "dwell": {
+      "unknown": true,
+      "reason": "departure not observable on the last family (decision 4)"
+    },
+    "flags": []
+  },
+  {
+    "run_id": "raw:jz:101450_J..N47R@1792616046#0",
+    "seq": 2,
+    "service_date": "2026-10-21",
+    "lineage": "raw",
+    "source": "jz",
+    "source_basis": "published",
+    "family": "last",
+    "stop_id": "M21N",
+    "pattern_id": "Z-N-bfb91b97d742",
+    "pattern_index": 2,
+    "pattern_attribution": "scheduled_trip",
+    "service_evidence": "inferred_passage",
+    "arrival": null,
+    "departure": null,
+    "passage": {
+      "after": 1792616167,
+      "by": 1792616228,
+      "reported": null,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "departure_basis": null,
+    "dwell": null,
+    "flags": [
+      "plan_dropped"
+    ]
+  },
+  {
+    "run_id": "raw:numbered:047450_6..S03R@1792583520#0",
+    "seq": 2,
+    "service_date": "2026-10-21",
+    "lineage": "raw",
+    "source": "numbered",
+    "source_basis": "published",
+    "family": "next",
+    "stop_id": "603S",
+    "pattern_id": "6-S-29db9d766d60",
+    "pattern_index": 2,
+    "pattern_attribution": "scheduled_trip",
+    "service_evidence": "stopped",
+    "arrival": {
+      "after": 1792583580,
+      "by": 1792583641,
+      "reported": 1792583634,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "departure": {
+      "after": 1792583641,
+      "by": 1792583701,
+      "reported": null,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "passage": null,
+    "departure_basis": "vehicle",
+    "dwell": {
+      "lo": 0,
+      "hi": 121,
+      "censoring": "none",
+      "reported": null,
+      "uncovered_s": 0
+    },
+    "flags": []
+  },
+  {
+    "run_id": "raw:numbered:047450_6..S03R@1792583520#0",
+    "seq": 3,
+    "service_date": "2026-10-21",
+    "lineage": "raw",
+    "source": "numbered",
+    "source_basis": "published",
+    "family": "next",
+    "stop_id": "604S",
+    "pattern_id": "6-S-29db9d766d60",
+    "pattern_index": 3,
+    "pattern_attribution": "scheduled_trip",
+    "service_evidence": "reported_not_stopped",
+    "arrival": null,
+    "departure": null,
+    "passage": {
+      "after": 1792583701,
+      "by": 1792583761,
+      "reported": null,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "departure_basis": null,
+    "dwell": null,
+    "flags": []
+  },
+  {
+    "run_id": "raw:numbered:002950_6..S@1792643421#0",
+    "seq": 0,
+    "service_date": "2026-10-22",
+    "lineage": "raw",
+    "source": "numbered",
+    "source_basis": "published",
+    "family": "next",
+    "stop_id": "609S",
+    "pattern_id": null,
+    "pattern_index": null,
+    "pattern_attribution": "ambiguous",
+    "service_evidence": "stopped",
+    "arrival": {
+      "after": null,
+      "by": 1792643421,
+      "reported": 1792643415,
+      "uncovered_s": null,
+      "suspect_s": null
+    },
+    "departure": {
+      "unknown": true,
+      "reason": "the input window ended with the train at the stop"
+    },
+    "passage": null,
+    "departure_basis": "vehicle",
+    "dwell": {
+      "unknown": true,
+      "reason": "departure not observed"
+    },
+    "flags": [
+      "first_of_run"
+    ]
+  },
+  {
+    "run_id": "legacy:ace:052350_A..S57R@1789475461#0",
+    "seq": 7,
+    "service_date": "2026-09-15",
+    "lineage": "legacy",
+    "source": "ace",
+    "source_basis": "route_feed_table",
+    "family": "last",
+    "stop_id": "A46S",
+    "pattern_id": "A-S-3214730c73bb",
+    "pattern_index": null,
+    "pattern_attribution": "scheduled_trip",
+    "service_evidence": "reported_planned",
+    "arrival": {
+      "after": 1789477261,
+      "by": 1789477321,
+      "reported": 1789477316,
+      "uncovered_s": 0,
+      "suspect_s": 0
+    },
+    "departure": {
+      "unknown": true,
+      "reason": "stale tail: liveness uncertain"
+    },
+    "passage": null,
+    "departure_basis": "next_arrival",
+    "dwell": {
+      "unknown": true,
+      "reason": "departure not observable on the last family (decision 4)"
+    },
+    "flags": [
+      "liveness_uncertain"
+    ]
+  }
+]

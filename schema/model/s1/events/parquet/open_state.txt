@@ -1,0 +1,21 @@
+as_of: int64 not null
+lineage: string not null
+source: string not null
+kind: string not null
+run_id: string
+last_event_seq: int64
+pattern_attribution: string
+compatible_pattern_ids: list<string not null> not null
+last_event: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64>
+last_event_evidence: string
+since: int64 not null
+stop_id: string not null
+route_id: string not null
+direction: string not null
+scope: string
+pattern_id: string
+evidence: string
+ambiguity_set: string
+current_gap: struct<lo: int64 not null, hi: int64> not null
+eventual: struct<lo: int64 not null, hi: int64, censoring: string not null, reported: int64, uncovered_s: int64> not null
+flags: list<string not null> not null

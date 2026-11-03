@@ -1,0 +1,29 @@
+[
+  {
+    "observed_at": 1792616046,
+    "lineage": "raw",
+    "source": "jz",
+    "source_basis": "published",
+    "route_id": "Z",
+    "route_basis": "scheduled_trip",
+    "vehicles": 3,
+    "vehicles_stale_tail": 0,
+    "scheduled_in_service": 4,
+    "listed_trips": 5
+  },
+  {
+    "observed_at": 1789484400,
+    "lineage": "legacy",
+    "source": "numbered",
+    "source_basis": "route_feed_table",
+    "route_id": "6",
+    "route_basis": "scheduled_trip",
+    "vehicles": 18,
+    "vehicles_stale_tail": 1,
+    "scheduled_in_service": 19,
+    "listed_trips": {
+      "unknown": true,
+      "reason": "archive/trace does not keep it"
+    }
+  }
+]

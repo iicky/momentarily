@@ -677,8 +677,8 @@ def test_the_parquet_layout_is_pinned() -> None:
     indefinitely: bump LAYOUT_VERSION (and the decoder version if decoding
     changed), add its digest to PINNED_LAYOUTS, then regenerate with
     uv run python -m scripts.export_model_schema."""
-    rendered = render_layouts()
-    assert committed_layouts() == rendered, (
+    rendered = render_layouts("observations")
+    assert committed_layouts("observations") == rendered, (
         "parquet layout drifted from the committed files"
     )
     digest = hashlib.sha256(

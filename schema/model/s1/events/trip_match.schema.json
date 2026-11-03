@@ -1,0 +1,434 @@
+{
+  "$defs": {
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One realtime run and what it is (\u00a72). Scheduled-trip identity and the\nobserved pattern fit are separate results: ``compatible_pattern_ids`` is\nfitted from observations alone.",
+  "properties": {
+    "alternative_service_date": {
+      "anyOf": [
+        {
+          "description": "ISO date of a GTFS service day (never a UTC date).",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Set exactly when flagged service_date_ambiguous.",
+      "title": "Alternative Service Date"
+    },
+    "compatible_pattern_ids": {
+      "description": "Patterns whose stop order contains the observed stops; sorted.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Compatible Pattern Ids",
+      "type": "array"
+    },
+    "deviation": {
+      "anyOf": [
+        {
+          "enum": [
+            "consistent",
+            "skips_only",
+            "extras_only",
+            "skips_and_extras",
+            "off_pattern",
+            "order_violation"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deviation"
+    },
+    "end_state": {
+      "enum": [
+        "left_feed",
+        "stale_tail",
+        "window_end"
+      ],
+      "title": "End State",
+      "type": "string"
+    },
+    "first_observed_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "First Observed At",
+      "type": "integer"
+    },
+    "flags": {
+      "description": "Sorted and distinct.",
+      "items": {
+        "enum": [
+          "deduplicated_by_position",
+          "duplicate_trip_id",
+          "joined_split_run",
+          "service_date_ambiguous",
+          "start_date_mismatch"
+        ],
+        "type": "string"
+      },
+      "title": "Flags",
+      "type": "array"
+    },
+    "identity_uncertain_with": {
+      "description": "Runs with identical positions but a different train_id (\u00a72.3).",
+      "items": {
+        "type": "string"
+      },
+      "title": "Identity Uncertain With",
+      "type": "array"
+    },
+    "last_observed_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "Last Observed At",
+      "type": "integer"
+    },
+    "lineage": {
+      "enum": [
+        "raw",
+        "legacy"
+      ],
+      "title": "Lineage",
+      "type": "string"
+    },
+    "member_run_ids": {
+      "description": "Runs joined into this one (split-run join); [] when not joined.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Member Run Ids",
+      "type": "array"
+    },
+    "miss_class": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Why no trip matched; null when matched.",
+      "title": "Miss Class"
+    },
+    "n_observations": {
+      "minimum": 1,
+      "title": "N Observations",
+      "type": "integer"
+    },
+    "n_old_timestamp_rows": {
+      "minimum": 0,
+      "title": "N Old Timestamp Rows",
+      "type": "integer"
+    },
+    "n_placeholder_rows": {
+      "minimum": 0,
+      "title": "N Placeholder Rows",
+      "type": "integer"
+    },
+    "nearest_scheduled_trip_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "For an unmatched run: the trip it nearly matched.",
+      "title": "Nearest Scheduled Trip Id"
+    },
+    "network_build_id": {
+      "title": "Network Build Id",
+      "type": "string"
+    },
+    "nyct_train_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "description": "Distinct NYCT train ids seen, sorted; Unknown on legacy runs.",
+      "title": "Nyct Train Ids"
+    },
+    "offset_s": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Observed minus scheduled at the first common stop.",
+      "title": "Offset S"
+    },
+    "origin_wrapped": {
+      "description": "Matched only after adding 24 h to the origin.",
+      "title": "Origin Wrapped",
+      "type": "boolean"
+    },
+    "outcome": {
+      "enum": [
+        "matched",
+        "unscheduled",
+        "unparseable"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "pattern_attribution": {
+      "enum": [
+        "scheduled_trip",
+        "unique_fit",
+        "ambiguous",
+        "off_pattern"
+      ],
+      "title": "Pattern Attribution",
+      "type": "string"
+    },
+    "pattern_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The matched trip's pattern, or the unique fit.",
+      "title": "Pattern Id"
+    },
+    "realtime_trip_id": {
+      "title": "Realtime Trip Id",
+      "type": "string"
+    },
+    "route_basis": {
+      "enum": [
+        "scheduled_trip",
+        "published",
+        "trip_id_field"
+      ],
+      "title": "Route Basis",
+      "type": "string"
+    },
+    "route_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Network route of the matched trip, else the route_basis route.",
+      "title": "Route Id"
+    },
+    "route_published": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "As published ('6X', 'SS'); Unknown on legacy runs.",
+      "title": "Route Published"
+    },
+    "run_id": {
+      "description": "f'{lineage}:{source}:{realtime_trip_id}@{first_observed_at}#{track}' (\u00a72.3).",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "scheduled_trip_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Scheduled Trip Id"
+    },
+    "service_date": {
+      "description": "ISO date of a GTFS service day (never a UTC date).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "title": "Service Date",
+      "type": "string"
+    },
+    "service_date_basis": {
+      "enum": [
+        "scheduled_trip",
+        "id_origin",
+        "clock_rule"
+      ],
+      "title": "Service Date Basis",
+      "type": "string"
+    },
+    "shares_scheduled_trip": {
+      "description": "Another id-tier run holds the same scheduled trip.",
+      "title": "Shares Scheduled Trip",
+      "type": "boolean"
+    },
+    "source": {
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "source_basis": {
+      "enum": [
+        "published",
+        "route_feed_table"
+      ],
+      "title": "Source Basis",
+      "type": "string"
+    },
+    "stale_only": {
+      "description": "Every row has an old vehicle_timestamp.",
+      "title": "Stale Only",
+      "type": "boolean"
+    },
+    "start_date_published": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Published 'YYYYMMDD', not a ServiceDate; Unknown on legacy runs.",
+      "title": "Start Date Published"
+    },
+    "stationary": {
+      "description": "Seen at one stop only; no traversal.",
+      "title": "Stationary",
+      "type": "boolean"
+    },
+    "supersedes_run_ids": {
+      "description": "Provisional live ids this nightly run absorbed.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Supersedes Run Ids",
+      "type": "array"
+    },
+    "tier": {
+      "anyOf": [
+        {
+          "enum": [
+            "exact_id",
+            "path_prefix",
+            "line_code",
+            "path_differs",
+            "drift"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Tier"
+    },
+    "track": {
+      "description": "0 for an unsplit run; else the track ordinal.",
+      "minimum": 0,
+      "title": "Track",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "run_id",
+    "track",
+    "member_run_ids",
+    "supersedes_run_ids",
+    "lineage",
+    "source",
+    "source_basis",
+    "realtime_trip_id",
+    "route_published",
+    "start_date_published",
+    "nyct_train_ids",
+    "first_observed_at",
+    "last_observed_at",
+    "n_observations",
+    "n_placeholder_rows",
+    "n_old_timestamp_rows",
+    "stale_only",
+    "outcome",
+    "stationary",
+    "flags",
+    "tier",
+    "miss_class",
+    "network_build_id",
+    "scheduled_trip_id",
+    "nearest_scheduled_trip_id",
+    "compatible_pattern_ids",
+    "pattern_id",
+    "pattern_attribution",
+    "shares_scheduled_trip",
+    "identity_uncertain_with",
+    "route_id",
+    "route_basis",
+    "service_date",
+    "service_date_basis",
+    "alternative_service_date",
+    "origin_wrapped",
+    "offset_s",
+    "deviation",
+    "end_state"
+  ],
+  "title": "TripMatch",
+  "type": "object"
+}

@@ -483,7 +483,8 @@ def test_cli_chooses_the_build_per_day_and_rebuilds_identically(
     ]
     assert events_main(argv) == 0
     first = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    keys = [parse_key(r["key"]) for r in first]
+    keys = [k for r in first if isinstance(k := parse_key(r["key"]), MatchIndexKey)]
+    assert len(keys) == len(first)
     _, rf_digest = load_route_feed()
     assert [(k.service_date, k.build_id) for k in keys] == [
         ("2026-08-26", "2faf6350456df7f6"),

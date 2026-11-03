@@ -1,0 +1,381 @@
+{
+  "$defs": {
+    "DurationBound": {
+      "additionalProperties": false,
+      "description": "Interval-censored duration in seconds; consumers fit distributions\nacross events, never per-event midpoints. Nothing in layer 3 is\nleft-censored: a left-censored start or an open end gives ``censoring =\n\"right\"`` with ``hi`` null.",
+      "properties": {
+        "censoring": {
+          "enum": [
+            "none",
+            "right"
+          ],
+          "title": "Censoring",
+          "type": "string"
+        },
+        "hi": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null exactly when censoring is right.",
+          "title": "Hi"
+        },
+        "lo": {
+          "description": "Clamped at 0.",
+          "minimum": 0,
+          "title": "Lo",
+          "type": "integer"
+        },
+        "reported": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Difference of the two events' reported times, when both are kept.",
+          "title": "Reported"
+        },
+        "uncovered_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of the span not covered; null exactly when right-censored.",
+          "title": "Uncovered S"
+        }
+      },
+      "required": [
+        "lo",
+        "hi",
+        "censoring",
+        "reported",
+        "uncovered_s"
+      ],
+      "title": "DurationBound",
+      "type": "object"
+    },
+    "EventBound": {
+      "additionalProperties": false,
+      "description": "Feed-supported bound: the event happened in ``(after, by]``, integer\nUTC seconds, exclusive below. ``after`` null is left-censored. ``after <\nby`` strictly. A kept ``reported`` satisfies ``after < reported <= by``\n(an earlier report widens ``after`` to ``reported - 1``, \u00a73.2).",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive; null = left-censored.",
+          "title": "After"
+        },
+        "by": {
+          "description": "Inclusive.",
+          "minimum": 0,
+          "title": "By",
+          "type": "integer"
+        },
+        "reported": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The feed's own time, kept only inside (after, by].",
+          "title": "Reported"
+        },
+        "suspect_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of (after, by] in legacy suspect_stale; null when after is null and on raw records.",
+          "title": "Suspect S"
+        },
+        "uncovered_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of (after, by] not covered; null when after is null.",
+          "title": "Uncovered S"
+        }
+      },
+      "required": [
+        "after",
+        "by",
+        "reported",
+        "uncovered_s",
+        "suspect_s"
+      ],
+      "title": "EventBound",
+      "type": "object"
+    },
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One occurrence of a run at a platform (\u00a73). A service event\n(``stopped``, ``reported_planned``) has an arrival and a departure; a\npassage (``reported_not_stopped``, ``inferred_passage``) has only a\npassage bound. \"last\"-family departures are bounded only by the next\narrival, and their dwell is ``Unknown`` (decision 4).",
+  "properties": {
+    "arrival": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventBound"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Service evidence only."
+    },
+    "departure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventBound"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Service evidence only; Unknown: censored tail or run end.",
+      "title": "Departure"
+    },
+    "departure_basis": {
+      "anyOf": [
+        {
+          "enum": [
+            "vehicle",
+            "next_arrival"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "vehicle ('next') or next_arrival ('last'); service evidence only.",
+      "title": "Departure Basis"
+    },
+    "dwell": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DurationBound"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Unknown for the 'last' family and for an Unknown departure.",
+      "title": "Dwell"
+    },
+    "family": {
+      "enum": [
+        "last",
+        "next"
+      ],
+      "title": "Family",
+      "type": "string"
+    },
+    "flags": {
+      "description": "Sorted and distinct. plan_dropped (basis trip_update): the trip update removed this listed stop more than 60 s before its predicted arrival.",
+      "items": {
+        "enum": [
+          "first_of_run",
+          "held_old_timestamp",
+          "liveness_uncertain",
+          "order_violation",
+          "plan_dropped",
+          "reported_after_bound",
+          "reported_widened_after"
+        ],
+        "type": "string"
+      },
+      "title": "Flags",
+      "type": "array"
+    },
+    "lineage": {
+      "enum": [
+        "raw",
+        "legacy"
+      ],
+      "title": "Lineage",
+      "type": "string"
+    },
+    "passage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventBound"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "reported_not_stopped and inferred_passage only."
+    },
+    "pattern_attribution": {
+      "enum": [
+        "scheduled_trip",
+        "unique_fit",
+        "ambiguous",
+        "off_pattern"
+      ],
+      "title": "Pattern Attribution",
+      "type": "string"
+    },
+    "pattern_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null when ambiguous or off pattern.",
+      "title": "Pattern Id"
+    },
+    "pattern_index": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null when the stop is off pattern or the run ambiguous.",
+      "title": "Pattern Index"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seq": {
+      "description": "Occurrence of this event within the run.",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "service_date": {
+      "description": "ISO date of a GTFS service day (never a UTC date).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "title": "Service Date",
+      "type": "string"
+    },
+    "service_evidence": {
+      "enum": [
+        "stopped",
+        "reported_planned",
+        "reported_not_stopped",
+        "inferred_passage"
+      ],
+      "title": "Service Evidence",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "source_basis": {
+      "enum": [
+        "published",
+        "route_feed_table"
+      ],
+      "title": "Source Basis",
+      "type": "string"
+    },
+    "stop_id": {
+      "description": "Platform.",
+      "title": "Stop Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "seq",
+    "service_date",
+    "lineage",
+    "source",
+    "source_basis",
+    "family",
+    "stop_id",
+    "pattern_id",
+    "pattern_index",
+    "pattern_attribution",
+    "service_evidence",
+    "arrival",
+    "departure",
+    "passage",
+    "departure_basis",
+    "dwell",
+    "flags"
+  ],
+  "title": "StopEvent",
+  "type": "object"
+}

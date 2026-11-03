@@ -1,0 +1,42 @@
+run_id: string not null
+track: int64 not null
+member_run_ids: list<string not null> not null
+supersedes_run_ids: list<string not null> not null
+lineage: string not null
+source: string not null
+source_basis: string not null
+realtime_trip_id: string not null
+route_published: string
+route_published__unknown: string
+start_date_published: string
+start_date_published__unknown: string
+nyct_train_ids: list<string not null>
+nyct_train_ids__unknown: string
+first_observed_at: int64 not null
+last_observed_at: int64 not null
+n_observations: int64 not null
+n_placeholder_rows: int64 not null
+n_old_timestamp_rows: int64 not null
+stale_only: bool not null
+outcome: string not null
+stationary: bool not null
+flags: list<string not null> not null
+tier: string
+miss_class: string
+network_build_id: string not null
+scheduled_trip_id: string
+nearest_scheduled_trip_id: string
+compatible_pattern_ids: list<string not null> not null
+pattern_id: string
+pattern_attribution: string not null
+shares_scheduled_trip: bool not null
+identity_uncertain_with: list<string not null> not null
+route_id: string
+route_basis: string not null
+service_date: string not null
+service_date_basis: string not null
+alternative_service_date: string
+origin_wrapped: bool not null
+offset_s: int64
+deviation: string
+end_state: string not null

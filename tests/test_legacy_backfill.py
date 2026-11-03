@@ -16,7 +16,11 @@ import pytest
 from botocore.exceptions import ClientError
 
 from momentarily.model.observations.derive.storage import LocalStorage
-from momentarily.model.observations.keys import DerivedDayKey, DerivedHourKey
+from momentarily.model.observations.keys import (
+    DerivedDayKey,
+    DerivedHourKey,
+    utc_day,
+)
 from momentarily.model.observations.legacy.__main__ import main as local_main
 from momentarily.model.observations.legacy.run import Report, run
 from training.derive_observations import R2Storage
@@ -45,8 +49,9 @@ def _trace(scheduled: int, observed: int) -> tuple[str, bytes]:
     """The fixture trace object scheduled and observed at other times."""
     doc = json.loads((MIRROR / TRACE).read_bytes())
     doc |= {"scheduled_at": scheduled, "observed_at": observed}
-    day = "2026-09-15" if scheduled < MIDNIGHT else "2026-09-16"
-    return f"archive/trace/{day}/{scheduled}.json", json.dumps(doc).encode()
+    return f"archive/trace/{utc_day(scheduled)}/{scheduled}.json", json.dumps(
+        doc
+    ).encode()
 
 
 def _midnight() -> dict[str, bytes]:
@@ -156,12 +161,67 @@ def test_a_range_writes_only_its_own_days() -> None:
     assert sum(d.written for d in report.days) == len(fake.derived())
 
 
-def test_a_trace_minute_reaching_past_the_lead_in_stops_the_run() -> None:
+def _late() -> dict[str, bytes]:
+    """The midnight fixture plus a late invocation: scheduled 22:52, 68
+    minutes before midnight, and observed 00:05 the next day (the Worker's
+    missed crons of 2026-10-25)."""
+    objects = _midnight()
+    key, body = _trace(MIDNIGHT - 68 * 60, MIDNIGHT + 300 + 5)
+    objects[key] = body
+    return objects
+
+
+def test_a_late_trace_minute_fills_the_next_day_whichever_range_covers_it() -> None:
+    whole = _FakeS3(_late())
+    assert not _backfill(whole, DAY, NEXT).failed
+    outcome = DerivedDayKey("legacy_fetch_outcome", NEXT).key
+    assert outcome in whole.derived()
+    alone = _FakeS3(_late())
+    assert not _backfill(alone, NEXT).failed
+    assert alone.derived() == {
+        k: v for k, v in whole.derived().items() if _day_of(k) == NEXT
+    }
+    split = _FakeS3(_late())
+    assert not _backfill(split, DAY).failed
+    assert not _backfill(split, NEXT).failed
+    assert split.derived() == whole.derived()
+    # Without the late minute the next day's outcomes differ: it is in them.
+    plain = _FakeS3(_midnight())
+    _backfill(plain, NEXT)
+    assert plain.derived()[outcome] != whole.derived()[outcome]
+
+
+def test_a_trace_minute_observed_at_the_end_of_the_next_day_is_read() -> None:
+    objects = _midnight()
+    key, body = _trace(MIDNIGHT - 68 * 60, MIDNIGHT + 86400 - 1)
+    objects[key] = body
+    whole = _FakeS3(objects)
+    assert not _backfill(whole, DAY, NEXT).failed
+    alone = _FakeS3(objects)
+    assert not _backfill(alone, NEXT).failed
+    assert alone.derived() == {
+        k: v for k, v in whole.derived().items() if _day_of(k) == NEXT
+    }
+
+
+def test_a_trace_minute_reaching_past_the_next_day_stops_the_run() -> None:
     objects = _fixture()
-    key, body = _trace(MIDNIGHT - 7200, MIDNIGHT + 10)
+    key, body = _trace(MIDNIGHT - 7200, MIDNIGHT + 86400 + 10)
     objects[key] = body
     with pytest.raises(RuntimeError, match="lead-in"):
         _backfill(_FakeS3(objects), DAY, NEXT)
+
+
+def test_a_lead_in_minute_reaching_past_the_first_day_stops_the_run() -> None:
+    """A range's lead-in object whose records reach past the range's first
+    day: no range reads it there."""
+    objects = _fixture()
+    after = MIDNIGHT + 86400  # 2026-09-17T00:00:00Z
+    key, body = _trace(after + 86400 - 3600, after + 2 * 86400 + 10)
+    objects[key] = body
+    assert key.startswith("archive/trace/2026-09-17/")
+    with pytest.raises(RuntimeError, match="lead-in"):
+        _backfill(_FakeS3(objects), "2026-09-18")
 
 
 def test_a_rerun_skips_every_file_and_puts_nothing() -> None:
@@ -301,12 +361,12 @@ def test_the_r2_cli_refuses_a_day_that_has_not_ended() -> None:
     assert r2_main(["--from", "2026-10-01", "--through", "2999-01-01"]) == 2
 
 
-def test_the_last_day_settles_30_minutes_after_it_ends() -> None:
-    at = datetime(2026, 11, 1, 0, 30, tzinfo=UTC)
+def test_the_last_day_settles_a_full_day_after_it_ends() -> None:
+    at = datetime(2026, 11, 2, 0, 0, tzinfo=UTC)
     assert unsettled("2026-10-31", at) is None
     late = unsettled("2026-10-31", at - timedelta(seconds=1))
     assert late is not None
-    assert "2026-11-01T00:30Z" in late
+    assert "2026-11-02T00:00Z" in late
     assert unsettled("2026-11-01", at) is not None
 
 
@@ -348,20 +408,21 @@ def test_a_spurious_not_found_is_retried() -> None:
 
 
 @pytest.mark.usefixtures("no_sleep")
-def test_an_unreadable_object_aborts_its_day_only() -> None:
+def test_an_unreadable_trace_object_aborts_its_day_and_the_next() -> None:
+    """The next day's lead-in needs every trace object of the day, so it is
+    aborted too; the day after starts afresh."""
+    after = "2026-09-17"
     whole = _FakeS3(_midnight())
-    _backfill(whole, DAY, NEXT)
+    _backfill(whole, DAY, after)
     fake = _Missing(_midnight(), TRACE, times=None)
-    report = _backfill(fake, DAY, NEXT)
+    report = _backfill(fake, DAY, after)
     assert report.failed
-    assert report.aborted == [(DAY, TRACE)]
-    assert [d.aborted for d in report.days] == [TRACE, None]
+    assert report.aborted == [(DAY, TRACE), (NEXT, TRACE)]
+    assert [d.aborted for d in report.days] == [TRACE, TRACE, None]
     assert report.archives["archive/trace"].failures == []
-    # Nothing of DAY is stored; NEXT, which reads DAY's last hour again, is
-    # what the whole run wrote.
-    assert {_day_of(k) for k in fake.derived()} == {NEXT}
+    assert {_day_of(k) for k in fake.derived()} == {after}
     assert fake.derived() == {
-        k: v for k, v in whole.derived().items() if _day_of(k) == NEXT
+        k: v for k, v in whole.derived().items() if _day_of(k) == after
     }
 
 
@@ -387,7 +448,6 @@ def test_without_a_last_day_the_files_after_the_last_held_day_are_written(
         (mirror / key).write_bytes(body)
     late = 1791935980  # 2026-10-13T23:59:40Z, the last day the mirror holds
     key, body = _trace(late, late + 30)
-    key = key.replace("2026-09-16", "2026-10-13")
     (mirror / key).parent.mkdir(parents=True, exist_ok=True)
     (mirror / key).write_bytes(body)
     after = {

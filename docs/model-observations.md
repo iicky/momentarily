@@ -1034,15 +1034,25 @@ one line per finished day (objects read, malformed, files written, unchanged,
 replaced, conflicting, obsolete, seconds), then the per-archive and
 per-record summary. It writes only the files of its own days, so a day's
 files have the same bytes whichever range covers it. A trace object is filed
-under its `scheduled_at` day, but its records carry `observed_at`, a few
-seconds later. So a minute scheduled just before midnight fills the next
-day's hour-00 `vehicle` file and its `legacy_fetch_outcome` file. The first
-day of a range therefore also reads the trace objects scheduled in the hour
-before it. With `--through`, files after that day are listed as `deferred`
-and not written. Without it, they are written, as the whole-mirror run always
-did.
-If a trace object filed more than an hour before midnight reaches the next
-day, the run stops, because a range would miss its records. `archive/alerts`
+under its `scheduled_at` day, but its records carry `observed_at`. That is
+usually a few seconds later, but a late Worker invocation is observed long
+after the minute it was scheduled for. On 2026-10-25 the Worker missed many
+cron invocations between 13:36 and 23:50 UTC, and
+`archive/trace/2026-10-25/1792968739.json`, scheduled at 22:52:19, added to
+the `legacy_fetch_outcome` file of 10-26: it was observed more than 67 minutes
+after its key. Its exact `observed_at` is not known here: `archive/trace/`
+is R2 only, not in the local mirror. A trace object can therefore fill the
+next day's `vehicle` and `legacy_fetch_outcome` files from any minute of its
+day, and no fixed lead-in is safe. The first day of a range (and the day
+after an aborted day) therefore also reads the whole previous day of trace
+objects, about 1,440 GETs. Every later day of a range has the previous day
+in the same run, so all days see the same objects and a split range gives
+the same bytes as a single one. With `--through`, files after that day are
+listed as `deferred` and not written. Without it, they are written, as the
+whole-mirror run always did.
+A trace object whose records reach past the day after its own stops the run
+when the run reads that object's day, because a range that starts later
+reads only one previous day and would miss those records. `archive/alerts`
 is read in full up to the cutover's day before the first day, because
 versioning needs every sighting (about 16,000 objects); a range that starts
 on or after 2026-10-21 skips it.
@@ -1077,14 +1087,17 @@ backoff). If an object still cannot be read, its day is aborted. A day's
 files are rendered as they close but stored only when the whole day has
 been read, so nothing of an aborted day is written. The report lists the day and the
 key, the CLI exits 1, and the run goes on with the next day, which starts as
-a new range would (with the lead-in). If an `archive/alerts` object cannot be
-read, the run stops before any day and writes nothing.
+a new range would (with the lead-in). An unreadable trace object aborts the
+next day too, because that day's lead-in reads it. If an `archive/alerts`
+object cannot be read, the run stops before any day and writes nothing.
 
 **Against R2.** `training.legacy_backfill` runs the same backfill with R2 as
 both the source and the output. It uses the derive job's `R2Storage`, with 8
 concurrent GETs. `--from` and `--through` are required. `--through` must
-have ended at least 30 minutes ago (exit 2 otherwise), because the Worker
-writes a day's last objects after 00:00 UTC:
+have ended at least a full day ago, so it is at most today − 2 in UTC (exit
+2 otherwise). The Worker writes a late invocation when it runs, and one
+filed under a day can run more than an hour late, until the end of the
+next day:
 
 ```
 murk exec -- uv run python -m training.legacy_backfill \

@@ -30,6 +30,7 @@ from momentarily.model.events.contracts import (
     StopEvent,
     SupplyObservation,
     TripMatch,
+    bound_after,
 )
 from momentarily.model.events.keys import (
     SERVICE_DAY_RECORDS,
@@ -67,6 +68,7 @@ EVENT_DOCS = {
 # never edit an old one.
 PINNED_LAYOUTS = {
     1: "78833180fb5238a31bf249f435fbf9b8011b7b961c3c04b1992489bad45bb8a4",
+    2: "6184bf706ffa98fa39b349bcf2b191fef83369f1db63fa186e9ffb722a957916",
 }
 FIXTURE_OF: dict[str, str] = {
     "trip_match": "trip_match",
@@ -368,7 +370,8 @@ REJECTED: list[tuple[type[BaseModel], str, int, str, Any, str]] = [
         "vehicle",
         "traversal_run_time",
     ),
-    (Headway, "headway", 0, "source", "jz", "service_evidence"),
+    # a feed's runs carry its id: retargeting the record breaks the follower
+    (Headway, "headway", 0, "source", "jz", "run_lineage"),
     (OpenState, "open_state", 0, "source", "numbered", "run_lineage"),
     (OpenState, "open_state", 1, "source", "numbered", "service_evidence"),
     # run ids carry the record's lineage (and feed)
@@ -394,6 +397,40 @@ REJECTED: list[tuple[type[BaseModel], str, int, str, Any, str]] = [
         0,
         "leader_run_id",
         "legacy:numbered:046950_6..S03R@1792583221#0",
+        "run_lineage",
+    ),
+    # a B-division run never joins a numbered series: follower, or leader of
+    # another family
+    (
+        Headway,
+        "headway",
+        0,
+        "follower_run_id",
+        "raw:ace:047450_A..S@1792583520#0",
+        "run_lineage",
+    ),
+    (
+        Headway,
+        "headway",
+        0,
+        "leader_run_id",
+        "raw:bdfm:046950_F..S@1792583221#0",
+        "run_lineage",
+    ),
+    (
+        TripMatch,
+        "trip_match",
+        0,
+        "supersedes_run_ids",
+        ["raw:bdfm:101450_J..N47R@1792616046#0"],
+        "run_lineage",
+    ),
+    (
+        TripMatch,
+        "trip_match",
+        2,
+        "member_run_ids",
+        ["legacy:l:118650_1..N@1789516903#0"],
         "run_lineage",
     ),
     (
@@ -468,6 +505,32 @@ REJECTED: list[tuple[type[BaseModel], str, int, str, Any, str]] = [
         "stop_event_flags",
     ),
     (StopEvent, "stop_event", 2, "arrival.suspect_s", 0, "event_bound_overlap"),
+    # uncovered seconds: inside the span, and at least its bounds'
+    (StopEvent, "stop_event", 2, "arrival.uncovered_s", 30, "stop_event_dwell"),
+    (Headway, "headway", 0, "leader_passing.uncovered_s", 60, "headway_bound"),
+    (
+        SegmentTraversal,
+        "segment_traversal",
+        1,
+        "to_arrival.uncovered_s",
+        61,
+        "traversal_run_time",
+    ),
+    (StopEvent, "stop_event", 2, "dwell.uncovered_s", 122, "duration_bound"),
+    (
+        StopEvent,
+        "stop_event",
+        5,
+        "arrival",
+        {
+            "after": 1789477261,
+            "by": 1789477321,
+            "reported": 1789477316,
+            "uncovered_s": 31,
+            "suspect_s": 30,
+        },
+        "event_bound_overlap",
+    ),
     (
         SegmentTraversal,
         "segment_traversal",
@@ -568,6 +631,135 @@ def test_contradictions_are_rejected(
 def test_an_open_run_may_hold_a_matched_pattern_outside_its_fit() -> None:
     doc = _with("open_state", 0, "compatible_pattern_ids", ["Z-N-0000000000ff"])
     assert OpenState.model_validate(doc).pattern_id == "Z-N-bfb91b97d742"
+
+
+_B = 1792616000
+
+
+def _clock(lo: int, until: int | None, as_of: int = _B + 200) -> dict[str, Any]:
+    """open_state[1] with its last passing in (B + 100, B + 160] (§4 and the
+    slice-6 acceptance examples, shifted by B)."""
+    doc = _record("open_state", 1)
+    return {
+        **doc,
+        "as_of": as_of,
+        "since": _B + 160,
+        "last_event": {**doc["last_event"], "after": _B + 100, "by": _B + 160},
+        "last_event_evidence": "reported_planned",
+        "uncovered_until": until,
+        "flags": [] if until is None else ["uncovered_since"],
+        "current_gap": {"lo": lo, "hi": as_of - _B - 101},
+        "eventual": {**doc["eventual"], "lo": lo},
+    }
+
+
+@pytest.mark.parametrize(
+    ("lo", "until"),
+    [
+        (40, None),  # no outage: [t - by, t - after - 1] = [40, 99]
+        (40, _B + 120),  # an outage ending inside the bound: lo 40, not 80
+        (20, _B + 180),  # ending after it: t - e
+        (0, _B + 200),  # still uncovered at as_of
+    ],
+)
+def test_the_open_gap_is_exactly_what_the_evidence_allows(
+    lo: int, until: int | None
+) -> None:
+    state = OpenState.model_validate(_clock(lo, until))
+    assert (state.current_gap.lo, state.current_gap.hi) == (lo, 99)
+    assert state.eventual.lo == lo
+
+
+@pytest.mark.parametrize(
+    ("lo", "until", "flags"),
+    [
+        (0, None, []),  # understated: the evidence gives 40
+        (39, None, []),
+        (41, None, []),  # overstated
+        (0, _B + 120, ["uncovered_since"]),  # the outage ended inside the bound
+        (40, _B + 120, []),  # an outage end without its flag
+        (40, None, ["uncovered_since"]),  # a flag without the outage end
+        (40, _B + 90, ["uncovered_since"]),  # ended before the last passing
+    ],
+)
+def test_an_open_gap_off_the_evidence_is_rejected(
+    lo: int, until: int | None, flags: list[str]
+) -> None:
+    doc = {**_clock(lo, until), "flags": flags}
+    assert "open_state_gap" in _error_types(OpenState, doc)
+    future = _clock(0, _B + 201)
+    assert "open_state_time" in _error_types(OpenState, future)
+
+
+def test_scheduled_no_observation_counts_exactly_from_since() -> None:
+    doc = _record("open_state", 2)
+    assert OpenState.model_validate(doc).current_gap.lo == doc["as_of"] - doc["since"]
+    understated = {
+        **doc,
+        "current_gap": {"lo": 0, "hi": None},
+        "eventual": {**doc["eventual"], "lo": 0},
+    }
+    assert "open_state_gap" in _error_types(OpenState, understated)
+    # A feed outage that ended 300 s before as_of: a train may have passed.
+    outage = {
+        **understated,
+        "uncovered_until": doc["as_of"] - 300,
+        "flags": ["uncovered_since"],
+        "current_gap": {"lo": 300, "hi": None},
+        "eventual": {**doc["eventual"], "lo": 300},
+    }
+    assert OpenState.model_validate(outage).current_gap.lo == 300
+
+
+def test_a_headway_leader_may_come_from_another_feed_of_the_family() -> None:
+    """Raw ``ace`` publishes some F trips, so a route's runs can span the
+    feeds of one family; never two families."""
+    jz = _record("headway", 1)
+    leader = jz["leader_run_id"].replace("raw:jz:", "raw:bdfm:", 1)
+    assert Headway.model_validate({**jz, "leader_run_id": leader}).source == "jz"
+    follower = jz["follower_run_id"].replace("raw:jz:", "raw:bdfm:", 1)
+    assert "run_lineage" in _error_types(Headway, {**jz, "follower_run_id": follower})
+
+
+def test_a_duration_carries_the_uncovered_seconds_of_its_bounds() -> None:
+    """A dwell over an arrival with 30 uncovered seconds is not fully
+    covered; with the 30 s (or more, up to its 121 s span) it is."""
+    nxt = _record("stop_event", 2)
+    arrival = {**nxt["arrival"], "uncovered_s": 30}
+    for uncovered in (30, 121):
+        dwell = {**nxt["dwell"], "uncovered_s": uncovered}
+        event = StopEvent.model_validate({**nxt, "arrival": arrival, "dwell": dwell})
+        assert isinstance(event.dwell, DurationBound)
+    # Overlapping bounds: arrival (580, 641] and departure (600, 701] share
+    # 41 s, so 30 + 30 uncovered seconds may be as few as 30 in the span.
+    a = {
+        "after": 580,
+        "by": 641,
+        "reported": None,
+        "uncovered_s": 30,
+        "suspect_s": None,
+    }
+    d = {**a, "after": 600, "by": 701}
+    span = {"lo": 0, "hi": 121, "censoring": "none", "reported": None}
+    ok = {**nxt, "arrival": a, "departure": d, "dwell": {**span, "uncovered_s": 30}}
+    assert StopEvent.model_validate(ok).dwell is not None
+    low = {**ok, "dwell": {**span, "uncovered_s": 29}}
+    assert "stop_event_dwell" in _error_types(StopEvent, low)
+
+
+def test_a_tie_in_one_second_falls_back_to_the_previous_distinct_fetch() -> None:
+    """Real case: ``numbered@1792708401559`` and ``numbered@1792708402024``
+    both finished in second 1792708402 and differ on 15 trips. When the
+    second shows the event and the first does not, the first counts as at
+    ``by``: ``after`` is the fetch a minute earlier, never ``by`` itself."""
+    by = 1792708402
+    observed = [1792708282, 1792708342, by, by]
+    after = bound_after(observed, by)
+    assert after == 1792708342
+    bound = EventBound.model_validate(_bound(after, by))
+    assert (bound.after, bound.by) == (1792708342, by)
+    assert bound_after([by], by) is None
+    assert "event_bound" in _error_types(EventBound, _bound(by, by))
 
 
 # --- coverage -------------------------------------------------------------------

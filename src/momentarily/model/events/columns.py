@@ -24,7 +24,7 @@ from momentarily.model.events.contracts import (
 )
 from momentarily.model.events.keys import ServiceDayRecord, UtcDayRecord
 
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 
 RECORDS: dict[ServiceDayRecord | UtcDayRecord, type[BaseModel]] = {
     "trip_match": TripMatch,

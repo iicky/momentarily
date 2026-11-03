@@ -15,8 +15,11 @@ Overwrite rule (``resolve_write``), layer 2's:
   ``code_dirty`` (only the code provenance differs): unchanged, kept;
 * a stored file whose metadata names another key, such as another lineage's
   file: a conflict, kept even with ``overwrite``;
-* a file written by another ``builder_version``: replaced, as layer 2
-  replaces a file of another ``DECODER_VERSION``;
+* a file written by a lower ``builder_version`` (and no newer layout):
+  replaced, as layer 2 replaces a file of another ``DECODER_VERSION``;
+* a file written by a higher ``builder_version`` or ``layout_version``: a
+  conflict, kept even with ``overwrite``, so an older checkout never
+  downgrades a newer build;
 * any other difference, or a file that cannot be read: a conflict, kept
   unless ``overwrite`` replaces it.
 
@@ -274,7 +277,17 @@ def resolve_write(
             return Resolution(
                 "conflict", None, f"the stored file is {old.file_key}; never replaced"
             )
-        if old.builder_version != metadata.builder_version:
+        if (
+            old.builder_version > metadata.builder_version
+            or old.layout_version > metadata.layout_version
+        ):
+            return Resolution(
+                "conflict",
+                None,
+                f"the stored file is from builder {old.builder_version} (layout "
+                f"{old.layout_version}), newer than this build; never replaced",
+            )
+        if old.builder_version < metadata.builder_version:
             return Resolution("replaced", data, None)
         code = {
             "code_sha": old.provenance.code_sha,

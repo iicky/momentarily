@@ -40,6 +40,7 @@ the type, not the wording. Deferred records and fields (ScheduledTripOutcome,
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Annotated, Literal, LiteralString, get_args
 
 from pydantic import Field, model_validator
@@ -142,13 +143,36 @@ def _check_evidence(source: GtfsRtSource, evidence: ServiceEvidence) -> None:
 
 
 def _check_run_ids(
-    lineage: Lineage, run_ids: list[str | None], source: str | None = None
+    lineage: Lineage, run_ids: list[str | None], source: GtfsRtSource
 ) -> None:
-    """Every run id names the record's lineage (and, when given, its feed)."""
-    prefix = f"{lineage}:" if source is None else f"{lineage}:{source}:"
+    """Every run id names the record's lineage and feed (§2.3: the run id
+    starts ``{lineage}:{source}:``)."""
+    prefix = f"{lineage}:{source}:"
     for run_id in run_ids:
         if run_id is not None and not run_id.startswith(prefix):
             raise _fail("run_lineage", f"{run_id} is not a {prefix} run")
+
+
+def _check_family_run_id(
+    lineage: Lineage, run_id: str | None, source: GtfsRtSource
+) -> None:
+    """A run id names the record's lineage and a feed of ``source``'s family:
+    a headway leader may come from another feed of the route (raw ``ace``
+    publishes some F trips), never from another family."""
+    if run_id is None:
+        return
+    lineage_part, feed, *_ = [*run_id.split(":", 2), "", ""]
+    family = next((f for name, f in FEED_FAMILY.items() if name == feed), None)
+    if lineage_part != lineage or family != FEED_FAMILY[source]:
+        raise _fail(
+            "run_lineage",
+            f"{run_id} is not a {lineage} run of a {FEED_FAMILY[source]}-family feed",
+        )
+
+
+def _overlap(a0: int, a1: int, b0: int, b1: int) -> int:
+    """Seconds shared by ``(a0, a1]`` and ``(b0, b1]``."""
+    return max(0, min(a1, b1) - max(a0, b0))
 
 
 def _check_bound_lineage(lineage: Lineage, bounds: list[EventBound | None]) -> None:
@@ -173,7 +197,14 @@ def _check_between(
     """A duration from ``start`` to ``end`` follows from the two bounds (§3.2):
     ``lo = max(0, end.after - start.by)``, ``hi = end.by - start.after`` (open
     when the start is left-censored), and the reported difference when both
-    reported times are kept."""
+    reported times are kept.
+
+    Its span is ``(start.after, end.by]``, ``hi`` seconds wide. Every second
+    of either bound inside the span is a second of the span, so the span's
+    ``uncovered_s`` is at least what the two bounds certainly hold there:
+    each bound's ``uncovered_s`` less its seconds outside the span, ``s`` and
+    ``e``, give ``max(s, e, s + e - overlap)`` with ``overlap`` the seconds the
+    two bounds share. (``uncovered_s <= hi`` is ``DurationBound``'s.)"""
     lo = 0 if end.after is None else max(0, end.after - start.by)
     hi = None if start.after is None else end.by - start.after
     reported = (
@@ -183,6 +214,26 @@ def _check_between(
     )
     if (duration.lo, duration.hi, duration.reported) != (lo, hi, reported):
         raise _fail(error_type, "the duration does not follow from its bounds")
+    if start.after is None or duration.uncovered_s is None:
+        return
+    span = (start.after, end.by)
+    inside: list[int] = []
+    for bound in (start, end):
+        if bound.after is None or bound.uncovered_s is None:
+            inside.append(0)
+            continue
+        outside = bound.by - bound.after - _overlap(bound.after, bound.by, *span)
+        inside.append(max(0, bound.uncovered_s - outside))
+    s, e = inside
+    shared = (
+        0 if end.after is None else _overlap(start.after, start.by, end.after, end.by)
+    )
+    least = max(s, e, s + e - shared)
+    if duration.uncovered_s < least:
+        raise _fail(
+            error_type,
+            f"uncovered_s {duration.uncovered_s} is below the {least} s its bounds hold",
+        )
 
 
 def _check_pattern_fit(
@@ -245,13 +296,28 @@ class EventBound(Model):
             )
         if self.suspect_s is not None and after is None:
             raise _fail("event_bound_overlap", "suspect_s is null when after is")
-        for name, value in (
-            ("uncovered_s", self.uncovered_s),
-            ("suspect_s", self.suspect_s),
+        if (
+            after is not None
+            and (self.uncovered_s or 0) + (self.suspect_s or 0) > by - after
         ):
-            if value is not None and after is not None and value > by - after:
-                raise _fail("event_bound_overlap", f"{name} exceeds the bound's width")
+            # suspect_stale is its own coverage state, never an uncovered one,
+            # so the two never share a second.
+            raise _fail(
+                "event_bound_overlap",
+                "uncovered_s and suspect_s together exceed the bound's width",
+            )
         return self
+
+
+def bound_after(observed: Iterable[Instant], by: Instant) -> Instant | None:
+    """``after`` for a bound closed at ``by`` (§3.2 tie rule): the latest
+    observation instant strictly before ``by``, None (left-censored) when
+    there is none. Two fetches of a feed can finish in one integer second
+    with different content, so the fetch that did not show the event can
+    share ``by``'s second. It then counts as at ``by``, and ``after`` falls
+    back to the previous distinct instant: the bound only widens, and
+    ``after < by`` stays strict."""
+    return max((t for t in observed if t < by), default=None)
 
 
 class DurationBound(Model):
@@ -283,13 +349,20 @@ class DurationBound(Model):
             )
         if self.hi is not None and self.hi < self.lo:
             raise _fail("duration_bound", "hi precedes lo")
+        if (
+            self.hi is not None
+            and self.uncovered_s is not None
+            and self.uncovered_s > self.hi
+        ):
+            raise _fail("duration_bound", "uncovered_s exceeds the span")
         return self
 
 
 class GapInterval(Model):
     """Current elapsed gap at an evaluation instant; integer seconds, both
     ends inclusive. ``hi`` null only when the last passing is left-censored,
-    or for ``scheduled_no_observation``."""
+    or for ``scheduled_no_observation``. ``OpenState`` fixes both ends (§4):
+    exactly ``[as_of - by, as_of - after - 1]`` with no outage."""
 
     lo: int = Field(ge=0)
     hi: int | None
@@ -433,7 +506,11 @@ class TripMatch(Model):
 
     def _check_identity(self) -> None:
         own = self.run_id
-        _check_run_ids(self.lineage, [*self.member_run_ids, *self.supersedes_run_ids])
+        _check_run_ids(
+            self.lineage,
+            [*self.member_run_ids, *self.supersedes_run_ids],
+            self.source,
+        )
         if own in self.member_run_ids or own in self.identity_uncertain_with:
             raise _fail("trip_match_identity", "a run does not list itself")
         if self.identity_uncertain_with and self.lineage != "raw":
@@ -818,7 +895,8 @@ class Headway(Model):
 
     @model_validator(mode="after")
     def _consistent(self) -> Headway:
-        _check_run_ids(self.lineage, [self.leader_run_id, self.follower_run_id])
+        _check_run_ids(self.lineage, [self.follower_run_id], self.source)
+        _check_family_run_id(self.lineage, self.leader_run_id, self.source)
         _check_bound_lineage(self.lineage, [self.leader_passing, self.follower_passing])
         leader = (
             self.leader_service_date,
@@ -873,7 +951,16 @@ class OpenState(Model):
     """Right-censored state at one instant (the live store, §7; also the
     window-end tail and the next day's checkpoint of a nightly build). Never
     a closed record. ``current_gap`` is finite at ``as_of``; ``eventual`` is
-    the still-open headway, right-censored from ``current_gap.lo``."""
+    the still-open headway, right-censored from ``current_gap.lo``.
+
+    ``current_gap`` is exact (§4): with the last passing in ``(after, by]``,
+    ``lo = max(0, as_of - max(by, e))`` and ``hi = as_of - after - 1``, where
+    ``e`` is ``uncovered_until`` (an uncovered interval of the feed ended
+    after the last passing, so a train may have passed unseen) and drops
+    out when null. ``scheduled_no_observation`` reads ``since`` for ``by``
+    and has no ``hi``. ``uncovered_until`` is set exactly when the flag
+    ``uncovered_since`` is; ``as_of`` while the feed is still uncovered,
+    which gives ``lo = 0``."""
 
     as_of: Instant
     lineage: Lineage
@@ -900,6 +987,9 @@ class OpenState(Model):
     since: Instant = Field(
         description="Start of the open interval (§4 initialization)."
     )
+    uncovered_until: Instant | None = Field(
+        description="End of the last uncovered interval of the feed after the last passing (after since with no passing), as_of while still uncovered; null when none. Set exactly with the uncovered_since flag."
+    )
     stop_id: str
     route_id: str
     direction: Direction
@@ -912,7 +1002,7 @@ class OpenState(Model):
         description="Pattern scope: one clock per series."
     )
     current_gap: GapInterval = Field(
-        description="[as_of - by, as_of - after - 1], with an outage-adjusted lo (§4)."
+        description="Exactly [as_of - max(by, uncovered_until), as_of - after - 1], lo clamped at 0 (§4); since for by with no observation."
     )
     eventual: DurationBound = Field(
         description="The still-open headway: censoring right, hi null, lo = current_gap.lo."
@@ -939,18 +1029,32 @@ class OpenState(Model):
             )
             _check_service_level(self.evidence, ends)
         gap = self.current_gap
+        until = self.uncovered_until
+        if (until is not None) != ("uncovered_since" in self.flags):
+            raise _fail(
+                "open_state_gap",
+                "uncovered_until is set exactly when uncovered_since is",
+            )
+        if until is not None and until > self.as_of:
+            raise _fail("open_state_time", "uncovered_until is after as_of")
         if last is not None:
             if last.by > self.as_of:
                 raise _fail("open_state_time", "the last event is after as_of")
-            hi = None if last.after is None else self.as_of - last.after - 1
-            if gap.hi != hi or gap.lo > self.as_of - last.by:
+            if until is not None and last.after is not None and until <= last.after:
                 raise _fail(
-                    "open_state_gap", "current_gap does not follow the last event"
+                    "open_state_gap", "uncovered_until ends after the last passing"
                 )
-        elif gap.hi is not None or gap.lo > self.as_of - self.since:
+            hi = None if last.after is None else self.as_of - last.after - 1
+            seen = last.by
+        else:
+            if until is not None and until <= self.since:
+                raise _fail("open_state_gap", "uncovered_until ends after since")
+            hi, seen = None, self.since
+        lo = max(0, self.as_of - max(seen, until if until is not None else seen))
+        if (gap.lo, gap.hi) != (lo, hi):
             raise _fail(
                 "open_state_gap",
-                "with no observation the gap is open and at most as_of - since",
+                f"current_gap must be [{lo}, {hi}] at as_of {self.as_of}",
             )
         eventual = self.eventual
         if eventual.censoring != "right" or eventual.lo != gap.lo:

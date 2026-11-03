@@ -331,6 +331,56 @@ def test_dst_nights_anchor_trips_on_the_wall_clock(
     assert trip.spans_dst_transition is spans_dst
 
 
+@pytest.mark.parametrize(
+    ("service_date", "arrivals_utc"),
+    [
+        # 02:02 EST exists once: the anchor is 07:02 UTC, and the 01:57
+        # arrival lies 5 min before it, the second 01:57 (EST), not the first.
+        ("2026-11-01", ["06:57", "07:04", "07:06"]),
+        # 02:02 does not exist: the whole trip is unresolved, though its
+        # 01:57 arrival does exist on the wall clock.
+        ("2027-03-14", [None, None, None]),
+    ],
+)
+def test_a_trip_is_anchored_on_its_first_departure_not_its_first_arrival(
+    service_date: str, arrivals_utc: list[str | None]
+) -> None:
+    """A dwell at the first stop: arrives 01:57, departs 02:02. The realtime
+    feeds start trips by their departure, so the anchor is the departure and
+    every other time (the first arrival included) is placed by elapsed
+    scheduled time."""
+    net = _synthetic()
+    stop_times = [(stop, m * 60, m * 60) for stop, m in (("102N", 124), ("103N", 126))]
+    trip = net.trips[0].model_copy(
+        update={
+            "trip_id": "SYN-Daily_011700_1..N03R",
+            "stop_times": [("101N", 117 * 60, 122 * 60), *stop_times],
+        }
+    )
+    ix = _index(net.model_copy(update={"trips": [trip]}), service_date)
+    expected = [
+        None if hm is None else _utc(f"{service_date}T{hm}:00") for hm in arrivals_utc
+    ]
+    assert [ix.arrival(trip.trip_id, s) for s in ("101N", "102N", "103N")] == expected
+    found = ix.trip(trip.trip_id)
+    assert found is not None
+    departure = None if expected[0] is None else expected[0] + 300
+    assert found.first_departure == departure
+
+
+def test_an_unresolved_trip_still_answers_its_realtime_key() -> None:
+    """The 02:30 trip on 2027-03-14 has no instant, but its realtime id
+    ``015000_1..N`` still finds it, so the matcher can tell an unresolved
+    trip from an unknown id."""
+    ix = _index(_synthetic(), "2027-03-14")
+    key = parse_realtime("015000_1..N")
+    assert key is not None
+    hits = [h for h in ix.realtime_key(key) if not h.wrapped]
+    assert [h.trip.trip_id for h in hits] == [_trip_id("02:30")]
+    assert (hits[0].trip.first_departure, hits[0].trip.last_arrival) == (None, None)
+    assert ix.arrival(_trip_id("02:30"), "101N") is None
+
+
 def test_unresolved_times_are_null_in_the_stored_document() -> None:
     ix = _index(_synthetic(), "2027-03-14")
     pattern = next(p for p in ix.document.patterns if p.trips)

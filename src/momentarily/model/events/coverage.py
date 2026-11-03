@@ -17,9 +17,14 @@ state that applies:
 
 1. ``fetch_failed``, ``not_stored``, ``stale_header``: a fetch of that kind
    lies between them, in that order;
-2. ``no_invocation``: a scheduled slot with no invocation lies in ``[a, b)``
-   (presence is a set over ``scheduled_at``; bundle-index-only invocations
-   count, duplicates do no harm), or else ``b - a > MAX_GAP_S``;
+2. ``no_invocation``: a slot of the cron grid whose own window
+   ``[S, S + SLOT_S)`` holds no good fetch of the feed lies in ``(a, b)``,
+   that is ``a < S`` and ``S + SLOT_S <= b``; or else ``b - a > MAX_GAP_S``.
+   The grid is every ``scheduled_at`` read and the slots missing between
+   them (``missing_slots``; bundle-index-only invocations count, duplicates
+   do no harm). Presence is keyed to fetch instants, never to an
+   invocation's ``scheduled_at``: a late invocation (a cron retry) fills
+   only the slot its fetches finish in, nothing earlier;
 3. ``suspect_stale`` (legacy): both fetches are in a run of
    ``SUSPECT_RUN`` or more consecutive trace objects whose non-empty row set
    for the feed (trip, stop, ``vehicle_timestamp``, placeholders excluded)
@@ -51,7 +56,7 @@ other's evidence.
 from __future__ import annotations
 
 import hashlib
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -103,8 +108,9 @@ from momentarily.model.observations.keys import (
 )
 from momentarily.model.observations.parquet import file_lineage, read_file_metadata
 
-COVERAGE_VERSION = 1
-"""Bump when the rules change what a file holds."""
+COVERAGE_VERSION = 2
+"""Bump when the rules change what a file holds. 2: slot presence keyed to
+fetch instants, and a legacy vehicle hour required for fresh polls."""
 
 MAX_GAP_S = 120
 MAX_HEADER_AGE_S = 120
@@ -206,9 +212,13 @@ def _transport(polls: Sequence[Poll]) -> CoverageState | None:
 
 
 def _feed_stretches(
-    polls: Sequence[Poll], missing: Sequence[int], window: tuple[int, int]
+    polls: Sequence[Poll],
+    grid: Sequence[int],
+    missing: Sequence[int],
+    window: tuple[int, int],
 ) -> list[_Stretch]:
-    """The stretches of one feed tiling ``window``, before merging."""
+    """The stretches of one feed tiling ``window``, before merging. ``grid``:
+    the sorted cron slots; ``missing``: those no invocation was recorded for."""
     w0, w1 = window
     if not polls:
         return [_Stretch(w0, w1, None, "unknown", NO_FETCH)]
@@ -230,11 +240,15 @@ def _feed_stretches(
         state = _transport(polls[i + 1 : j])
         cause: Cause = "fetch"
         if state is None:
-            k = bisect_left(missing, a)
-            if k < len(missing) and missing[k] < b:
-                state, cause = "no_invocation", "missing_slot"
-            elif b - a > MAX_GAP_S:
-                state, cause = "no_invocation", "late"
+            # A slot's window [S, S + SLOT_S) with no fetch: no good fetch
+            # lies strictly between a and b, so it is one inside (a, b].
+            k = bisect_right(grid, a)
+            if (k < len(grid) and grid[k] + SLOT_S <= b) or b - a > MAX_GAP_S:
+                m = bisect_left(missing, a)
+                cause = (
+                    "missing_slot" if m < len(missing) and missing[m] < b else "late"
+                )
+                state = "no_invocation"
             elif j == i + 1 and i in suspect:
                 state, cause = "suspect_stale", "suspect"
             else:
@@ -280,6 +294,7 @@ def coverage_intervals(
     """The day's ``CoverageInterval`` records per feed, and their tally."""
     w0, w1 = evidence.window
     missing = missing_slots(evidence.slots)
+    grid = sorted({*evidence.slots, *missing})
     records: list[CoverageInterval] = []
     tally: dict[GtfsRtSource, FeedCoverage] = {}
     for feed in _FEEDS:
@@ -289,7 +304,7 @@ def coverage_intervals(
             fetches=bisect_left(ats, w1) - bisect_left(ats, w0)
         )
         merged: list[_Stretch] = []
-        for s in _feed_stretches(polls, missing, evidence.window):
+        for s in _feed_stretches(polls, grid, missing, evidence.window):
             length = s.end - s.start
             if s.state is None:
                 stats.unknown_s += length
@@ -337,13 +352,16 @@ class CoverageReport:
     from_bundle_index: int = 0
     """Raw invocations known from their bundle index alone."""
     missing_slots: list[int] = field(default_factory=list[int])
+    """Slots of the window no invocation was recorded for (the cron grid's
+    holes). Coverage keys presence to fetch instants (rule 2), so a late
+    invocation fills its slot here, never in the coverage file."""
     undecoded_fetches: int = 0
     """Raw fetches stored and parsed whose header layer 2 did not decode."""
     unattributed_rows: int = 0
     """Legacy rows whose trip id names no ``RouteFeed`` route."""
     dropped_edge_hours: list[int] = field(default_factory=list[int])
-    """Raw: neighbouring hours left out because their ``feed_header`` file is
-    missing."""
+    """Neighbouring hours left out because their layer-2 file is missing:
+    raw ``feed_header``, legacy ``vehicle``."""
     feeds: dict[str, FeedCoverage] = field(default_factory=dict[str, FeedCoverage])
     rows: int = 0
     outcome: WriteOutcome | None = None
@@ -631,15 +649,32 @@ def legacy_evidence(
                     key, f"{r.legacy_fetch_id} disagrees with its object"
                 )
             obj.fresh[cast(GtfsRtSource, r.source)] = r.succeeded
-    hours = sorted({o.observed_at - o.observed_at % _HOUR for o in objects.values()})
-    for hour_start in hours:
+
+    def hour_of(obj: _TraceObject) -> int:
+        return obj.observed_at - obj.observed_at % _HOUR
+
+    # Layer 2 records no hour as holding zero rows, so an hour with a fresh
+    # poll needs its vehicle file: an absent one is never read as empty
+    # polls. A missing neighbouring hour is left out, as raw does.
+    dropped: set[int] = set()
+    for hour_start in sorted({hour_of(o) for o in objects.values()}):
         key = DerivedHourKey("vehicle", hour_start).key
         data = inputs.get(key)
-        # The backfill writes no file for an hour whose trace objects hold no
-        # rows at all: those objects are fresh polls with empty row sets.
         if data is not None:
             _legacy_rows(inputs, key, data, objects, route_feed)
-    by_order = sorted(objects.items(), key=lambda kv: (kv[1].observed_at, kv[0]))
+            continue
+        in_hour = [o for o in objects.values() if hour_of(o) == hour_start]
+        if not any(any(o.fresh.values()) for o in in_hour):
+            continue
+        if window[0] <= hour_start < window[1]:
+            inputs.missing(key, "no layer-2 file for an hour with fresh trace objects")
+        else:
+            dropped.add(hour_start)
+            report.dropped_edge_hours.append(hour_start)
+    by_order = sorted(
+        ((k, o) for k, o in objects.items() if hour_of(o) not in dropped),
+        key=lambda kv: (kv[1].observed_at, kv[0]),
+    )
     polls: dict[GtfsRtSource, list[Poll]] = {feed: [] for feed in _FEEDS}
     for _, obj in by_order:
         for feed in _FEEDS:

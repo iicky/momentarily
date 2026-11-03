@@ -628,6 +628,23 @@ def test_contradictions_are_rejected(
     assert error_type in _error_types(model, doc)
 
 
+@pytest.mark.parametrize(
+    ("stop_to_stop", "accepted"), [(0, False), (29, False), (30, True)]
+)
+def test_a_next_stop_to_stop_holds_its_run_time_uncovered_seconds(
+    stop_to_stop: int, accepted: bool
+) -> None:
+    """Arrival to arrival contains departure to arrival: a "next" stop-to-stop
+    time is never less uncovered than its run time."""
+    doc = _with("segment_traversal", 1, "from_event.uncovered_s", 30)
+    doc["run_time"]["uncovered_s"] = 30
+    doc["stop_to_stop"]["uncovered_s"] = stop_to_stop
+    if accepted:
+        SegmentTraversal.model_validate(doc)
+    else:
+        assert "traversal_run_time" in _error_types(SegmentTraversal, doc)
+
+
 def test_an_open_run_may_hold_a_matched_pattern_outside_its_fit() -> None:
     doc = _with("open_state", 0, "compatible_pattern_ids", ["Z-N-0000000000ff"])
     assert OpenState.model_validate(doc).pattern_id == "Z-N-bfb91b97d742"

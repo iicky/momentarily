@@ -63,7 +63,11 @@ def _print_day(d: DayReport) -> None:
         f"written {d.written:>3}  unchanged {d.unchanged:>3}  "
         f"replaced {d.replaced:>3}  conflicts {d.conflicts:>3}  "
         f"obsolete {d.obsolete:>3}  {d.seconds:>7.1f} s"
-        + (f"  ABORTED, nothing written: {d.aborted} unreadable" if d.aborted else ""),
+        + (
+            f"  ABORTED, nothing written: {d.aborted} unreadable or malformed"
+            if d.aborted
+            else ""
+        ),
         flush=True,
     )
 

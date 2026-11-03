@@ -407,15 +407,31 @@ def test_file_metadata_names_every_input_object(tmp_path: Path) -> None:
     assert named == every
 
 
-def test_a_malformed_object_is_skipped_and_reported(tmp_path: Path) -> None:
+def test_a_malformed_object_aborts_its_day_and_is_reported(tmp_path: Path) -> None:
+    """Its rows are unknown, so its day is written whole or not at all; the
+    other days are written as without it (a health object fills its own day
+    only)."""
+    run(LocalStorage(MIRROR), LocalStorage(tmp_path / "clean"), "f" * 40, False)
     mirror = tmp_path / "mirror"
     shutil.copytree(MIRROR, mirror)
-    bad = mirror / "archive" / "health" / "2026-09-11" / "1789094708.json"
-    bad.write_bytes(b'{"observed_at": 1789094708, "write_fail')
-    report = run(LocalStorage(mirror), LocalStorage(tmp_path / "out"), "f" * 40, False)
+    key = "archive/health/2026-09-11/1789094708.json"
+    (mirror / key).write_bytes(b'{"observed_at": 1789094708, "write_fail')
+    out = tmp_path / "out"
+    report = run(LocalStorage(mirror), LocalStorage(out), "f" * 40, False)
     failures = report.archives["archive/health"].failures
-    assert [k for k, _ in failures] == ["archive/health/2026-09-11/1789094708.json"]
-    assert report.archives["archive/health"].rows == {"legacy_collector_health": 2}
+    assert [k for k, _ in failures] == [key]
+    assert report.aborted == [("2026-09-11", key)]
+    assert report.failed
+
+    def files(root: Path) -> dict[str, bytes]:
+        return {
+            p.relative_to(root).as_posix(): p.read_bytes()
+            for p in root.rglob("*.parquet")
+        }
+
+    clean = files(tmp_path / "clean")
+    assert any("2026-09-11" in k for k in clean)
+    assert files(out) == {k: v for k, v in clean.items() if "2026-09-11" not in k}
     assert main(["--mirror", str(mirror), "--out", str(tmp_path / "cli")]) == 1
 
 

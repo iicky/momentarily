@@ -31,11 +31,16 @@ the adapters emit vehicles, equipment and alert versions observed before it
 only, and alert versions of days before its UTC day only. The legacy-only
 records continue past it.
 
-A malformed object is skipped and listed in the report; a record a contract
-rejects stops the run. A listed object the store does not return (after the
-store's retries) is a store error, not bad data: its day is aborted, nothing
-of it is written, the report lists it and the run goes on with the next day
-as a new range would. Files are rendered as they close and stored only once
+A record a contract rejects stops the run. A day that reads an object it
+cannot use is aborted: nothing of it is written, the report lists the day and
+the key, and the run goes on with the next day as a new range would. That is
+a listed object the store does not return (after the store's retries), a
+store error, or a malformed one (listed with its reason), whose rows are
+unknown. Both count for every day that reads the object, its own and, for a
+trace object, the next (whose lead-in reads it), so no day is ever written
+without an object that may hold its rows. A malformed or unreadable
+``archive/alerts`` object stops the run before any day: every version depends
+on every sighting. Files are rendered as they close and stored only once
 their day is complete.
 
 **Writing.** A file is compared with what the store holds under its key:
@@ -177,8 +182,8 @@ class DayReport:
     obsolete: int
     seconds: float
     aborted: str | None = None
-    """The listed object that could not be read; nothing of the day was
-    written."""
+    """The listed object that could not be read, or was malformed; nothing of
+    the day was written."""
 
 
 @dataclass
@@ -199,8 +204,9 @@ class Report:
     the run that covers their day writes them."""
     days: list[DayReport] = field(default_factory=list[DayReport])
     aborted: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
-    """(day, key): days left unwritten because a listed object could not be
-    read (``archive/alerts`` for the up-front read, which stops the run)."""
+    """(day, key): days left unwritten because an object they read could not
+    be read or was malformed (``archive/alerts`` for the up-front read, which
+    stops the run)."""
 
     @property
     def failed(self) -> bool:
@@ -215,6 +221,15 @@ class MissingObjectError(Exception):
 
     def __init__(self, key: str) -> None:
         super().__init__(f"{key} is listed but could not be read")
+        self.key = key
+
+
+class _MalformedInputError(Exception):
+    """A malformed object a day reads. Its rows are unknown, so every day
+    that reads it is aborted, as for an unreadable one."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"{key} is malformed")
         self.key = key
 
 
@@ -510,6 +525,7 @@ def _alert_versions(
             sightings.append(alerts.parse(obj))
         except MalformedObjectError as err:
             stats.failures.append((obj.key, str(err)))
+            raise _MalformedInputError(obj.key) from err
     by_day: dict[str, list[Emitted]] = {}
     for e in alerts.versions(sightings):
         first = e.record.first_seen if isinstance(e.record, AlertVersion) else None
@@ -551,7 +567,8 @@ class _Run:
     ) -> None:
         """Adapt ``keys`` of ``src``, filed under the day that ends at
         ``end``, in order. ``lead_in``: read for the next day only; the run
-        of their own day counts and reports them."""
+        of their own day counts them. A malformed object is listed (once)
+        and aborts the day reading it."""
         stats = self._report.archives[src.archive]
         t0 = time.perf_counter()
         by = end + _DAY_SECONDS if src.spills else end
@@ -562,9 +579,10 @@ class _Run:
             try:
                 emitted = src.adapt(obj)
             except MalformedObjectError as err:
-                if not lead_in:
-                    stats.failures.append((key, str(err)))
-                continue
+                failure = (key, str(err))
+                if failure not in stats.failures:
+                    stats.failures.append(failure)
+                raise _MalformedInputError(key) from err
             if not emitted:
                 continue
             self._writer.add(src.archive, emitted, by)
@@ -650,7 +668,7 @@ def run(
             if days[0] < RECORDER_CUTOVER_DAY
             else {}
         )
-    except MissingObjectError as err:
+    except (MissingObjectError, _MalformedInputError) as err:
         report.aborted.append((ALERTS, err.key))
         return report
     with tempfile.TemporaryDirectory(prefix="legacy-") as staging:
@@ -666,7 +684,7 @@ def run(
                 if lead_in:
                     job.lead_in(day)
                 job.day(day, versions.pop(day, []))
-            except MissingObjectError as err:
+            except (MissingObjectError, _MalformedInputError) as err:
                 # Nothing of the day is stored; the next day starts afresh.
                 writer.discard(_day_start(day) + _DAY_SECONDS)
                 report.aborted.append((day, err.key))

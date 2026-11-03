@@ -796,6 +796,14 @@ class SegmentTraversal(Model):
             _check_between(
                 self.run_time, self.from_event, self.to_arrival, "traversal_run_time"
             )
+            # "next": stop-to-stop runs from the arrival, which precedes the
+            # departure, so its span contains the run time's span.
+            outer, inner = self.stop_to_stop.uncovered_s, self.run_time.uncovered_s
+            if outer is not None and inner is not None and outer < inner:
+                raise _fail(
+                    "traversal_run_time",
+                    f"stop_to_stop uncovered_s {outer} is below run_time's {inner}",
+                )
         else:
             # "last": from_event is the arrival, so stop-to-stop is exact.
             _check_between(

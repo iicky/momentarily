@@ -855,17 +855,38 @@ An HTTP 200 does not mean data:
 
 ### 5.1 Coverage (transport evidence, per feed)
 
-Coverage is keyed to fetch instants (`observed_at`), not wall-clock
-minutes, so dispatch jitter is never a gap:
+Coverage is keyed to fetch instants (`observed_at`) and the recorder's
+minute grid (`COVERAGE_VERSION` 2, review fix 2026-11-03). The grid is
+every `scheduled_at` read plus the missing slots between them (§10, slice
+3 as built). Slot `S` is present for a feed when a good fetch of the feed
+finished in its own minute `[S, S + 60)`:
 
 ```text
-covered(feed) = every stretch between two consecutive good fetches of the
-                feed that are at most 120 s apart, with no failed fetch
-                inside it
+covered(feed) = every stretch [a, b) between two consecutive good fetches
+                of the feed that are at most 120 s apart, with no failed
+                fetch inside it, and no grid slot S with a < S and
+                S + 60 <= b (a minute that held no good fetch)
 ```
 
 Any other stretch is uncovered. Its state is `fetch_failed` when a failed
-fetch lies inside it (whatever its length), otherwise `no_invocation`.
+fetch lies inside it (whatever its length), otherwise `no_invocation`,
+with the cause `missing_slot` (a slot with no recorded invocation) or
+`late`. Jitter inside a minute is never a gap: a fetch at `S + 59` covers
+slot `S`. An invocation that starts 60 s or more late, however, leaves its
+own minute without a fetch, so the 70–120 s stretch between its
+neighbours' fetches is `no_invocation` (`late`) although no two fetches
+are more than 120 s apart: the recorder promised a fetch in that minute
+and none came. The rule has a cliff there (`S + 59` covered, `S + 60` a
+stretch of about 118 s).
+
+*Superseded (`COVERAGE_VERSION` 1, until 2026-11-03):* "Coverage is keyed
+to fetch instants (`observed_at`), not wall-clock minutes, so dispatch
+jitter is never a gap: covered = every stretch between two consecutive
+good fetches that are at most 120 s apart, with no failed fetch inside
+it", and slot presence was a set over `scheduled_at`. A cron retry
+40 minutes late made its slot present, so a 120 s hole read `covered`
+(review finding O-03).
+
 What counts as a good fetch differs by lineage:
 
 - **Raw.** `FeedFetch.outcome == "ok"`, the payload decoded, and
@@ -909,8 +930,9 @@ These are exactly the minutes the earlier count-based rule flagged on the
 unaltered days. They are transport events, now in their own states, and
 no count-based flag remains.
 
-Live latency: a failed fetch is known at once, and a stale header or a
-missing invocation after 120 s, within the ≤ 2 min that §1 needs.
+Live latency: a failed fetch is known at once, a missing or late
+invocation once its minute ends (60 s), and a stale header after 120 s,
+within the ≤ 2 min that §1 needs.
 
 **Feed of a row.** Legacy rows carry no `source`. Layer 3 maps the trip
 id's route field to a feed through a fixed table (`RouteFeed`, versioned
@@ -1679,7 +1701,12 @@ built.
     certainly hold inside the span, `max(s, e, s + e − overlap)` (§3.2).
     This ties a "next" dwell to arrival and departure, a "next" run time
     and a "last" stop-to-stop time to the traversal's bounds, and a
-    headway to its two passings.
+    headway to its two passings. A "next" stop-to-stop time runs from the
+    arrival, which the record does not hold; its span contains the run
+    time's, so its `uncovered_s` is at least the run time's (review fix,
+    2026-11-03: it was unchecked). Every other duration either has this
+    two-bound check or is right-censored with a null `uncovered_s`
+    (an unknown leader's headway, `OpenState.eventual`).
   - `run_lineage`: every run id a record holds starts with the record's
     lineage and feed, `{lineage}:{source}:` (`run_id`, TripMatch members
     and superseded ids, the headway follower). A headway leader needs the
@@ -1893,7 +1920,8 @@ its metadata are `momentarily.model.events.files`.
     70–120 s (17 on 10-21 and 15 on 10-22 for `ace`) around a slot whose
     own invocation started 60 s or more late (up to 53 minutes, a cron
     retry), so no fetch finished inside that slot's minute. The Gate A/B
-    tables above were measured under the old rule.
+    tables and the new-days figures were measured under the old rule; each
+    is marked version 1 and followed by its version-2 figures.
     Legacy 09-15, 10-19 and 08-12 are unchanged.
   - Legacy 09-15: one 180 s `no_invocation` on every feed (the 2 missing
     trace minutes) and 120 s `fetch_failed` on `numbered`. 10-19: none
@@ -2103,8 +2131,9 @@ feeds resume at 00:37.
   events.
 - 1,558 of 152,915 arrival bounds overlap an uncovered stretch.
 
-**Coverage** (§5.1, keyed to fetch instants). Seconds per state, from the
-first fetch (03:57:21 UTC) to the last:
+**Coverage** (§5.1, keyed to fetch instants; `COVERAGE_VERSION` 1,
+superseded below). Seconds per state, from the first fetch (03:57:21 UTC)
+to the last:
 
 | Feed | covered | `stale_header` | `no_invocation` | bytes not stored |
 |---|---|---|---|---|
@@ -2115,6 +2144,22 @@ first fetch (03:57:21 UTC) to the last:
 | `si` | 68,799 | 2,399 | 800 | 121 |
 | `l` | 71,198 | 0 | 800 | 121 |
 | `numbered` | 71,082 | 0 | 916 | 121 |
+
+Under `COVERAGE_VERSION` 2 (2026-11-03, §5.1), from the coverage CLI on
+the local mirror over the build window (04:00 to 24:00 UTC; the 20 s
+before the first raw fetch are `Unknown`), seconds per state:
+
+| Feed | covered | `stale_header` | `no_invocation` (slot + late) | `not_stored` |
+|---|---|---|---|---|
+| `ace`, `bdfm`, `g`, `jz` | 66,650 | 2,220 | 2,989 | 121 |
+| `nqrw` | 66,651 | 2,220 | 2,988 | 121 |
+| `si` | 66,537 | 2,220 | 3,102 | 121 |
+| `l` | 68,758 | 0 | 3,101 | 121 |
+| `numbered` | 68,755 | 0 | 3,104 | 121 |
+
+The stretches below are the version-1 ones. Version 2 adds a `late`
+stretch of 70–120 s around each invocation that started 60 s or more
+late, because no fetch finished inside its own minute (17 on `ace`).
 
 Every uncovered stretch, and its cause:
 
@@ -2415,8 +2460,16 @@ and one revises a decision (item 3):
    - `stale_header` is decided by header age above 120 s, from the first
      stale fetch. It never starts at the stuck header time (03:22), which
      is earlier than any evidence.
+   - *Superseded on 2026-11-03 (`COVERAGE_VERSION` 2, §5.1):* presence is
+     per feed, and a slot is present only when a good fetch of the feed
+     finished in its own minute. The first bullet let a late retry make
+     its slot present, so a 120 s hole read `covered`. The other bullets
+     stand; "gap > 120 s" is now the `late` cause, which also takes every
+     70–120 s stretch around an invocation that started 60 s or more late
+     and left its minute without a fetch.
 
-   Uncovered seconds on 10-21 under the combined rule:
+   Uncovered seconds on 10-21 under the combined rule (`COVERAGE_VERSION`
+   1, prototype from 03:57:21; superseded by the next table):
 
    | Feed | Uncovered | `stale_header` | `no_invocation` (slot) | gap > 120 s | `not_stored` |
    |---|---|---|---|---|---|
@@ -2427,6 +2480,20 @@ and one revises a decision (item 3):
    | `si` | 3,434 | 2,399 | 120 | 794 | 121 |
    | `l` | 1,035 | 0 | 120 | 794 | 121 |
    | `numbered` | 1,156 | 0 | 120 | 915 | 121 |
+
+   Uncovered seconds on 10-21 under `COVERAGE_VERSION` 2, from the coverage
+   CLI on the local mirror (window from 04:00, so `stale_header` is 2,220 s,
+   not 2,399; the 20 s before the first raw fetch are `Unknown` and not
+   counted):
+
+   | Feed | Uncovered | `stale_header` | `no_invocation` (slot) | `no_invocation` (late) | `not_stored` |
+   |---|---|---|---|---|---|
+   | `ace`, `bdfm`, `jz` | 5,330 | 2,220 | 120 | 2,869 | 121 |
+   | `g` | 5,330 | 2,220 | 121 | 2,868 | 121 |
+   | `nqrw` | 5,329 | 2,220 | 120 | 2,868 | 121 |
+   | `si` | 5,443 | 2,220 | 120 | 2,982 | 121 |
+   | `l` | 3,222 | 0 | 120 | 2,981 | 121 |
+   | `numbered` | 3,225 | 0 | 120 | 2,984 | 121 |
 2. **Gate B (decided 2026-10-22).** `ServiceEvidence` gains
    `reported_planned` for the "last" family. `StopEvent.arrival`,
    `departure` and `departure_basis` must allow it as well as `stopped`.
@@ -2476,9 +2543,10 @@ Unmatched classes on 10-22 (500, maximum cardinality):
 By route field the most are D 133 and 6 106, as on 10-21. The evening
 hours 21:00–23:00 ET match least often (85–90%).
 
-**Coverage on 10-22** (the combined rule of the contract verdict).
-Missing slots: 09:21–09:22, 19:14–19:15 and 21:41–21:42 UTC, each 2
-consecutive minutes with no tick and no bundle.
+**Coverage on 10-22** (the combined rule of the contract verdict,
+`COVERAGE_VERSION` 1; the table and the stretches are superseded by the
+version-2 table after them). Missing slots: 09:21–09:22, 19:14–19:15 and
+21:41–21:42 UTC, each 2 consecutive minutes with no tick and no bundle.
 
 | Feed | Uncovered s | `no_invocation` | gap > 120 s | `not_stored` |
 |---|---|---|---|---|
@@ -2503,6 +2571,26 @@ Stretches (UTC) and their causes:
   feeds and 00:59 only `ace`. The invocations started 62–848 s late.
 - Not one stretch comes from train counts. All are recorder delays or
   losses: 19–21 stretches per feed, against 8–11 on 10-21.
+
+Under `COVERAGE_VERSION` 2 (2026-11-03, §5.1), from the coverage CLI on
+the local mirror (the day's last 39–40 s are `Unknown`, not counted):
+
+| Feed | Uncovered s | `no_invocation` (slot) | `no_invocation` (late) | `not_stored` |
+|---|---|---|---|---|
+| `ace` | 4,959 | 724 | 4,114 | 121 |
+| `bdfm` | 4,955 | 724 | 4,111 | 120 |
+| `g` | 4,953 | 723 | 4,109 | 121 |
+| `jz` | 4,954 | 723 | 4,110 | 121 |
+| `nqrw` | 4,962 | 726 | 4,115 | 121 |
+| `si` | 4,959 | 723 | 4,115 | 121 |
+| `l` | 4,963 | 725 | 4,117 | 121 |
+| `numbered` | 4,958 | 723 | 4,114 | 121 |
+
+The slot and `not_stored` columns are unchanged. `late` (the old "gap >
+120 s") grows by 1,736–1,979 s per feed, and each feed has 35
+uncovered stretches instead of 19–21: every invocation that started 60 s
+or more late left its own minute without a fetch, so the 70–120 s around
+it is now `no_invocation` (15 such stretches on `ace`).
 
 **Service day on 10-22.** 8,348 matched runs:
 - 6,765 belong to service day 10-22 and 1,583 to 10-21, which is still
@@ -2689,7 +2777,8 @@ minus the `instant_of` instant at the first common stop:
     change; trips departing at a spring-forward time that does not exist
     are unresolved until a spring-forward night is measured.
 
-**Coverage on the new days** (combined rule):
+**Coverage on the new days** (combined rule, `COVERAGE_VERSION` 1;
+superseded by the version-2 figures after the list):
 - **10-24:** 1,440 invocations, none missing. 5–7 late gaps of 121–147 s
   per feed, 630–874 s uncovered per feed.
 - **10-25:** 1,399 invocations; the 41 missing minutes fall between 13:36
@@ -2713,6 +2802,13 @@ minus the `instant_of` instant at the first common stop:
     counted as not good, 120 s.
   - One late gap of 122 s.
 - No uncovered stretch comes from train counts.
+
+Under `COVERAGE_VERSION` 2 (2026-11-03, §5.1; coverage CLI on the local
+mirror), uncovered seconds per feed: 10-24 2,978–3,213 (all `late`);
+10-25 14,345–14,761 (`no_invocation` slot 4,266–4,270, late
+10,076–10,087); 11-01 and 11-02 unchanged (0 except `l` 1,561, and
+122–362). The growth is again the 70–120 s stretches around invocations
+that started 60 s or more late.
 
 **Contract verdict (weekend and DST).** One rule change is needed, in §2.4
 and the layer-1 matching convention: scheduled instants on the local wall

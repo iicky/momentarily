@@ -10,9 +10,11 @@ name: Legacy observations backfill (manual)
 # new key is written with a conditional put, a raw-lineage (derive job) or
 # unreadable file is never overwritten, and nothing is deleted. A legacy
 # file whose content differs is a conflict (the step
-# fails, the file is kept) unless `overwrite` is set. A day with an object
-# R2 will not return, after retries, is written not at all and fails the
-# step; rerun it. The legacy-only records (fetch outcome, route alert state,
+# fails, the file is kept) unless `overwrite` is set. An object R2 will not
+# return, after retries, fails the step and leaves its day unwritten; an
+# unreadable archive/trace object also leaves the next day unwritten, because
+# that day's lead-in reads it, so the rerun must cover both days. The
+# legacy-only records (fetch outcome, route alert state,
 # collector health) continue past the recorder cutover, so rerunning a later
 # day writes that day's files. Prints keys and counts only.
 
@@ -24,7 +26,7 @@ on:
         type: string
         required: true
       through:
-        description: "Last UTC day (YYYY-MM-DD), inclusive; ended at least 30 minutes ago"
+        description: "Last UTC day (YYYY-MM-DD), inclusive; ended at least a full day ago (today - 2 UTC or earlier)"
         type: string
         required: true
       overwrite:

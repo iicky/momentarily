@@ -14,15 +14,17 @@ daily files at the end of their day.
 
 A run writes the files of the days in its range only, so a day's files are
 the same whichever range covers it. A trace object is filed under the day of
-its ``scheduled_at`` but its records are observed at ``observed_at``,
-seconds later, so the last minutes of a day can fill the next day's first
-hour: the first day of a range also reads the trace objects of the hour
-before it (``Source.lead``), and files after an explicit last day are left
+its ``scheduled_at`` but its records are observed at ``observed_at``: seconds
+later as a rule, but a late Worker invocation is observed long after the
+minute it is scheduled for (more than 67 minutes on 2026-10-25). So any trace
+object of a day can fill the next day's files, and none can reach further:
+the first day of a range also reads the whole previous day of trace objects
+(``Source.spills``), and files after an explicit last day are left
 unwritten (``deferred``). Without a last day, the run writes those too, as a
-run over a whole mirror always has. A trace object filed earlier than that
-which still reaches the
-next day stops the run. Alert versions need every sighting (``alerts``), so
-the whole ``archive/alerts`` up to the recorder cutover's day is read first.
+run over a whole mirror always has. A trace object that reaches past the
+day after its own stops the run, because no range reads it there. Alert
+versions need every sighting (``alerts``), so the whole ``archive/alerts`` up
+to the recorder cutover's day is read first.
 
 The recorder owns every record it writes from ``keys.RECORDER_CUTOVER`` on:
 the adapters emit vehicles, equipment and alert versions observed before it
@@ -123,14 +125,14 @@ class Source:
     archive: LegacyArchive
     adapt: Adapter
     watermark: Callable[[str], int] | None
-    lead: int = 0
-    """Seconds before a day whose objects (by ``watermark``) may hold records
-    of that day; 0 when every record is in its object's day folder."""
+    spills: bool = False
+    """An object's records may land on the day after the one it is filed
+    under (never later); False when every record is in its object's day."""
 
 
 # Day order within a run; the alerts archive is read up front (alerts.py).
 SOURCES: tuple[Source, ...] = (
-    Source("archive/trace", trace.adapt, trace.watermark, lead=3600),
+    Source("archive/trace", trace.adapt, trace.watermark, spills=True),
     Source("archive/trip_updates", fresh_feeds.adapt, None),
     Source("archive/vehicles", fresh_feeds.adapt, None),
     Source("archive/alerts_liveness", alerts_liveness.adapt, None),
@@ -314,8 +316,9 @@ class _Writer:
                 raise RuntimeError(f"{archive} adds to {key} after it was written")
             if by is not None and end > by:
                 raise RuntimeError(
-                    f"{archive}: {e.inputs[0].key} adds to {key}, after the day "
-                    "it is filed under and before the lead-in a range reads"
+                    f"{archive}: {e.inputs[0].key} adds to {key}, beyond the "
+                    "day after the one it is filed under, which a range reading "
+                    "only the previous day as its lead-in would miss"
                 )
             bucket = self._open.get(key)
             if bucket is None:
@@ -543,48 +546,41 @@ class _Run:
         self._report = report
         self._readers = readers
 
-    def objects(self, src: Source, keys: list[str], end: int | None) -> None:
+    def objects(
+        self, src: Source, keys: list[str], end: int, lead_in: bool = False
+    ) -> None:
         """Adapt ``keys`` of ``src``, filed under the day that ends at
-        ``end``, in order. ``end`` None: the lead-in, whose objects the run
-        of their own day counts and reports."""
+        ``end``, in order. ``lead_in``: read for the next day only; the run
+        of their own day counts and reports them."""
         stats = self._report.archives[src.archive]
         t0 = time.perf_counter()
+        by = end + _DAY_SECONDS if src.spills else end
         for obj in _fetch(self._source, keys, self._readers):
             key = obj.key
-            if end is not None:
+            if not lead_in:
                 stats.inputs += 1
             try:
                 emitted = src.adapt(obj)
             except MalformedObjectError as err:
-                if end is not None:
+                if not lead_in:
                     stats.failures.append((key, str(err)))
                 continue
             if not emitted:
                 continue
-            # Only an object within ``lead`` of its day's end reaches the next.
-            by = end
-            if src.lead and src.watermark is not None and end is not None:
-                by = None if src.watermark(key) >= end - src.lead else end
             self._writer.add(src.archive, emitted, by)
             if src.watermark is not None:
                 self._writer.flush(src.watermark(key), src.archive)
         stats.seconds += time.perf_counter() - t0
 
     def lead_in(self, day: str) -> None:
-        """The objects filed before ``day`` that may hold records of it."""
+        """Every object filed the day before ``day`` that may hold records
+        of it: the whole day of each archive that ``spills``."""
         start = _day_start(day)
         before = utc_day(start - 1)
         for src in SOURCES:
-            if not src.lead or src.watermark is None:
-                continue
-            keys: list[str] = []
-            for key in self._source.list(f"{src.archive}/{before}/"):
-                try:
-                    if src.watermark(key) >= start - src.lead:
-                        keys.append(key)
-                except MalformedObjectError:
-                    pass  # the run that covers ``before`` reports it
-            self.objects(src, keys, None)
+            if src.spills:
+                keys = self._source.list(f"{src.archive}/{before}/")
+                self.objects(src, keys, start, lead_in=True)
         self._writer.flush(start)
 
     def day(self, day: str, versions: list[Emitted]) -> None:

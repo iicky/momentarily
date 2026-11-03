@@ -12,8 +12,9 @@ reports, the write rules and the exit status are those of
 ``python -m momentarily.model.observations.legacy`` (docs/model-observations.md
 §5.1); only the store differs, and the range is required. A new key is
 written with a conditional put, so a file another run wrote meanwhile is
-never replaced. ``--through`` must have ended at least 30 minutes ago
-(``SETTLE``): the Worker writes a day's last objects after 00:00 UTC.
+never replaced. ``--through`` must have ended at least a full day ago
+(``SETTLE``): a late Worker invocation is written when it runs, more than an
+hour after the minute it is filed under, until the end of the next UTC day.
 Credentials come from ``training.r2_client``.
 """
 
@@ -33,8 +34,9 @@ from training.r2_client import load_config, make_client
 
 # Concurrent GETs; below botocore's default pool of 10 connections.
 READERS = 8
-# How long after a UTC day ends its last archive objects may still land.
-SETTLE = timedelta(minutes=30)
+# How long after a UTC day ends its last archive objects may still land: a
+# late invocation filed under the day runs until the end of the next one.
+SETTLE = timedelta(days=1)
 
 
 def unsettled(day: str, now: datetime) -> str | None:
@@ -46,7 +48,8 @@ def unsettled(day: str, now: datetime) -> str | None:
         return None
     return (
         f"--through {day} is not settled: its last objects can land until "
-        f"{ready:%Y-%m-%dT%H:%MZ} (30 minutes after the day ends); "
+        f"{ready:%Y-%m-%dT%H:%MZ} (a full day after it ends, as late Worker "
+        "invocations filed under it run until the end of the next day); "
         f"it is {now:%Y-%m-%dT%H:%MZ} now"
     )
 

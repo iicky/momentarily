@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -230,13 +231,23 @@ def _utc(text: str) -> int:
 # GTFS times of the synthetic trips (one per origin), each running 101N, 102N,
 # 103N two minutes apart.
 SYNTH_ORIGINS = {
+    "00:14": 14 * 60,
     "00:30": 30 * 60,
+    "01:30": 90 * 60,
+    "01:59": 119 * 60,
     "02:30": 150 * 60,
+    "03:00": 180 * 60,
     "06:00": 360 * 60,
     "25:30": 1530 * 60,
     "26:30": 1590 * 60,
 }
-SYNTH_DATES = ["2026-03-07", "2026-03-08", "2026-10-31", "2026-11-01"]
+# Fall back on 2026-11-01 at 06:00 UTC (02:00 EDT -> 01:00 EST); spring
+# forward on 2027-03-14 at 07:00 UTC (02:00 EST -> 03:00 EDT).
+SYNTH_DATES = ["2026-10-31", "2026-11-01", "2027-03-13", "2027-03-14"]
+
+
+def _trip_id(gtfs: str) -> str:
+    return f"SYN-Daily_{SYNTH_ORIGINS[gtfs] // 60 * 100:06d}_1..N03R"
 
 
 def _synthetic() -> NetworkSnapshot:
@@ -278,55 +289,126 @@ def _synthetic() -> NetworkSnapshot:
 
 
 @pytest.mark.parametrize(
-    ("service_date", "gtfs", "first_arrival_utc"),
+    ("service_date", "gtfs", "arrivals_utc", "spans_dst"),
     [
-        # Spring forward, 2026-03-08: GTFS time counts from 23:00 EST on 03-07.
-        ("2026-03-08", "00:30", "2026-03-08T04:30:00"),
-        ("2026-03-08", "02:30", "2026-03-08T06:30:00"),  # 01:30 EST
-        ("2026-03-08", "06:00", "2026-03-08T10:00:00"),  # 06:00 EDT
-        ("2026-03-07", "25:30", "2026-03-08T06:30:00"),  # 01:30 EST, before the jump
-        ("2026-03-07", "26:30", "2026-03-08T07:30:00"),  # 03:30 EDT, after it
-        # Fall back, 2026-11-01: GTFS time counts from 01:00 EDT on 11-01.
-        ("2026-11-01", "00:30", "2026-11-01T05:30:00"),  # the first 01:30 (EDT)
-        ("2026-11-01", "06:00", "2026-11-01T11:00:00"),  # 06:00 EST
-        ("2026-10-31", "25:30", "2026-11-01T05:30:00"),  # the first 01:30 (EDT)
-        ("2026-10-31", "26:30", "2026-11-01T06:30:00"),  # the second 01:30 (EST)
+        # Fall back. The feed starts trips on the wall clock: 00:14 on 11-01 is
+        # 00:14 EDT (instant_of's noon-minus-12h origin, 01:00 EDT, gives 05:14).
+        ("2026-11-01", "00:14", ["04:14", "04:16", "04:18"], False),
+        ("2026-11-01", "01:30", ["05:30", "05:32", "05:34"], False),  # first 01:30
+        # Departs 01:59 EDT and runs straight through the change: no hour gap.
+        ("2026-11-01", "01:59", ["05:59", "06:01", "06:03"], True),
+        ("2026-11-01", "06:00", ["11:00", "11:02", "11:04"], False),  # 06:00 EST
+        ("2026-10-31", "25:30", ["05:30", "05:32", "05:34"], False),  # first 01:30
+        ("2026-10-31", "26:30", ["07:30", "07:32", "07:34"], False),  # 02:30 EST
+        # Spring forward: 02:00-02:59 on 03-14 does not exist. A trip departing
+        # then is unresolved; one departing before runs on by elapsed time.
+        ("2027-03-14", "00:30", ["05:30", "05:32", "05:34"], False),  # 00:30 EST
+        ("2027-03-14", "01:59", ["06:59", "07:01", "07:03"], True),  # 01:59 EST
+        ("2027-03-14", "02:30", [None, None, None], False),
+        ("2027-03-14", "03:00", ["07:00", "07:02", "07:04"], False),  # 03:00 EDT
+        ("2027-03-13", "25:30", ["06:30", "06:32", "06:34"], False),  # 01:30 EST
+        ("2027-03-13", "26:30", [None, None, None], False),  # 02:30 on 03-14
     ],
 )
-def test_dst_nights_give_utc_instants(
-    service_date: str, gtfs: str, first_arrival_utc: str
+def test_dst_nights_anchor_trips_on_the_wall_clock(
+    service_date: str, gtfs: str, arrivals_utc: list[str | None], spans_dst: bool
 ) -> None:
     ix = _index(_synthetic(), service_date)
-    origin = f"{SYNTH_ORIGINS[gtfs] // 60 * 100:06d}"
-    trip_id = f"SYN-Daily_{origin}_1..N03R"
-    start = _utc(first_arrival_utc)
-    assert [ix.arrival(trip_id, s) for s in ("101N", "102N", "103N")] == [
-        start,
-        start + 120,
-        start + 240,
+    utc_date = "2027-03-14" if service_date.startswith("2027") else "2026-11-01"
+    expected = [
+        None if hm is None else _utc(f"{utc_date}T{hm}:00") for hm in arrivals_utc
     ]
-    assert start in ix.stop_times("1-N-synthetic", "101N").instants
-    assert ix.supply("1", start + 30) >= 1
+    trip_id = _trip_id(gtfs)
+    assert [ix.arrival(trip_id, s) for s in ("101N", "102N", "103N")] == expected
+    for stop, instant in zip(("101N", "102N", "103N"), expected, strict=True):
+        st = ix.stop_times("1-N-synthetic", stop)
+        assert (trip_id in st.trip_ids) == (instant is not None)
+        if instant is not None:
+            assert st.instants[st.trip_ids.index(trip_id)] == instant
+    trip = ix.trip(trip_id)
+    assert trip is not None
+    assert (trip.first_departure, trip.last_arrival) == (expected[0], expected[-1])
+    assert trip.spans_dst_transition is spans_dst
 
 
-def test_fall_back_hour_supply_counts_both_days() -> None:
-    """At 05:31 UTC on 11-01 (01:31 EDT) the 10-31 25:30 trip and the 11-01
-    00:30 trip are both in service; at 06:31 UTC (01:31 EST) only 10-31's
-    26:30 trip is."""
+def test_unresolved_times_are_null_in_the_stored_document() -> None:
+    ix = _index(_synthetic(), "2027-03-14")
+    pattern = next(p for p in ix.document.patterns if p.trips)
+    row = [ix.trips[k].trip_id for k in pattern.trips].index(_trip_id("02:30"))
+    assert [arr[row] for arr in pattern.arrivals] == [None, None, None]
+    # Only the 02:30 trip; the 01:59 trip departs before the gap.
+    assert ix.metadata.entries["unresolved_stop_times"] == 3
+    assert ix.metadata.entries["unresolved_trips"] == 1
+    assert ix.metadata.entries["trips_spanning_dst"] == 1
+    stored = json.loads(gzip.decompress(serialize(ix.document)))
+    assert [arr[row] for arr in stored["patterns"][0]["arrivals"]] == [None] * 3
+
+
+def test_spring_forward_keeps_resolved_times_in_schedule_order() -> None:
+    ix = _index(_synthetic(), "2027-03-14")
+    by_schedule = sorted(SYNTH_ORIGINS, key=SYNTH_ORIGINS.__getitem__)
+    for stop in ("101N", "102N", "103N"):
+        st = ix.stop_times("1-N-synthetic", stop)
+        assert list(st.instants) == sorted(set(st.instants))
+        resolved = [
+            _trip_id(g)
+            for g in by_schedule
+            if ix.arrival(_trip_id(g), stop) is not None
+        ]
+        assert list(st.trip_ids) == resolved
+
+
+def test_spring_forward_gap_has_no_scheduled_supply() -> None:
+    """On 03-14 the 02:30 trip is in no minute. The 01:59 trip runs 06:59 to
+    07:03 UTC by elapsed time, overlapping the 03:00 trip from 07:00 UTC."""
+    ix = _index(_synthetic(), "2027-03-14")
+    s = ix.document.supply["1"]
+    busy = Counter(
+        datetime.fromtimestamp((s.start_minute + k) * 60, UTC).strftime("%m-%d %H:%M")
+        for k, n in enumerate(s.counts)
+        for _ in range(n)
+    )
+    spans = {  # trip: first and last UTC minute on 03-14 or 03-15
+        "00:14": ("03-14", 5 * 60 + 14, 5 * 60 + 18),
+        "00:30": ("03-14", 5 * 60 + 30, 5 * 60 + 34),
+        "01:30": ("03-14", 6 * 60 + 30, 6 * 60 + 34),
+        "01:59": ("03-14", 6 * 60 + 59, 7 * 60 + 3),
+        "03:00": ("03-14", 7 * 60, 7 * 60 + 4),
+        "06:00": ("03-14", 10 * 60, 10 * 60 + 4),
+        "25:30": ("03-15", 5 * 60 + 30, 5 * 60 + 34),  # 01:30 EDT
+        "26:30": ("03-15", 6 * 60 + 30, 6 * 60 + 34),  # 02:30 EDT
+    }
+    assert busy == Counter(
+        f"{d} {m // 60:02d}:{m % 60:02d}"
+        for d, lo, hi in spans.values()
+        for m in range(lo, hi + 1)
+    )
+
+
+def test_fall_back_hour_supply_counts_first_occurrence_only() -> None:
+    """At 05:31 UTC on 11-01 (the first 01:31, EDT) the 10-31 25:30 trip and
+    the 11-01 01:30 trip are both in service. At 06:02 UTC (the second 01:02,
+    EST) only the 11-01 01:59 trip is, finishing its run; at 06:31 UTC (the
+    second 01:31) none is. At 07:31 UTC (02:31 EST) 10-31's 26:30 trip and
+    11-01's 02:30 trip are, both departing 02:30 on the wall clock."""
     net = _synthetic()
     sat, sun = _index(net, "2026-10-31"), _index(net, "2026-11-01")
-    edt, est = _utc("2026-11-01T05:31:00"), _utc("2026-11-01T06:31:00")
-    assert (sat.supply("1", edt), sun.supply("1", edt)) == (1, 1)
-    assert (sat.supply("1", est), sun.supply("1", est)) == (1, 0)
+    first, through, second, after = (
+        _utc(f"2026-11-01T{hm}:00") for hm in ("05:31", "06:02", "06:31", "07:31")
+    )
+    assert (sat.supply("1", first), sun.supply("1", first)) == (1, 1)
+    assert (sat.supply("1", through), sun.supply("1", through)) == (0, 1)
+    assert (sat.supply("1", second), sun.supply("1", second)) == (0, 0)
+    assert (sat.supply("1", after), sun.supply("1", after)) == (1, 1)
 
 
 def test_wrapped_origin_maps_to_previous_service_date() -> None:
-    """A realtime id ``009000_1..N`` (01:30) seen at 01:31 on 03-08 names the
-    25:30 trip (static origin 153000) of every day that runs it. Only the
-    previous service date's one is near in time; no 03-08 trip starts at
-    01:30."""
+    """A realtime id ``009000_1..N`` (01:30) seen at 01:31 on 2027-03-14 names
+    the 25:30 trip (static origin 153000) of every day that runs it, wrapped.
+    Only the previous service date's one is near in time. (It also names each
+    day's own 01:30 trip, unwrapped.)"""
     net = _synthetic()
-    seen = _utc("2026-03-08T06:31:00")  # 01:31 EST on 03-08
+    seen = _utc("2027-03-14T06:31:00")  # 01:31 EST on 03-14
     key = parse_realtime("009000_1..N")
     assert key is not None
     built = {d.date for d in net.service_days}
@@ -336,12 +418,13 @@ def test_wrapped_origin_maps_to_previous_service_date() -> None:
             continue
         ix = _index(net, day)
         for h in ix.realtime_key(key):
+            if not h.wrapped:
+                continue
             arrival = ix.arrival(h.trip.trip_id, "101N")
             assert arrival is not None
             offsets[(day, h.trip.trip_id, h.wrapped)] = seen - arrival
-    assert all(wrapped for _d, _t, wrapped in offsets)
     nearest = min(offsets, key=lambda k: abs(offsets[k]))
-    assert nearest == ("2026-03-07", "SYN-Daily_153000_1..N03R", True)
+    assert nearest == ("2027-03-13", "SYN-Daily_153000_1..N03R", True)
     assert offsets[nearest] == 60
     assert all(abs(v) > 12 * 3600 for k, v in offsets.items() if k != nearest)
 
@@ -352,7 +435,7 @@ def test_missing_route_feed_entry_fails_the_build() -> None:
         update={"trip_id": "SYN-Daily_003000_9Q..N03R", "route_id": "9Q"}
     )
     with pytest.raises(MatchIndexBuildError):
-        _index(net.model_copy(update={"trips": [trip]}), "2026-03-08")
+        _index(net.model_copy(update={"trips": [trip]}), "2026-11-01")
 
 
 # --- the CLI on a layer-1 root: build per day, byte-identical rebuild -----------------
@@ -690,7 +773,7 @@ def _doc(code_sha: str) -> MatchIndexDocument:
     table, digest = load_route_feed()
     net = _synthetic()
     return build_match_index(
-        "2026-03-08",
+        "2026-11-01",
         IndexInputs(
             network=net,
             network_digest="0" * 64,
@@ -711,7 +794,7 @@ def test_stored_file_rule() -> None:
     assert resolve_write(data, doc, False) == ("unchanged", None)
     # Only the code stamp differs: keep the stored file.
     assert resolve_write(serialize(_doc("b")), doc, False) == ("unchanged", None)
-    other = serialize(_index(_synthetic(), "2026-03-07").document)
+    other = serialize(_index(_synthetic(), "2026-10-31").document)
     for stored in (other, b"not gzip"):
         assert resolve_write(stored, doc, False) == ("conflict", None)
         assert resolve_write(stored, doc, True) == ("replaced", data)

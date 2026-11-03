@@ -8,7 +8,8 @@ One index holds one service day of one layer-1 build:
   the second is ``wrapped`` and still belongs to this service day, which is
   the calendar day before the observation;
 - per pattern, the arrival instant of each active trip at each stop, from
-  which ``stop_times`` gives the sorted times per (pattern, stop);
+  which ``stop_times`` gives the sorted times per (pattern, stop), skipping
+  unresolved ones;
 - every pattern's stop list and the platform set, for fitting a run's
   observed stops to patterns without a trip match;
 - scheduled supply: trips of each route in service per minute, with 6X, 7X
@@ -17,9 +18,18 @@ One index holds one service day of one layer-1 build:
   the minute of its last arrival;
 - the active services, and the ``RouteFeed`` table.
 
-Instants are ``instant_of(service_date, gtfs_seconds, tz)``, which counts
-from noon minus 12 h, so DST change days are placed right. The matcher reads
-the indexes of the candidate days ``candidate_service_dates(at)``.
+Each trip is anchored at its first departure, placed by
+``wall_instant_of(service_date, s, tz)``: the service date's local midnight
+plus ``s`` on the wall clock, which is the clock the realtime feeds start
+trips on, and the first occurrence in the repeated hour of a fall-back night.
+Every other stop of the trip is the anchor plus its elapsed scheduled time,
+because trains run straight through a clock change; such a trip is flagged
+``spans_dst_transition``. A trip whose first departure does not exist on the
+wall clock (the skipped hour of a spring-forward night) is unresolved: all
+its times are ``null``, so it is in no ``stop_times``, no lateness and no
+supply, while its ids still match. Layer 1's ``instant_of`` (GTFS noon minus
+12 h) is not used here. The matcher reads the indexes of the candidate days
+``candidate_service_dates(at)``.
 
 The stored form is ``MatchIndexDocument`` as canonical JSON (sorted keys,
 compact), gzipped with mtime 0. The same inputs and code give the same bytes.
@@ -44,11 +54,12 @@ from pydantic import Field
 
 from momentarily.gtfs.static import base_route
 from momentarily.model.conventions import (
+    WALL_CLOCK_VERSION,
     Instant,
     Model,
     Provenance,
     ServiceDate,
-    instant_of,
+    wall_instant_of,
 )
 from momentarily.model.events.keys import MatchIndexKey
 from momentarily.model.events.route_feed import RouteFeedEntry, RouteFeedTable
@@ -65,7 +76,7 @@ from momentarily.model.observations.contracts import GtfsRtSource
 SCHEMA_ID = "events/s1"
 
 # Bump whenever a change alters the index built from the same inputs.
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 
 BuildBasis = Literal[
     "live", "live_inferred", "previous_covering", "covering_unmapped", "explicit"
@@ -96,8 +107,21 @@ class IndexTrip(Model):
     route_field: str
     direction: DirectionCode
     path: str
-    first_departure: Instant
-    last_arrival: Instant
+    first_departure: Instant | None = Field(
+        description=(
+            "The trip's anchor. Null when its wall time does not exist "
+            "(spring forward): the whole trip is then unresolved."
+        )
+    )
+    last_arrival: Instant | None = Field(
+        description="first_departure plus the scheduled run time; null with it."
+    )
+    spans_dst_transition: bool = Field(
+        description=(
+            "Whether the UTC offset changes between first_departure and "
+            "last_arrival; false for an unresolved trip."
+        )
+    )
 
 
 class IndexPattern(Model):
@@ -108,11 +132,15 @@ class IndexPattern(Model):
     trips: list[int] = Field(
         description=(
             "Indexes into MatchIndexDocument.trips of the active trips of this "
-            "pattern, by (first arrival, trip_id). Empty when none runs."
+            "pattern, by (scheduled first arrival, trip_id). Empty when none "
+            "runs."
         )
     )
-    arrivals: list[list[Instant]] = Field(
-        description="Per stop, the arrival of each trip in ``trips`` order."
+    arrivals: list[list[Instant | None]] = Field(
+        description=(
+            "Per stop, the arrival of each trip in ``trips`` order; null when "
+            "the wall time does not exist (spring forward)."
+        )
     )
 
 
@@ -128,7 +156,12 @@ class MatchIndexMetadata(Model):
     route_feed_digest: str = Field(description="blake3 of route_feed.json.")
     service_date: ServiceDate
     timezone: str
-    day_origin: Instant = Field(description="instant_of(service_date, 0, timezone).")
+    day_origin: Instant = Field(
+        description="wall_instant_of(service_date, 0, timezone): local midnight."
+    )
+    wall_clock_version: int = Field(
+        description="WALL_CLOCK_VERSION of the rule that placed the instants."
+    )
     build_id: str
     feed_id: str
     build_basis: BuildBasis = Field(
@@ -330,12 +363,18 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
             [f"{service_date} is not a service day of build {net.build_id}"]
         )
     active = frozenset(day.active_service_ids)
-    origin = instant_of(service_date, 0, tz)
+    origin = wall_instant_of(service_date, 0, tz)
+    if origin is None:
+        raise MatchIndexBuildError([f"local midnight of {service_date} does not exist"])
+    zone = ZoneInfo(tz)
+
     patterns = {p.pattern_id: p for p in net.patterns}
     problems: list[str] = []
 
     trips: list[IndexTrip] = []
-    arrivals: dict[str, list[int]] = {}
+    arrivals: dict[str, list[int | None]] = {}
+    first_seconds: dict[str, int] = {}
+    spans: list[tuple[str, int, int]] = []
     for t in net.trips:
         if t.service_id not in active:
             continue
@@ -350,7 +389,20 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
         for key in (t.route_id, parsed.route_field):
             if key not in inputs.route_feed.routes:
                 problems.append(f"trip {t.trip_id}: no RouteFeed entry for {key!r}")
-        arrivals[t.trip_id] = [origin + a for _s, a, _d in t.stop_times]
+        # Anchor at the first departure on the wall clock; every other stop
+        # follows by elapsed scheduled time (trains run straight through a
+        # clock change). No anchor: the whole trip is unresolved.
+        depart = t.stop_times[0][2]
+        anchor = wall_instant_of(service_date, depart, tz)
+        if anchor is None:
+            arrivals[t.trip_id] = [None] * len(t.stop_times)
+            first, last, spans_dst = None, None, False
+        else:
+            arrivals[t.trip_id] = [anchor + a - depart for _s, a, _d in t.stop_times]
+            first, last = anchor, anchor + t.stop_times[-1][1] - depart
+            spans_dst = _utc_offset(first, zone) != _utc_offset(last, zone)
+            spans.append((t.route_id, first, last))
+        first_seconds[t.trip_id] = t.stop_times[0][1]
         trips.append(
             IndexTrip(
                 trip_id=t.trip_id,
@@ -362,8 +414,9 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
                 route_field=parsed.route_field,
                 direction=parsed.direction,
                 path=parsed.path,
-                first_departure=origin + t.stop_times[0][2],
-                last_arrival=origin + t.stop_times[-1][1],
+                first_departure=first,
+                last_arrival=last,
+                spans_dst_transition=spans_dst,
             )
         )
     if problems:
@@ -378,7 +431,7 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
     for pid in sorted(patterns):
         p = patterns[pid]
         members = sorted(
-            by_pattern.get(pid, []), key=lambda t: (arrivals[t.trip_id][0], t.trip_id)
+            by_pattern.get(pid, []), key=lambda t: (first_seconds[t.trip_id], t.trip_id)
         )
         out_patterns.append(
             IndexPattern(
@@ -394,7 +447,7 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
             )
         )
 
-    supply = _supply(trips)
+    supply = supply_counts(spans)
     key = MatchIndexKey(
         INDEX_VERSION, service_date, net.build_id, inputs.route_feed_digest[:16]
     )
@@ -413,6 +466,7 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
         service_date=service_date,
         timezone=tz,
         day_origin=origin,
+        wall_clock_version=WALL_CLOCK_VERSION,
         build_id=net.build_id,
         feed_id=inputs.choice.feed_id,
         build_basis=inputs.choice.basis,
@@ -423,6 +477,11 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
             "patterns": len(out_patterns),
             "patterns_running": sum(1 for p in out_patterns if p.trips),
             "stop_times": sum(len(a) for a in arrivals.values()),
+            "unresolved_stop_times": sum(
+                a is None for row in arrivals.values() for a in row
+            ),
+            "unresolved_trips": sum(t.first_departure is None for t in trips),
+            "trips_spanning_dst": sum(t.spans_dst_transition for t in trips),
             "platforms": len(platforms),
             "supply_minutes": sum(len(s.counts) for s in supply.values()),
             "route_feed": len(inputs.route_feed.routes),
@@ -450,18 +509,24 @@ def build_match_index(service_date: str, inputs: IndexInputs) -> MatchIndexDocum
     )
 
 
-def _supply(trips: list[IndexTrip]) -> dict[str, RouteSupply]:
-    spans: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for t in trips:
-        spans[base_route(t.route_id)].append(
-            (t.first_departure // 60, t.last_arrival // 60)
-        )
+def _utc_offset(instant: int, zone: ZoneInfo) -> timedelta | None:
+    return datetime.fromtimestamp(instant, zone).utcoffset()
+
+
+def supply_counts(spans: list[tuple[str, int, int]]) -> dict[str, RouteSupply]:
+    """Trips in service per route and epoch minute, from (route_id, first
+    instant, last instant) spans, both minutes counted; 6X, 7X and FX are
+    folded into 6, 7 and F."""
+    by_route: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for route_id, start, end in spans:
+        by_route[base_route(route_id)].append((start // 60, end // 60))
     out: dict[str, RouteSupply] = {}
-    for route in sorted(spans):
-        lo = min(a for a, _b in spans[route])
-        hi = max(b for _a, b in spans[route])
+    for route in sorted(by_route):
+        route_spans = by_route[route]
+        lo = min(a for a, _b in route_spans)
+        hi = max(b for _a, b in route_spans)
         delta = [0] * (hi - lo + 2)
-        for a, b in spans[route]:
+        for a, b in route_spans:
             delta[a - lo] += 1
             delta[b - lo + 1] -= 1
         counts: list[int] = []
@@ -557,7 +622,7 @@ class KeyHit:
 @dataclass(frozen=True, slots=True)
 class StopTimes:
     """Scheduled arrivals of one pattern's active trips at one stop, sorted by
-    (instant, trip_id)."""
+    (instant, trip_id). Unresolved trips (no wall-clock anchor) are left out."""
 
     instants: tuple[int, ...]
     trip_ids: tuple[str, ...]
@@ -624,7 +689,8 @@ class MatchIndex:
 
     def arrival(self, trip_id: str, stop: str) -> int | None:
         """Scheduled arrival instant of a trip at a stop, or None when the trip
-        is not active today or does not serve the stop."""
+        is not active today, does not serve the stop, or is unresolved (no
+        wall-clock anchor; stored as null)."""
         t = self._trip.get(trip_id)
         if t is None:
             return None
@@ -647,19 +713,20 @@ class MatchIndex:
         return self._position[pattern_id].get(stop)
 
     def stop_times(self, pattern_id: str, stop: str) -> StopTimes:
-        """Sorted scheduled arrivals at a stop of a pattern's active trips."""
+        """Sorted resolved scheduled arrivals at a stop of a pattern's active
+        trips."""
         cached = self._stop_times.get((pattern_id, stop))
         if cached is not None:
             return cached
         p = self._pattern[pattern_id]
         i = self._position[pattern_id].get(stop)
-        pairs = (
+        pairs: list[tuple[int, str]] = (
             []
             if i is None
             else sorted(
-                zip(
-                    p.arrivals[i], (self.trips[k].trip_id for k in p.trips), strict=True
-                )
+                (a, self.trips[k].trip_id)
+                for a, k in zip(p.arrivals[i], p.trips, strict=True)
+                if a is not None
             )
         )
         out = StopTimes(tuple(a for a, _ in pairs), tuple(t for _, t in pairs))

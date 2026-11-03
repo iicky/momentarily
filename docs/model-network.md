@@ -16,6 +16,17 @@ schemas. Nothing is hand-mirrored.
   `instant_of(service_date, seconds, tz)`, which subtracts 12 h in UTC
   seconds. On DST change days, that origin is 23:00 or 01:00 local time, not
   midnight.
+- **Two conventions for scheduled times.** `instant_of` is the GTFS
+  definition and keeps that meaning for any consumer that needs it.
+  The realtime feeds start trips on the local wall clock instead (measured
+  on the 2026-11-01 fall-back night), so the layer-3 match index anchors
+  each trip's first departure with `wall_instant_of(service_date, seconds,
+  tz)` (local midnight of the service date plus the seconds as wall time,
+  the first occurrence in the repeated fall-back hour, `None` in the
+  skipped spring-forward hour) and places the trip's other stops by
+  elapsed scheduled time. The rule is versioned (`WALL_CLOCK_VERSION`).
+  The two agree except on DST nights. Layer 1's builds store GTFS seconds
+  and do not change; docs/model-events.md §2.4 has the matching rule.
 - **Intervals are half-open**, `[start, end)`. GTFS's inclusive `end_date`
   values (`calendar.txt`, `feed_info.txt`) are stored as end + 1 day.
 - **No defaults**: no contract field has a default value. A missing value is an

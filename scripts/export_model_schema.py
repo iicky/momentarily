@@ -1,13 +1,13 @@
 """Export the data-model JSON Schemas (schema/model/s1/) from Pydantic, and
-the pinned parquet layouts of the observation records
-(schema/model/s1/observations/parquet/<record>.txt).
+the pinned parquet layouts of the observation and event records
+(schema/model/s1/<layer>/parquet/<record>.txt).
 
 Pydantic (src/momentarily/model/) is the source of truth. The TypeScript types
 in shared/model/s1/ are generated from these files by
 worker/scripts/model_types.ts, so the chain is Pydantic -> JSON Schema -> TS
 with no hand-written mirror. tests/test_model_network.py fails on a stale
-schema; tests/test_model_observations.py on a stale layout;
-worker/test/model_network.test.ts on stale generated TS.
+schema; tests/test_model_observations.py and tests/test_model_events.py on a
+stale layout; worker/test/model_network.test.ts on stale generated TS.
 
 Run:  uv run python -m scripts.export_model_schema
       (cd worker && bun run gen:model)
@@ -20,6 +20,16 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from momentarily.model.events.columns import RECORDS
+from momentarily.model.events.contracts import (
+    CoverageInterval,
+    Headway,
+    OpenState,
+    SegmentTraversal,
+    StopEvent,
+    SupplyObservation,
+    TripMatch,
+)
 from momentarily.model.network.contracts import (
     DayFeedMap,
     NetworkIndex,
@@ -42,7 +52,13 @@ from momentarily.model.observations.contracts import (
 )
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema" / "model" / "s1"
-LAYOUT_DIR = SCHEMA_DIR / "observations" / "parquet"
+
+# Layer -> its derived record kinds, each with a pinned parquet layout under
+# SCHEMA_DIR/<layer>/parquet/.
+LAYOUTS: dict[str, tuple[tuple[str, type[BaseModel]], ...]] = {
+    "observations": tuple(NORMALIZED.items()),
+    "events": tuple(RECORDS.items()),
+}
 
 # Path under SCHEMA_DIR (without .schema.json) -> the model it exports. A
 # subdirectory per layer after the first; the TS mirror follows the same tree.
@@ -62,6 +78,13 @@ DOCUMENTS: dict[str, type[BaseModel]] = {
     "observations/legacy_fetch_outcome": LegacyFetchOutcome,
     "observations/legacy_collector_health": LegacyCollectorHealth,
     "observations/derived_file_metadata": DerivedFileMetadata,
+    "events/trip_match": TripMatch,
+    "events/stop_event": StopEvent,
+    "events/segment_traversal": SegmentTraversal,
+    "events/headway": Headway,
+    "events/open_state": OpenState,
+    "events/coverage_interval": CoverageInterval,
+    "events/supply_observation": SupplyObservation,
 }
 
 
@@ -85,13 +108,17 @@ def committed_schemas() -> dict[str, str]:
     }
 
 
-def render_layouts() -> dict[str, str]:
-    """File name -> the parquet layout of each derived record kind."""
-    return {f"{record}.txt": describe(model) for record, model in NORMALIZED.items()}
+def layout_dir(layer: str) -> Path:
+    return SCHEMA_DIR / layer / "parquet"
 
 
-def committed_layouts() -> dict[str, str]:
-    return {p.name: p.read_text() for p in LAYOUT_DIR.glob("*")}
+def render_layouts(layer: str) -> dict[str, str]:
+    """File name -> the parquet layout of each derived record kind of a layer."""
+    return {f"{record}.txt": describe(model) for record, model in LAYOUTS[layer]}
+
+
+def committed_layouts(layer: str) -> dict[str, str]:
+    return {p.name: p.read_text() for p in layout_dir(layer).glob("*")}
 
 
 def main() -> int:
@@ -103,13 +130,15 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         print(f"wrote {path}")
-    LAYOUT_DIR.mkdir(parents=True, exist_ok=True)
-    layouts = render_layouts()
-    for stale in committed_layouts().keys() - layouts.keys():
-        (LAYOUT_DIR / stale).unlink()
-    for name, text in layouts.items():
-        (LAYOUT_DIR / name).write_text(text)
-        print(f"wrote {LAYOUT_DIR / name}")
+    for layer in LAYOUTS:
+        directory = layout_dir(layer)
+        directory.mkdir(parents=True, exist_ok=True)
+        layouts = render_layouts(layer)
+        for stale in committed_layouts(layer).keys() - layouts.keys():
+            (directory / stale).unlink()
+        for name, text in layouts.items():
+            (directory / name).write_text(text)
+            print(f"wrote {directory / name}")
     return 0
 
 

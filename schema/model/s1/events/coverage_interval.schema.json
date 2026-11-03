@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "Interval": {
+      "additionalProperties": false,
+      "description": "A half-open span of instants, ``[start, end)``.",
+      "properties": {
+        "end": {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "description": "UTC epoch seconds.",
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "Interval",
+      "type": "object"
+    },
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Transport evidence only, keyed to fetch instants (\u00a75.1, combined rule\nof the 10-21 verdict). Train counts never make an interval uncovered.\n``not_stored``: fetched, but the bytes were not stored, so nothing\ndecodes. ``suspect_stale`` (legacy) is uncertain evidence, not a\ntransport failure.",
+  "properties": {
+    "evidence_count": {
+      "description": "Fetches (raw) or trace objects (legacy) inside.",
+      "minimum": 0,
+      "title": "Evidence Count",
+      "type": "integer"
+    },
+    "interval": {
+      "$ref": "#/$defs/Interval"
+    },
+    "lineage": {
+      "enum": [
+        "raw",
+        "legacy"
+      ],
+      "title": "Lineage",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "state": {
+      "anyOf": [
+        {
+          "enum": [
+            "covered",
+            "fetch_failed",
+            "no_invocation",
+            "not_stored",
+            "stale_header",
+            "suspect_stale"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "title": "State"
+    }
+  },
+  "required": [
+    "source",
+    "lineage",
+    "interval",
+    "state",
+    "evidence_count"
+  ],
+  "title": "CoverageInterval",
+  "type": "object"
+}

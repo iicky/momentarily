@@ -1,0 +1,151 @@
+[
+  {
+    "run_id": "raw:jz:101450_J..N47R@1792616046#0",
+    "track": 0,
+    "member_run_ids": [],
+    "supersedes_run_ids": [],
+    "lineage": "raw",
+    "source": "jz",
+    "source_basis": "published",
+    "realtime_trip_id": "101450_J..N47R",
+    "route_published": "Z",
+    "start_date_published": "20261021",
+    "nyct_train_ids": [
+      "1Z 1654+ BPK/JAM"
+    ],
+    "first_observed_at": 1792616046,
+    "last_observed_at": 1792619046,
+    "n_observations": 51,
+    "n_placeholder_rows": 14,
+    "n_old_timestamp_rows": 0,
+    "stale_only": false,
+    "outcome": "matched",
+    "stationary": false,
+    "flags": [],
+    "tier": "exact_id",
+    "miss_class": null,
+    "network_build_id": "606d9f640f5aad67",
+    "scheduled_trip_id": "XL0S1-J-1056-S12_101450_J..N47R",
+    "nearest_scheduled_trip_id": null,
+    "compatible_pattern_ids": [
+      "Z-N-bfb91b97d742"
+    ],
+    "pattern_id": "Z-N-bfb91b97d742",
+    "pattern_attribution": "scheduled_trip",
+    "shares_scheduled_trip": false,
+    "identity_uncertain_with": [],
+    "route_id": "Z",
+    "route_basis": "scheduled_trip",
+    "service_date": "2026-10-21",
+    "service_date_basis": "scheduled_trip",
+    "alternative_service_date": null,
+    "origin_wrapped": false,
+    "offset_s": -24,
+    "deviation": "consistent",
+    "end_state": "left_feed"
+  },
+  {
+    "run_id": "raw:numbered:002950_6..S@1792643421#0",
+    "track": 0,
+    "member_run_ids": [],
+    "supersedes_run_ids": [],
+    "lineage": "raw",
+    "source": "numbered",
+    "source_basis": "published",
+    "realtime_trip_id": "002950_6..S",
+    "route_published": "6",
+    "start_date_published": "20261022",
+    "nyct_train_ids": [
+      "06 0029+ BBR/PEL"
+    ],
+    "first_observed_at": 1792643421,
+    "last_observed_at": 1792644021,
+    "n_observations": 11,
+    "n_placeholder_rows": 0,
+    "n_old_timestamp_rows": 0,
+    "stale_only": false,
+    "outcome": "unscheduled",
+    "stationary": false,
+    "flags": [
+      "service_date_ambiguous"
+    ],
+    "tier": null,
+    "miss_class": "unscheduled",
+    "network_build_id": "606d9f640f5aad67",
+    "scheduled_trip_id": null,
+    "nearest_scheduled_trip_id": "AFA25GEN-6086-Weekday-00_002600_6..S03R",
+    "compatible_pattern_ids": [
+      "6-S-29db9d766d60",
+      "6-S-5776c5eec903"
+    ],
+    "pattern_id": null,
+    "pattern_attribution": "ambiguous",
+    "shares_scheduled_trip": false,
+    "identity_uncertain_with": [],
+    "route_id": "6",
+    "route_basis": "published",
+    "service_date": "2026-10-22",
+    "service_date_basis": "id_origin",
+    "alternative_service_date": "2026-10-21",
+    "origin_wrapped": false,
+    "offset_s": null,
+    "deviation": null,
+    "end_state": "window_end"
+  },
+  {
+    "run_id": "legacy:numbered:118650_1..N17R@1789516001#0",
+    "track": 0,
+    "member_run_ids": [
+      "legacy:numbered:118650_1..N@1789516903#0"
+    ],
+    "supersedes_run_ids": [],
+    "lineage": "legacy",
+    "source": "numbered",
+    "source_basis": "route_feed_table",
+    "realtime_trip_id": "118650_1..N17R",
+    "route_published": {
+      "unknown": true,
+      "reason": "archive/trace does not keep it"
+    },
+    "start_date_published": {
+      "unknown": true,
+      "reason": "archive/trace does not keep it"
+    },
+    "nyct_train_ids": {
+      "unknown": true,
+      "reason": "archive/trace does not keep it"
+    },
+    "first_observed_at": 1789516001,
+    "last_observed_at": 1789518762,
+    "n_observations": 46,
+    "n_placeholder_rows": 0,
+    "n_old_timestamp_rows": 2,
+    "stale_only": false,
+    "outcome": "matched",
+    "stationary": false,
+    "flags": [
+      "joined_split_run"
+    ],
+    "tier": "exact_id",
+    "miss_class": null,
+    "network_build_id": "606d9f640f5aad67",
+    "scheduled_trip_id": "AFA25GEN-1093-Weekday-00_118650_1..N03R",
+    "nearest_scheduled_trip_id": null,
+    "compatible_pattern_ids": [
+      "1-N-5af42ba870c5"
+    ],
+    "pattern_id": "1-N-5af42ba870c5",
+    "pattern_attribution": "scheduled_trip",
+    "shares_scheduled_trip": false,
+    "identity_uncertain_with": [],
+    "route_id": "1",
+    "route_basis": "scheduled_trip",
+    "service_date": "2026-09-15",
+    "service_date_basis": "scheduled_trip",
+    "alternative_service_date": null,
+    "origin_wrapped": false,
+    "offset_s": 11,
+    "deviation": "consistent",
+    "end_state": "left_feed"
+  }
+]

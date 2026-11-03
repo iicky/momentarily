@@ -1,0 +1,6 @@
+source: string not null
+lineage: string not null
+interval: struct<start: int64 not null, end: int64 not null> not null
+state: string
+state__unknown: string
+evidence_count: int64 not null

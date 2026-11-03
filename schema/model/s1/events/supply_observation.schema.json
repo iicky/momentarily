@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "Unknown": {
+      "additionalProperties": false,
+      "description": "A measurement that was expected but could not be taken, and why.",
+      "properties": {
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "unknown": {
+          "const": true,
+          "title": "Unknown",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unknown",
+        "reason"
+      ],
+      "title": "Unknown",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Observed trains against schedule at one good fetch, per feed and\nroute (\u00a75.2). Evidence for layer 5, never coverage.",
+  "properties": {
+    "lineage": {
+      "enum": [
+        "raw",
+        "legacy"
+      ],
+      "title": "Lineage",
+      "type": "string"
+    },
+    "listed_trips": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
+      ],
+      "description": "Raw: trip updates listing the route; legacy: Unknown.",
+      "title": "Listed Trips"
+    },
+    "observed_at": {
+      "description": "UTC epoch seconds.",
+      "minimum": 0,
+      "title": "Observed At",
+      "type": "integer"
+    },
+    "route_basis": {
+      "enum": [
+        "scheduled_trip",
+        "trip_id_field"
+      ],
+      "title": "Route Basis",
+      "type": "string"
+    },
+    "route_id": {
+      "description": "Network route: the matched trip's, else the trip-id field.",
+      "title": "Route Id",
+      "type": "string"
+    },
+    "scheduled_in_service": {
+      "description": "Layer-1 trips in service at observed_at.",
+      "minimum": 0,
+      "title": "Scheduled In Service",
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "source_basis": {
+      "enum": [
+        "published",
+        "route_feed_table"
+      ],
+      "title": "Source Basis",
+      "type": "string"
+    },
+    "vehicles": {
+      "description": "Certain: real vehicles after \u00a72.2, fresh positions.",
+      "minimum": 0,
+      "title": "Vehicles",
+      "type": "integer"
+    },
+    "vehicles_stale_tail": {
+      "description": "Uncertain: runs in a stale_tail block (held train or ghost).",
+      "minimum": 0,
+      "title": "Vehicles Stale Tail",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "observed_at",
+    "lineage",
+    "source",
+    "source_basis",
+    "route_id",
+    "route_basis",
+    "vehicles",
+    "vehicles_stale_tail",
+    "scheduled_in_service",
+    "listed_trips"
+  ],
+  "title": "SupplyObservation",
+  "type": "object"
+}

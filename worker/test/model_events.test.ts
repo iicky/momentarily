@@ -13,6 +13,7 @@ import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020';
 import { describe, expect, test } from 'vitest';
 
 import coverageSchema from '../../schema/model/s1/events/coverage_interval.schema.json';
+import fileMetadataSchema from '../../schema/model/s1/events/event_file_metadata.schema.json';
 import headwaySchema from '../../schema/model/s1/events/headway.schema.json';
 import openStateSchema from '../../schema/model/s1/events/open_state.schema.json';
 import traversalSchema from '../../schema/model/s1/events/segment_traversal.schema.json';
@@ -23,6 +24,7 @@ import type { CoverageInterval } from '../../shared/model/s1/events/coverage_int
 import type { Headway } from '../../shared/model/s1/events/headway';
 import type { StopEvent } from '../../shared/model/s1/events/stop_event';
 import coverage from '../../tests/fixtures/model/events/records/coverage_interval.json';
+import fileMetadata from '../../tests/fixtures/model/events/records/event_file_metadata.json';
 import headway from '../../tests/fixtures/model/events/records/headway.json';
 import openState from '../../tests/fixtures/model/events/records/open_state.json';
 import traversal from '../../tests/fixtures/model/events/records/segment_traversal.json';
@@ -40,6 +42,7 @@ const DOCUMENTS: Record<string, { schema: object; records: object[] }> = {
   open_state: { schema: openStateSchema, records: openState },
   coverage_interval: { schema: coverageSchema, records: coverage },
   supply_observation: { schema: supplySchema, records: supply },
+  event_file_metadata: { schema: fileMetadataSchema, records: fileMetadata },
 };
 
 function parse<T>(validate: ValidateFunction<T>, doc: unknown): T {

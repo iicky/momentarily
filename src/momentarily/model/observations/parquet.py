@@ -381,10 +381,17 @@ def write_rows(path: Path, rows: Rows, metadata: DerivedFileMetadata) -> int:
     table = rows.table().replace_schema_metadata(parquet_metadata(metadata))
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    # Every option that changes the bytes is pinned, defaults included.
+    write_parquet(table, tmp)
+    os.replace(tmp, path)
+    return path.stat().st_size
+
+
+def write_parquet(table: pa.Table, where: Path | pa.NativeFile) -> None:
+    """Write ``table`` to ``where`` with every option that changes the bytes
+    pinned, defaults included. Layer 3's event files use the same settings."""
     pq.write_table(
         table,
-        tmp,
+        where,
         row_group_size=ROW_GROUP_SIZE,
         version="2.6",
         use_dictionary=True,
@@ -399,8 +406,6 @@ def write_rows(path: Path, rows: Rows, metadata: DerivedFileMetadata) -> int:
         write_page_index=False,
         write_page_checksum=False,
     )
-    os.replace(tmp, path)
-    return path.stat().st_size
 
 
 def read_records[M: BaseModel](

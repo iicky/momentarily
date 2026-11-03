@@ -47,7 +47,7 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
         raise MalformedObjectError(f"{obj.key}: unknown outcome {outcome!r}")
     record = LegacyFetchOutcome(
         legacy_fetch_id=f"{obj.key}#alerts",
-        lineage=lineage(ARCHIVE, obj.key, None),
+        lineage=lineage(ARCHIVE, obj.key, None, replaceable=False),
         source="alerts",
         observed_at=observed_at,
         scheduled_at=_WALL_CLOCK_ONLY,

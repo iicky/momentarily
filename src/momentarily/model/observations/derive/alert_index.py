@@ -5,7 +5,10 @@ Evidence is a presence: the full alert set of one fetch whose outcome was
 undecodable fetch is no evidence, and neither is a minute with no tick.
 
 **Window.** Day ``D``'s index is built over ``[D 00:00 - CARRY_SECONDS,
-D+1 00:00)``: the day plus a carry before it, nothing after.
+D+1 00:00)``: the day plus a carry before it, nothing after. It never starts
+before ``not_before`` (the recorder cutover in the derive job), so on the
+cutover's day it starts at the cutover with no carry, and a version present
+there has ``absent_before`` null.
 
 **Rows.** A version (``source``, ``alert_id``, ``content_digest``) gets one
 row per *run*: a maximal stretch of sightings with no evidence lacking it in
@@ -70,9 +73,13 @@ def day_start(day: str) -> int:
     return (date.fromisoformat(day) - date(1970, 1, 1)).days * _DAY
 
 
-def window(day: str) -> Interval:
+def window(day: str, not_before: int) -> Interval:
+    """``day``'s index window; ``not_before`` must fall before its end."""
     start = day_start(day)
-    return Interval(start=start - CARRY_SECONDS, end=start + _DAY)
+    lo = max(start - CARRY_SECONDS, not_before)
+    if lo >= start + _DAY:
+        raise ValueError(f"{day} ends by {not_before}")
+    return Interval(start=lo, end=start + _DAY)
 
 
 @dataclass(frozen=True)
@@ -136,8 +143,8 @@ def _source_versions(
     seq: list[Evidence],
     entities: Mapping[tuple[str, str], dict[str, JsonValue]],
     stats: IndexStats,
+    win: Interval,
 ) -> list[AlertVersion]:
-    win = window(day)
     start = day_start(day)
     ats = [e.at for e in seq]
     seen: dict[tuple[str, str], list[int]] = {}
@@ -199,11 +206,14 @@ def alert_versions(
     day: str,
     evidence: Iterable[Evidence],
     entities: Mapping[tuple[str, str], dict[str, JsonValue]],
+    *,
+    not_before: int,
 ) -> tuple[list[AlertVersion], IndexStats]:
     """The versions of ``day``'s index. ``evidence`` may hold presences from
     anywhere; only those observed inside the window count. ``entities`` maps
-    ``(source, content_digest)`` to the verbatim entity."""
-    win = window(day)
+    ``(source, content_digest)`` to the verbatim entity. The window starts no
+    earlier than ``not_before`` (``window``)."""
+    win = window(day, not_before)
     by_source: dict[AlertSource, list[Evidence]] = {}
     for e in evidence:
         if win.start <= e.at < win.end:
@@ -212,6 +222,6 @@ def alert_versions(
     out: list[AlertVersion] = []
     for source in sorted(by_source):
         seq = sorted(by_source[source], key=lambda e: (e.at, e.presence.fetch_id))
-        out += _source_versions(day, source, seq, entities, stats)
+        out += _source_versions(day, source, seq, entities, stats, win)
     stats.versions = len(out)
     return out, stats

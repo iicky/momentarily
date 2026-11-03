@@ -11134,3 +11134,17 @@ keeps every feed's trip count per route key.
 
 - Trip-id route fields need their own keys: W trains carry `N`, Z carry
   `J`, 6X carry `6` and SS carry `SI`.
+
+## 2026-10-22 alert-versions-lost-at-the-cutover
+
+origin: agent
+
+Handing layer 2 to the recorder at 2026-10-21T04:00Z costs more than
+`first_seen` precision for alert versions. Over the 90 full mirror days the
+legacy alerts archive first-sighted 2,265 versions in 00:00–04:00 UTC (mean
+25.2 a day). 922 of them (40.7%) were superseded by another legacy version
+of the same id before 04:00, so on 10-21 roughly 10 contents are in no
+derived file (the archive objects stay). Dropping the recorder's own first
+minutes (03:57–03:59) loses 3 more `alerts` versions, all gone at 04:00:21,
+and the rebuilt 10-21 index has 1,899 rows instead of 1,905. Of the 176
+`alerts` versions present at 04:00, 151 are also in an earlier legacy file.

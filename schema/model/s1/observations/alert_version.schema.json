@@ -82,7 +82,7 @@
     },
     "LegacyPeriod": {
       "additionalProperties": false,
-      "description": "The UTC days ``[start, end)`` for which a legacy archive stands in for\nthe recorder's records.",
+      "description": "The UTC days from ``start`` for which a legacy archive stands in for\nthe recorder's records. Date-granular: when ``end`` is set, the archive\nstops at the recorder cutover, 2026-10-21T04:00:00Z, on the day before\n``end``.",
       "properties": {
         "end": {
           "anyOf": [
@@ -95,7 +95,7 @@
               "type": "null"
             }
           ],
-          "description": "Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not.",
+          "description": "Exclusive: the first UTC day the archive no longer covers at all; it stops at the recorder cutover (2026-10-21T04:00:00Z) on the day before. Null for records the recorder does not write.",
           "title": "End"
         },
         "start": {

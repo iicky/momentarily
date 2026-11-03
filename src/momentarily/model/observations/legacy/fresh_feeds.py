@@ -55,7 +55,7 @@ def feed_outcomes(
 ) -> list[Emitted]:
     """One outcome per GTFS-RT feed: fresh or not. The archive kept no
     cause and no fetch time."""
-    line = lineage(archive, source.key, None)
+    line = lineage(archive, source.key, None, replaceable=False)
     last_success = unknown(f"{archive} keeps no fetch time")
     return [
         Emitted(

@@ -49,6 +49,8 @@ from momentarily.model.observations.contracts import (
 from momentarily.model.observations.keys import (
     DAILY_RECORDS,
     HOURLY_RECORDS,
+    RECORDER_CUTOVER,
+    REPLACED_PERIOD_END,
     BlobKey,
     BundleKey,
     DerivedDayKey,
@@ -274,10 +276,39 @@ def test_a_legacy_row_must_come_from_an_archive_that_holds_it() -> None:
 
 def test_a_legacy_row_outside_its_period_is_rejected() -> None:
     doc = _record("vehicle_observation", 3)
-    lineage = {**doc["lineage"], "period": {"start": "2026-08-12", "end": "2026-10-01"}}
+    period = {"start": "2026-10-21", "end": REPLACED_PERIOD_END}
+    lineage = {**doc["lineage"], "period": period}
     assert "legacy_period" in _error_types(
         VehicleObservation, {**doc, "lineage": lineage}
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "index"),
+    [("vehicle_observation", 3), ("equipment_observation", 1), ("alert_version", 1)],
+)
+def test_a_replaced_legacy_record_ends_at_the_recorder_cutover(
+    name: str, index: int
+) -> None:
+    model = OBSERVATION_DOCS[name]
+    doc = _record(name, index)
+    assert doc["lineage"]["kind"] == "legacy"
+    at = "first_seen" if name == "alert_version" else "observed_at"
+    model.model_validate({**doc, at: RECORDER_CUTOVER - 1})
+    assert "legacy_period" in _error_types(model, {**doc, at: RECORDER_CUTOVER})
+    for end in (None, "2026-10-21", "2026-10-23"):
+        period = {**doc["lineage"]["period"], "end": end}
+        lineage = {**doc["lineage"], "period": period}
+        assert "legacy_period" in _error_types(model, {**doc, "lineage": lineage})
+
+
+def test_legacy_only_records_continue_past_the_cutover() -> None:
+    record = _record("legacy_fetch_outcome")
+    later = {**record, "observed_at": RECORDER_CUTOVER + 86400}
+    LegacyFetchOutcome.model_validate(later)
+    period = {**record["lineage"]["period"], "end": REPLACED_PERIOD_END}
+    ended = {**record, "lineage": {**record["lineage"], "period": period}}
+    assert "legacy_period" in _error_types(LegacyFetchOutcome, ended)
 
 
 def test_a_legacy_period_needs_real_dates() -> None:

@@ -25,6 +25,7 @@ import pytest
 from botocore.exceptions import ClientError
 from pydantic import BaseModel
 
+from momentarily.model.conventions import Interval
 from momentarily.model.observations.contracts import (
     AlertEntry,
     AlertPresence,
@@ -51,6 +52,7 @@ from momentarily.model.observations.derive.bundle import read_bundle
 from momentarily.model.observations.derive.run import NotDecoded, Report, derive
 from momentarily.model.observations.derive.storage import LocalStorage
 from momentarily.model.observations.keys import (
+    RECORDER_CUTOVER,
     BlobKey,
     BundleKey,
     DerivedDayKey,
@@ -91,6 +93,17 @@ MODELS: dict[str, type[BaseModel]] = {
 }
 
 
+# The replay fixture was recorded on 2026-10-20, before the recorder cutover.
+# Most tests derive it as if the recorder had owned the whole day; the cutover
+# tests pass a cutover explicitly.
+FIXTURE_CUTOVER = 0
+
+
+@pytest.fixture(autouse=True)
+def fixture_predates_the_cutover(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(derive_run, "RECORDER_CUTOVER", FIXTURE_CUTOVER)
+
+
 def _derive(out: Path, source: Path = RECORDED, day: str = DAY, **kw: Any) -> Report:
     return derive(LocalStorage(source), LocalStorage(out), day, *CODE, **kw)
 
@@ -129,7 +142,7 @@ def _canonical(root: Path) -> str:
 def derived(tmp_path_factory: pytest.TempPathFactory) -> tuple[Report, Path]:
     """The fixture day derived once, for the tests that only read it."""
     out = tmp_path_factory.mktemp("derived")
-    return _derive(out), out
+    return _derive(out, cutover=FIXTURE_CUTOVER), out
 
 
 # --- replay ------------------------------------------------------------------
@@ -545,6 +558,8 @@ def test_recorded_rows_never_replace_or_remove_backfill_files(
 
 
 def test_the_backfill_never_overwrites_a_raw_file(tmp_path: Path) -> None:
+    """The raw files sit on a day before the cutover, so the backfill owns
+    their keys: it lists them as obsolete and keeps them."""
     out, saved = tmp_path / "out", tmp_path / "report.json"
     _derive(out)
     raw = _files(out)
@@ -552,7 +567,8 @@ def test_the_backfill_never_overwrites_a_raw_file(tmp_path: Path) -> None:
     args = ["--mirror", str(mirror), "--out", str(out), "--report", str(saved)]
     assert legacy_main(args) == 1
     report = json.loads(saved.read_text())
-    assert sorted(report["conflicts"]) == sorted([VEHICLE_14, ALERT_VERSION])
+    assert sorted(report["obsolete"]) == sorted([VEHICLE_14, ALERT_VERSION])
+    assert report["conflicts"] == []
     assert VEHICLE_13 in report["files"]
     after = _files(out)
     assert {k: after[k] for k in raw} == raw
@@ -570,6 +586,124 @@ def test_the_backfill_never_overwrites_an_unreadable_file(tmp_path: Path) -> Non
     assert report["conflicts"] == [VEHICLE_13]
     assert VEHICLE_14 in report["files"]
     assert (out / VEHICLE_13).read_bytes() == b"not parquet"
+
+
+# --- the recorder cutover -----------------------------------------------------------
+
+HOUR_15 = HOUR_14 + 3600
+NEXT_MIDNIGHT = day_start(DAY) + 86400
+
+
+def _hourly(files: dict[str, bytes]) -> dict[str, bytes]:
+    return {k: v for k, v in files.items() if "/alert_version/" not in k}
+
+
+def test_fetches_before_the_cutover_are_dropped_and_reported(
+    tmp_path: Path, derived: tuple[Report, Path]
+) -> None:
+    kept = _derive(tmp_path / "kept", cutover=HOUR_14)
+    assert kept.dropped_before_cutover == {}
+    assert _hourly(_files(tmp_path / "kept")) == _hourly(_files(derived[1]))
+    dropped = _derive(tmp_path / "dropped", cutover=HOUR_15)
+    assert dropped.status == "no_ticks"
+    assert sum(dropped.dropped_before_cutover.values()) == sum(kept.fetches.values())
+    assert not (tmp_path / "dropped").exists()
+
+
+@pytest.mark.parametrize("cutover", [HOUR_15, NEXT_MIDNIGHT])
+@pytest.mark.parametrize("prune", [False, True])
+def test_raw_files_before_the_cutover_are_obsolete_and_removed_only_on_request(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    cutover: int,
+    prune: bool,
+) -> None:
+    out = tmp_path / "out"
+    _derive(out)
+    before = _files(out)
+    monkeypatch.setattr(derive_run, "RECORDER_CUTOVER", cutover)
+    # --overwrite alone never removes an obsolete file.
+    args = ["--root", str(RECORDED), "--out", str(out), "--day", DAY, "--overwrite"]
+    assert main(args + ["--prune-obsolete"] * prune) == 0
+    report = json.loads(capsys.readouterr().out)
+    obsolete = sorted(before) if cutover == NEXT_MIDNIGHT else sorted(_hourly(before))
+    assert sorted(report["obsolete"]) == obsolete
+    assert report["obsolete_pruned"] is prune
+    assert report["failed"] is False
+    left = {k: v for k, v in before.items() if k not in obsolete}
+    assert _files(out) == (left if prune else before)
+
+
+def test_a_backfill_file_before_the_cutover_is_never_obsolete(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    before = _backfilled(out, tmp_path)
+    report = _derive(out, cutover=NEXT_MIDNIGHT, prune_obsolete=True)
+    assert report.obsolete == []
+    assert _files(out) == before
+
+
+def test_an_unreadable_file_before_the_cutover_is_never_obsolete(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    (out / VEHICLE_14).parent.mkdir(parents=True)
+    (out / VEHICLE_14).write_bytes(b"not parquet")
+    report = _derive(out, cutover=HOUR_15, prune_obsolete=True)
+    assert report.obsolete == []
+    assert (out / VEHICLE_14).read_bytes() == b"not parquet"
+
+
+def test_the_backfill_owns_the_hour_before_the_real_cutover(tmp_path: Path) -> None:
+    """A trace object at 03:59:59 on the cutover day fills the hour-03 file,
+    where a stored raw file is obsolete, not a conflict."""
+    _derive(tmp_path / "raw")
+    key = DerivedHourKey("vehicle", RECORDER_CUTOVER - 3600).key
+    out = tmp_path / "out"
+    (out / key).parent.mkdir(parents=True)
+    shutil.copy(tmp_path / "raw" / VEHICLE_14, out / key)
+    mirror = tmp_path / "mirror"
+    trace = "archive/trace/2026-09-15/1789477995.json"
+    _shift(mirror, trace, RECORDER_CUTOVER - 1, 1789477995)
+    report = legacy_run.run(mirror, out, *CODE)
+    assert report.obsolete == [key]
+    assert report.conflicts == []
+    assert report.archives["archive/trace"].rows["vehicle"] > 0
+
+
+def test_at_the_real_cutover_a_fetch_one_second_early_is_dropped(
+    tmp_path: Path,
+) -> None:
+    """A static GTFS HEAD (no layer-2 record, so nothing is read) observed at
+    03:59:59 and at 04:00:00 on the cutover day."""
+    tick = CollectorTick.model_validate_json(
+        next(RECORDED.rglob("ticks/**/*.json")).read_bytes()
+    )
+    (head,) = [f for f in tick.fetches if f.source == "gtfs_static"]
+    report = Report(
+        utc_day(RECORDER_CUTOVER), (0, 23), DECODER_VERSION, RECORDER_CUTOVER
+    )
+    store = LocalStorage(tmp_path)
+    output = derive_run.Output(store, *CODE, False, report)
+    day = derive_run._Day(  # pyright: ignore[reportPrivateUsage]
+        report.day,
+        (0, 23),
+        RECORDER_CUTOVER,
+        derive_run._Reader(store, report),  # pyright: ignore[reportPrivateUsage]
+        output,
+    )
+    inv = derive_run._Invocation([head], "tick", None)  # pyright: ignore[reportPrivateUsage]
+    try:
+        for at in (RECORDER_CUTOVER - 1, RECORDER_CUTOVER):
+            moved = head.model_copy(
+                update={"started_at_ms": at * 1000 - 300, "finished_at_ms": at * 1000}
+            )
+            day.fetch(inv, moved, report)
+    finally:
+        output.close()
+    assert day.dropped == {"gtfs_static": 1}
+    assert sum(day.fetches.values()) == 1
+    assert day.not_decoded.no_record == 1
 
 
 # --- the R2 store ------------------------------------------------------------------
@@ -682,14 +816,14 @@ class _Script:
 
     def versions(self, day: str = DAY) -> dict[tuple[str, str], AlertVersion]:
         """Versions with one run each, by (alert_id, digest)."""
-        found, _ = alert_versions(day, self.evidence, self.entities)
+        found, _ = alert_versions(day, self.evidence, self.entities, not_before=0)
         by_key = {(v.alert_id, v.content_digest): v for v in found}
         assert len(by_key) == len(found)
         return by_key
 
     def runs(self, entity: dict[str, Any], day: str = DAY) -> list[tuple[Any, ...]]:
         """Bounds of every row of ``entity``'s version, by first_seen."""
-        found, _ = alert_versions(day, self.evidence, self.entities)
+        found, _ = alert_versions(day, self.evidence, self.entities, not_before=0)
         digest = alert_content_digest(entity)
         rows = [
             v for v in found if (v.alert_id, v.content_digest) == (entity["id"], digest)
@@ -745,7 +879,7 @@ def test_a_version_that_leaves_and_returns_is_one_row_per_run() -> None:
         (t[5], t[6], t[6], t[7], "removed", []),
         (t[7], t[8], t[8], None, None, [(t[8] + 1, D + 86400)]),
     ]
-    _, stats = alert_versions(DAY, s.evidence, s.entities)
+    _, stats = alert_versions(DAY, s.evidence, s.entities, not_before=0)
     assert stats.reappearing == 1
 
 
@@ -790,6 +924,33 @@ def test_a_version_spanning_midnight_keeps_its_bounds_in_the_next_day() -> None:
     # The next day's presences change nothing in this day's index.
     s.poll(D + 86400 + 20, c)
     assert s.versions() == today
+
+
+def test_the_cutover_days_index_starts_at_the_cutover() -> None:
+    a, b = _entity("A", "present at the cutover"), _entity("B", "gone before it")
+    cutover_day, next_day = utc_day(RECORDER_CUTOVER), day_start("2026-10-22")
+    s = _Script()
+    s.poll(RECORDER_CUTOVER - 120 + 20)  # 03:58, empty: before the cutover
+    s.poll(RECORDER_CUTOVER - 60 + 20, b)  # 03:59
+    s.poll(RECORDER_CUTOVER + 20, a)  # 04:00
+    s.poll(RECORDER_CUTOVER + 60 + 20)  # 04:01, gone
+    s.poll(next_day + 20, a)  # the next day, an ordinary one
+    found, _ = alert_versions(
+        cutover_day, s.evidence, s.entities, not_before=RECORDER_CUTOVER
+    )
+    assert [(v.alert_id, _bounds(v)[:5]) for v in found] == [
+        ("A", (None, RECORDER_CUTOVER + 20, RECORDER_CUTOVER + 20,
+               RECORDER_CUTOVER + 80, "removed")),
+    ]  # fmt: skip
+    assert found[0].window == Interval(start=RECORDER_CUTOVER, end=next_day)
+    (after,), _ = alert_versions(
+        "2026-10-22", s.evidence, s.entities, not_before=RECORDER_CUTOVER
+    )
+    assert after.window == Interval(start=next_day - 3600, end=next_day + 86400)
+    with pytest.raises(ValueError, match="2026-10-20"):
+        alert_versions(
+            "2026-10-20", s.evidence, s.entities, not_before=RECORDER_CUTOVER
+        )
 
 
 def _no_sleep(_: float) -> None:

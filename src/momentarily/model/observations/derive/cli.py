@@ -34,6 +34,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "them and fail, unless DECODER_VERSION changed); a legacy backfill "
         "file is never replaced",
     )
+    parser.add_argument(
+        "--prune-obsolete",
+        action="store_true",
+        help="delete the stored raw files the report lists as obsolete (wholly "
+        "before the recorder cutover, so the legacy backfill's keys); "
+        "default: list them and keep them",
+    )
     parser.add_argument("--report", type=Path, help="also write the JSON report here")
 
 
@@ -67,11 +74,20 @@ def execute(args: argparse.Namespace, source: Storage, out: Storage) -> int:
         code["dirty"],
         hours=hours,
         overwrite=args.overwrite,
+        prune_obsolete=args.prune_obsolete,
     )
     text = json.dumps(report_json(report), indent=2) + "\n"
     sys.stdout.write(text)
     if args.report is not None:
         args.report.write_text(text)
+    if report.obsolete:
+        done = (
+            "deleted" if report.obsolete_pruned else "kept (--prune-obsolete deletes)"
+        )
+        print(
+            f"{len(report.obsolete)} obsolete raw files before the cutover {done}",
+            file=sys.stderr,
+        )
     if report.status == "no_ticks":
         print(
             f"no recorded ticks observed in {args.day}; nothing derived",

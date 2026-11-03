@@ -1,7 +1,7 @@
 """Derive one UTC day of recorded observations in R2 (the nightly step).
 
     murk exec -- uv run python -m training.derive_observations --day YYYY-MM-DD \\
-        [--hours H-H] [--overwrite] [--report report.json]
+        [--hours H-H] [--overwrite] [--prune-obsolete] [--report report.json]
 
 Reads the recorder's ticks, bundles and blobs from the bucket and writes the
 derived parquet files back under the same ``model/observations/s1/`` keys.

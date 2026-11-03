@@ -66,6 +66,8 @@ from momentarily.model.conventions import (
     UtcDate,
 )
 from momentarily.model.observations.keys import (
+    RECORDER_CUTOVER,
+    REPLACED_PERIOD_END,
     BlobKey,
     BundleKey,
     DerivedDayKey,
@@ -411,12 +413,14 @@ def _real_date(value: str) -> None:
 
 
 class LegacyPeriod(Model):
-    """The UTC days ``[start, end)`` for which a legacy archive stands in for
-    the recorder's records."""
+    """The UTC days from ``start`` for which a legacy archive stands in for
+    the recorder's records. Date-granular: when ``end`` is set, the archive
+    stops at the recorder cutover, 2026-10-21T04:00:00Z, on the day before
+    ``end``."""
 
     start: UtcDate = Field(description="First UTC day the legacy archive covers.")
     end: UtcDate | None = Field(
-        description="Exclusive: the first UTC day the recorder wrote the replacing record; null while it has not."
+        description="Exclusive: the first UTC day the archive no longer covers at all; it stops at the recorder cutover (2026-10-21T04:00:00Z) on the day before. Null for records the recorder does not write."
     )
 
     @model_validator(mode="after")
@@ -424,12 +428,18 @@ class LegacyPeriod(Model):
         _real_date(self.start)
         if self.end is not None:
             _real_date(self.end)
-            if self.end <= self.start:
-                raise _fail("legacy_period", "legacy period end is not after its start")
+            if self.end != REPLACED_PERIOD_END:
+                raise _fail(
+                    "legacy_period",
+                    f"a legacy period ends on {REPLACED_PERIOD_END}, after the recorder cutover",
+                )
+            if self.start > utc_day(RECORDER_CUTOVER):
+                raise _fail("legacy_period", "legacy period starts after the cutover")
         return self
 
-    def contains(self, day: str) -> bool:
-        return self.start <= day and (self.end is None or day < self.end)
+    def admits(self, at: int) -> bool:
+        """Whether a record observed at ``at`` falls inside the period."""
+        return self.start <= utc_day(at) and (self.end is None or at < RECORDER_CUTOVER)
 
 
 class RawLineage(Model):
@@ -522,8 +532,10 @@ def _check_lineage(
         return
     if lineage.archive not in legacy_archives:
         raise _fail("lineage", f"{lineage.archive} cannot back this record")
-    if at is not None and not lineage.period.contains(utc_day(at)):
-        raise _fail("legacy_period", f"{utc_day(at)} is outside the legacy period")
+    if lineage.period.end is None:
+        raise _fail("legacy_period", "the recorder replaces this record at the cutover")
+    if at is not None and not lineage.period.admits(at):
+        raise _fail("legacy_period", f"{at} is outside the legacy period")
 
 
 def _check_source(fetch_id: str | Unknown, source: str | Unknown, lineage: Any) -> None:
@@ -958,7 +970,9 @@ def _check_legacy(
 ) -> None:
     if lineage.archive not in archives:
         raise _fail("lineage", f"{lineage.archive} cannot back this record")
-    if not lineage.period.contains(utc_day(at)):
+    if lineage.period.end is not None:
+        raise _fail("legacy_period", "no recorder record replaces this legacy record")
+    if not lineage.period.admits(at):
         raise _fail("legacy_period", f"{utc_day(at)} is outside the legacy period")
     if source_key is not None and lineage.source_key != source_key:
         raise _fail("legacy_key", f"the record at {at} lives in {source_key}")

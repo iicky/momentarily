@@ -33,7 +33,13 @@ from momentarily.model.observations.contracts import (
     VehicleObservation,
     alert_content_digest,
 )
-from momentarily.model.observations.keys import PREFIX, DerivedHourKey, utc_day
+from momentarily.model.observations.derive.alert_index import day_start
+from momentarily.model.observations.keys import (
+    PREFIX,
+    RECORDER_CUTOVER,
+    DerivedHourKey,
+    utc_day,
+)
 from momentarily.model.observations.legacy import (
     alerts,
     alerts_liveness,
@@ -536,3 +542,68 @@ def test_an_object_dated_before_its_legacy_period_is_rejected(
     with pytest.raises(ValidationError) as err:
         adapt(obj)
     assert "legacy_period" in {e["type"] for e in err.value.errors()}
+
+
+# --- the recorder cutover -------------------------------------------------------
+
+
+def _moved(key: str, at: int) -> LegacyObject:
+    """The fixture object ``key`` observed at ``at`` (a trace object also
+    scheduled then), filed where its archive files it."""
+    doc = json.loads((MIRROR / key).read_bytes())
+    doc["observed_at"] = at
+    archive, _, name = key.rsplit("/", 2)
+    if archive == "archive/trace":
+        doc["scheduled_at"] = at
+        name = f"{at}.json"
+    elif archive == "archive/ene":
+        name = f"{at % 86400 // 3600:02d}0000-{name.split('-', 1)[1]}"
+    return LegacyObject(f"{archive}/{utc_day(at)}/{name}", json.dumps(doc).encode())
+
+
+@pytest.mark.parametrize(
+    ("adapt", "key", "replaced"),
+    [
+        (trace.adapt, "archive/trace/2026-09-15/1789477995.json", VehicleObservation),
+        (
+            ene.adapt,
+            "archive/ene/2026-07-21/000000-ene_current.json",
+            EquipmentObservation,
+        ),
+    ],
+)
+def test_replaced_records_stop_at_the_cutover_and_fetch_outcomes_go_on(
+    adapt: Any, key: str, replaced: type[BaseModel]
+) -> None:
+    before = [e.record for e in adapt(_moved(key, RECORDER_CUTOVER - 1))]
+    after = [e.record for e in adapt(_moved(key, RECORDER_CUTOVER))]
+    assert any(isinstance(r, replaced) for r in before)
+    assert not any(isinstance(r, replaced) for r in after)
+    outcomes = [r for r in after if isinstance(r, LegacyFetchOutcome)]
+    assert outcomes
+    assert all(r.lineage.period.end is None for r in outcomes)
+
+
+def test_alert_versions_of_the_cutover_day_are_left_to_the_recorder() -> None:
+    """Two contents of one alert id; the second proves the first superseded
+    only while it was seen before the cutover."""
+    first = "archive/alerts/2026-10-13/1791893575-lmm_alert_271625_26.json"
+    second = "archive/alerts/2026-10-13/1791893817-lmm_alert_271625_26.json"
+    midnight = day_start(utc_day(RECORDER_CUTOVER))
+
+    def versions(second_at: int) -> list[AlertVersion]:
+        sightings = [
+            alerts.parse(_moved(first, midnight - 3600)),
+            alerts.parse(_moved(second, second_at)),
+        ]
+        found = [e.record for e in alerts.versions(sightings)]
+        assert all(isinstance(r, AlertVersion) for r in found)
+        return [r for r in found if isinstance(r, AlertVersion)]
+
+    (proven,) = versions(RECORDER_CUTOVER - 1)
+    assert proven.first_seen == midnight - 3600
+    assert proven.gone_kind == "superseded"
+    (unproven,) = versions(RECORDER_CUTOVER)
+    assert isinstance(unproven.gone_kind, Unknown)
+    both = versions(midnight - 1)
+    assert [v.first_seen for v in both] == [midnight - 3600, midnight - 1]

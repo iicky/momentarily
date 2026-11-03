@@ -32,6 +32,15 @@ is reported per fetch and the run goes on.
 once, and each hour's files are written and released as soon as no later
 tick folder can add to them.
 
+**Cutover.** Raw records start at ``keys.RECORDER_CUTOVER``; the legacy
+backfill owns everything observed before it. Fetches observed in the asked
+hours before it are counted in ``dropped_before_cutover`` (by source) and
+neither decoded nor used as alert evidence. The index of the cutover's day
+starts at the cutover (``alert_index``). A stored raw file wholly before the
+cutover in the asked day and hours (and that day's ``alert_version`` file
+when the whole day is before it) is listed in ``obsolete``, and removed only
+with ``prune_obsolete``, never by ``overwrite``.
+
 **Files.** Each file's metadata names, as inputs, every tick, bundle and
 blob its records were read from, with the sha256 of the stored object and
 the latest ``observed_at`` it contributed, so ``built_at`` is the latest
@@ -96,6 +105,7 @@ from momentarily.model.observations.derive.storage import Storage
 from momentarily.model.observations.keys import (
     HOURLY_RECORDS,
     PREFIX,
+    RECORDER_CUTOVER,
     BlobKey,
     BundleKey,
     DerivedDayKey,
@@ -172,6 +182,7 @@ class Report:
     day: str
     hours: tuple[int, int]
     decoder_version: str
+    cutover: int
     status: Literal["derived", "no_ticks"] = "no_ticks"
     from_tick_record: int = 0
     from_bundle_index: int = 0
@@ -184,6 +195,12 @@ class Report:
     inconsistent_inputs: list[InputProblem] = field(default_factory=list[InputProblem])
     conflicts: list[InputProblem] = field(default_factory=list[InputProblem])
     foreign_kept: list[str] = field(default_factory=list[str])
+    dropped_before_cutover: dict[str, int] = field(default_factory=dict[str, int])
+    """Fetches observed in the asked hours before the cutover, by source."""
+    obsolete: list[str] = field(default_factory=list[str])
+    """Stored raw files wholly before the cutover; the backfill owns the keys."""
+    obsolete_pruned: bool = False
+    """Whether the ``obsolete`` files were removed."""
 
     @property
     def failed(self) -> bool:
@@ -495,6 +512,16 @@ class Output:
         self._count(record, outcome, len(rows), len(inputs))
         return outcome
 
+    def obsolete(self, key: str, prune: bool) -> None:
+        """``key`` lies wholly before the cutover: a stored raw file there is
+        listed, and removed with ``prune``; any other file is left alone."""
+        stored = self._stored(key)
+        if stored is None or stored[1] is None or file_lineage(stored[1]) != "raw":
+            return
+        self._report.obsolete.append(key)
+        if prune:
+            self._storage.delete(key)
+
     def stale(self, record: str, key: str) -> None:
         """``key`` is stored, but the rebuild has no rows for it."""
         stored = self._stored(key)
@@ -549,13 +576,23 @@ class _Day:
     """One derive run: the scope's hourly buckets and the index's evidence."""
 
     def __init__(
-        self, day: str, hours: tuple[int, int], reader: _Reader, output: Output
+        self,
+        day: str,
+        hours: tuple[int, int],
+        cutover: int,
+        reader: _Reader,
+        output: Output,
     ) -> None:
         start = day_start(day)
         self.day = day
         self.whole_day = hours == (0, 23)
-        self.scope = (start + hours[0] * _HOUR, start + (hours[1] + 1) * _HOUR)
-        self.carry_from = self.scope[0] - (CARRY_SECONDS if self.whole_day else 0)
+        self.cutover = cutover
+        self.asked = (start + hours[0] * _HOUR, start + (hours[1] + 1) * _HOUR)
+        # Empty (start >= end) when every asked hour is before the cutover.
+        self.scope = (max(self.asked[0], cutover), self.asked[1])
+        self.carry_from = max(
+            self.scope[0] - (CARRY_SECONDS if self.whole_day else 0), cutover
+        )
         self.reader = reader
         self.output = output
         self.buckets: dict[tuple[HourlyRecord, int], _Bucket] = {}
@@ -563,17 +600,21 @@ class _Day:
         self.evidence_inputs: dict[str, tuple[str, int]] = {}
         self.entities: dict[tuple[str, str], dict[str, JsonValue]] = {}
         self.fetches: Counter[str] = Counter()
+        self.dropped: Counter[str] = Counter()
         self.not_decoded = NotDecoded()
 
     def folders(self) -> range:
         """Tick folders to read: every hour whose invocations can observe
-        inside the carry or the scope."""
-        return range(self.carry_from - _HOUR, self.scope[1], _HOUR)
+        inside the carry, the scope or the asked hours before the cutover."""
+        first = min(self.carry_from, self.asked[0])
+        return range(first - _HOUR, self.asked[1], _HOUR)
 
     def fetch(self, inv: _Invocation, f: FeedFetch, report: Report) -> None:
         obs = None if f.finished_at_ms is None else f.finished_at_ms // 1000
         at = obs if obs is not None else f.started_at_ms // 1000
         in_scope = self.scope[0] <= at < self.scope[1]
+        if self.asked[0] <= at < min(self.cutover, self.asked[1]):
+            self.dropped[f.source] += 1
         carried = self.carry_from <= at < self.scope[0] and f.source in _ALERT_SOURCES
         if in_scope:
             self.fetches[f.outcome] += 1
@@ -654,16 +695,27 @@ class _Day:
     def index(self, report: Report) -> None:
         if not (self.whole_day and self.evidence):
             return
-        versions, stats = alert_versions(self.day, self.evidence, self.entities)
+        versions, stats = alert_versions(
+            self.day, self.evidence, self.entities, not_before=self.cutover
+        )
         report.alert_versions_reappearing = stats.reappearing
         if versions:
             rows = Rows(AlertVersion, DerivedDayKey("alert_version", self.day).key)
             rows.add(versions)
             self.output.write("alert_version", rows, self.evidence_inputs)
 
+    def sweep_obsolete(self, prune: bool) -> None:
+        """Stored raw files in the asked hours that lie wholly before the
+        cutover, and the day's ``alert_version`` file when the whole day does."""
+        for h in range(self.asked[0], min(self.cutover, self.asked[1]), _HOUR):
+            for name in HOURLY_RECORDS:
+                self.output.obsolete(DerivedHourKey(name, h).key, prune)
+        if self.whole_day and self.asked[1] <= self.cutover:
+            self.output.obsolete(DerivedDayKey("alert_version", self.day).key, prune)
+
     def sweep(self) -> None:
         """Stored files in the scope that this rebuild produced no rows for."""
-        hours = range(self.scope[0], self.scope[1], _HOUR)
+        hours = range(self.scope[0], self.scope[1], _HOUR)  # empty before cutover
         expected = {
             DerivedHourKey(name, h).key: name for name in HOURLY_RECORDS for h in hours
         }
@@ -686,17 +738,25 @@ def derive(
     *,
     hours: tuple[int, int] = (0, 23),
     overwrite: bool = False,
+    prune_obsolete: bool = False,
+    cutover: int | None = None,
 ) -> Report:
     """Derive ``day`` (UTC hours ``hours``, inclusive) from ``source`` into
-    ``out``. The daily ``alert_version`` file is built only for a whole day.
-    A day with no fetch observed in the scope writes and removes nothing
-    (status ``no_ticks``)."""
+    ``out``, from ``cutover`` (an hour boundary; default
+    ``keys.RECORDER_CUTOVER``) on. The daily ``alert_version`` file is built
+    only for a whole day. Obsolete raw files are listed, and removed only with
+    ``prune_obsolete``. Otherwise a day with no fetch observed in the scope
+    writes and removes nothing (status ``no_ticks``)."""
     check_day(day)
     if not 0 <= hours[0] <= hours[1] <= 23:
         raise ValueError(f"hours {hours} are not a range within one day")
-    report = Report(day, hours, DECODER_VERSION)
+    if cutover is None:
+        cutover = RECORDER_CUTOVER
+    if cutover % _HOUR:
+        raise ValueError(f"cutover {cutover} is not an hour boundary")
+    report = Report(day, hours, DECODER_VERSION, cutover)
     output = Output(out, code_sha, code_dirty, overwrite, report)
-    run = _Day(day, hours, _Reader(source, report), output)
+    run = _Day(day, hours, cutover, _Reader(source, report), output)
     try:
         for folder in run.folders():
             for inv in run.reader.hour(folder):
@@ -706,9 +766,12 @@ def derive(
         if run.fetches:
             run.index(report)
             run.sweep()
+        run.sweep_obsolete(prune_obsolete)
+        report.obsolete_pruned = prune_obsolete and bool(report.obsolete)
     finally:
         output.close()
     report.fetches = dict(sorted(run.fetches.items()))
+    report.dropped_before_cutover = dict(sorted(run.dropped.items()))
     report.not_decoded = run.not_decoded
     report.records = dict(sorted(report.records.items()))
     if run.fetches:

@@ -34,6 +34,7 @@ from momentarily.model.observations.contracts import (
     alert_content_digest,
 )
 from momentarily.model.observations.derive.alert_index import day_start
+from momentarily.model.observations.derive.storage import LocalStorage
 from momentarily.model.observations.keys import (
     PREFIX,
     RECORDER_CUTOVER,
@@ -334,7 +335,7 @@ def test_a_resighted_version_keeps_its_first_sighting() -> None:
 
 
 def _run(out: Path, mirror: Path = MIRROR) -> dict[str, bytes]:
-    run(mirror, out, "f" * 40, False)
+    run(LocalStorage(mirror), LocalStorage(out), "f" * 40, False)
     return {
         p.relative_to(out).as_posix(): p.read_bytes()
         for p in sorted(out.rglob("*"))
@@ -411,7 +412,7 @@ def test_a_malformed_object_is_skipped_and_reported(tmp_path: Path) -> None:
     shutil.copytree(MIRROR, mirror)
     bad = mirror / "archive" / "health" / "2026-09-11" / "1789094708.json"
     bad.write_bytes(b'{"observed_at": 1789094708, "write_fail')
-    report = run(mirror, tmp_path / "out", "f" * 40, False)
+    report = run(LocalStorage(mirror), LocalStorage(tmp_path / "out"), "f" * 40, False)
     failures = report.archives["archive/health"].failures
     assert [k for k, _ in failures] == ["archive/health/2026-09-11/1789094708.json"]
     assert report.archives["archive/health"].rows == {"legacy_collector_health": 2}

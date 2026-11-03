@@ -515,7 +515,9 @@ def _legacy_mirror(root: Path) -> Path:
 
 
 def _backfilled(out: Path, tmp_path: Path) -> dict[str, bytes]:
-    legacy_run.run(_legacy_mirror(tmp_path / "mirror"), out, *CODE)
+    legacy_run.run(
+        LocalStorage(_legacy_mirror(tmp_path / "mirror")), LocalStorage(out), *CODE
+    )
     files = _files(out)
     assert {VEHICLE_13, VEHICLE_14, ALERT_VERSION} <= set(files)
     return files
@@ -557,15 +559,19 @@ def test_recorded_rows_never_replace_or_remove_backfill_files(
     assert DerivedHourKey("trip_update", HOUR_14).key in after
 
 
-def test_the_backfill_never_overwrites_a_raw_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_the_backfill_never_overwrites_a_raw_file(
+    tmp_path: Path, overwrite: bool
+) -> None:
     """The raw files sit on a day before the cutover, so the backfill owns
-    their keys: it lists them as obsolete and keeps them."""
+    their keys: it lists them as obsolete and keeps them, even with
+    ``--overwrite``."""
     out, saved = tmp_path / "out", tmp_path / "report.json"
     _derive(out)
     raw = _files(out)
     mirror = _legacy_mirror(tmp_path / "mirror")
     args = ["--mirror", str(mirror), "--out", str(out), "--report", str(saved)]
-    assert legacy_main(args) == 1
+    assert legacy_main(args + ["--overwrite"] * overwrite) == 1
     report = json.loads(saved.read_text())
     assert sorted(report["obsolete"]) == sorted([VEHICLE_14, ALERT_VERSION])
     assert report["conflicts"] == []
@@ -583,7 +589,7 @@ def test_the_backfill_never_overwrites_an_unreadable_file(tmp_path: Path) -> Non
     args = ["--mirror", str(mirror), "--out", str(out), "--report", str(saved)]
     assert legacy_main(args) == 1
     report = json.loads(saved.read_text())
-    assert report["conflicts"] == [VEHICLE_13]
+    assert [key for key, _ in report["conflicts"]] == [VEHICLE_13]
     assert VEHICLE_14 in report["files"]
     assert (out / VEHICLE_13).read_bytes() == b"not parquet"
 
@@ -665,7 +671,7 @@ def test_the_backfill_owns_the_hour_before_the_real_cutover(tmp_path: Path) -> N
     mirror = tmp_path / "mirror"
     trace = "archive/trace/2026-09-15/1789477995.json"
     _shift(mirror, trace, RECORDER_CUTOVER - 1, 1789477995)
-    report = legacy_run.run(mirror, out, *CODE)
+    report = legacy_run.run(LocalStorage(mirror), LocalStorage(out), *CODE)
     assert report.obsolete == [key]
     assert report.conflicts == []
     assert report.archives["archive/trace"].rows["vehicle"] > 0

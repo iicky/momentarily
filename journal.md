@@ -11148,3 +11148,20 @@ derived file (the archive objects stay). Dropping the recorder's own first
 minutes (03:57–03:59) loses 3 more `alerts` versions, all gone at 04:00:21,
 and the rebuilt 10-21 index has 1,899 rows instead of 1,905. Of the 176
 `alerts` versions present at 04:00, 151 are also in an earlier legacy file.
+
+## 2026-11-02 legacy-trace-crosses-midnight
+
+origin: agent
+
+A legacy `archive/trace` object is filed under the UTC day of its
+`scheduled_at`, but its vehicles and fetch outcomes carry `observed_at`.
+A minute scheduled at 23:59:40 and observed at 00:00:10 therefore fills the
+next day's hour-00 `vehicle` file and its daily `legacy_fetch_outcome` file.
+A backfill over a day range that simply flushes everything at the end
+writes a partial next-day file, and the run that later covers that day sees
+different bytes and reports a conflict. The ranged backfill reads the trace
+objects of the hour before its first day and, when given a last day, leaves
+files after it unwritten. Timing on a synthetic full trace day (1,440
+objects, 619,200 vehicle rows, M-series laptop): 63 s to write, 67 s for a
+rerun that skips every file, because the skip still renders each file to
+compare bytes.

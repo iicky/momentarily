@@ -4,7 +4,9 @@ One module per legacy source (doc ``model-observations.md`` §5): ``trace``,
 ``fresh_feeds`` (``archive/trip_updates`` and ``archive/vehicles``),
 ``alerts``, ``alerts_liveness``, ``predictions``, ``ene`` and ``health``.
 Each keeps what its archive kept and marks every other field ``Unknown``;
-nothing is inferred. ``run`` drives them over a local mirror and writes
-parquet (``python -m momentarily.model.observations.legacy``, needs the
-``derive`` extra). The adapters themselves need no ``pyarrow``.
+nothing is inferred. ``run`` drives them over a store, a local mirror or R2,
+one UTC day at a time and writes parquet
+(``python -m momentarily.model.observations.legacy`` locally,
+``python -m training.legacy_backfill`` on R2; needs the ``derive`` extra).
+The adapters themselves need no ``pyarrow``.
 """

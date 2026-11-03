@@ -1,0 +1,66 @@
+name: Legacy observations backfill (manual)
+
+# Layer 2's legacy backfill (docs/model-observations.md §5.1), run where the
+# R2 credentials live: reads archive/trace, archive/trip_updates,
+# archive/vehicles, archive/alerts, archive/alerts_liveness, archive/ene,
+# archive/health and v1/predictions one UTC day at a time and writes the
+# legacy-lineage parquet files under model/observations/s1/derived/.
+#
+# Safe to rerun over any range: a file with the same bytes is skipped, a
+# new key is written with a conditional put, a raw-lineage (derive job) or
+# unreadable file is never overwritten, and nothing is deleted. A legacy
+# file whose content differs is a conflict (the step
+# fails, the file is kept) unless `overwrite` is set. A day with an object
+# R2 will not return, after retries, is written not at all and fails the
+# step; rerun it. The legacy-only records (fetch outcome, route alert state,
+# collector health) continue past the recorder cutover, so rerunning a later
+# day writes that day's files. Prints keys and counts only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "First UTC day (YYYY-MM-DD)"
+        type: string
+        required: true
+      through:
+        description: "Last UTC day (YYYY-MM-DD), inclusive; ended at least 30 minutes ago"
+        type: string
+        required: true
+      overwrite:
+        description: "Replace stored legacy files whose content differs"
+        type: boolean
+        default: false
+
+concurrency:
+  group: legacy-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # About 5,000 objects a day plus every archive/alerts object up to the
+    # cutover; the whole history (06-15 on) takes hours. 360 is the hosted
+    # runner's maximum; an interrupted run resumes by rerunning the range.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Backfill legacy observations
+        run: |
+          set -euo pipefail
+          args=(--from "$FROM" --through "$THROUGH")
+          if [ "$OVERWRITE" = "true" ]; then args+=(--overwrite); fi
+          uv run python -m training.legacy_backfill "${args[@]}"
+        env:
+          FROM: ${{ inputs.from }}
+          THROUGH: ${{ inputs.through }}
+          OVERWRITE: ${{ inputs.overwrite }}
+          MURK_KEY: ${{ secrets.MURK_KEY }}

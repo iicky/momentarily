@@ -1023,9 +1023,11 @@ The CLI reads the mirror (local) and writes
 `<out>/model/observations/s1/derived/...` with the existing `keys`; no key
 was added. `vehicle` and `equipment` files are hourly by `observed_at`.
 `alert_version` files are daily by `first_seen`. The three legacy-only
-records are daily by `observed_at`. A malformed object is skipped, listed in
-the report, and makes the CLI exit 1. A missing mirror, or `--from` after
-`--through`, exits 2. A record that a contract rejects stops the run.
+records are daily by `observed_at`. A malformed object aborts every day
+that reads it, as an unreadable one does (see **Unreadable and malformed
+objects** below), is listed in the report with its reason, and makes the
+CLI exit 1. A missing mirror, or `--from` after `--through`, exits 2. A
+record that a contract rejects stops the run.
 
 **Days.** The run covers the UTC days `--from` through `--through`, by
 default every day the mirror holds. It reads one day at a time: each
@@ -1080,16 +1082,23 @@ on or after 2026-10-21 skips it.
 Nothing is ever deleted. A conflict or an obsolete file makes the CLI exit 1;
 the other files are still written.
 
-**Unreadable objects.** The archives are never pruned, so a listed object
-that the store does not return is a store error, not bad data.
+**Unreadable and malformed objects.** The archives are never pruned, so a
+listed object that the store does not return is a store error, not bad data.
 `R2Storage.get` retries R2's spurious not-found answers (5 attempts, with
-backoff). If an object still cannot be read, its day is aborted. A day's
-files are rendered as they close but stored only when the whole day has
-been read, so nothing of an aborted day is written. The report lists the day and the
-key, the CLI exits 1, and the run goes on with the next day, which starts as
-a new range would (with the lead-in). An unreadable trace object aborts the
-next day too, because that day's lead-in reads it. If an `archive/alerts`
-object cannot be read, the run stops before any day and writes nothing.
+backoff). If an object still cannot be read, or is malformed (not the JSON
+its archive writes), its rows are unknown and every day that reads it is
+aborted. A day's files are rendered as they close but stored only when the
+whole day has been read, so nothing of an aborted day is written. The
+report lists the day and the key (and a malformed object's reason, once),
+the CLI exits 1, and the run goes on with the next day, which starts as a
+new range would (with the lead-in). Such a trace object aborts the next day
+too, because that day's lead-in reads it, also in a range that starts on
+that next day. So a day's files are complete or not written, whichever
+range covers it. If an `archive/alerts` object cannot be read or is
+malformed, the run stops before any day and writes nothing, because every
+version depends on every sighting. (Review fix, 2026-11-03: until then a
+malformed object was skipped and its days written without it, silently
+when it was read only as lead-in. The mirror held no malformed object.)
 
 **Against R2.** `training.legacy_backfill` runs the same backfill with R2 as
 both the source and the output. It uses the derive job's `R2Storage`, with 8

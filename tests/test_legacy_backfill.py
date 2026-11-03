@@ -436,6 +436,46 @@ def test_an_unreadable_alert_sighting_writes_nothing() -> None:
     assert fake.derived() == {}
 
 
+def _late_malformed() -> tuple[dict[str, bytes], str]:
+    """The late fixture with its 22:52 trace minute, which fills the next
+    day's files, replaced by bytes that are not JSON."""
+    objects = _late()
+    key = f"archive/trace/{DAY}/{MIDNIGHT - 68 * 60}.json"
+    objects[key] = b"{not-json"
+    return objects, key
+
+
+@pytest.mark.parametrize("days", [(NEXT,), (DAY, NEXT)])
+def test_a_malformed_trace_object_aborts_every_day_that_reads_it(
+    days: tuple[str, ...],
+) -> None:
+    """Read in-day or only as the next day's lead-in, it may hold rows of
+    both days, so neither is written without it, and the run fails."""
+    after = "2026-09-17"
+    objects, key = _late_malformed()
+    fake = _FakeS3(objects)
+    report = _backfill(fake, *days, after)
+    assert report.failed
+    assert report.aborted == [(day, key) for day in days]
+    assert [k for k, _ in report.archives["archive/trace"].failures] == [key]
+    whole = _FakeS3(_late())
+    _backfill(whole, *days, after)
+    assert fake.derived() == {
+        k: v for k, v in whole.derived().items() if _day_of(k) == after
+    }
+
+
+def test_a_malformed_alert_sighting_writes_nothing() -> None:
+    key = "archive/alerts/2026-07-22/1784592096-lmm_alert_556649.json"
+    objects = _fixture()
+    objects[key] = b"{not-json"
+    fake = _FakeS3(objects)
+    report = _backfill(fake, "2026-07-21", "2026-07-22")
+    assert report.aborted == [("archive/alerts", key)]
+    assert [k for k, _ in report.archives["archive/alerts"].failures] == [key]
+    assert fake.derived() == {}
+
+
 def test_without_a_last_day_the_files_after_the_last_held_day_are_written(
     tmp_path: Path,
 ) -> None:

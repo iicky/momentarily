@@ -11,9 +11,10 @@ name: Legacy observations backfill (manual)
 # unreadable file is never overwritten, and nothing is deleted. A legacy
 # file whose content differs is a conflict (the step
 # fails, the file is kept) unless `overwrite` is set. An object R2 will not
-# return, after retries, fails the step and leaves its day unwritten; an
-# unreadable archive/trace object also leaves the next day unwritten, because
-# that day's lead-in reads it, so the rerun must cover both days. The
+# return, after retries, or a malformed one fails the step and leaves its
+# day unwritten; such an archive/trace object also leaves the next day
+# unwritten, because that day's lead-in reads it, so the rerun must cover
+# both days. The
 # legacy-only records (fetch outcome, route alert state,
 # collector health) continue past the recorder cutover, so rerunning a later
 # day writes that day's files. Prints keys and counts only.

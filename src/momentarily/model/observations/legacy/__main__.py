@@ -19,8 +19,9 @@ conflict, or as obsolete when it is a raw file wholly before the recorder
 cutover (the derive job's ``--prune-obsolete`` removes it). A legacy file
 with the same content is kept as unchanged; one with other content is a
 conflict unless ``--overwrite`` replaces it. Exit status: 0 clean, 1 when
-any object was skipped as malformed or any file conflicted or was obsolete
-(the rest is still written), 2 when the mirror does not exist or the range
+an object was malformed or unreadable (every day that reads it is aborted
+and left unwritten) or any file conflicted or was obsolete (the rest is still
+written), 2 when the mirror does not exist or the range
 is empty.
 """
 

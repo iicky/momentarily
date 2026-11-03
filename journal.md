@@ -11420,3 +11420,30 @@ fetches finish in. `COVERAGE_VERSION` is 2.
 - A legacy vehicle hour that holds a fresh trace object is now required:
   layer 2 records nothing that tells a row-less hour from a lost file, and a
   lost file had turned `suspect_stale` into `covered`.
+
+## 2026-11-03 review-round-2-fixes
+
+origin: agent
+
+Fixes from the second review round.
+
+- A "next" `SegmentTraversal.stop_to_stop` was accepted with
+  `uncovered_s` 0 while its `run_time` held 30 uncovered seconds. Stop to
+  stop runs from the arrival, which the record does not hold, so it is not
+  checked against two bounds. Its span contains the run time's, so its
+  `uncovered_s` must be at least the run time's. Every other duration was
+  checked: dwell, run time, "last" stop to stop and a headway with a known
+  leader have the two-bound check, and a headway with an unknown leader and
+  `OpenState.eventual` are right-censored, with a null `uncovered_s`.
+- Legacy backfill: a malformed object was skipped and its days were still
+  written. Read only as the next day's lead-in, it was not even reported,
+  and the run exited 0 with that day's `legacy_fetch_outcome` missing its
+  rows. A malformed object now aborts every day that reads it, as an
+  unreadable one does. A malformed `archive/alerts` object stops the run
+  before any day. The mirror holds no malformed object, so no stored day
+  changes.
+- Coverage docs: §5.1, the 10-21 verdict, the Gate A/B tables and the
+  new-days figures now give the `COVERAGE_VERSION` 2 numbers. The version 1
+  numbers stay, marked as superseded. Replays on the mirror: 10-21 `ace`
+  5,330 uncovered s (v1, prototype window 3,558); 10-22 4,953–4,963 per feed;
+  10-24 2,978–3,213; 10-25 14,345–14,761; 11-01 and 11-02 unchanged.

@@ -11165,3 +11165,29 @@ files after it unwritten. Timing on a synthetic full trace day (1,440
 objects, 619,200 vehicle rows, M-series laptop): 63 s to write, 67 s for a
 rerun that skips every file, because the skip still renders each file to
 compare bytes.
+## 2026-11-02 live-feed-is-not-the-scheduling-feed
+
+origin: agent
+
+A feed being live does not mean it schedules the day. The MTA's fall 2026
+pick (build `2c06219240445181`, `feed_info` 2026-11-01..2027-05-16) was
+served from 2026-10-28 and is the day map's verified feed for 10-29, 10-30
+and 10-31, but its `service_days` start on 11-01. The previous feed (build
+`606d9f640f5aad67`, service days 2026-05-26..10-31) is the only build that
+schedules those three days: taking the build straight from the day map gave
+no service day at all for them. Choosing by calendar coverage, with the
+previous feed as fallback, gives 8,497 trips on 10-29 and 10-30 and 6,186 on
+Saturday 10-31 from `606d9f640f5aad67`, then 5,626 on Sunday 11-01 from
+`2c06219240445181`. 10-28 itself has no map feed (the HEAD ETag alternated
+between the two feeds about every minute from 1793205619 on), so it still
+needs a named build.
+
+## 2026-11-02 unmapped-days-resolve-by-coverage
+
+origin: agent
+
+Correction to the entry above: 10-28 no longer needs a named build. A day
+the map names no feed for now takes the most recently published built feed
+first named by that day whose calendar has service that date. On the
+mirrored root 10-28 gets `606d9f640f5aad67` (8,497 trips): the fall pick
+was first named on 10-29, and its calendar starts 11-01 anyway.

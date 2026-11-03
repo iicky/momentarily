@@ -1159,11 +1159,13 @@ Keys and rules:
     With the 05:00 UTC nightly derive, that is the second night after D,
     about 25 hours after D ends.
   - Unmatched runs are filed by their `id_origin` date (§2.4).
-- **Network build per day.** Each service day uses the build of the feed
-  that served it: `day_feed_map` `feed_id` when verified, else its
-  inferred feed. The choice (`network_build_id`, `verified`) goes into
-  provenance. The two current builds are content-identical apart from
-  supplement trip ids.
+- **Network build per day.** Each service day uses the build that
+  schedules it: the feed live that day per `day_feed_map` (`feed_id` when
+  verified, else its inferred feed) when its calendar has service that day,
+  else the most recently published earlier feed whose calendar does (see
+  "As built (slice 1)", Build choice). The choice (`network_build_id`,
+  basis) goes into provenance. The two current builds are content-identical
+  apart from supplement trip ids.
 - **Live updates** do not write these files (§7). The live state is a
   rolling store that is replaced by the nightly final.
 - **Determinism.** Inputs are the layer-2 files of the window (named with
@@ -1329,17 +1331,33 @@ not a public contract and has no JSON Schema, TypeScript or parquet layout.
   directory. It prints one JSON line per date (key, the built index's
   bytes, entry counts, and the outcome: `written`, `unchanged`, `replaced`
   or `conflict`). Exit status 1 means a build failed or a file conflicts.
-- **Build choice.** Without `--build-id`, the build is the feed that
-  `day_feed_map` gives for the UTC day with the same date: `feed_id` when
-  verified, else `inferred_feed_id` (`build_basis` `verified`, `inferred`
-  or `explicit`). A service day runs from about 04:00 UTC on its date to
-  about 08:00 UTC the next day, so that UTC day holds most of it. A date the
-  map does not cover fails unless a build is named. The snapshot is checked
-  against the index's `content_digest` before use. A missing `index.json`,
-  day map or build file is a build error (exit 1). Layer 1 now extends the
-  map every night from recorder evidence (docs/model-network.md, "Keeping
-  the map current"); a day it leaves without a feed (2026-10-19 and 10-20,
-  before the recorder ran) still needs `--build-id`.
+- **Build choice.** The day map answers which feed was live on a UTC day;
+  the index needs the build that schedules the service date, and the two
+  differ when the MTA publishes a feed before its calendar starts (the fall
+  2026 pick, build `2c06219240445181`, was live from 2026-10-29 with
+  service from 11-01). Without `--build-id`, `select_build` takes the feed
+  the map gives for the UTC day with the same date (`feed_id` when
+  verified, else `inferred_feed_id`) when its build has an active service
+  on that date in `service_days` (feed_info's dates are not used):
+  `build_basis` `live` or `live_inferred`. Otherwise it takes the most
+  recently published earlier built feed whose build has service that date
+  (`previous_covering`); publication order is the first map day naming
+  each feed, so a feed the map never names is never a candidate. A day the
+  map names no feed for (a mid-day change, or unverified with no lead)
+  takes the most recently published built feed first named on or before
+  that day whose build has service that date (`covering_unmapped`). No
+  such build is a build error. `--build-id` overrides the choice
+  (`explicit`). A service day runs from about 04:00 UTC on its date to
+  about 08:00 UTC the next day, so that UTC day holds most of it. A date
+  the map does not cover and a live feed that is not built fail unless a
+  build is named. Each snapshot is checked against the index's
+  `content_digest` before use. A missing `index.json`, day map or build
+  file is a build error (exit 1). Layer 1 now extends the map every night
+  from recorder evidence (docs/model-network.md, "Keeping the map
+  current"). On the mirrored layer-1 root, 10-28 (both feeds served, no
+  map feed) takes `606d9f640f5aad67` (`covering_unmapped`; 8,497 trips),
+  10-29, 10-30 and 10-31 take it as `previous_covering` (8,497, 8,497 and
+  6,186 trips), and 11-01 takes `2c06219240445181` (`live`; 5,626 trips).
 - **Key.** `model/events/s1/match_index/v<INDEX_VERSION>/<service_date>/<build_id>-<route_feed16>.json.gz`
   (`momentarily.model.events.keys`; `route_feed16` is the first 16 hex of
   the blake3 of `route_feed.json`). The index version, the build and the

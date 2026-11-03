@@ -14,10 +14,16 @@ name: Legacy observations backfill (manual)
 # return, after retries, or a malformed one fails the step and leaves its
 # day unwritten; such an archive/trace object also leaves the next day
 # unwritten, because that day's lead-in reads it, so the rerun must cover
-# both days. The
+# both days. An object listed in the reviewed quarantine file
+# (src/momentarily/model/observations/legacy/quarantine.json) with the
+# sha256 of its bytes is read as absent instead, and named in the files it
+# could have filled. The
 # legacy-only records (fetch outcome, route alert state,
 # collector health) continue past the recorder cutover, so rerunning a later
-# day writes that day's files. Prints keys and counts only.
+# day writes that day's files. Prints keys and counts only. A failed run
+# opens or updates the tracking issue, which names every aborted day and
+# each unreadable or malformed object with its reason (repair procedure:
+# docs/model-observations.md §5.1).
 
 on:
   workflow_dispatch:
@@ -39,12 +45,17 @@ concurrency:
   group: legacy-backfill
   cancel-in-progress: false
 
+# Read-only by default; the failure-alert step is granted issues: write per-job.
 permissions:
   contents: read
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
+    # issues: write for the failure tracking issue; contents: read for checkout.
+    permissions:
+      contents: read
+      issues: write
     # About 5,000 objects a day plus every archive/alerts object up to the
     # cutover; the whole history (06-15 on) takes hours. 360 is the hosted
     # runner's maximum; an interrupted run resumes by rerunning the range.
@@ -59,11 +70,46 @@ jobs:
       - name: Backfill legacy observations
         run: |
           set -euo pipefail
-          args=(--from "$FROM" --through "$THROUGH")
+          args=(--from "$FROM" --through "$THROUGH" --failure-report "$FAILURES")
           if [ "$OVERWRITE" = "true" ]; then args+=(--overwrite); fi
           uv run python -m training.legacy_backfill "${args[@]}"
         env:
           FROM: ${{ inputs.from }}
           THROUGH: ${{ inputs.through }}
           OVERWRITE: ${{ inputs.overwrite }}
+          FAILURES: ${{ runner.temp }}/legacy-backfill-failures.md
           MURK_KEY: ${{ secrets.MURK_KEY }}
+      # A red manual run is easy to miss and says nothing about what to
+      # repair; the tracking issue names the days and objects (keys and
+      # reasons only, from the backfill's failure report).
+      - name: Open or update the tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Legacy backfill is failing"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FROM: ${{ inputs.from }}
+          THROUGH: ${{ inputs.through }}
+          FAILURES: ${{ runner.temp }}/legacy-backfill-failures.md
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/legacy-backfill-issue.md"
+          {
+            echo "\`${{ github.workflow }}\` failed at $(date -u +%FT%TZ) for \`$FROM\` through \`$THROUGH\`. Run: $RUN_URL"
+            echo
+            if [ -s "$FAILURES" ]; then
+              cat "$FAILURES"
+            else
+              echo "The backfill wrote no failure report (it stopped before its summary); see the run log."
+            fi
+            echo
+            echo "Repair: docs/model-observations.md §5.1, **Repairing an aborted day**."
+          } > "$body"
+          number=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$TITLE\") | .number] | first // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file "$body"
+          else
+            gh issue create --title "$TITLE" --body-file "$body"
+          fi

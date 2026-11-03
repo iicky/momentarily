@@ -11447,3 +11447,26 @@ Fixes from the second review round.
   numbers stay, marked as superseded. Replays on the mirror: 10-21 `ace`
   5,330 uncovered s (v1, prototype window 3,558); 10-22 4,953–4,963 per feed;
   10-24 2,978–3,213; 10-25 14,345–14,761; 11-01 and 11-02 unchanged.
+
+## 2026-11-03 legacy-backfill-quarantine
+
+origin: agent
+
+Review finding BF-2 (round 3): a malformed or unreadable legacy object
+aborted every day that read it, with no way past it, and the dispatched
+workflow only turned red.
+
+- The workflow now opens or updates the issue "Legacy backfill is failing"
+  on failure, as the nightly prune does. The body is the backfill's new
+  `--failure-report` Markdown: each aborted day, each unreadable or
+  malformed object with its reason, conflicts and obsolete files.
+- A reviewed `quarantine.json` beside the legacy adapters lists objects to
+  exclude by key, sha256, reason and date. A listed object whose bytes still
+  match is read as absent: its days are written without it, and every file
+  it could have filled names it under a second parquet footer key,
+  `momentarily.observations.excluded`. The column layout and
+  `DerivedFileMetadata` are unchanged, and a file that excludes nothing
+  keeps its bytes. A hash mismatch fails as a malformed object does.
+- Legacy coverage reads those names: the stretch around an excluded trace
+  minute is `Unknown`, not `covered` or `no_invocation`.
+- docs/model-observations.md §5.1 gives the repair procedure.

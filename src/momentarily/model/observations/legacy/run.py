@@ -43,6 +43,19 @@ without an object that may hold its rows. A malformed or unreadable
 on every sighting. Files are rendered as they close and stored only once
 their day is complete.
 
+**Quarantine** (``quarantine``): an object the reviewed quarantine file lists
+whose bytes hash to the listed sha256 is read as absent. Its days are
+written without it, the report lists it under ``excluded``, and every file
+it could have filled names it under ``parquet.EXCLUDED_METADATA_KEY``: the
+files of its archive's record types whose span ends after the start of its
+folder day and no later than the last day it may fill (``Source.spills``).
+Its key is not trusted for more: its bytes are not what the archive writes.
+An
+``archive/alerts`` object is named in every ``alert_version`` file of the
+run, since every version depends on every sighting. A listed object whose
+bytes hash to anything else changed since the review: it fails as a
+malformed one does.
+
 **Writing.** A file is compared with what the store holds under its key:
 
 * nothing: written with ``put_new``, which refuses a key written meanwhile;
@@ -67,7 +80,7 @@ from __future__ import annotations
 import tempfile
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -104,6 +117,7 @@ from momentarily.model.observations.legacy import (
     fresh_feeds,
     health,
     predictions,
+    quarantine,
     trace,
 )
 from momentarily.model.observations.legacy.common import (
@@ -130,20 +144,25 @@ class Source:
     archive: LegacyArchive
     adapt: Adapter
     watermark: Callable[[str], int] | None
+    records: tuple[str, ...]
+    """The record types (``keys`` names) its objects fill."""
     spills: bool = False
     """An object's records may land on the day after the one it is filed
     under (never later); False when every record is in its object's day."""
 
 
 # Day order within a run; the alerts archive is read up front (alerts.py).
+_FETCH = "legacy_fetch_outcome"
 SOURCES: tuple[Source, ...] = (
-    Source("archive/trace", trace.adapt, trace.watermark, spills=True),
-    Source("archive/trip_updates", fresh_feeds.adapt, None),
-    Source("archive/vehicles", fresh_feeds.adapt, None),
-    Source("archive/alerts_liveness", alerts_liveness.adapt, None),
-    Source("archive/ene", ene.adapt, ene.watermark),
-    Source("archive/health", health.adapt, None),
-    Source("v1/predictions", predictions.adapt, None),
+    Source(
+        "archive/trace", trace.adapt, trace.watermark, ("vehicle", _FETCH), spills=True
+    ),
+    Source("archive/trip_updates", fresh_feeds.adapt, None, (_FETCH,)),
+    Source("archive/vehicles", fresh_feeds.adapt, None, (_FETCH,)),
+    Source("archive/alerts_liveness", alerts_liveness.adapt, None, (_FETCH,)),
+    Source("archive/ene", ene.adapt, ene.watermark, ("equipment", _FETCH)),
+    Source("archive/health", health.adapt, None, ("legacy_collector_health",)),
+    Source("v1/predictions", predictions.adapt, None, ("legacy_route_alert_state",)),
 )
 ALERTS: LegacyArchive = "archive/alerts"
 ARCHIVES: tuple[LegacyArchive, ...] = (
@@ -207,6 +226,9 @@ class Report:
     """(day, key): days left unwritten because an object they read could not
     be read or was malformed (``archive/alerts`` for the up-front read, which
     stops the run)."""
+    excluded: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+    """(key, reason): quarantined objects read as absent, their days written
+    without them."""
 
     @property
     def failed(self) -> bool:
@@ -231,6 +253,18 @@ class _MalformedInputError(Exception):
     def __init__(self, key: str) -> None:
         super().__init__(f"{key} is malformed")
         self.key = key
+
+
+@dataclass(frozen=True)
+class _Exclusion:
+    """A quarantined object and the files it could have filled: those of
+    ``records`` whose span ends in ``(after, by]``."""
+
+    sha256: str
+    reason: str
+    records: tuple[str, ...]
+    after: int
+    by: int
 
 
 @dataclass
@@ -318,6 +352,7 @@ class _Writer:
         self._open: dict[str, _Bucket] = {}
         self._written: set[str] = set()
         self._pending: list[_Staged] = []
+        self._excluded: dict[str, _Exclusion] = {}
 
     def _in_span(self, end: int) -> bool:
         return self._span[0] < end <= self._span[1]
@@ -344,6 +379,18 @@ class _Writer:
                 bucket.inputs[s.key] = (s.sha256, s.observed_at)
             if self._in_span(end):
                 rows[name] = rows.get(name, 0) + 1
+
+    def exclude(self, key: str, exclusion: _Exclusion) -> None:
+        """Name ``key`` in every file it could have filled. Kept across
+        ``discard``: the same object always gives the same exclusion."""
+        self._excluded[key] = exclusion
+
+    def _excluded_from(self, bucket: _Bucket) -> dict[str, tuple[str, str]]:
+        return {
+            k: (x.sha256, x.reason)
+            for k, x in self._excluded.items()
+            if bucket.record in x.records and x.after < bucket.end <= x.by
+        }
 
     def flush(self, before: int, archive: str | None = None) -> None:
         """Render every file whose span ends by ``before``; with ``archive``,
@@ -378,7 +425,7 @@ class _Writer:
             key, DECODER_VERSION, len(bucket.records), bucket.inputs, *code
         )
         path = self._staging / key
-        write_records(path, bucket.records, meta)
+        write_records(path, bucket.records, meta, self._excluded_from(bucket))
         data = path.read_bytes()
         path.unlink()
         return data
@@ -506,12 +553,40 @@ def _fetch(source: Storage, keys: list[str], readers: int) -> Iterator[LegacyObj
                 ahead.append(pool.submit(get, k))
 
 
+def _changed(entry: quarantine.Entry, obj: LegacyObject) -> str | None:
+    """Why a quarantined object may not be read as absent; None when its
+    bytes are the reviewed ones."""
+    if obj.sha256 == entry.sha256:
+        return None
+    return (
+        f"listed in the quarantine file with sha256 {entry.sha256}, but its "
+        f"bytes hash to {obj.sha256}: it changed since the review"
+    )
+
+
+def _fail(stats: ArchiveStats, key: str, reason: str) -> _MalformedInputError:
+    """List ``key``'s failure (once) and the error that aborts its days."""
+    if (key, reason) not in stats.failures:
+        stats.failures.append((key, reason))
+    return _MalformedInputError(key)
+
+
+def _exclude(report: Report, key: str, entry: quarantine.Entry) -> None:
+    if (key, entry.reason) not in report.excluded:
+        report.excluded.append((key, entry.reason))
+
+
 def _alert_versions(
-    source: Storage, stats: ArchiveStats, readers: int
-) -> dict[str, list[Emitted]]:
+    source: Storage,
+    report: Report,
+    readers: int,
+    quarantined: Mapping[str, quarantine.Entry],
+) -> tuple[dict[str, list[Emitted]], dict[str, _Exclusion]]:
     """Alert versions by the day of their first sighting, from every
     ``archive/alerts`` object filed up to the recorder cutover's day (none
-    after it is read: ``alerts.versions``)."""
+    after it is read: ``alerts.versions``), and the quarantined objects read
+    as absent."""
+    stats = report.archives[ALERTS]
     t0 = time.perf_counter()
     keys = [
         k
@@ -519,13 +594,23 @@ def _alert_versions(
         if (day := _folder(ALERTS, k)) is not None and day <= RECORDER_CUTOVER_DAY
     ]
     sightings: list[alerts.Sighting] = []
+    excluded: dict[str, _Exclusion] = {}
     for obj in _fetch(source, keys, readers):
         stats.inputs += 1
+        entry = quarantined.get(obj.key)
+        if entry is not None:
+            changed = _changed(entry, obj)
+            if changed is not None:
+                raise _fail(stats, obj.key, changed)
+            _exclude(report, obj.key, entry)
+            excluded[obj.key] = _Exclusion(
+                entry.sha256, entry.reason, ("alert_version",), 0, _NEVER
+            )
+            continue
         try:
             sightings.append(alerts.parse(obj))
         except MalformedObjectError as err:
-            stats.failures.append((obj.key, str(err)))
-            raise _MalformedInputError(obj.key) from err
+            raise _fail(stats, obj.key, str(err)) from err
     by_day: dict[str, list[Emitted]] = {}
     for e in alerts.versions(sightings):
         first = e.record.first_seen if isinstance(e.record, AlertVersion) else None
@@ -535,7 +620,7 @@ def _alert_versions(
             )
         by_day.setdefault(utc_day(first), []).append(e)
     stats.seconds += time.perf_counter() - t0
-    return by_day
+    return by_day, excluded
 
 
 def held_days(source: Storage) -> tuple[str, str] | None:
@@ -556,11 +641,19 @@ def _calendar(first: str, last: str) -> list[str]:
 
 
 class _Run:
-    def __init__(self, source: Storage, writer: _Writer, report: Report, readers: int):
+    def __init__(
+        self,
+        source: Storage,
+        writer: _Writer,
+        report: Report,
+        readers: int,
+        quarantined: Mapping[str, quarantine.Entry],
+    ):
         self._source = source
         self._writer = writer
         self._report = report
         self._readers = readers
+        self._quarantined = quarantined
 
     def objects(
         self, src: Source, keys: list[str], end: int, lead_in: bool = False
@@ -568,21 +661,40 @@ class _Run:
         """Adapt ``keys`` of ``src``, filed under the day that ends at
         ``end``, in order. ``lead_in``: read for the next day only; the run
         of their own day counts them. A malformed object is listed (once)
-        and aborts the day reading it."""
+        and aborts the day reading it; a quarantined one is read as absent
+        and named in the files it could have filled."""
         stats = self._report.archives[src.archive]
         t0 = time.perf_counter()
         by = end + _DAY_SECONDS if src.spills else end
+        # Named before any object is read: the watermark flushes close files
+        # by the keys read so far, and a quarantined object's key may name
+        # any instant. The folder day bounds it instead, never the key's
+        # minute (a bound before the folder day would reach files already
+        # written). Its bytes are checked when it is read; a mismatch aborts
+        # the day, so nothing named here is stored for it.
+        for key in keys:
+            entry = self._quarantined.get(key)
+            if entry is not None:
+                after = end - _DAY_SECONDS
+                self._writer.exclude(
+                    key,
+                    _Exclusion(entry.sha256, entry.reason, src.records, after, by),
+                )
         for obj in _fetch(self._source, keys, self._readers):
             key = obj.key
             if not lead_in:
                 stats.inputs += 1
             try:
+                entry = self._quarantined.get(key)
+                if entry is not None:
+                    changed = _changed(entry, obj)
+                    if changed is not None:
+                        raise _fail(stats, key, changed)
+                    _exclude(self._report, key, entry)
+                    continue
                 emitted = src.adapt(obj)
             except MalformedObjectError as err:
-                failure = (key, str(err))
-                if failure not in stats.failures:
-                    stats.failures.append(failure)
-                raise _MalformedInputError(key) from err
+                raise _fail(stats, key, str(err)) from err
             if not emitted:
                 continue
             self._writer.add(src.archive, emitted, by)
@@ -645,12 +757,17 @@ def run(
     overwrite: bool = False,
     readers: int = 1,
     on_day: Callable[[DayReport], None] | None = None,
+    quarantined: Mapping[str, quarantine.Entry] | None = None,
 ) -> Report:
     """Backfill the legacy archives in ``source`` into ``out``, for the UTC
     days ``first`` through ``last`` (default: the days ``source`` holds).
     ``readers`` objects are read concurrently; ``on_day`` sees each day's
     report as it ends. Without ``last`` every file is written, including
-    those after the last day held; with it, those are ``deferred``."""
+    those after the last day held; with it, those are ``deferred``.
+    ``quarantined``: the objects to read as absent (default: the packaged
+    quarantine file, ``quarantine.load``)."""
+    if quarantined is None:
+        quarantined = quarantine.load()
     report = Report({a: ArchiveStats() for a in ARCHIVES}, {}, [])
     open_end = last is None
     if first is None or last is None:
@@ -663,10 +780,10 @@ def run(
         return report
     end = _NEVER if open_end else _day_start(days[-1]) + _DAY_SECONDS
     try:
-        versions = (
-            _alert_versions(source, report.archives[ALERTS], readers)
+        versions, excluded = (
+            _alert_versions(source, report, readers, quarantined)
             if days[0] < RECORDER_CUTOVER_DAY
-            else {}
+            else ({}, {})
         )
     except (MissingObjectError, _MalformedInputError) as err:
         report.aborted.append((ALERTS, err.key))
@@ -676,7 +793,9 @@ def run(
         writer = _Writer(
             out, (code_sha, code_dirty), overwrite, span, Path(staging), report
         )
-        job = _Run(source, writer, report, readers)
+        for key, exclusion in excluded.items():
+            writer.exclude(key, exclusion)
+        job = _Run(source, writer, report, readers, quarantined)
         lead_in = True
         for day in days:
             tally = _Tally(report)

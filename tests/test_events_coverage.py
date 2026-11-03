@@ -22,6 +22,7 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
+from momentarily.model.conventions import Unknown
 from momentarily.model.events import coverage as coverage_module
 from momentarily.model.events.__main__ import main
 from momentarily.model.events.contracts import CoverageInterval
@@ -51,6 +52,7 @@ from momentarily.model.observations.keys import (
     TickKey,
 )
 from momentarily.model.observations.legacy import run as legacy_run
+from momentarily.model.observations.legacy.quarantine import Entry
 from momentarily.model.observations.parquet import (
     Rows,
     file_metadata,
@@ -603,6 +605,104 @@ def test_an_hour_of_rowless_trace_objects_is_a_missing_input(
     assert (t[-4], t[-1], "fetch_failed") in _feed(
         _intervals(tmp_path / "out2", "legacy", LEGACY_DAY), "ace"
     )
+
+
+def test_a_quarantined_trace_minute_is_unknown_not_a_missing_invocation(
+    tmp_path: Path,
+) -> None:
+    """Minute 3 is malformed and quarantined: layer 2 writes the day without
+    it and names it, so the stretch around it is Unknown. The same minute
+    simply missing from the archive is a missing slot."""
+    mirror = tmp_path / "mirror"
+    for k in range(6):
+        rows = [_row("070000_1..S03R", f"R0{k}S", L0 + 60 * k - 10)]
+        _trace(mirror, k, rows, ALL_FEEDS)
+    key = f"archive/trace/{LEGACY_DAY}/{L0 + 180}.json"
+    body = b"{not-json"
+    (mirror / key).write_bytes(body)
+    sha = hashlib.sha256(body).hexdigest()
+    quarantined = {key: Entry(key, sha, "no source", "2026-11-03")}
+    store, out = tmp_path / "store", tmp_path / "out"
+    legacy = legacy_run.run(
+        LocalStorage(mirror), LocalStorage(store), *CODE, quarantined=quarantined
+    )
+    assert not legacy.failed, legacy
+    report = _build(store, out, LEGACY_DAY, "legacy")
+    assert not report.failed, report
+    assert report.excluded_inputs == [key]
+    assert report.missing_slots == []
+    t = [L0 + 60 * k for k in range(6)]
+    numbered = _feed(_intervals(out, "legacy", LEGACY_DAY), "numbered")
+    assert numbered[1:-1] == [
+        (t[0], t[2], "covered"),
+        (t[2], t[4], "unknown"),
+        (t[4], t[5], "covered"),
+    ]
+    [gone] = [
+        r
+        for r in _intervals(out, "legacy", LEGACY_DAY)
+        if r.source == "numbered" and r.interval.start == t[2]
+    ]
+    assert isinstance(gone.state, Unknown)
+    assert key in gone.state.reason
+
+    (mirror / key).unlink()
+    store2, out2 = tmp_path / "store2", tmp_path / "out2"
+    legacy_run.run(LocalStorage(mirror), LocalStorage(store2), *CODE, quarantined={})
+    report2 = _build(store2, out2, LEGACY_DAY, "legacy")
+    assert report2.missing_slots == [t[3]]
+    assert (t[2], t[4], "no_invocation") in _feed(
+        _intervals(out2, "legacy", LEGACY_DAY), "numbered"
+    )
+
+
+@pytest.mark.parametrize("edge", ["start", "end"])
+def test_a_quarantined_minute_just_outside_the_window_still_makes_its_stretch_unknown(
+    tmp_path: Path, edge: str
+) -> None:
+    """The excluded minute lies outside the day (W0 - 60, or W1), but the
+    stretch around it reaches into the day: the clipped part is Unknown,
+    not no_invocation."""
+    w0 = _midnight(LEGACY_DAY)
+    w1 = w0 + 86400
+    base = w0 if edge == "start" else w1
+    minutes = [base - 120, base - 60, base, base + 60]
+    gone = base - 60 if edge == "start" else base
+    mirror = tmp_path / "mirror"
+    key = ""
+    for k, at in enumerate(minutes):
+        path = f"archive/trace/{datetime.fromtimestamp(at, UTC):%Y-%m-%d}/{at}.json"
+        if at == gone:
+            key, body = path, b"{not-json"
+        else:
+            rows = [_row("070000_1..S03R", f"R0{k}S", at - 10)]
+            doc = {
+                "observed_at": at + 3,
+                "scheduled_at": at,
+                "fresh_feeds": ALL_FEEDS,
+                "rows": rows,
+            }
+            body = json.dumps(doc).encode()
+        (mirror / path).parent.mkdir(parents=True, exist_ok=True)
+        (mirror / path).write_bytes(body)
+    sha = hashlib.sha256(b"{not-json").hexdigest()
+    quarantined = {key: Entry(key, sha, "no source", "2026-11-03")}
+    store, out = tmp_path / "store", tmp_path / "out"
+    legacy = legacy_run.run(
+        LocalStorage(mirror), LocalStorage(store), *CODE, quarantined=quarantined
+    )
+    assert not legacy.failed, legacy
+    report = _build(store, out, LEGACY_DAY, "legacy")
+    assert not report.failed, report
+    assert report.excluded_inputs == [key]
+    numbered = [
+        r for r in _intervals(out, "legacy", LEGACY_DAY) if r.source == "numbered"
+    ]
+    clipped = (w0, w0 + 3) if edge == "start" else (w1 - 57, w1)
+    [r] = [r for r in numbered if (r.interval.start, r.interval.end) == clipped]
+    assert isinstance(r.state, Unknown)
+    assert key in r.state.reason
+    assert all(r.state != "no_invocation" for r in numbered)
 
 
 # --- the writer --------------------------------------------------------------------

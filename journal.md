@@ -11330,3 +11330,143 @@ A/B results".
     in the 01:00 ET hour match.
 - 10-25 lost 41 minutes of invocations, which gave 4,352–4,356 s of
   `no_invocation` per feed. On 11-01 coverage around 06:00 UTC is clean.
+
+## 2026-11-03 match-index-wall-clock-dst
+
+origin: agent
+
+The match index now places scheduled times on the New York wall clock
+(index version 3). Measured against `instant_of` on the mirrored layer-1
+root, over every active stop time of every service day of the three builds:
+
+- 10-31, both summer builds: 840 of 169,429 stop times move +3,600 s (682
+  at 26:xx, 158 at 27:xx). The H, SI, Z, 7X and FX trips have none, so the
+  prototype-agreement digests for 10-31 are unchanged.
+- 11-01, `2c06219240445181`: 3,394 of 154,778 move −3,600 s (1,003 at
+  00:xx, 2,391 at 01:xx).
+- Not obvious: the same build runs to 2027-05-15, so it already covers the
+  2027 spring forward. On 03-13, 158 at 27:xx move −3,600 s and 682 at
+  26:xx are unresolved. On 03-14, 3,394 at 00:xx–01:xx move +3,600 s and
+  3,067 at 02:xx are unresolved. No other date changes.
+- On the fall-back night, a trip that runs through 02:00 gets an hour
+  between its 01:59 (EDT) and 02:01 (EST) stops, so its supply span covers
+  the repeated hour.
+
+## 2026-11-03 match-index-wall-clock-dst-correction
+
+origin: agent
+
+Correction to `match-index-wall-clock-dst` above. Review measured that
+trains spanning the 11-01 fall-back ran straight through it (69 of 71
+events crossing 02:00 within 600 s of the scheduled run time). Placing each
+stop on the wall clock separately put a false one-hour gap inside those
+trips. The index now anchors each trip at its first departure on the wall
+clock and places later stops by elapsed scheduled time. A trip departing in
+the spring-forward gap is unresolved as a whole.
+
+- Changed against `instant_of`: 10-31, 175 stop times of 3 trips (+3,600 s),
+  not 840; 11-01, 4,887 of 190 trips (−3,600 s), not 3,394. On 2027-03-13,
+  175 stop times of 3 trips are unresolved; on 03-14, 4,887 move +3,600 s
+  and 3,572 of 127 trips are unresolved.
+- Trips flagged `spans_dst_transition`: 32 on 10-31 and 03-13, 77 on 11-01
+  and 03-14.
+- Replay of 72 id-tier runs crossing 02:00 on 11-01: the first stop after
+  02:00 is within 15 min for 61 when the trip is anchored, against 47 when
+  each stop is placed on the wall clock.
+
+## 2026-11-03 events-coverage-replay
+
+origin: agent
+
+Layer-3 coverage (combined rule of the 10-21 verdict) replayed on the local
+mirror. 10-22 reproduces the Gate A/B uncovered seconds exactly on all 8
+feeds (`ace` 3,223 = 724 missing slot + 2,378 late + 121 not stored). 10-21
+from the 04:00 cutover reproduces every column except `stale_header`: 2,220 s,
+not 2,399, on the six frozen feeds, because the gate counted from the
+recorder's first fetch at 03:57:21 and raw coverage starts at the cutover
+(04:00:00 to the first fetch at 04:00:20 is `Unknown`).
+
+- Not obvious: every recorded `scheduled_at` is `hh:mm:19` (36,651 of 36,651
+  ticks and bundles), not minute-aligned. Missing slots are found from gaps
+  between distinct `scheduled_at` values, so the rule does not depend on
+  that phase.
+- Legacy 09-15, 10-19 and 08-12 give only the §5.1 transport events (09-15:
+  180 s `no_invocation` on every feed, 120 s `fetch_failed` on `numbered`)
+  and no `suspect_stale`.
+- A raw coverage day file is 0.7–0.9 MB, almost all provenance: about 1,440
+  tick inputs, each with its digest. The 166–314 interval rows take a few kB.
+
+## 2026-11-03 events-coverage-retry-slots
+
+origin: agent
+
+Review fix to the coverage rule above. Slot presence was a set over
+`scheduled_at`, so a cron retry of a skipped minute, even 40 minutes later,
+made the slot present and a genuine 120 s hole read `covered`. A slot is now
+present for a feed only when a good fetch of that feed finished inside its
+own minute `[S, S + 60)`; a late invocation fills only the minute its
+fetches finish in. `COVERAGE_VERSION` is 2.
+
+- Rejected: counting an invocation only when it started within 60 s of its
+  slot. On 10-22 that also flags 42–106 s stretches whose slot minute held
+  a fetch from another late invocation.
+- Replays: the missing-slot and not-stored columns are unchanged on 10-21
+  and 10-22, and the late column grows by 1,740–2,190 s per feed (`ace` on
+  10-22: 3,223 → 4,959 uncovered). Each added stretch is 70–120 s around a
+  slot whose own invocation started 60 s to 53 minutes late, so no fetch
+  finished in that minute. 52 of 1,444 invocations on 10-22 started a minute
+  or more late. Legacy days are unchanged (every trace object is observed
+  within 50 s of its slot).
+- A legacy vehicle hour that holds a fresh trace object is now required:
+  layer 2 records nothing that tells a row-less hour from a lost file, and a
+  lost file had turned `suspect_stale` into `covered`.
+
+## 2026-11-03 review-round-2-fixes
+
+origin: agent
+
+Fixes from the second review round.
+
+- A "next" `SegmentTraversal.stop_to_stop` was accepted with
+  `uncovered_s` 0 while its `run_time` held 30 uncovered seconds. Stop to
+  stop runs from the arrival, which the record does not hold, so it is not
+  checked against two bounds. Its span contains the run time's, so its
+  `uncovered_s` must be at least the run time's. Every other duration was
+  checked: dwell, run time, "last" stop to stop and a headway with a known
+  leader have the two-bound check, and a headway with an unknown leader and
+  `OpenState.eventual` are right-censored, with a null `uncovered_s`.
+- Legacy backfill: a malformed object was skipped and its days were still
+  written. Read only as the next day's lead-in, it was not even reported,
+  and the run exited 0 with that day's `legacy_fetch_outcome` missing its
+  rows. A malformed object now aborts every day that reads it, as an
+  unreadable one does. A malformed `archive/alerts` object stops the run
+  before any day. The mirror holds no malformed object, so no stored day
+  changes.
+- Coverage docs: §5.1, the 10-21 verdict, the Gate A/B tables and the
+  new-days figures now give the `COVERAGE_VERSION` 2 numbers. The version 1
+  numbers stay, marked as superseded. Replays on the mirror: 10-21 `ace`
+  5,330 uncovered s (v1, prototype window 3,558); 10-22 4,953–4,963 per feed;
+  10-24 2,978–3,213; 10-25 14,345–14,761; 11-01 and 11-02 unchanged.
+
+## 2026-11-03 legacy-backfill-quarantine
+
+origin: agent
+
+Review finding BF-2 (round 3): a malformed or unreadable legacy object
+aborted every day that read it, with no way past it, and the dispatched
+workflow only turned red.
+
+- The workflow now opens or updates the issue "Legacy backfill is failing"
+  on failure, as the nightly prune does. The body is the backfill's new
+  `--failure-report` Markdown: each aborted day, each unreadable or
+  malformed object with its reason, conflicts and obsolete files.
+- A reviewed `quarantine.json` beside the legacy adapters lists objects to
+  exclude by key, sha256, reason and date. A listed object whose bytes still
+  match is read as absent: its days are written without it, and every file
+  it could have filled names it under a second parquet footer key,
+  `momentarily.observations.excluded`. The column layout and
+  `DerivedFileMetadata` are unchanged, and a file that excludes nothing
+  keeps its bytes. A hash mismatch fails as a malformed object does.
+- Legacy coverage reads those names: the stretch around an excluded trace
+  minute is `Unknown`, not `covered` or `no_invocation`.
+- docs/model-observations.md §5.1 gives the repair procedure.

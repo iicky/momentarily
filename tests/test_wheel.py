@@ -48,9 +48,11 @@ import momentarily.model.observations.legacy.fresh_feeds
 import momentarily.model.observations.legacy.health
 import momentarily.model.observations.legacy.predictions
 import momentarily.model.observations.legacy.trace
+from momentarily.model.observations.legacy.quarantine import load as load_quarantine
 decode = files("momentarily.model.observations.decode")
 assert decode.joinpath("nyct-subway.proto").is_file()
 assert load_route_feed()[0].routes
+assert isinstance(load_quarantine(), dict)
 assert "site-packages" in momentarily.__file__, momentarily.__file__
 stray = sorted(m for m in ("boto3", "botocore", "pyarrow", "training") if m in sys.modules)
 assert not stray, stray

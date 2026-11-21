@@ -1,0 +1,11 @@
+observed_at: int64 not null
+lineage: string not null
+source: string not null
+source_basis: string not null
+route_id: string not null
+route_basis: string not null
+vehicles: int64 not null
+vehicles_stale_tail: int64 not null
+scheduled_in_service: int64 not null
+listed_trips: int64
+listed_trips__unknown: string

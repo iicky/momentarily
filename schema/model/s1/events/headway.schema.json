@@ -1,0 +1,403 @@
+{
+  "$defs": {
+    "DurationBound": {
+      "additionalProperties": false,
+      "description": "Interval-censored duration in seconds; consumers fit distributions\nacross events, never per-event midpoints. Nothing in layer 3 is\nleft-censored: a left-censored start or an open end gives ``censoring =\n\"right\"`` with ``hi`` null.",
+      "properties": {
+        "censoring": {
+          "enum": [
+            "none",
+            "right"
+          ],
+          "title": "Censoring",
+          "type": "string"
+        },
+        "hi": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null exactly when censoring is right.",
+          "title": "Hi"
+        },
+        "lo": {
+          "description": "Clamped at 0.",
+          "minimum": 0,
+          "title": "Lo",
+          "type": "integer"
+        },
+        "reported": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Difference of the two events' reported times, when both are kept.",
+          "title": "Reported"
+        },
+        "uncovered_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of the span not covered; null exactly when right-censored.",
+          "title": "Uncovered S"
+        }
+      },
+      "required": [
+        "lo",
+        "hi",
+        "censoring",
+        "reported",
+        "uncovered_s"
+      ],
+      "title": "DurationBound",
+      "type": "object"
+    },
+    "EventBound": {
+      "additionalProperties": false,
+      "description": "Feed-supported bound: the event happened in ``(after, by]``, integer\nUTC seconds, exclusive below. ``after`` null is left-censored. ``after <\nby`` strictly. A kept ``reported`` satisfies ``after < reported <= by``\n(an earlier report widens ``after`` to ``reported - 1``, \u00a73.2).",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive; null = left-censored.",
+          "title": "After"
+        },
+        "by": {
+          "description": "Inclusive.",
+          "minimum": 0,
+          "title": "By",
+          "type": "integer"
+        },
+        "reported": {
+          "anyOf": [
+            {
+              "description": "UTC epoch seconds.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The feed's own time, kept only inside (after, by].",
+          "title": "Reported"
+        },
+        "suspect_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of (after, by] in legacy suspect_stale; null when after is null and on raw records.",
+          "title": "Suspect S"
+        },
+        "uncovered_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds of (after, by] not covered; null when after is null.",
+          "title": "Uncovered S"
+        }
+      },
+      "required": [
+        "after",
+        "by",
+        "reported",
+        "uncovered_s",
+        "suspect_s"
+      ],
+      "title": "EventBound",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Consecutive passings at a stop (\u00a74), owned by the follower's service\ndate. Adjacency is computed per scope and evidence level, never filtered\nfrom another series. ``leader_unknown``: no leader in the window and no\nvalid checkpoint, so every leader field is null and ``headway.hi`` too.",
+  "properties": {
+    "ambiguity_set": {
+      "anyOf": [
+        {
+          "enum": [
+            "certain",
+            "with_ambiguous"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Set exactly at pattern scope.",
+      "title": "Ambiguity Set"
+    },
+    "basis": {
+      "description": "The follower's timed end: departure (stopped), arrival (reported_planned), else passage.",
+      "enum": [
+        "departure",
+        "arrival",
+        "passage"
+      ],
+      "title": "Basis",
+      "type": "string"
+    },
+    "direction": {
+      "enum": [
+        "N",
+        "S"
+      ],
+      "title": "Direction",
+      "type": "string"
+    },
+    "evidence": {
+      "description": "service: stopped or reported_planned ends only, never mixed.",
+      "enum": [
+        "service",
+        "physical"
+      ],
+      "title": "Evidence",
+      "type": "string"
+    },
+    "follower_passing": {
+      "$ref": "#/$defs/EventBound"
+    },
+    "follower_pattern_attribution": {
+      "enum": [
+        "scheduled_trip",
+        "unique_fit",
+        "ambiguous",
+        "off_pattern"
+      ],
+      "title": "Follower Pattern Attribution",
+      "type": "string"
+    },
+    "follower_run_id": {
+      "title": "Follower Run Id",
+      "type": "string"
+    },
+    "follower_seq": {
+      "description": "Revisits of a stop differ here.",
+      "minimum": 0,
+      "title": "Follower Seq",
+      "type": "integer"
+    },
+    "follower_service_evidence": {
+      "enum": [
+        "stopped",
+        "reported_planned",
+        "reported_not_stopped",
+        "inferred_passage"
+      ],
+      "title": "Follower Service Evidence",
+      "type": "string"
+    },
+    "headway": {
+      "$ref": "#/$defs/DurationBound"
+    },
+    "leader_passing": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventBound"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "leader_pattern_attribution": {
+      "anyOf": [
+        {
+          "enum": [
+            "scheduled_trip",
+            "unique_fit",
+            "ambiguous",
+            "off_pattern"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Leader Pattern Attribution"
+    },
+    "leader_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Leader Run Id"
+    },
+    "leader_seq": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Leader Seq"
+    },
+    "leader_service_date": {
+      "anyOf": [
+        {
+          "description": "ISO date of a GTFS service day (never a UTC date).",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Leader Service Date"
+    },
+    "leader_service_evidence": {
+      "anyOf": [
+        {
+          "enum": [
+            "stopped",
+            "reported_planned",
+            "reported_not_stopped",
+            "inferred_passage"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Leader Service Evidence"
+    },
+    "leader_unknown": {
+      "title": "Leader Unknown",
+      "type": "boolean"
+    },
+    "lineage": {
+      "enum": [
+        "raw",
+        "legacy"
+      ],
+      "title": "Lineage",
+      "type": "string"
+    },
+    "pattern_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Set exactly at pattern scope.",
+      "title": "Pattern Id"
+    },
+    "route_id": {
+      "title": "Route Id",
+      "type": "string"
+    },
+    "scope": {
+      "enum": [
+        "route",
+        "pattern"
+      ],
+      "title": "Scope",
+      "type": "string"
+    },
+    "service_date": {
+      "description": "The follower's.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "title": "Service Date",
+      "type": "string"
+    },
+    "source": {
+      "description": "The follower's feed; every feed of a route has one family.",
+      "enum": [
+        "ace",
+        "bdfm",
+        "g",
+        "jz",
+        "nqrw",
+        "l",
+        "numbered",
+        "si"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "spans_no_service": {
+      "description": "A scheduled closure lies inside the span.",
+      "title": "Spans No Service",
+      "type": "boolean"
+    },
+    "stop_id": {
+      "title": "Stop Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "service_date",
+    "leader_service_date",
+    "leader_unknown",
+    "lineage",
+    "source",
+    "stop_id",
+    "route_id",
+    "direction",
+    "scope",
+    "pattern_id",
+    "evidence",
+    "leader_run_id",
+    "follower_run_id",
+    "leader_pattern_attribution",
+    "follower_pattern_attribution",
+    "leader_seq",
+    "follower_seq",
+    "ambiguity_set",
+    "leader_passing",
+    "follower_passing",
+    "leader_service_evidence",
+    "follower_service_evidence",
+    "basis",
+    "headway",
+    "spans_no_service"
+  ],
+  "title": "Headway",
+  "type": "object"
+}

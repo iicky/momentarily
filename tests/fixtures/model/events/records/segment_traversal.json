@@ -1,0 +1,88 @@
+[
+  {
+    "run_id": "raw:jz:101450_J..N47R@1792616046#0",
+    "from_seq": 1,
+    "to_seq": 3,
+    "service_date": "2026-10-21",
+    "lineage": "raw",
+    "source": "jz",
+    "pattern_id": "Z-N-bfb91b97d742",
+    "from_index": 1,
+    "to_index": 3,
+    "segment_ids": [
+      "M22N>M21N",
+      "M21N>M20N"
+    ],
+    "hidden_realtime_stops": 0,
+    "from_event": {
+      "after": 1792616046,
+      "by": 1792616107,
+      "reported": 1792616101,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "to_arrival": {
+      "after": 1792616167,
+      "by": 1792616228,
+      "reported": 1792616221,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "run_time": {
+      "unknown": true,
+      "reason": "departure not observable on the last family (decision 4)"
+    },
+    "stop_to_stop": {
+      "lo": 60,
+      "hi": 182,
+      "censoring": "none",
+      "reported": 120,
+      "uncovered_s": 0
+    },
+    "run_time_basis": "next_arrival"
+  },
+  {
+    "run_id": "raw:numbered:047450_6..S03R@1792583520#0",
+    "from_seq": 1,
+    "to_seq": 2,
+    "service_date": "2026-10-21",
+    "lineage": "raw",
+    "source": "numbered",
+    "pattern_id": "6-S-29db9d766d60",
+    "from_index": 1,
+    "to_index": 2,
+    "segment_ids": [
+      "602S>603S"
+    ],
+    "hidden_realtime_stops": 0,
+    "from_event": {
+      "after": 1792583520,
+      "by": 1792583580,
+      "reported": null,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "to_arrival": {
+      "after": 1792583580,
+      "by": 1792583641,
+      "reported": 1792583634,
+      "uncovered_s": 0,
+      "suspect_s": null
+    },
+    "run_time": {
+      "lo": 0,
+      "hi": 121,
+      "censoring": "none",
+      "reported": null,
+      "uncovered_s": 0
+    },
+    "stop_to_stop": {
+      "lo": 60,
+      "hi": 182,
+      "censoring": "none",
+      "reported": null,
+      "uncovered_s": 0
+    },
+    "run_time_basis": "vehicle"
+  }
+]

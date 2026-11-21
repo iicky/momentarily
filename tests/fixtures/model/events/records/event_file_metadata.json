@@ -1,0 +1,60 @@
+[
+  {
+    "schema": "events/s1",
+    "file_key": "model/events/s1/raw/coverage/2026-10-21.parquet",
+    "layout_version": 1,
+    "builder_version": 1,
+    "row_count": 24,
+    "provenance": {
+      "code_sha": "91b9324c0ffee",
+      "code_dirty": false,
+      "schema": "events/s1",
+      "inputs": {
+        "model/observations/s1/derived/feed_header/2026-10-21/04.parquet": "cb5151a7eda47753a0b1c7092966c1ecfda3690103d161256260392d4a735cef",
+        "model/observations/s1/ticks/2026-10-21/03/1792555159-1792555161107.json": "688f7ee29003cea0aece5196e487c5150c28682f75e06aed44d46631cb125bf4",
+        "model/observations/s1/ticks/2026-10-21/04/1792555219-1792555220662.json": "84a432fef6d0620d7374242398bf20c0006a730f1fb50cb3b98b6dd4765078f3",
+        "model/observations/s1/ticks/2026-10-21/04/1792555279-1792555302015.json": "fa1d92e5cc85c69d0d0f8663f1841dc0189eab543830e61c6f3d63f1eda0bf72",
+        "model/observations/s1/ticks/2026-10-21/04/1792555339-1792555342631.json": "309a5b1a680871e45ee13b4eadb5a4dfe02d085c90e40641ff2c90ee33052736"
+      },
+      "captured_at": {
+        "model/observations/s1/derived/feed_header/2026-10-21/04.parquet": 1792555342,
+        "model/observations/s1/ticks/2026-10-21/03/1792555159-1792555161107.json": 1792555164,
+        "model/observations/s1/ticks/2026-10-21/04/1792555219-1792555220662.json": 1792555228,
+        "model/observations/s1/ticks/2026-10-21/04/1792555279-1792555302015.json": 1792555321,
+        "model/observations/s1/ticks/2026-10-21/04/1792555339-1792555342631.json": 1792555347
+      },
+      "period_start": null,
+      "observed_from_utc_day": "2026-10-21",
+      "applied_retroactively": [],
+      "built_at": 1792555347
+    }
+  },
+  {
+    "schema": "events/s1",
+    "file_key": "model/events/s1/legacy/coverage/2026-09-15.parquet",
+    "layout_version": 1,
+    "builder_version": 1,
+    "row_count": 42,
+    "provenance": {
+      "code_sha": "91b9324c0ffee",
+      "code_dirty": false,
+      "schema": "events/s1",
+      "inputs": {
+        "model/observations/s1/derived/legacy_fetch_outcome/2026-09-15.parquet": "b612c46903074d39d3f4bc8d1b72c018425f4694dd9465932345ce554930e0db",
+        "model/observations/s1/derived/vehicle/2026-09-15/11.parquet": "57694d046c02f3c618f0159ac32834ac0800e17ac3a2689dbf50408a94eef6ac",
+        "momentarily/model/events/route_feed.json": "0de31dc6409e33ba2ae7ba4273bfdaf41077d93cdd41175ce6db0a0605e971d0"
+      },
+      "captured_at": {
+        "model/observations/s1/derived/legacy_fetch_outcome/2026-09-15.parquet": 1789516755,
+        "model/observations/s1/derived/vehicle/2026-09-15/11.parquet": 1789473555,
+        "momentarily/model/events/route_feed.json": 1792589425
+      },
+      "period_start": null,
+      "observed_from_utc_day": "2026-09-15",
+      "applied_retroactively": [
+        "momentarily/model/events/route_feed.json"
+      ],
+      "built_at": 1792589425
+    }
+  }
+]

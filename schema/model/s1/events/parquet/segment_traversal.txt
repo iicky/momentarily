@@ -1,0 +1,17 @@
+run_id: string not null
+from_seq: int64 not null
+to_seq: int64 not null
+service_date: string not null
+lineage: string not null
+source: string not null
+pattern_id: string not null
+from_index: int64 not null
+to_index: int64 not null
+segment_ids: list<string not null> not null
+hidden_realtime_stops: int64 not null
+from_event: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64> not null
+to_arrival: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64> not null
+run_time: struct<lo: int64 not null, hi: int64, censoring: string not null, reported: int64, uncovered_s: int64>
+run_time__unknown: string
+stop_to_stop: struct<lo: int64 not null, hi: int64, censoring: string not null, reported: int64, uncovered_s: int64> not null
+run_time_basis: string not null

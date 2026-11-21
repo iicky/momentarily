@@ -1,0 +1,20 @@
+run_id: string not null
+seq: int64 not null
+service_date: string not null
+lineage: string not null
+source: string not null
+source_basis: string not null
+family: string not null
+stop_id: string not null
+pattern_id: string
+pattern_index: int64
+pattern_attribution: string not null
+service_evidence: string not null
+arrival: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64>
+departure: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64>
+departure__unknown: string
+passage: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64>
+departure_basis: string
+dwell: struct<lo: int64 not null, hi: int64, censoring: string not null, reported: int64, uncovered_s: int64>
+dwell__unknown: string
+flags: list<string not null> not null

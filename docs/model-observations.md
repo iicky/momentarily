@@ -1016,16 +1016,23 @@ writes any record type; the derive job is meant to reuse it.
 ```
 python -m momentarily.model.observations.legacy --mirror <mirror-root> \
     --out <out-root> [--from YYYY-MM-DD] [--through YYYY-MM-DD] \
-    [--overwrite] [--report report.json]
+    [--overwrite] [--report report.json] [--failure-report failures.md]
 ```
 
 The CLI reads the mirror (local) and writes
 `<out>/model/observations/s1/derived/...` with the existing `keys`; no key
 was added. `vehicle` and `equipment` files are hourly by `observed_at`.
 `alert_version` files are daily by `first_seen`. The three legacy-only
-records are daily by `observed_at`. A malformed object is skipped, listed in
-the report, and makes the CLI exit 1. A missing mirror, or `--from` after
-`--through`, exits 2. A record that a contract rejects stops the run.
+records are daily by `observed_at`. A malformed object aborts every day
+that reads it, as an unreadable one does (see **Unreadable and malformed
+objects** below), is listed in the report with its reason, and makes the
+CLI exit 1, unless the reviewed quarantine file lists it (see
+**Quarantine** below). A missing mirror, or `--from` after `--through`,
+exits 2. A record that a contract rejects stops the run.
+`--failure-report` also writes the run's failures as Markdown: each aborted
+day with the object that aborted it, each unreadable or malformed object
+with its reason, conflicts, obsolete files and the quarantined objects read
+as absent. It holds keys, counts and reasons only.
 
 **Days.** The run covers the UTC days `--from` through `--through`, by
 default every day the mirror holds. It reads one day at a time: each
@@ -1034,15 +1041,25 @@ one line per finished day (objects read, malformed, files written, unchanged,
 replaced, conflicting, obsolete, seconds), then the per-archive and
 per-record summary. It writes only the files of its own days, so a day's
 files have the same bytes whichever range covers it. A trace object is filed
-under its `scheduled_at` day, but its records carry `observed_at`, a few
-seconds later. So a minute scheduled just before midnight fills the next
-day's hour-00 `vehicle` file and its `legacy_fetch_outcome` file. The first
-day of a range therefore also reads the trace objects scheduled in the hour
-before it. With `--through`, files after that day are listed as `deferred`
-and not written. Without it, they are written, as the whole-mirror run always
-did.
-If a trace object filed more than an hour before midnight reaches the next
-day, the run stops, because a range would miss its records. `archive/alerts`
+under its `scheduled_at` day, but its records carry `observed_at`. That is
+usually a few seconds later, but a late Worker invocation is observed long
+after the minute it was scheduled for. On 2026-10-25 the Worker missed many
+cron invocations between 13:36 and 23:50 UTC, and
+`archive/trace/2026-10-25/1792968739.json`, scheduled at 22:52:19, added to
+the `legacy_fetch_outcome` file of 10-26: it was observed more than 67 minutes
+after its key. Its exact `observed_at` is not known here: `archive/trace/`
+is R2 only, not in the local mirror. A trace object can therefore fill the
+next day's `vehicle` and `legacy_fetch_outcome` files from any minute of its
+day, and no fixed lead-in is safe. The first day of a range (and the day
+after an aborted day) therefore also reads the whole previous day of trace
+objects, about 1,440 GETs. Every later day of a range has the previous day
+in the same run, so all days see the same objects and a split range gives
+the same bytes as a single one. With `--through`, files after that day are
+listed as `deferred` and not written. Without it, they are written, as the
+whole-mirror run always did.
+A trace object whose records reach past the day after its own stops the run
+when the run reads that object's day, because a range that starts later
+reads only one previous day and would miss those records. `archive/alerts`
 is read in full up to the cutover's day before the first day, because
 versioning needs every sighting (about 16,000 objects); a range that starts
 on or after 2026-10-21 skips it.
@@ -1070,25 +1087,99 @@ on or after 2026-10-21 skips it.
 Nothing is ever deleted. A conflict or an obsolete file makes the CLI exit 1;
 the other files are still written.
 
-**Unreadable objects.** The archives are never pruned, so a listed object
-that the store does not return is a store error, not bad data.
+**Unreadable and malformed objects.** The archives are never pruned, so a
+listed object that the store does not return is a store error, not bad data.
 `R2Storage.get` retries R2's spurious not-found answers (5 attempts, with
-backoff). If an object still cannot be read, its day is aborted. A day's
-files are rendered as they close but stored only when the whole day has
-been read, so nothing of an aborted day is written. The report lists the day and the
-key, the CLI exits 1, and the run goes on with the next day, which starts as
-a new range would (with the lead-in). If an `archive/alerts` object cannot be
-read, the run stops before any day and writes nothing.
+backoff). If an object still cannot be read, or is malformed (not the JSON
+its archive writes), its rows are unknown and every day that reads it is
+aborted. A day's files are rendered as they close but stored only when the
+whole day has been read, so nothing of an aborted day is written. The
+report lists the day and the key (and a malformed object's reason, once),
+the CLI exits 1, and the run goes on with the next day, which starts as a
+new range would (with the lead-in). Such a trace object aborts the next day
+too, because that day's lead-in reads it, also in a range that starts on
+that next day. So a day's files are complete or not written, whichever
+range covers it. If an `archive/alerts` object cannot be read or is
+malformed, the run stops before any day and writes nothing, because every
+version depends on every sighting. (Review fix, 2026-11-03: until then a
+malformed object was skipped and its days written without it, silently
+when it was read only as lead-in. The mirror held no malformed object.)
+
+**Quarantine.** Most objects before the recorder cutover have no source to
+rebuild them from, so without a way past them one bad object would block
+every range that reads it forever (review finding BF-2, 2026-11-03).
+`src/momentarily/model/observations/legacy/quarantine.json` is a reviewed,
+committed list of objects to exclude:
+
+```json
+{"objects": [{"key": "archive/trace/2026-09-15/1789512720.json",
+              "sha256": "<sha256 of the stored bytes>",
+              "reason": "not JSON; no source to rebuild it from",
+              "added": "2026-11-03"}]}
+```
+
+Each entry needs exactly these four fields, a legacy archive key, 64
+lowercase hex digits and a `YYYY-MM-DD` day, and no key is listed twice;
+otherwise every run fails before it reads anything. A listed object whose
+stored bytes still hash to the listed sha256 is read as absent:
+
+- Its days are written without it. The report lists it under `excluded`
+  with its reason, and the run does not fail for it.
+- Its absence is never silent. Every file it could have filled names it,
+  with its sha256 and reason, under a second key-value metadata key of the
+  parquet footer, `momentarily.observations.excluded`
+  (`parquet.EXCLUDED_METADATA_KEY`, read with `parquet.read_excluded`).
+  The column layout and `DerivedFileMetadata` are unchanged, and a file
+  that excludes nothing has no such key, so its bytes are as before. The
+  files named are those of the record types its archive fills (an
+  `archive/trace` object: `vehicle` and `legacy_fetch_outcome`) whose span
+  starts at or after the start of its folder day (its key is not trusted
+  for a later bound: its bytes are not what the archive writes) and ends
+  no later than the end of that day, or of the next day
+  for `archive/trace`. An `archive/alerts` object is named in every
+  `alert_version` file of the run, because every version depends on every
+  sighting. A day whose only object of a record type is excluded has no
+  file of that type to name it; the report still lists it.
+- Legacy coverage (docs/model-events.md §5.1) reads the names from the
+  `legacy_fetch_outcome` files. The stretch that holds an excluded trace
+  object's scheduled minute is `Unknown` (reason `excluded from layer 2
+  (quarantined): <key>`), not `covered` and not `no_invocation`.
+
+A listed object whose bytes hash to anything else has changed since the
+review. It fails as a malformed object does, with the two hashes as its
+reason. An unlisted malformed object still aborts its days.
+
+**Repairing an aborted day.** A failed run of the workflow opens, or
+comments on, the issue "Legacy backfill is failing". It names each aborted
+day and each unreadable or malformed object with its reason.
+
+1. Read the object's reason in the issue. "Listed but could not be read" is
+   a store error: rerun the range, and go on only if it persists.
+2. Check whether a source exists to rebuild the object: another copy (a
+   local mirror), or, from the recorder cutover (2026-10-21T04:00Z) on, the
+   recorder's ticks and bundles for the same minutes. If one does, restore
+   the object from it and rerun the range.
+3. If none does, add the object to `quarantine.json` with the sha256 of
+   its stored bytes, the reason and today's date, in a reviewed commit.
+4. Rerun the affected range: the days the issue names. For an
+   `archive/trace` object that is its day and the next. A file already
+   stored for those days (every `alert_version` file of the run, for an
+   `archive/alerts` object) now differs in its footer and is a conflict:
+   rerun with `overwrite` to replace it. Close the issue once the run
+   passes.
 
 **Against R2.** `training.legacy_backfill` runs the same backfill with R2 as
 both the source and the output. It uses the derive job's `R2Storage`, with 8
 concurrent GETs. `--from` and `--through` are required. `--through` must
-have ended at least 30 minutes ago (exit 2 otherwise), because the Worker
-writes a day's last objects after 00:00 UTC:
+have ended at least a full day ago, so it is at most today − 2 in UTC (exit
+2 otherwise). The Worker writes a late invocation when it runs, and one
+filed under a day can run more than an hour late, until the end of the
+next day:
 
 ```
 murk exec -- uv run python -m training.legacy_backfill \
-    --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json]
+    --from YYYY-MM-DD --through YYYY-MM-DD [--overwrite] [--report r.json] \
+    [--failure-report failures.md]
 ```
 
 On GitHub Actions, run the manually dispatched workflow
@@ -1098,7 +1189,10 @@ On GitHub Actions, run the manually dispatched workflow
 listed object, and LISTs and GETs each target key under
 `model/observations/s1/derived/`. It PUTs only new keys (conditional) and,
 with `overwrite`, legacy files whose content differs. It never deletes. It
-prints keys and counts only.
+prints keys and counts only. When it fails, its last step opens the issue
+"Legacy backfill is failing", or comments on the open one, with the run
+link and the `--failure-report` contents, as `prune-nightly.yml` does for
+its own failures.
 
 The legacy-only records continue past the cutover. To write a later day's
 `legacy_fetch_outcome`, `legacy_route_alert_state` and
@@ -1212,7 +1306,9 @@ was kept.
   order, and a duplicate key rejected. Every writer option that affects the
   bytes is pinned: format version, data page version and size, dictionary,
   statistics, compression and level. The key-value metadata holds the arrow
-  schema and the `DerivedFileMetadata`. The writer rejects an output path
+  schema and the `DerivedFileMetadata`, and, on a legacy file written
+  without a quarantined object, `momentarily.observations.excluded`
+  (**Quarantine** above). The writer rejects an output path
   that does not end in `file_key`, and any record outside the file's hour or
   day. The bytes are reproducible for a given `pyarrow` version. `pyarrow`
   has no upper bound, and `uv.lock` pins the version. The bytes also depend

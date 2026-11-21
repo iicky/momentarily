@@ -1,0 +1,62 @@
+[
+  {
+    "source": "ace",
+    "lineage": "raw",
+    "interval": {
+      "start": 1792555041,
+      "end": 1792557440
+    },
+    "state": "stale_header",
+    "evidence_count": 40
+  },
+  {
+    "source": "numbered",
+    "lineage": "raw",
+    "interval": {
+      "start": 1792555041,
+      "end": 1792557440
+    },
+    "state": "covered",
+    "evidence_count": 40
+  },
+  {
+    "source": "g",
+    "lineage": "raw",
+    "interval": {
+      "start": 1792609341,
+      "end": 1792609462
+    },
+    "state": "no_invocation",
+    "evidence_count": 0
+  },
+  {
+    "source": "g",
+    "lineage": "raw",
+    "interval": {
+      "start": 1792611201,
+      "end": 1792611322
+    },
+    "state": "not_stored",
+    "evidence_count": 1
+  },
+  {
+    "source": "ace",
+    "lineage": "legacy",
+    "interval": {
+      "start": 1789484640,
+      "end": 1789484820
+    },
+    "state": "no_invocation",
+    "evidence_count": 0
+  },
+  {
+    "source": "numbered",
+    "lineage": "legacy",
+    "interval": {
+      "start": 1789484400,
+      "end": 1789484520
+    },
+    "state": "fetch_failed",
+    "evidence_count": 1
+  }
+]

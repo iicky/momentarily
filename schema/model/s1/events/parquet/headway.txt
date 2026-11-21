@@ -1,0 +1,25 @@
+service_date: string not null
+leader_service_date: string
+leader_unknown: bool not null
+lineage: string not null
+source: string not null
+stop_id: string not null
+route_id: string not null
+direction: string not null
+scope: string not null
+pattern_id: string
+evidence: string not null
+leader_run_id: string
+follower_run_id: string not null
+leader_pattern_attribution: string
+follower_pattern_attribution: string not null
+leader_seq: int64
+follower_seq: int64 not null
+ambiguity_set: string
+leader_passing: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64>
+follower_passing: struct<after: int64, by: int64 not null, reported: int64, uncovered_s: int64, suspect_s: int64> not null
+leader_service_evidence: string
+follower_service_evidence: string not null
+basis: string not null
+headway: struct<lo: int64 not null, hi: int64, censoring: string not null, reported: int64, uncovered_s: int64> not null
+spans_no_service: bool not null

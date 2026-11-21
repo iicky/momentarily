@@ -1,9 +1,10 @@
 # Data model, layer 3: events (`events/s1`) — scoping proposal
 
-Status: decided on 2026-10-21 (§9). Slice 1, the match index, is built
-(§10, "As built (slice 1)"); nothing else is. The build plan (§10) starts
-with the match index and two data gates; deferred items are listed under
-Deferred.
+Status: decided on 2026-10-21 (§9). Slice 1, the match index, slice 2, the
+contracts, and slice 3, coverage with the event file writer, are built
+(§10, "As built (slice 1)" to "As built (slice 3)"); nothing else is. The
+build plan (§10) starts with the match index and two data gates; deferred
+items are listed under Deferred.
 
 Layer 3 turns layer-2 observations into facts about trains. It answers
 questions such as these: which scheduled trip a realtime train is, which
@@ -350,9 +351,44 @@ service day is the previous one.
   local date of the matched trip's first scheduled departure. A run that
   disagrees is flagged `start_date_mismatch`. On the daytime `step2`
   sample, all 501 matched runs agree.
-- **DST.** GTFS seconds are placed with `instant_of(service_date, s, tz)`,
-  which counts from noon − 12 h. On 2026-11-01 that origin is 01:00 EDT, not
-  midnight. No measured day crosses a DST change [not verified].
+- **DST (decided 2026-11-03; anchor rule after review).** For matching, each
+  trip is anchored at its first departure on the New York wall clock, not
+  on GTFS's noon − 12 h origin: the service date's local midnight plus the
+  first departure's seconds read as wall time, with 24:00 or later rolling
+  into the next calendar date the same way (`wall_instant_of`,
+  `WALL_CLOCK_VERSION` 1, in `momentarily.model.conventions`). Every other
+  stop of the trip is the anchor plus its elapsed scheduled time since the
+  first departure. The realtime feeds start trips on the wall clock
+  (measured on 2026-11-01, Gate A/B results), and trains that span the
+  change run straight through it: 69 of 71 events crossing 02:00 on 11-01
+  were within 600 s of the scheduled run time (median excess +1 s), with
+  no mid-trip hold of 50 minutes or more. Placing each stop on the wall
+  clock separately would put a one-hour gap inside those trips. Layer 1's
+  `instant_of` keeps the GTFS meaning for its other consumers; the two
+  agree except on DST nights.
+  - **Fall back.** A first departure in the repeated 01:00–01:59 is its
+    first occurrence (EDT). On 2026-11-01, 00:14 is 04:14 UTC (`instant_of`:
+    05:14) and 01:30 is 05:30 UTC (06:30); a trip departing 01:59 reaches a
+    stop scheduled 02:01 at 06:01 UTC. On 10-31, 25:30 is 05:30 UTC
+    (unchanged) and a trip departing 26:30 is 02:30 EST, 07:30 UTC (06:30).
+  - **Spring forward.** A trip whose first departure does not exist on the
+    wall clock (02:00–02:59 on the spring-forward date, including 26:xx of
+    the service date before) is **unresolved**, never clamped: clamping
+    would collapse ordering and headways. It has no instants, so tier-5
+    matching, lateness and scheduled supply leave it out; the id tiers
+    still match it. A trip that departs before the gap runs on by elapsed
+    time. The rule is provisional until a spring-forward night is measured
+    (2027-03-14; 2026-03-08 is outside the recorded data).
+  - Every trip whose UTC offset differs between its first departure and
+    last arrival is flagged `spans_dst_transition`, so that measurement can
+    check them. A new rule bumps `WALL_CLOCK_VERSION` and `INDEX_VERSION`.
+  - **The anchor is the first departure, not the first arrival.** A trip
+    with a dwell at its first stop is placed by its departure there, the
+    time the feeds start it, and its first arrival lies the dwell before
+    the anchor by elapsed time. So a trip arriving 01:57 and departing
+    02:02 is wholly unresolved on 2027-03-14, though 01:57 exists, and on
+    2026-11-01 departs 02:02 EST (07:02 UTC) with its arrival at 06:57 UTC,
+    the second 01:57 (`tests/test_match_index.py`).
 
 ### 2.5 Measured
 
@@ -450,10 +486,12 @@ own time) is kept beside the bound when the feed supplies one.
 
 **Service evidence.** Each StopEvent says how strongly it shows passenger
 service at the stop:
-- `stopped`: the train was observed stopped there. In the "next" family
-  that is a STOPPED_AT row at s. In the "last" family the feed reported s as
-  the last stop reached, a feed statement that the train stopped at s
-  [inference: not checked against express running].
+- `stopped`: "next" family only. The train was observed stopped there: a
+  STOPPED_AT row at s.
+- `reported_planned`: "last" family only (owner decision 2026-10-22). The
+  feed reported s as the last stop reached, and s is a stop that the trip
+  update plans. Gate B found that these feeds do not report planned passes,
+  but an unplanned pass of a listed stop looks the same.
 - `reported_not_stopped`: "next" family only. The feed named s as the
   current or next stop, but never showed the train stopped there (13–14%
   of "next"-family stop blocks). It is physical passage. Service is
@@ -474,7 +512,7 @@ service. `reported_planned` is weaker: a train that skips a listed stop
 without a plan change still produces it. `reported_not_stopped` and
 `inferred_passage` never close a rider-service gap (§4).
 
-- **Arrival** (`stopped` only).
+- **Arrival** (`stopped` and `reported_planned` only).
   - "last" family: `(previous observation, first observation at s]`.
     Reported: `vehicle_timestamp` of that row, which equals the TU arrival.
   - "next" family: `(last observation at s not stopped, first STOPPED_AT
@@ -518,9 +556,27 @@ without a plan change still produces it. `reported_not_stopped` and
   - Lower bounds are always clamped to 0.
   - `uncovered_s` is null when `after` is null, because there is no
     interval to measure.
-- **Degenerate events** (`after == by`) come only from one trip id at two
+- **Uncovered seconds of a bound and a duration.** A bound's `uncovered_s`
+  and `suspect_s` count disjoint seconds of `(after, by]`, so together
+  they are at most `by − after`. A duration's span is `(start.after,
+  end.by]`, `hi` seconds wide, and its `uncovered_s` is at most `hi`. Every
+  second of either bound inside the span is a second of the span, so the
+  duration's `uncovered_s` is at least what its bounds certainly hold
+  there: with `s` and `e` the bounds' `uncovered_s`, each less its seconds
+  outside the span, and `overlap` the seconds the two bounds share, it is
+  at least `max(s, e, s + e − overlap)`. A dwell over an arrival with 30
+  uncovered seconds is never fully covered.
+- **Degenerate events** (`after == by`) come from one trip id at two
   stops in one poll (§2.3). Splitting removes them. An unsplit run emits
   nothing for those polls, so `after < by` stays a strict invariant.
+- **Two fetches in one second.** `observed_at` is an integer second, and
+  two fetches of one feed can finish in the same second with different
+  content (`numbered@1792708401559` and `numbered@1792708402024` both
+  have `observed_at` 1792708402 and differ on 15 trips). When the first
+  does not show an event and the second does, the first counts as at
+  `by`: `after` is the previous distinct fetch instant
+  (`contracts.bound_after`: the latest observation strictly before `by`).
+  The bound only widens, and `after < by` holds.
 
 ### 3.3 Measured bound widths
 
@@ -639,11 +695,12 @@ first stops, which the old pipeline drops because it needs a stopped row
   same-pattern pair that only the pattern scope sees.
 
   Each headway is built at two **evidence levels**:
-  - `service`: only `stopped` events (departure for "next", arrival for
-    "last", whose departure is not observable, §3.1). This is the
-    rider-service series. A `reported_not_stopped` or `inferred_passage`
-    event never closes or resets it, so a local suspension that trains
-    pass through stays a growing gap.
+  - `service`: only `stopped` events ("next", timed by departure) or only
+    `reported_planned` events ("last", timed by arrival, because their
+    departure is not observable, §3.1). The two are never mixed in one
+    series. This is the rider-service series. A `reported_not_stopped` or
+    `inferred_passage` event never closes or resets it, so a local
+    suspension that trains pass through stays a growing gap.
   - `physical`: any event at the stop, passages included. It shows that
     trains moved through the stop, for layer 5 to tell a suspension from
     an outage.
@@ -695,7 +752,11 @@ first stops, which the old pipeline drops because it needs a stopped row
     upper bound on the real gap. When an uncovered interval ended at `e`
     and may overlap the last-passing bound, `lo = max(0, t − max(by, e))`
     for a finite `by`, and `lo = 0` while the feed is still uncovered.
-    `hi` stays `t − after − 1`.
+    `hi` stays `t − after − 1`. `OpenState` carries `e` as
+    `uncovered_until` (`as_of` while still uncovered) with the flag
+    `uncovered_since`, and both ends of `current_gap` are exact: with no
+    outage, `[t − by, t − after − 1]`. With no passing yet
+    (`scheduled_no_observation`), `since` stands for `by`.
   - The current elapsed gap is a **finite interval at `t`**
     (`OpenState.current_gap`). The eventual headway that will close it is
     a separate value (`OpenState.eventual`): a `DurationBound` with
@@ -794,17 +855,38 @@ An HTTP 200 does not mean data:
 
 ### 5.1 Coverage (transport evidence, per feed)
 
-Coverage is keyed to fetch instants (`observed_at`), not wall-clock
-minutes, so dispatch jitter is never a gap:
+Coverage is keyed to fetch instants (`observed_at`) and the recorder's
+minute grid (`COVERAGE_VERSION` 2, review fix 2026-11-03). The grid is
+every `scheduled_at` read plus the missing slots between them (§10, slice
+3 as built). Slot `S` is present for a feed when a good fetch of the feed
+finished in its own minute `[S, S + 60)`:
 
 ```text
-covered(feed) = every stretch between two consecutive good fetches of the
-                feed that are at most 120 s apart, with no failed fetch
-                inside it
+covered(feed) = every stretch [a, b) between two consecutive good fetches
+                of the feed that are at most 120 s apart, with no failed
+                fetch inside it, and no grid slot S with a < S and
+                S + 60 <= b (a minute that held no good fetch)
 ```
 
 Any other stretch is uncovered. Its state is `fetch_failed` when a failed
-fetch lies inside it (whatever its length), otherwise `no_invocation`.
+fetch lies inside it (whatever its length), otherwise `no_invocation`,
+with the cause `missing_slot` (a slot with no recorded invocation) or
+`late`. Jitter inside a minute is never a gap: a fetch at `S + 59` covers
+slot `S`. An invocation that starts 60 s or more late, however, leaves its
+own minute without a fetch, so the 70–120 s stretch between its
+neighbours' fetches is `no_invocation` (`late`) although no two fetches
+are more than 120 s apart: the recorder promised a fetch in that minute
+and none came. The rule has a cliff there (`S + 59` covered, `S + 60` a
+stretch of about 118 s).
+
+*Superseded (`COVERAGE_VERSION` 1, until 2026-11-03):* "Coverage is keyed
+to fetch instants (`observed_at`), not wall-clock minutes, so dispatch
+jitter is never a gap: covered = every stretch between two consecutive
+good fetches that are at most 120 s apart, with no failed fetch inside
+it", and slot presence was a set over `scheduled_at`. A cron retry
+40 minutes late made its slot present, so a 120 s hole read `covered`
+(review finding O-03).
+
 What counts as a good fetch differs by lineage:
 
 - **Raw.** `FeedFetch.outcome == "ok"`, the payload decoded, and
@@ -824,6 +906,15 @@ What counts as a good fetch differs by lineage:
     (`suspect_s` on each bound). Nothing treats it as a transport failure,
     and it never turns a suspension into missing data.
   - Legacy days are history only, so no live display depends on it.
+  - A trace object that layer 2 left out because it is quarantined
+    (docs/model-observations.md §5.1, **Quarantine**) is named in the
+    footer of the `legacy_fetch_outcome` files it could have filled. The
+    stretch that holds its scheduled minute is `Unknown`, with the reason
+    `excluded from layer 2 (quarantined): <key>`, because its fetches are
+    not known. It is never `covered`, and never `no_invocation`, because
+    the invocation ran: its minute joins the slot grid, so it is no
+    missing slot. The report lists such objects under `excluded_inputs`.
+    No stored coverage file changes, so `COVERAGE_VERSION` stays 2.
   - Measured with every trace object that holds at least one vehicle row
     included, zero rows for a feed counted, and no row floor: no episode
     of 3 or more identical sets on any feed on 08-12, 09-15 or 10-19. The
@@ -848,8 +939,9 @@ These are exactly the minutes the earlier count-based rule flagged on the
 unaltered days. They are transport events, now in their own states, and
 no count-based flag remains.
 
-Live latency: a failed fetch is known at once, and a stale header or a
-missing invocation after 120 s, within the ≤ 2 min that §1 needs.
+Live latency: a failed fetch is known at once, a missing or late
+invocation once its minute ends (60 s), and a stale header after 120 s,
+within the ≤ 2 min that §1 needs.
 
 **Feed of a row.** Legacy rows carry no `source`. Layer 3 maps the trip
 id's route field to a feed through a fixed table (`RouteFeed`, versioned
@@ -924,17 +1016,21 @@ Count-based coverage rules were tested and rejected:
   L collapses in the rider-truth audit) as missing data.
 
 Coverage is stored as intervals (`CoverageInterval`) with a state
-(`covered`, `fetch_failed`, `no_invocation`, `stale_header`), a source and
-a lineage. A layer-3 bound, headway or ScheduledTripOutcome records the
-uncovered seconds it overlaps.
+(`covered`, `fetch_failed`, `no_invocation`, `not_stored`, `stale_header`,
+and the legacy `suspect_stale`), a source and a lineage. A layer-3 bound,
+headway or ScheduledTripOutcome records the uncovered seconds it overlaps.
 
-## 6. Draft contracts
+## 6. Contracts (as built in slice 2)
 
 The conventions are layer 1's: `Model` (frozen, closed, no defaults),
 `Instant`, `ServiceDate`, `Unknown`, `Interval`, `Provenance`. Schema id
-`events/s1`. Pydantic is the source of truth, under
-`momentarily.model.events`. JSON Schema goes to `schema/model/s1/events/`
-and TypeScript to `shared/model/s1/events/`.
+`events/s1`. Pydantic is the source of truth, in
+`momentarily.model.events.contracts`. JSON Schema goes to
+`schema/model/s1/events/` and TypeScript to `shared/model/s1/events/`. The
+block below follows the code, with the Gate A/B verdicts applied. The
+validators and their error types are listed in §10, "As built (slice 2)".
+ScheduledTripOutcome stays here as a record of the deferred design and is
+not built.
 
 ```python
 SCHEMA_ID = "events/s1"
@@ -950,7 +1046,7 @@ class EventBound(Model):
     by: Instant
     reported: Instant | None
     uncovered_s: int | None = Field(description="Seconds of (after, by] not covered; null when after is null.")
-    suspect_s: int | None = Field(description="Seconds of (after, by] in legacy suspect_stale; null when after is null.")
+    suspect_s: int | None = Field(description="Seconds of (after, by] in legacy suspect_stale; null when after is null and on raw records.")
 
 class DurationBound(Model):
     """Interval-censored duration; consumers fit distributions, never midpoints."""
@@ -958,16 +1054,18 @@ class DurationBound(Model):
     hi: int | None = Field(description="null when censoring is right.")
     censoring: Literal["none", "right"]   # left-censored starts give right-censored durations (§3.2)
     reported: int | None
-    uncovered_s: int | None
+    uncovered_s: int | None                  # null exactly when censoring is right
 
 class GapInterval(Model):
     """Current elapsed gap at an evaluation instant; integer seconds, both ends inclusive.
-    hi null only when the last passing is left-censored, or for scheduled_no_observation
-    (lo = as_of − since)."""
+    hi null only when the last passing is left-censored, or for scheduled_no_observation.
+    OpenState fixes both ends exactly (§4): lo = max(0, as_of − max(by, uncovered_until)),
+    with since for by when nothing has passed."""
     lo: int = Field(ge=0)
     hi: int | None
 
-ServiceEvidence = Literal["stopped", "reported_not_stopped", "inferred_passage"]
+ServiceEvidence = Literal["stopped", "reported_planned",   # service: "next" / "last" family (Gate B)
+                          "reported_not_stopped", "inferred_passage"]   # passage only
 PatternAttribution = Literal["scheduled_trip", "unique_fit", "ambiguous", "off_pattern"]
 
 class TripMatch(Model):
@@ -1027,11 +1125,11 @@ class StopEvent(Model):
     pattern_index: int | None                # null when off pattern or ambiguous
     pattern_attribution: PatternAttribution
     service_evidence: ServiceEvidence
-    arrival: EventBound | None               # stopped only
-    departure: EventBound | None | Unknown   # stopped only; Unknown: censored tail / run end
-    passage: EventBound | None               # reported_not_stopped and inferred_passage only
-    departure_basis: Literal["vehicle", "next_arrival"] | None
-    dwell: DurationBound | Unknown | None    # Unknown for the "last" family (§3.2)
+    arrival: EventBound | None               # stopped or reported_planned only
+    departure: EventBound | None | Unknown   # stopped or reported_planned only; Unknown: censored tail / run end
+    passage: EventBound | None               # reported_not_stopped and inferred_passage only (after never null)
+    departure_basis: Literal["vehicle", "next_arrival"] | None   # vehicle for stopped, next_arrival for reported_planned
+    dwell: DurationBound | Unknown | None    # Unknown for the "last" family (§3.2) and an Unknown departure
     flags: list[Literal["order_violation", "reported_after_bound", "reported_widened_after",
                         "held_old_timestamp", "first_of_run", "liveness_uncertain",
                         "plan_dropped"]]   # trip update removed the stop > 60 s before its predicted arrival (§3.2)
@@ -1059,12 +1157,13 @@ class Headway(Model):
     leader_service_date: ServiceDate | None  # null when leader_unknown (§4 carry-in)
     leader_unknown: bool
     lineage: Lineage
+    source: GtfsRtSource                     # as built: the follower's feed, gates service evidence by family
     stop_id: str
     route_id: str
     direction: Literal["N", "S"]
     scope: Literal["route", "pattern"]       # adjacency computed per scope, never filtered
     pattern_id: str | None                   # the pattern for scope "pattern"; null for "route"
-    evidence: Literal["service", "physical"] # service: stopped events only (§4)
+    evidence: Literal["service", "physical"] # service: both ends stopped, or both reported_planned (§4)
     leader_run_id: str | None
     follower_run_id: str
     leader_pattern_attribution: PatternAttribution | None
@@ -1076,7 +1175,7 @@ class Headway(Model):
     follower_passing: EventBound
     leader_service_evidence: ServiceEvidence | None
     follower_service_evidence: ServiceEvidence
-    basis: Literal["departure", "arrival", "passage"]
+    basis: Literal["departure", "arrival", "passage"]   # the follower's timed end, from its evidence
     headway: DurationBound
     spans_no_service: bool                   # scheduled closure inside the span (§4)
 
@@ -1085,23 +1184,28 @@ class OpenState(Model):
     window_end tail of a nightly file). Never a closed record."""
     as_of: Instant
     lineage: Lineage
+    source: GtfsRtSource                     # as built: the run's or the route's feed
     kind: Literal["open_run", "open_headway", "scheduled_no_observation"]
     run_id: str | None                       # open_run
-    compatible_pattern_ids: list[str]        # open_run: live pattern fit (§2.3)
+    last_event_seq: int | None               # as built, open_run: StopEvent.seq of the last event
+    pattern_attribution: PatternAttribution | None   # as built, open_run only
+    compatible_pattern_ids: list[str]        # open_run: live pattern fit (§2.3); may exclude a matched pattern
     last_event: EventBound | None            # null only for scheduled_no_observation
+    last_event_evidence: ServiceEvidence | None   # as built: null exactly when last_event is; service level: stopped or reported_planned
     since: Instant                           # start of the open interval (§4 initialization)
+    uncovered_until: Instant | None          # as built: end of the last uncovered interval after the last passing (after since with none); as_of while still uncovered; set exactly with uncovered_since
     stop_id: str
     route_id: str
     direction: Literal["N", "S"]
     scope: Literal["route", "pattern"] | None
-    pattern_id: str | None
+    pattern_id: str | None                   # open_run: matched or unique fit; clocks: the scope's pattern
     evidence: Literal["service", "physical"] | None
     ambiguity_set: Literal["certain", "with_ambiguous"] | None   # pattern scope: one clock per series
-    current_gap: GapInterval                 # finite at as_of: [as_of − by, as_of − after − 1], outage-adjusted lo (§4)
+    current_gap: GapInterval                 # exactly [as_of − max(by, uncovered_until), as_of − after − 1], lo clamped at 0 (§4)
     eventual: DurationBound                  # the still-open headway: censoring = "right", hi = null
     flags: list[Literal["possibly_stale", "uncovered_since", "ambiguous_patterns_only"]]
 
-class ScheduledTripOutcome(Model):
+class ScheduledTripOutcome(Model):           # deferred: not built (see Deferred)
     service_date: ServiceDate
     lineage: Lineage
     scheduled_trip_id: str
@@ -1120,8 +1224,8 @@ class CoverageInterval(Model):
     source: GtfsRtSource
     lineage: Lineage
     interval: Interval
-    state: Literal["covered", "fetch_failed", "no_invocation", "stale_header",
-                   "suspect_stale"] | Unknown
+    state: Literal["covered", "fetch_failed", "no_invocation", "not_stored",
+                   "stale_header", "suspect_stale"] | Unknown   # not_stored: 10-21 verdict
     evidence_count: int                      # fetches (raw) or trace objects (legacy) inside
 
 class SupplyObservation(Model):
@@ -1136,7 +1240,7 @@ class SupplyObservation(Model):
     vehicles_stale_tail: int                 # uncertain: runs in a stale_tail block (held train or ghost)
     scheduled_in_service: int                # layer-1 trips in service at observed_at
     listed_trips: int | Unknown              # raw: trip updates for the route; legacy: Unknown
-    suspect_producer_outage: bool            # heuristic; interpretation deferred (§5.2)
+    # suspect_producer_outage: deferred (§5.2), not built
 ```
 
 Keys and rules:
@@ -1152,17 +1256,20 @@ Keys and rules:
   | OpenState | (`as_of`, `kind`, `run_id` or (`stop_id`, `route_id`, `direction`, `scope`, `pattern_id`, `evidence`, `ambiguity_set`)) |
   | ScheduledTripOutcome | (`lineage`, `service_date`, `scheduled_trip_id`) |
   | CoverageInterval | (`source`, `lineage`, `interval.start`) |
+  | SupplyObservation | (`lineage`, `source`, `route_id`, `observed_at`) |
 
 - **Lineage is carried end to end.** A record built from legacy rows says
   `legacy`, so a consumer filters on one field. A run is never built from
   both lineages. While both exist (§8), both are built and filed apart,
-  under `events/s1/<lineage>/…`. Raw is preferred for any day whose raw
-  coverage is complete.
+  under `model/events/s1/<lineage>/…`. Raw is preferred for any day whose
+  raw coverage is complete.
 - **Partitioning: by ServiceDate.**
-  `events/s1/<lineage>/<record>/<service_date>.parquet`, and coverage by UTC day.
-  Every consumer (normals by day type and time of day, supply against the
-  timetable) thinks in service days. A UTC-hour partition would split
-  every run that crosses 20:00 New York time.
+  `model/events/s1/<lineage>/<record>/<service_date>.parquet`, and coverage
+  and supply, which are keyed to fetch instants, by UTC day.
+  Every consumer of runs and events (normals by day type and time of day)
+  thinks in service days. A UTC-hour partition would split every run that
+  crosses 20:00 New York time. A fetch serves two overlapping service days,
+  so a per-fetch record filed by service day would be written twice.
   - Service day D needs observations from D 00:00 local minus 2 h to
     D + 1 08:00 local, because trips run to 28:xx GTFS time. It can be
     final once layer 2 has derived the UTC day holding D + 1 08:00 local.
@@ -1396,30 +1503,43 @@ not a public contract and has no JSON Schema, TypeScript or parquet layout.
   compact), gzipped with mtime 0. The same inputs and code give the same
   bytes; a second CLI run reports `unchanged`. `metadata` holds the key,
   `INDEX_VERSION`, the `route_feed.json` digest, service date, time zone,
-  `day_origin` (`instant_of(date, 0)`), build, `build_basis`, day type,
-  entry counts and layer 1's `Provenance` (`inputs`: the network
-  `content_digest`, the `route_feed.json` digest and, when used, the day
-  map's; `built_at`: the network's; `period_start`: the service date).
+  `day_origin` (`wall_instant_of(date, 0)`, local midnight),
+  `wall_clock_version`, build, `build_basis`, day type, entry counts
+  (`unresolved_stop_times`, `unresolved_trips` and `trips_spanning_dst`
+  among them) and layer 1's `Provenance`
+  (`inputs`: the network `content_digest`, the `route_feed.json` digest
+  and, when used, the day map's; `built_at`: the network's;
+  `period_start`: the service date).
 - **Contents.**
   - `trips`: every trip active that day, sorted by id, with the stripped
     key (static origin, route field, direction, path), block, route,
-    pattern, service, first departure and last arrival.
+    pattern, service, first departure, last arrival and
+    `spans_dst_transition`.
   - `patterns`: every pattern of the build with its stop list, and for
-    patterns that run, the trips by first arrival and an arrival matrix
-    (per stop, per trip). Instants are `instant_of(service_date, s, tz)`.
+    patterns that run, the trips by scheduled first arrival and an arrival
+    matrix (per stop, per trip). Each trip is anchored at its first
+    departure, `wall_instant_of(service_date, s, tz)` (§2.4: the New York
+    wall clock, first occurrence in the repeated fall-back hour), and every
+    other time is the anchor plus elapsed scheduled time. A trip whose first
+    departure does not exist on the wall clock (spring forward) is
+    unresolved: `null` in the matrix and in its first departure and last
+    arrival. Index version 2 and earlier used `instant_of` per stop.
   - `platforms`, `active_service_ids`, day type and exception flag.
   - `supply`: per route with 6X, 7X and FX folded into 6, 7 and F (riders
     see the 6; the patterns keep the variants apart), trips in service per
     epoch minute, from the minute of the first departure through the minute
     of the last arrival. This is the prototype's rule (`m13_supply.py`,
     `base_route`); `supply` folds the route it is asked for the same way.
+    An unresolved trip is in no minute.
   - `route_feed`: the `RouteFeed` table.
 - **Lookups** (`MatchIndex`, built from a document in about 0.04 s for a
   weekday): `realtime_key` (a realtime origin `o` hits static origin `o`,
   then `o + 144000` flagged `wrapped`; a wrapped hit belongs to this
   service day, the calendar day before the observation), `static_key`,
-  `origin_direction`, `arrival(trip, stop)`, `stop_times(pattern, stop)`
-  (sorted instants and trip ids), `patterns_of(route, direction)` (6X, 7X
+  `origin_direction`, `arrival(trip, stop)` (None also for an unresolved
+  trip), `stop_times(pattern, stop)` (sorted instants and trip ids of the
+  resolved trips),
+  `patterns_of(route, direction)` (6X, 7X
   and FX folded, as in the prototype), `pattern_stops`, `stop_position`,
   `platforms`, `supply`, `supply_by_feed` and `feed_of`.
   `candidate_service_dates(at, tz)` gives D−1, D and D+1. The index stores
@@ -1448,26 +1568,50 @@ not a public contract and has no JSON Schema, TypeScript or parquet layout.
   supply per route and minute, candidate days) are equal for every route,
   on both builds and all 10 dates. The committed test checks the same
   families by digest on a route subset (H, SI, Z, 7X, FX; 101 KB per
-  build, gzipped).
+  build, gzipped). That comparison was at index version 2; `Net`, like
+  version 2, placed times with `instant_of`. From version 3, the full
+  builds' 10-31 differs from `Net` only in the 175 stop times of the 3
+  trips departing at 26:xx, which the wall clock moves (below). The subset
+  routes have none, so the committed test is unchanged.
 - **Generator input.** `scripts/gen_route_feed.py` reads raw-lineage
   derived files only (`parquet.file_lineage`) and exits with a message on
   a legacy-backfilled day, whose rows have no `source`.
-- **Wrap and DST.** Tested on a synthetic network on real 2026 DST
-  nights, outside the builds' range (05-26 to 10-31): 25:30 on 10-31 and
-  00:30 on 11-01 are both 05:30 UTC (the first 01:30), 26:30 on 10-31 is
-  06:30 UTC (the second 01:30), 02:30 on 03-08 is 06:30 UTC (01:30 EST),
-  and 26:30 on 03-07 is 07:30 UTC (03:30 EDT). A realtime `009000` seen
-  at 01:31 on 03-08 hits the 25:30 trip of 03-07, 60 s off, and the same
-  trip of 03-08 more than 12 h off.
-- **Size per day** (bytes gzipped / uncompressed, trips, stop times):
+- **Wrap and DST.** Tested on a synthetic network on real DST nights, the
+  2026 fall back and the 2027 spring forward. Fall back: 00:14 on 11-01 is
+  04:14 UTC; 01:30 on 11-01 and 25:30 on 10-31 are both 05:30 UTC (the
+  first 01:30); a trip departing 01:59 on 11-01 reaches its 02:01 stop at
+  06:01 UTC and is flagged `spans_dst_transition`; 26:30 on 10-31 is 07:30
+  UTC (02:30 EST); at 06:31 UTC (the second 01:31) no trip is in service.
+  Spring forward: on 2027-03-14 01:59 is 06:59 UTC with its later stops at
+  07:01 and 07:03 UTC (flagged), and 03:00 is 07:00 UTC; trips departing
+  02:30 on 03-14 and 26:30 on 03-13 are unresolved (null, in no
+  `stop_times` and no supply minute); resolved times keep schedule order.
+  A realtime `009000` seen at 01:31 on 2027-03-14 hits, wrapped, the 25:30
+  trip of 03-13, 60 s off, and the same trip of 03-14 more than 12 h off.
+- **What the wall clock changes on the mirrored layer-1 root** (every
+  active stop time of every service day of the three builds, against
+  `instant_of`): 10-31 (both summer builds), 175 of 169,429 move +3,600 s
+  (the 3 trips departing at 26:xx); 11-01 (`2c06219240445181`), 4,887 of
+  154,778 move −3,600 s (190 trips departing before 02:00). The same build
+  also covers the 2027 spring forward: on 03-13, 175 stop times of 3
+  trips are unresolved; on 03-14, 4,887 move +3,600 s and 3,572 of 127
+  trips are unresolved. No other date changes. Trips flagged
+  `spans_dst_transition`: 32 on 10-31 and 03-13, 77 on 11-01 and 03-14.
+- **Replay on 11-01** (gate matches of 10-31 and 11-01, throwaway script):
+  of 72 id-tier runs whose trip departs before 02:00 and runs past it, the
+  first stop seen after 02:00 is within 15 minutes of the anchored
+  schedule for 61, against 47 with each stop placed on the wall clock
+  separately.
+- **Size per day** at index version 3 (bytes gzipped / uncompressed,
+  trips, stop times):
 
   | Day | `2faf6350456df7f6` | `606d9f640f5aad67` |
   |---|---|---|
-  | Weekday (09-15) | 637,569 / 5,176,289; 8,497; 238,724 | 637,590 / 5,179,827; 8,497; 238,724 |
-  | Saturday (09-19) | 406,261 / 3,794,851; 6,186; 169,429 | 406,250 / 3,796,271; 6,186; 169,429 |
-  | Sunday (09-20) | 376,730 / 3,443,280; 5,626; 154,778 | 376,735 / 3,444,468; 5,626; 154,778 |
-  | Labor Day (09-07) | 378,259 / 3,444,217; 5,626; 155,037 | 378,274 / 3,445,697; 5,626; 155,037 |
-  | Added Saturday (07-03) | 408,442 / 3,795,871; 6,186; 169,772 | 408,432 / 3,797,623; 6,186; 169,772 |
+  | Weekday (09-15) | 638,065 / 5,422,795; 8,497; 238,724 | 638,077 / 5,426,333; 8,497; 238,724 |
+  | Saturday (09-19) | 406,538 / 3,974,338; 6,186; 169,429 | 406,535 / 3,975,758; 6,186; 169,429 |
+  | Sunday (09-20) | 376,997 / 3,606,527; 5,626; 154,778 | 376,999 / 3,607,715; 5,626; 154,778 |
+  | Labor Day (09-07) | 378,601 / 3,607,464; 5,626; 155,037 | 378,603 / 3,608,944; 5,626; 155,037 |
+  | Added Saturday (07-03) | 408,803 / 3,975,358; 6,186; 169,772 | 408,800 / 3,977,110; 6,186; 169,772 |
 
   Every index also holds 218 patterns, 992 platforms and 30 `RouteFeed`
   keys; supply covers 37,406 route-minutes on a weekday. The builds differ
@@ -1505,8 +1649,141 @@ contracts slice proceeds unchanged.
    - `TripMatch` rejects `service_date_basis = "scheduled_trip"` without a
      scheduled trip;
    - a "last"-family `StopEvent` with a numeric dwell is rejected;
-   - a `Headway` with `evidence = "service"` and a non-`stopped` end is
-     rejected.
+   - a `Headway` with `evidence = "service"` and a passage end
+     (`inferred_passage`, `reported_not_stopped`) is rejected, while
+     `stopped` and `reported_planned` ends are accepted and kept apart
+     (Gate B verdict);
+   - `CoverageInterval` accepts `not_stored` (10-21 verdict).
+
+#### As built (slice 2)
+
+The contracts are `momentarily.model.events.contracts`. §6 shows them as
+built.
+
+- **Records.** `TripMatch`, `StopEvent`, `SegmentTraversal`, `Headway`,
+  `OpenState`, `CoverageInterval` and `SupplyObservation`, with the
+  sub-models `EventBound`, `DurationBound` and `GapInterval`. Deferred
+  pieces are not built: ScheduledTripOutcome and
+  `SupplyObservation.suspect_producer_outage`.
+- **Verdicts applied.**
+  - The feed decides the family (`FEED_FAMILY`, §3.1: `numbered` and `l`
+    are "next", the other six feeds "last"). A record's `family`,
+    `departure_basis` or `run_time_basis` that contradicts its `source`
+    is rejected. `Headway` and `OpenState` gain `source` (deviation from
+    §6) so that their service evidence is gated the same way.
+  - `ServiceEvidence` has four values. `stopped` is allowed only on "next"
+    feeds and `reported_planned` only on "last" feeds.
+    `reported_not_stopped` is "next" only, and `inferred_passage` is
+    either. A service event (`stopped`, `reported_planned`) has an arrival,
+    a departure (or `Unknown`) and `departure_basis` `vehicle` or
+    `next_arrival` by family. A passage has only a passage bound.
+  - A service-level Headway takes both ends from one value: both `stopped`
+    or both `reported_planned`. Because a feed has one family, a mixed
+    pair cannot pass the feed gate, so the two never fold together. At
+    every level `basis` is the follower's timed end: `departure`
+    (`stopped`), `arrival` (`reported_planned`), else `passage`.
+  - `OpenState` gains `last_event_evidence` (deviation from §6: the draft
+    had no field to carry `reported_planned` on an open clock). It is null
+    exactly when `last_event` is. At the service level it must be
+    `stopped` or `reported_planned`. An open run also gains
+    `last_event_seq` and `pattern_attribution`, and its `pattern_id` is
+    the matched pattern or the unique fit. A matched pattern may lie
+    outside `compatible_pattern_ids` (a deviating run).
+  - `CoverageInterval.state` gains `not_stored`. `stale_header` and
+    `not_stored` need raw lineage, and `suspect_stale` needs legacy.
+  - `StopEvent.flags` gains `plan_dropped`, which needs raw lineage (trip
+    updates).
+- **Invariants** (each a `PydanticCustomError` with a stable type):
+  - `event_bound`, `event_bound_reported`, `event_bound_overlap`:
+    `after < by`. A kept `reported` lies in `(after, by]`. `uncovered_s`
+    is null exactly when `after` is. `suspect_s` is set exactly on legacy
+    bounds with an `after`. Together they are no wider than the bound
+    (review fix, 2026-11-03: each was checked alone).
+  - `duration_censoring`, `duration_bound`: `hi` and `uncovered_s` are
+    null exactly when `censoring` is `right`, `lo <= hi`, and
+    `uncovered_s <= hi`. `lo >= 0` is a field constraint.
+  - `stop_event_dwell`, `traversal_run_time`, `headway_bound`: a duration
+    follows from its two bounds (§3.2): `lo = max(0, end.after −
+    start.by)`, `hi = end.by − start.after` (open for a left-censored
+    start), and `reported` is the difference of the two reported times
+    when both are kept. Its `uncovered_s` is at least what its bounds
+    certainly hold inside the span, `max(s, e, s + e − overlap)` (§3.2).
+    This ties a "next" dwell to arrival and departure, a "next" run time
+    and a "last" stop-to-stop time to the traversal's bounds, and a
+    headway to its two passings. A "next" stop-to-stop time runs from the
+    arrival, which the record does not hold; its span contains the run
+    time's, so its `uncovered_s` is at least the run time's (review fix,
+    2026-11-03: it was unchecked). Every other duration either has this
+    two-bound check or is right-censored with a null `uncovered_s`
+    (an unknown leader's headway, `OpenState.eventual`).
+  - `run_lineage`: every run id a record holds starts with the record's
+    lineage and feed, `{lineage}:{source}:` (`run_id`, TripMatch members
+    and superseded ids, the headway follower). A headway leader needs the
+    lineage and a feed of the same family, because a route's runs can
+    span feeds (raw `ace` publishes some F trips); a B-division run never
+    joins a numbered series (review fix, 2026-11-03: Headway and TripMatch
+    checked the lineage only).
+  - `trip_match_identity`, `trip_match_outcome`, `service_date_basis`,
+    `pattern_fit`, `lineage_unknown`, `source_basis`: `run_id` follows
+    §2.3. A run never lists itself as a member or as identity-uncertain.
+    `identity_uncertain_with` needs raw lineage (train ids), and names only
+    other tracks of the same trip id and first poll. A trip, a tier and no
+    miss class go together with `matched`. `service_date_basis` is
+    `scheduled_trip`, `id_origin` or `clock_rule` for `matched`,
+    `unscheduled` or `unparseable`. `service_date_ambiguous` is for
+    unmatched runs only and goes with the alternative date.
+    `pattern_attribution` agrees with `pattern_id` and the fit. Legacy runs
+    hold `Unknown` for the published route, `start_date` and train ids,
+    and raw runs never do. `source_basis` is `published` (raw) or
+    `route_feed_table` (legacy).
+  - `service_evidence`, `stop_event_bounds`, `stop_event_dwell`,
+    `stop_event_flags`: the family rules above. A "last"-family dwell is
+    `Unknown`, never a number. `first_of_run` marks exactly a
+    left-censored arrival. `liveness_uncertain` needs an `Unknown`
+    departure. `reported_widened_after` needs `reported = after + 1` on
+    the event's first bound, and `reported_after_bound` needs no kept
+    `reported` there. A "last" departure starts where the arrival does.
+  - `traversal_order`, `traversal_run_time`: `from < to` for seq and
+    index, and one segment id per pattern hop. `run_time` is `Unknown`
+    exactly when the basis is `next_arrival`.
+  - `headway_leader`, `headway_scope`, `headway_evidence`: an unknown
+    leader has null leader fields and an open headway. `pattern_id` and
+    `ambiguity_set` are set exactly at pattern scope. `certain` admits
+    only `scheduled_trip` and `unique_fit` runs, and `off_pattern` runs
+    count at route scope only.
+  - `open_state_kind`, `open_state_time`, `open_state_gap`: the fields of
+    each kind. `current_gap` is exact (§4, review fix 2026-11-03: the
+    lower end was "at most"): `hi = as_of − after − 1` and `lo = max(0,
+    as_of − max(by, uncovered_until))`; for `scheduled_no_observation`,
+    `since` stands for `by` and `hi` is null. `uncovered_until` (a field
+    added for this) is set exactly with the `uncovered_since` flag, ends
+    after the last passing's `after` (after `since` with none), and is at
+    most `as_of`. `eventual` is right-censored from `current_gap.lo`.
+  - `coverage_interval`, `coverage_state`: an interval is not empty,
+    does not cross 00:00Z, and its state needs its lineage's evidence.
+    Every `flags` list is sorted and distinct.
+- **Keys** (`momentarily.model.events.keys`):
+  `model/events/s1/<lineage>/<record>/<YYYY-MM-DD>.parquet`. `trip_match`,
+  `stop_event`, `segment_traversal`, `headway` and `open_state` use the
+  service date. `coverage` and `supply` use the UTC day of the fetch
+  (deviation: the draft partitioned only coverage by UTC day. A fetch
+  serves two overlapping service days). A supply record goes under the
+  day of its `observed_at`. Coverage intervals are split at 00:00Z, so a
+  day's coverage file covers exactly that day. `EventLineage` in `keys` is
+  the contracts' `Lineage`. The match index key is unchanged.
+- **Parquet.** `momentarily.model.events.columns` maps each record kind to
+  its contract and uses layer 2's column rules. The layouts are committed
+  under `schema/model/s1/events/parquet/` and pinned per `LAYOUT_VERSION`:
+  2 since `OpenState.uncovered_until` (2026-11-03; no OpenState file had
+  been written).
+- **Generation.** `scripts/export_model_schema.py` exports the seven
+  schemas and both layers' layouts. `bun run gen:model` writes
+  `shared/model/s1/events/`. The fixtures in
+  `tests/fixtures/model/events/records/` use runs, stops and stretches
+  from the Gate A/B days (the Z train `101450_J..N47R`, the 10-21 freeze,
+  the lost 19:34 bundle). `tests/test_model_events.py` and
+  `worker/test/model_events.test.ts` check them.
+
 3. **Coverage** (CoverageInterval for both lineages, keyed to fetch
    instants; stale header; legacy `suspect_stale`). It needs no matching.
    Acceptance:
@@ -1528,6 +1805,152 @@ contracts slice proceeds unchanged.
        `suspect_stale`, never `stale_header` or `fetch_failed`;
    - on 09-15, 10-19 and 08-12 the only uncovered stretches are the
      transport events in §5.1, and there is no `suspect_stale`.
+
+#### As built (slice 3)
+
+Coverage is `momentarily.model.events.coverage`; the event file writer and
+its metadata are `momentarily.model.events.files`.
+
+- **Rule.** The combined rule of the 10-21 verdict, keyed to fetch
+  instants (`observed_at` = `finished_at_ms // 1000`, a timeout's start).
+  Per feed, the stretch `[a, b)` between consecutive good fetches takes the
+  first state that applies: `fetch_failed`, `not_stored` or `stale_header`
+  (a fetch of that kind inside, in that order); `no_invocation` (a slot
+  whose own window held no good fetch lies in the stretch, else `b − a >
+  120 s`); `suspect_stale` (legacy); `covered`. Adjacent stretches with
+  one state merge.
+  - Raw good fetch: outcome `ok` or `empty`, a non-empty stored body, a
+    layer-2 `FeedHeaderObservation`, and a header at most 120 s old when
+    observed. `empty` counts because train counts never make coverage.
+    A body that was stored and parsed but has no header row is
+    `fetch_failed` and counted as `undecoded_fetches`.
+  - **Slot presence is keyed to fetch instants** (review fix O-03,
+    2026-11-03, `COVERAGE_VERSION` 2). The cron grid is every
+    `scheduled_at` read plus the missing slots between them (steps of 60 s
+    inside a longer gap between distinct values; tick records and
+    bundle-index-only invocations both count). Slot `S` is present for a
+    feed when a good fetch of the feed finished in its own window `[S, S +
+    60)`. Between consecutive good fetches nothing else lies, so the
+    stretch `[a, b)` holds an absent slot exactly when some grid slot has
+    `a < S` and `S + 60 ≤ b`. A late invocation, such as a cron retry
+    40 minutes on, fills only the window its fetches finish in, nothing
+    earlier; before, presence was a set over `scheduled_at`, so the retry
+    made its slot present and a 120 s hole read `covered`. The cause is
+    `missing_slot` when a slot with no recorded invocation lies in `[a,
+    b)`, else `late` (the cron fired, but late). `missing_slots` in the
+    report stays the slots with no recorded invocation.
+  - A stale episode in mid-day is `stale_header` from the last good fetch
+    before it to the first good fetch after it, the same stretch as every
+    other state (and the prototype's). Only where no good fetch precedes it
+    (the start of a lineage's evidence, as at 04:00 on 10-21) does it begin
+    at the first stale fetch, and after the last good fetch it ends at the
+    last stale one. It never starts at the stuck header time. Where the
+    inputs hold no fetch on one side the state is `Unknown`, with the
+    reason.
+  - Legacy `suspect_stale`: both ends lie in a run of 3 or more consecutive
+    good trace objects whose non-empty row set for the feed (trip, stop,
+    `vehicle_timestamp`; §2.2 legacy placeholders excluded; feed by
+    `RouteFeed` on the trip id) is identical. A failed object breaks the
+    run, and empty sets never count.
+- **Cutover.** Raw coverage reads only fetches observed at or after
+  `observations.keys.RECORDER_CUTOVER` (2026-10-21T04:00:00Z), and legacy
+  only trace objects observed before it. So the 10-21 raw file starts at
+  04:00:00, and the 10-21 legacy file ends there. A raw day before the
+  cutover day, or a legacy day after it, is a usage error.
+- **Day files.** Each file tiles its UTC day (from or to the cutover on
+  10-21). The hour on each side is read so a stretch crossing 00:00Z gets
+  its state before it is split. A neighbouring raw hour whose
+  `feed_header` file is missing is left out (`dropped_edge_hours`), and
+  the edge becomes `Unknown`; one for an hour of the day itself is a
+  missing input. The legacy backfill writes no vehicle file for an hour
+  whose trace objects hold no rows at all, and layer 2 records nothing
+  that tells such an hour from a lost file. So an hour holding a fresh
+  trace object needs its vehicle file: absent, it is a missing input
+  (nothing is written), and a neighbouring hour is left out like a raw
+  one (`dropped_edge_hours`). Before (review fix O-02, 2026-11-03), an
+  absent hour read as zero rows, and a lost file turned `suspect_stale`
+  into `covered`. An hour whose objects hold no fresh feed needs no file.
+  The day's `legacy_fetch_outcome` file is required.
+  - A day built before the next day's hour 00 exists in layer 2 ends in
+    `Unknown` after its last fetch. Rebuilt once that hour exists, its
+    content differs, so the rebuild conflicts without `--overwrite`. The
+    nightly wiring (slice 7) must run after the next day's hour 00 is
+    derived, or rebuild with `--overwrite`.
+- **File metadata.** `EventFileMetadata` (exported as
+  `events/event_file_metadata`, with TS) holds the file key,
+  `layout_version`, `builder_version` (`COVERAGE_VERSION = 2`), the row
+  count and layer 1's `Provenance`. Inputs are every object read: tick
+  records, bundles read for lost ticks, layer-2 files, and on legacy days
+  the packaged `RouteFeed` table. Each input's `captured_at` is the latest
+  instant of data it holds; `built_at` is the latest of those. The
+  `RouteFeed` table is listed in `applied_retroactively` on legacy days,
+  because it was measured on raw data after them. It lives in `files`, not
+  `contracts`, because `keys` imports `contracts`.
+- **Writer.** Layer 2's pinned writer settings
+  (`observations.parquet.write_parquet`), rows sorted by natural key
+  (coverage: source, interval start). The overwrite rule is layer 2's:
+  identical bytes, or bytes that differ only in `code_sha`/`code_dirty`,
+  are kept; a file of a lower `builder_version` is replaced (as layer 2
+  replaces on a `DECODER_VERSION` change); any other difference is a
+  conflict unless `--overwrite`. A stored file of a higher
+  `builder_version` or `layout_version`, or whose metadata names another
+  key, is never replaced, even with `--overwrite` (review fix O-17,
+  2026-11-03: a downgrade replaced the newer file). The lineage is in the
+  key, so a build
+  never writes under the other lineage's keys. Layer 2's file bytes are
+  unchanged by the shared settings (a test pins them).
+- **CLI.** `python -m momentarily.model.events coverage --root <store>
+  --out <dir> --day D [--lineage raw|legacy] [--overwrite] [--report
+  PATH]`. Without `--lineage` it builds every lineage that holds the day.
+  It prints a JSON report per lineage: invocations, missing slots, and
+  per feed the seconds by state, `no_invocation` split into missing slot
+  and late, `Unknown` seconds and the interval count. Exit 1: a missing or
+  inconsistent input (nothing is written) or a conflict. Exit 2: a bad day
+  or a lineage that does not hold it.
+- **Replays** (local mirror, read only). Transport-uncovered seconds per
+  feed, under `COVERAGE_VERSION` 1 (presence a set over `scheduled_at`):
+  - 10-22 reproduces the Gate A/B table exactly on every feed and column
+    (`ace` 3,223 = 724 slot + 2,378 late + 121 `not_stored`, ... `numbered`
+    2,979). The day's last 39–40 s are `Unknown`: the local store has no
+    10-23 layer-2 files.
+  - 10-21 from 04:00 reproduces the `no_invocation` (slot 120–121, late
+    794–1,038) and `not_stored` (121) columns exactly. `stale_header` is
+    2,220 s, not 2,399, on the six frozen feeds: 2,399 − 2,220 = 179 s =
+    159 s before the cutover (the table counted from the first fetch at
+    03:57:21) + 20 s `Unknown` (04:00:00 to the first raw fetch at
+    04:00:20, on every feed). So `ace` is 3,379 uncovered, against 3,558;
+    `l` and `numbered` are 1,035 and 1,156, as in the table.
+  - **`COVERAGE_VERSION` 2** (slot presence keyed to fetch instants):
+    the slot and `not_stored` columns are unchanged on both days; `late`
+    grows. 10-21: `ace` 5,330 (late 918 → 2,869), `l` 3,222 (794 →
+    2,981), `numbered` 3,225 (915 → 2,984), `si` 5,443 (794 → 2,982).
+    10-22: 4,953–4,963 on every feed (`ace` late 2,378 → 4,114,
+    `numbered` 2,135 → 4,114). Each added second is in a stretch of
+    70–120 s (17 on 10-21 and 15 on 10-22 for `ace`) around a slot whose
+    own invocation started 60 s or more late (up to 53 minutes, a cron
+    retry), so no fetch finished inside that slot's minute. The Gate A/B
+    tables and the new-days figures were measured under the old rule; each
+    is marked version 1 and followed by its version-2 figures.
+    Legacy 09-15, 10-19 and 08-12 are unchanged.
+  - Legacy 09-15: one 180 s `no_invocation` on every feed (the 2 missing
+    trace minutes) and 120 s `fetch_failed` on `numbered`. 10-19: none
+    (the 99 s gap is covered). 08-12 (a partial day): none. No
+    `suspect_stale` on any of the three days.
+  - Two builds of each day give identical bytes; a rerun reports
+    `unchanged`.
+  - The raw day files are 0.7–0.9 MB, almost all of it the provenance
+    (about 1,440 tick inputs); the 166–314 rows take a few kB.
+- **Fixtures and tests.** `tests/test_events_coverage.py`: a scripted
+  recorder store (a timeout, a missing tick, a stuck header, a late
+  invocation 99 s after the previous fetch, an unstored body, a
+  bundle-only invocation, across 00:00Z); the frozen-feed excerpt
+  `tests/fixtures/model/events/frozen_feed/` (four real invocations
+  03:59:19–04:02:19 on 10-21, cut by `scripts/gen_frozen_feed_fixture.py`
+  and derived by the layer-2 job in the test), which gives `stale_header`
+  on the six frozen feeds and `covered` on `l` and `numbered`; legacy
+  cases on synthetic trace objects run through the layer-2 backfill; and
+  the writer's overwrite rule.
+
 4. **Runs, pattern fitting, trip matching and supply** (placeholders,
    censored stale tails, duplicate-trip-id split with tracks, split-run
    join, `compatible_pattern_ids`, tiers 1–5, min-cost one-to-one tier 5,
@@ -1587,8 +2010,10 @@ contracts slice proceeds unchanged.
      - a run cut by the input window gives `window_end`;
      - an unmatched run seen at 00:30 gets its `id_origin` date with
        `service_date_ambiguous`;
-     - **DST**: trips on 2026-11-01 and 2026-03-08 service days, including
-       one past 24:00, get the instants that `instant_of` defines, and are
+     - **DST**: trips on the 2026-11-01 and 2027-03-14 service days and
+       the days before, including ones past 24:00, get the anchored
+       wall-clock instants of §2.4 (unresolved when departing in the
+       spring-forward gap), and are
        matched on the right day;
    - a rebuild is byte-identical.
 5. **Stop events, traversals and dwell** (per-family rules, service
@@ -1634,7 +2059,8 @@ feeds, their events carry `service_evidence = "unknown"`. Rider-service
 gaps there are then marked `service_not_separable`, never shown as a
 service difference. The `stopped` value is kept only where Gate B shows
 a difference. The contract gains `"unknown"` in `ServiceEvidence` and
-the flag on Headway and OpenState.
+the flag on Headway and OpenState. (The verdict below replaced this plan:
+`reported_planned`, not `unknown`.)
 
 #### Gate A/B results (recorded raw days)
 
@@ -1714,8 +2140,9 @@ feeds resume at 00:37.
   events.
 - 1,558 of 152,915 arrival bounds overlap an uncovered stretch.
 
-**Coverage** (§5.1, keyed to fetch instants). Seconds per state, from the
-first fetch (03:57:21 UTC) to the last:
+**Coverage** (§5.1, keyed to fetch instants; `COVERAGE_VERSION` 1,
+superseded below). Seconds per state, from the first fetch (03:57:21 UTC)
+to the last:
 
 | Feed | covered | `stale_header` | `no_invocation` | bytes not stored |
 |---|---|---|---|---|
@@ -1726,6 +2153,22 @@ first fetch (03:57:21 UTC) to the last:
 | `si` | 68,799 | 2,399 | 800 | 121 |
 | `l` | 71,198 | 0 | 800 | 121 |
 | `numbered` | 71,082 | 0 | 916 | 121 |
+
+Under `COVERAGE_VERSION` 2 (2026-11-03, §5.1), from the coverage CLI on
+the local mirror over the build window (04:00 to 24:00 UTC; the 20 s
+before the first raw fetch are `Unknown`), seconds per state:
+
+| Feed | covered | `stale_header` | `no_invocation` (slot + late) | `not_stored` |
+|---|---|---|---|---|
+| `ace`, `bdfm`, `g`, `jz` | 66,650 | 2,220 | 2,989 | 121 |
+| `nqrw` | 66,651 | 2,220 | 2,988 | 121 |
+| `si` | 66,537 | 2,220 | 3,102 | 121 |
+| `l` | 68,758 | 0 | 3,101 | 121 |
+| `numbered` | 68,755 | 0 | 3,104 | 121 |
+
+The stretches below are the version-1 ones. Version 2 adds a `late`
+stretch of 70–120 s around each invocation that started 60 s or more
+late, because no fetch finished inside its own minute (17 on `ace`).
 
 Every uncovered stretch, and its cause:
 
@@ -2026,8 +2469,16 @@ and one revises a decision (item 3):
    - `stale_header` is decided by header age above 120 s, from the first
      stale fetch. It never starts at the stuck header time (03:22), which
      is earlier than any evidence.
+   - *Superseded on 2026-11-03 (`COVERAGE_VERSION` 2, §5.1):* presence is
+     per feed, and a slot is present only when a good fetch of the feed
+     finished in its own minute. The first bullet let a late retry make
+     its slot present, so a 120 s hole read `covered`. The other bullets
+     stand; "gap > 120 s" is now the `late` cause, which also takes every
+     70–120 s stretch around an invocation that started 60 s or more late
+     and left its minute without a fetch.
 
-   Uncovered seconds on 10-21 under the combined rule:
+   Uncovered seconds on 10-21 under the combined rule (`COVERAGE_VERSION`
+   1, prototype from 03:57:21; superseded by the next table):
 
    | Feed | Uncovered | `stale_header` | `no_invocation` (slot) | gap > 120 s | `not_stored` |
    |---|---|---|---|---|---|
@@ -2038,6 +2489,20 @@ and one revises a decision (item 3):
    | `si` | 3,434 | 2,399 | 120 | 794 | 121 |
    | `l` | 1,035 | 0 | 120 | 794 | 121 |
    | `numbered` | 1,156 | 0 | 120 | 915 | 121 |
+
+   Uncovered seconds on 10-21 under `COVERAGE_VERSION` 2, from the coverage
+   CLI on the local mirror (window from 04:00, so `stale_header` is 2,220 s,
+   not 2,399; the 20 s before the first raw fetch are `Unknown` and not
+   counted):
+
+   | Feed | Uncovered | `stale_header` | `no_invocation` (slot) | `no_invocation` (late) | `not_stored` |
+   |---|---|---|---|---|---|
+   | `ace`, `bdfm`, `jz` | 5,330 | 2,220 | 120 | 2,869 | 121 |
+   | `g` | 5,330 | 2,220 | 121 | 2,868 | 121 |
+   | `nqrw` | 5,329 | 2,220 | 120 | 2,868 | 121 |
+   | `si` | 5,443 | 2,220 | 120 | 2,982 | 121 |
+   | `l` | 3,222 | 0 | 120 | 2,981 | 121 |
+   | `numbered` | 3,225 | 0 | 120 | 2,984 | 121 |
 2. **Gate B (decided 2026-10-22).** `ServiceEvidence` gains
    `reported_planned` for the "last" family. `StopEvent.arrival`,
    `departure` and `departure_basis` must allow it as well as `stopped`.
@@ -2087,9 +2552,10 @@ Unmatched classes on 10-22 (500, maximum cardinality):
 By route field the most are D 133 and 6 106, as on 10-21. The evening
 hours 21:00–23:00 ET match least often (85–90%).
 
-**Coverage on 10-22** (the combined rule of the contract verdict).
-Missing slots: 09:21–09:22, 19:14–19:15 and 21:41–21:42 UTC, each 2
-consecutive minutes with no tick and no bundle.
+**Coverage on 10-22** (the combined rule of the contract verdict,
+`COVERAGE_VERSION` 1; the table and the stretches are superseded by the
+version-2 table after them). Missing slots: 09:21–09:22, 19:14–19:15 and
+21:41–21:42 UTC, each 2 consecutive minutes with no tick and no bundle.
 
 | Feed | Uncovered s | `no_invocation` | gap > 120 s | `not_stored` |
 |---|---|---|---|---|
@@ -2114,6 +2580,26 @@ Stretches (UTC) and their causes:
   feeds and 00:59 only `ace`. The invocations started 62–848 s late.
 - Not one stretch comes from train counts. All are recorder delays or
   losses: 19–21 stretches per feed, against 8–11 on 10-21.
+
+Under `COVERAGE_VERSION` 2 (2026-11-03, §5.1), from the coverage CLI on
+the local mirror (the day's last 39–40 s are `Unknown`, not counted):
+
+| Feed | Uncovered s | `no_invocation` (slot) | `no_invocation` (late) | `not_stored` |
+|---|---|---|---|---|
+| `ace` | 4,959 | 724 | 4,114 | 121 |
+| `bdfm` | 4,955 | 724 | 4,111 | 120 |
+| `g` | 4,953 | 723 | 4,109 | 121 |
+| `jz` | 4,954 | 723 | 4,110 | 121 |
+| `nqrw` | 4,962 | 726 | 4,115 | 121 |
+| `si` | 4,959 | 723 | 4,115 | 121 |
+| `l` | 4,963 | 725 | 4,117 | 121 |
+| `numbered` | 4,958 | 723 | 4,114 | 121 |
+
+The slot and `not_stored` columns are unchanged. `late` (the old "gap >
+120 s") grows by 1,736–1,979 s per feed, and each feed has 35
+uncovered stretches instead of 19–21: every invocation that started 60 s
+or more late left its own minute without a fetch, so the 70–120 s around
+it is now `no_invocation` (15 such stretches on `ace`).
 
 **Service day on 10-22.** 8,348 matched runs:
 - 6,765 belong to service day 10-22 and 1,583 to 10-21, which is still
@@ -2293,8 +2779,15 @@ minus the `instant_of` instant at the first common stop:
   - In the repeated hour use the first occurrence, as the feed did.
   - Keep `instant_of` only where the GTFS definition is needed.
   - The spring-forward night (03-08) is not measured.
+  - Decided on 2026-11-03 and built in index version 3 (§2.4), as a
+    matching convention in the match index rather than a change to layer
+    1's builds. After review, trips are anchored at their first departure
+    and run on by elapsed time, since trains ran straight through the
+    change; trips departing at a spring-forward time that does not exist
+    are unresolved until a spring-forward night is measured.
 
-**Coverage on the new days** (combined rule):
+**Coverage on the new days** (combined rule, `COVERAGE_VERSION` 1;
+superseded by the version-2 figures after the list):
 - **10-24:** 1,440 invocations, none missing. 5–7 late gaps of 121–147 s
   per feed, 630–874 s uncovered per feed.
 - **10-25:** 1,399 invocations; the 41 missing minutes fall between 13:36
@@ -2319,6 +2812,13 @@ minus the `instant_of` instant at the first common stop:
   - One late gap of 122 s.
 - No uncovered stretch comes from train counts.
 
+Under `COVERAGE_VERSION` 2 (2026-11-03, §5.1; coverage CLI on the local
+mirror), uncovered seconds per feed: 10-24 2,978–3,213 (all `late`);
+10-25 14,345–14,761 (`no_invocation` slot 4,266–4,270, late
+10,076–10,087); 11-01 and 11-02 unchanged (0 except `l` 1,561, and
+122–362). The growth is again the 70–120 s stretches around invocations
+that started 60 s or more late.
+
 **Contract verdict (weekend and DST).** One rule change is needed, in §2.4
 and the layer-1 matching convention: scheduled instants on the local wall
 clock for matching, as above. The match-index build choice is a code
@@ -2334,8 +2834,8 @@ states hold.
    - a train that only passes (`inferred_passage` or
      `reported_not_stopped`) between two stopping trains does not split
      the service headway;
-   - on Gate B's feeds, if it found no difference, service headways carry
-     `service_not_separable`;
+   - on the "last"-family feeds, service headways carry `reported_planned`
+     at both ends and never pair with a `stopped` end (Gate B verdict);
    - an ambiguous run counts toward each compatible pattern in the
      `with_ambiguous` series and not in `certain`. A P–A–P sequence (A
      ambiguous) gives P→A and A→P pairs in `with_ambiguous` and one P→P

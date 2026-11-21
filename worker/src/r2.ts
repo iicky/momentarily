@@ -18,6 +18,7 @@ export interface VersionedRead<T> {
  * Put `body` only if the object is unchanged since it was read at `etag` — or
  * still absent, when `etag` is null. Returns true on success, false when a
  * concurrent writer won the race (the caller should yield, not retry blindly).
+ * `customMetadata` is stored beside the body, outside its bytes.
  */
 export async function conditionalPut(
   bucket: R2Bucket,
@@ -25,9 +26,33 @@ export async function conditionalPut(
   body: string,
   etag: string | null,
   httpMetadata: R2HTTPMetadata,
+  customMetadata?: Record<string, string>,
 ): Promise<boolean> {
   const onlyIf: R2Conditional | Headers =
-    etag === null ? new Headers({ 'If-None-Match': '*' }) : { etagMatches: etag };
-  const result = await bucket.put(key, body, { httpMetadata, onlyIf });
+    etag === null ? createOnly() : { etagMatches: etag };
+  const result = await bucket.put(key, body, {
+    httpMetadata,
+    onlyIf,
+    ...(customMetadata !== undefined ? { customMetadata } : {}),
+  });
   return result !== null;
+}
+
+/**
+ * Put `body` only if `key` does not exist yet (`If-None-Match: *`). For an
+ * object two runs of one minute can both write: the first write is kept, and
+ * a later one, whatever it holds, cannot replace it. Returns false when the
+ * object already existed.
+ */
+export async function createOnce(
+  bucket: R2Bucket,
+  key: string,
+  body: string | Uint8Array,
+  httpMetadata: R2HTTPMetadata,
+): Promise<boolean> {
+  return (await bucket.put(key, body, { httpMetadata, onlyIf: createOnly() })) !== null;
+}
+
+function createOnly(): Headers {
+  return new Headers({ 'If-None-Match': '*' });
 }

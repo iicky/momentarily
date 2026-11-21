@@ -31,9 +31,12 @@
  * the pipeline publishes or archives.
  *
  * Two triggers run that minute body (`runMinute`): the Cron Trigger
- * (`scheduled`) and, for a minute the cron did not run to the end, the
- * watchdog Durable Object's alarm (watchdog.ts). Both claim the minute in the
- * watchdog first, so one of them runs it.
+ * (`scheduled`) and, for a minute the cron did not run and is no longer
+ * running, the watchdog Durable Object's alarm (watchdog.ts). Both claim the
+ * minute in the watchdog first, so one of them runs it; a cron run taken over
+ * stops writing at its next stage, and every object two runs of one minute
+ * could both write is protected at the write (a conditional put or a key per
+ * run).
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
@@ -66,7 +69,8 @@ import {
 import { resolveFeedIdentity } from './gtfs_feed';
 import { Recorder } from './recorder';
 import type { Trigger } from './recorder';
-import { claimForCron, minuteSlot, reportCronDone } from './watchdog';
+import { ALWAYS_HELD, CronLease, HEARTBEAT_MS, claimForCron, minuteSlot, reportCronDone } from './watchdog';
+import type { Lease } from './watchdog';
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import {
@@ -239,23 +243,34 @@ export function tickMinute(observedAt: number): number {
   return new Date(observedAt * 1000).getUTCMinutes();
 }
 
+/** Thrown at a write stage once the run no longer owns its minute. */
+class Fenced extends Error {}
+
 /**
  * One minute of the pipeline: everything a cron invocation does, whichever
  * trigger started it. `scheduledTime` is the cron's `event.scheduledTime`, or
  * for an alarm run the minute plus the cron's dispatch offset (watchdog.ts), so
  * the 5-minute gate, the recorder's keys and every snapped minute below read
  * the same instant either way. `trigger` is written into the tick record.
+ *
+ * `lease` is asked before every write stage (`fence`). Once it says the run no
+ * longer owns its minute (the watchdog's alarm took it over), the run stops
+ * and writes nothing more, its tick record included.
  */
 export async function runMinute(
   scheduledTime: number,
   env: Env,
   ctx: Pick<ExecutionContext, 'waitUntil'>,
   trigger: Trigger,
+  lease: Lease,
 ): Promise<void> {
   const observedAt = Math.floor(Date.now() / 1000);
   const t0 = Date.now();
   const step = (label: string): void => {
     console.log(`step ${label} t+${Date.now() - t0}ms`);
+  };
+  const fence = async (stage: string): Promise<void> => {
+    if (!(await lease.hold())) throw new Fenced(stage);
   };
   console.log(`tick trigger=${trigger} t=${observedAt}`);
 
@@ -311,6 +326,7 @@ export async function runMinute(
   // The raw-observation recorder (recorder.ts). Every upstream fetch below
   // reports to it; its CollectorTick is written in the `finally` at the end.
   const recorder = new Recorder(env.MOMENTARILY, scheduledAt, t0, trigger, failWrite);
+  let fenced = false;
   try {
     // The alerts feed is fetched every minute for the recorder, alongside the
     // protobuf feeds. Only a boundary tick's step 2 hands the payload to the
@@ -330,6 +346,7 @@ export async function runMinute(
     );
     // The raw bytes are stored before a single feed is decoded, so a decode
     // failure below cannot lose them. Never throws: a failed PUT is recorded.
+    await fence('0-record');
     await recorder.storeBundle();
     step('0-record');
     const vehicles: VehicleLite[] = [];
@@ -367,6 +384,7 @@ export async function runMinute(
         console.error(`trip-updates ${name} failed:`, r.reason);
       }
     }
+    await fence('0-trace');
     let rows: TraceRow[] = [];
     try {
       rows = deriveTrace(vehicles);
@@ -424,6 +442,7 @@ export async function runMinute(
     // though it were current. Leaving the prior doc untouched lets the gate
     // age the surface out on its own. Zero rows means a total vehicle-feed
     // outage or a throw above, never a real empty system.
+    await fence('0-state');
     let stationWaitDoc: StationWaitDoc | null = null;
     if (rows.length > 0) {
       try {
@@ -565,6 +584,7 @@ export async function runMinute(
     // is left un-rewritten rather than publishing an empty countdown as a real
     // "no trains due" reading; a PARTIAL read (some groups decoded) publishes
     // flagged via fresh_feeds/expected_feeds.
+    await fence('0b-arrivals');
     if (tripUpdateFreshFeeds.length > 0) {
       const arrivalsRecord = buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES);
 
@@ -635,26 +655,36 @@ export async function runMinute(
     // cadence: `lam` and `p0` are both per-tick, so an old 5-minute fit read
     // here would call every cell a collapse. Writes are plain puts, same posture
     // as station_wait — a lost race drops one minute's update, and the next
-    // minute re-decays from the slightly older base.
+    // minute re-decays from the slightly older base. A minute the accumulator
+    // already holds (another run of this minute, an alarm takeover or a late
+    // cron, folded it first) is not folded again: a second fold would decay the
+    // sums twice and add the minute's expected traversals twice.
+    await fence('0c-segments');
     try {
       const segParams = await readSegmentParams(env.MOMENTARILY);
+      // Segment judging keys on the SCHEDULED minute, snapped, not the
+      // wall-clock observedAt. observedAt is Date.now() at execution and
+      // jitters (12:00:03 then 12:01:05), so an observedAt-keyed carry would
+      // almost never satisfy `prev === now - 60` and would drop nearly every
+      // transition. scheduledTime is the minute the cron was meant to fire,
+      // so consecutive minutes are exactly SEGMENT_CADENCE_SECONDS apart —
+      // the same reason the 5-minute gate reads scheduledAt (see tickMinute).
+      const segmentTick =
+        Math.floor(scheduledAt / SEGMENT_CADENCE_SECONDS) * SEGMENT_CADENCE_SECONDS;
       if (segParams && vehicleFreshFeeds.length > 0) {
+        const prevFlow = segmentCadenceOk(segParams) ? await readSegmentFlow(env.MOMENTARILY) : null;
         if (!segmentCadenceOk(segParams)) {
           console.log(
             `segment judging skipped: params cadence `
             + `${segParams.cadence_seconds ?? 'legacy-300'}s != ${SEGMENT_CADENCE_SECONDS}s `
             + '(awaiting a 1-minute refit)',
           );
+        } else if (prevFlow !== null && segmentFlowCadenceMatches(prevFlow) && prevFlow.observed_at >= segmentTick) {
+          console.log(
+            `segment judging skipped: segment_flow already holds minute ${prevFlow.observed_at} `
+            + `(this run's is ${segmentTick})`,
+          );
         } else {
-          // Segment judging keys on the SCHEDULED minute, snapped, not the
-          // wall-clock observedAt. observedAt is Date.now() at execution and
-          // jitters (12:00:03 then 12:01:05), so an observedAt-keyed carry would
-          // almost never satisfy `prev === now - 60` and would drop nearly every
-          // transition. scheduledTime is the minute the cron was meant to fire,
-          // so consecutive minutes are exactly SEGMENT_CADENCE_SECONDS apart —
-          // the same reason the 5-minute gate reads scheduledAt (see tickMinute).
-          const segmentTick =
-            Math.floor(scheduledAt / SEGMENT_CADENCE_SECONDS) * SEGMENT_CADENCE_SECONDS;
           const prevCarry = await readSegmentVehicleStops(env.MOMENTARILY);
           // Strict adjacency, matching the offline reconstruction: diff only
           // against the carry stamped exactly one minute ago. A carry from
@@ -680,7 +710,6 @@ export async function runMinute(
             segmentTick,
             stopPositions(vehicles),
           );
-          const prevFlow = await readSegmentFlow(env.MOMENTARILY);
           // Everything downstream keys on the snapped scheduled minute too, not
           // the wall-clock observedAt. This is a parity requirement: the offline
           // grade that gated this migration snaps trace ticks to the scheduled
@@ -733,6 +762,7 @@ export async function runMinute(
       // Otherwise a persistent 1-minute publish failure would be invisible here.
       // The recorder finishes first (its finally call is then a no-op) so its
       // own write failures land in this record too.
+      await fence('10-health');
       await recorder.finish();
       try {
         await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
@@ -768,6 +798,14 @@ export async function runMinute(
     const lastSeen = lastSeenRead.state;
     const alphaState = alphaRead.state;
     const trainedParams = paramsLoad.params;
+    // The 5-minute pipeline applies each tick to the filter at most once, and
+    // never after a later tick. alpha.json carries the `scheduled_at` of the
+    // tick that last advanced it; a run whose tick is not newer (another run
+    // of this minute got there first, or a late run of an older one) skips
+    // the alpha write and so every output gated on it. The write itself is an
+    // etag CAS on the object read here, so two runs that both read an older
+    // tick cannot both advance it either.
+    const tickApplied = alphaRead.tick !== null && alphaRead.tick >= scheduledAt;
     step('1-read-state');
 
     // --- Step 2: this minute's alerts fetch (started at step 0) ---
@@ -791,6 +829,7 @@ export async function runMinute(
     }
     step('2-fetch-alerts');
 
+    await fence('2b-alerts-archive');
     // --- Step 2b: archive this tick's alert-fetch liveness ---
     // Unconditional, in its own try/catch, and placed BEFORE step 3's
     // `alertsPayload !== null` gate so a failed fetch — which skips step 3
@@ -1020,24 +1059,34 @@ export async function runMinute(
     // doesn't ship snapshot.json / predictions / transitions derived from
     // state that never landed in R2.
     let alphaWritten = false;
-    try {
-      alphaWritten = await writeAlphaState(
-        env.MOMENTARILY,
-        newAlphaState,
-        alphaRead.etag,
+    await fence('5-alpha-write');
+    if (tickApplied) {
+      console.warn(
+        `alpha.json already advanced for tick ${alphaRead.tick} (this run's is ${scheduledAt}); `
+        + 'skipping snapshot/predictions/transitions this tick',
       );
-      if (!alphaWritten) {
-        console.warn(
-          'alpha.json write conflict; skipping snapshot/predictions/transitions this tick',
+    } else {
+      try {
+        alphaWritten = await writeAlphaState(
+          env.MOMENTARILY,
+          newAlphaState,
+          alphaRead.etag,
+          scheduledAt,
         );
+        if (!alphaWritten) {
+          console.warn(
+            'alpha.json write conflict; skipping snapshot/predictions/transitions this tick',
+          );
+        }
+      } catch (err) {
+        console.error('alpha write failed; skipping outputs this tick:', err);
+        failWrite('alpha_write');
       }
-    } catch (err) {
-      console.error('alpha write failed; skipping outputs this tick:', err);
-      failWrite('alpha_write');
     }
     step('5-alpha-write');
 
     if (alphaWritten) {
+      await fence('6-publish');
       // --- Step 6: render + publish snapshot ---
       // Station metadata lives in its own R2 object (refreshed daily), read here
       // and embedded. A read failure degrades to an empty stations surface, never
@@ -1225,6 +1274,7 @@ export async function runMinute(
       }
       step('6c-publish-trains');
 
+      await fence('7-grading-writes');
       // --- Step 7: grading streams ---
       // Predictions are derived from the assembled snapshot's route_status, so
       // they degrade with it: if buildSnapshot threw above, there is nothing to
@@ -1275,6 +1325,7 @@ export async function runMinute(
     // Only the alpha CAS winner gets to mutate lastSeen, so losing runs skip
     // the E&E fetch too.
     if (alphaWritten && observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
+      await fence('8-ene');
       let eneOk = 0;
       const enePayloads: Record<string, unknown> = {};
       for (const [name, url] of ENE_SOURCES) {
@@ -1321,6 +1372,7 @@ export async function runMinute(
     // double-write. A failed/slow feed is non-fatal — its routes are simply
     // absent this tick, recorded via fresh_feeds.
     if (alphaWritten) {
+      await fence('8b-trip-updates');
       try {
         const freshFeeds = vehicleFreshFeeds;
         if (freshFeeds.length > 0) {
@@ -1478,6 +1530,8 @@ export async function runMinute(
           await recorder.attempt('stations', (observe) => fetchJson(STATIONS_FEED, observe)),
         );
         if (stations.length > 0) {
+          // After the fetch, which can be the slowest wait of the minute.
+          await fence('8c-stations');
           try {
             await writeStationsCache(env.MOMENTARILY, stations, observedAt);
             lastSeen.stations_at = observedAt;
@@ -1491,6 +1545,7 @@ export async function runMinute(
           console.warn('stations: feed parsed to zero records, freshness held');
         }
       } catch (err) {
+        if (err instanceof Fenced) throw err;
         console.error('stations fetch failed; freshness held:', err);
       }
       step('8c-stations');
@@ -1519,6 +1574,7 @@ export async function runMinute(
             await recorder.attempt('entrances', (observe) => fetchJson(ENTRANCES_FEED, observe)),
           );
           if (rawEntrances.length > 0) {
+            await fence('8d-entrances');
             try {
               const published = buildEntrances(observedAt, rawEntrances, entranceStations);
               await publishEntrances(env.MOMENTARILY, published);
@@ -1538,6 +1594,7 @@ export async function runMinute(
             console.warn('entrances: feed parsed to zero rows, freshness held');
           }
         } catch (err) {
+          if (err instanceof Fenced) throw err;
           console.error('entrances fetch failed; freshness held:', err);
         }
       } else {
@@ -1549,6 +1606,7 @@ export async function runMinute(
     // Only the alpha CAS winner commits last_seen — a losing run's outputs
     // were all discarded above, so it must not race the winner's state here.
     if (alphaWritten) {
+      await fence('9-last-seen-write');
       try {
         const written = await writeLastSeen(
           env.MOMENTARILY,
@@ -1570,6 +1628,7 @@ export async function runMinute(
     // liveness record: a broken health archive must never mask (or be
     // masked by) any of the writes it is reporting on. The recorder finishes
     // first so its write failures are counted here.
+    await fence('10-health');
     await recorder.finish();
     try {
       await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
@@ -1577,36 +1636,65 @@ export async function runMinute(
       console.error('health archive failed:', err);
     }
     step('10-health');
+  } catch (err) {
+    if (!(err instanceof Fenced)) throw err;
+    fenced = true;
+    console.warn(
+      `tick ${scheduledAt}: the watchdog's alarm took this minute over before stage `
+      + `${err.message}; this run writes nothing more, its tick record included`,
+    );
   } finally {
-    // The tick record lands however the pipeline ended, alpha CAS included.
-    await recorder.finish();
+    // The tick record lands however the pipeline ended, alpha CAS included,
+    // unless the run was fenced: the minute is then the alarm run's.
+    if (!fenced) await recorder.finish();
   }
 }
 
 export { MinuteClock } from './watchdog';
+
+/**
+ * The Cron Trigger's minute: claim it in the watchdog, run it under a lease,
+ * then report it done. A lost claim means the watchdog's alarm already ran
+ * (or is running) this minute, so a late or duplicated cron does nothing. A
+ * claim that errors or times out runs the minute anyway: the claim must never
+ * cost a minute, and every object two runs of one minute share is protected
+ * at the write. The lease is renewed at every write stage and every
+ * `heartbeatMs` (watchdog.ts `CronLease`), so the alarm takes the minute over
+ * only from a cron that stopped renewing; a cron that finds it was taken over
+ * stops writing. The minute is reported done once it has run to its end,
+ * whether it ended in an error or not. Without a watchdog binding the minute
+ * runs with no claim and no lease.
+ */
+export async function runCron(
+  scheduledTime: number,
+  env: Env,
+  ctx: ExecutionContext,
+  heartbeatMs: number = HEARTBEAT_MS,
+): Promise<void> {
+  if (env.MINUTE_CLOCK === undefined) {
+    await runMinute(scheduledTime, env, ctx, 'cron', ALWAYS_HELD);
+    return;
+  }
+  const slot = minuteSlot(scheduledTime);
+  const run = crypto.randomUUID();
+  if (!(await claimForCron(env, slot, run))) return;
+  const lease = new CronLease(env, slot, run, heartbeatMs);
+  lease.start();
+  try {
+    await runMinute(scheduledTime, env, ctx, 'cron', lease);
+  } finally {
+    lease.stop();
+    await reportCronDone(env, slot, run);
+  }
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handlePublicRead(request, env);
   },
 
-  /**
-   * The Cron Trigger: claim the minute in the watchdog, run it, then report it
-   * done. A lost claim means the watchdog's alarm already ran (or is running)
-   * this minute, so a late or duplicated cron does nothing. A claim that
-   * errors or times out runs the minute anyway: a duplicate is harmless, a
-   * lost minute is not. The minute is reported done once it has run to its
-   * end, whether it ended in an error or not; until then the alarm at :45
-   * takes over a cron that died or stuck after claiming.
-   */
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    const slot = minuteSlot(event.scheduledTime);
-    if (!(await claimForCron(env, slot))) return;
-    try {
-      await runMinute(event.scheduledTime, env, ctx, 'cron');
-    } finally {
-      await reportCronDone(env, slot);
-    }
+    await runCron(event.scheduledTime, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
 

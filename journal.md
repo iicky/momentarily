@@ -11488,3 +11488,24 @@ Investigation only: no Worker change. Two findings that are easy to miss:
   0 runs happened in 5 s after the restart. A self-healing alarm loop
   therefore has to re-arm when the alarm is null or stale. A null check
   alone is not enough.
+
+## 2026-11-21 watchdog-lease-and-fencing
+
+origin: agent
+
+The alarm watchdog took over every cron still running at :45: 6.4 % of
+recorded minutes and 26 % of 5-minute ticks. The second run advanced the
+forward filter again on the same observation and could replace a complete
+trace with a late, incomplete one. Easy to miss:
+
+- An ownership check before an R2 write is not a lock: a run can pass it and
+  write after a takeover. Every object two runs of one minute share needs its
+  own protection at the write (create-once, etag CAS, or a key per run).
+  §4.1 lists each object and its protection.
+- The lease is short (60 s, renewed every 10 s and at each write stage)
+  rather than longer than the longest run (237 s). A 5-minute lease would run
+  a dead cron's minute only after the next 5-minute tick, under the dead
+  minute's key, with feeds from later.
+- alpha.json records the tick that wrote it in R2 custom metadata, not in the
+  body, so the published and archived bytes of a normal minute stay as they
+  were (211 of 211 objects identical to `main`).

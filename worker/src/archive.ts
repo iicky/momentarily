@@ -14,14 +14,17 @@
  * same payload like the legacy Python collector did.
  *
  * Object keys are deterministic (alert version / hour bucket, not wall-clock
- * tick time) so an overlapping or retried scheduled run overwrites the same key
- * instead of producing a duplicate object. The date folder still tracks the
- * observation date so the Python loader's date-prefix listing keeps working.
+ * tick time) so an overlapping or retried scheduled run lands on the same key
+ * instead of producing a duplicate object. Alert versions are written
+ * create-once (the first observation of a version is kept); E&E hour buckets
+ * are overwritten. The date folder still tracks the observation date so the
+ * Python loader's date-prefix listing keeps working.
  *
  * E&E is written as a full snapshot per hourly tick (per feed). Volume is low
  * (~3 PUTs/hour × 24 = 72/day) so no dedupe needed yet.
  */
 
+import { createOnce } from './r2';
 import type { LastSeen } from './state';
 import type { ServiceRow } from './trip_updates';
 import type { MovementRow, TraceRow } from './vehicles';
@@ -69,14 +72,17 @@ export async function archiveNewAlerts(
     if (lastSeen.alerts[id] === updatedAt) continue;
 
     // Key on the alert version (updated_at), not the tick wall-clock, so a
-    // retried/overlapping run writes the same object instead of a duplicate.
+    // retried/overlapping run lands on the same object instead of a duplicate.
+    // Create-once: a second run of one minute (or a tick after a lost
+    // last_seen write) keeps the version's first observation.
     const key = `archive/alerts/${datePrefix}/${updatedAt}-${safeKey(id)}.json`;
-    await bucket.put(
+    const created = await createOnce(
+      bucket,
       key,
       JSON.stringify({ observed_at: observedAt, alert: entity }),
-      { httpMetadata: { contentType: 'application/json' } },
+      { contentType: 'application/json' },
     );
-    written += 1;
+    if (created) written += 1;
   }
 
   lastSeen.alerts = seen;
@@ -267,8 +273,8 @@ export async function archiveVehicleMetric(
  * archiveVehicleMetric above, and deliberately kept apart from it: this feeds
  * the per-minute movement trace (vehicles.ts deriveTrace), never the
  * 5-minute advanced_n/stalled_n signal archiveVehicleMetric feeds. Same key/
- * body-shape convention — one object per poll, keyed on the tick wall-clock
- * so an overlapping/retried run overwrites rather than duplicates — but its
+ * body-shape convention — one object per poll, keyed on the tick's scheduled
+ * second so an overlapping/retried run cannot duplicate it — but its
  * own archive/trace/ prefix so this additive stream can never collide with,
  * or be mistaken for, archive/vehicles/. `rows` is a full snapshot from
  * deriveTrace (one row per in-service trip, every poll, not a delta), so
@@ -292,8 +298,13 @@ export async function archiveTraceRows(
   // duplicating every row in it. Downstream that is double-counted arrivals and
   // silently wrong traversal times, in a brand-new archive with no history to
   // cross-check against. The scheduled second is stable across retries, so a
-  // rerun overwrites. observed_at stays in the body: it is the real execution
-  // time, and the per-vehicle feed timestamps on each row are finer still.
+  // rerun lands on the same key. The put is create-once (If-None-Match: *): the
+  // first run's trace is kept, and a second run of the same minute (an alarm
+  // takeover, a late or duplicated cron) cannot replace it, whatever it holds.
+  // A takeover runs its minute later than the cron did, so the first trace is
+  // also the one nearer the minute it is keyed by. observed_at stays in the
+  // body: it is the real execution time, and the per-vehicle feed timestamps
+  // on each row are finer still.
   const key = `archive/trace/${utcDate(scheduledAt)}/${scheduledAt}.json`;
   // feed_digest / feed_etag: this tick's GTFS static feed identity from
   // gtfs_feed.resolveFeedIdentity's HEAD+ETag compare against
@@ -313,11 +324,8 @@ export async function archiveTraceRows(
     feed_etag: feedEtag,
     rows,
   };
-  await bucket.put(
-    key,
-    JSON.stringify(body),
-    { httpMetadata: { contentType: 'application/json' } },
-  );
+  const created = await createOnce(bucket, key, JSON.stringify(body), { contentType: 'application/json' });
+  if (!created) console.warn(`trace: ${key} already archived by another run of this minute; kept`);
 }
 
 /**

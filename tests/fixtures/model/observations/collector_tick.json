@@ -197,6 +197,7 @@
         "entity_count": 184,
         "store_error": null
       }
-    ]
+    ],
+    "trigger": "cron"
   }
 ]

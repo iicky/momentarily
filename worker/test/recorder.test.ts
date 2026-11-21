@@ -272,7 +272,7 @@ async function recordMinute(
   bucket: R2Bucket,
   opts: { startedAtMs?: number; json?: Array<[FeedFetch['source'], string]>; failWrite?: (k: string) => void } = {},
 ): Promise<void> {
-  const recorder = new Recorder(bucket, SCHEDULED_AT, opts.startedAtMs ?? STARTED_AT_MS, opts.failWrite ?? (() => {}));
+  const recorder = new Recorder(bucket, SCHEDULED_AT, opts.startedAtMs ?? STARTED_AT_MS, 'cron', opts.failWrite ?? (() => {}));
   for (const [source, url] of opts.json ?? [['alerts', FEEDS.alerts]]) {
     void recorder.attempt(source, (observe) => fetchJson(url, observe)).catch(() => {});
   }

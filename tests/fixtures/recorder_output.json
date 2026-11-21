@@ -242,7 +242,8 @@
         "entity_count": null,
         "store_error": null
       }
-    ]
+    ],
+    "trigger": "cron"
   },
   "tick_bundle_index": {
     "schema": "observations/s1",

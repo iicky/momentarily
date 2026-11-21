@@ -40,6 +40,8 @@ import type { FetchObserver, JsonParse, RawFetch } from './fetch';
 import { blobKey, bundleKey, tickKey, utcDay } from './observation_keys';
 
 export type SourceId = FeedFetch['source'];
+/** What started the invocation: the Cron Trigger or the watchdog's alarm. */
+export type Trigger = CollectorTick['trigger'];
 
 const SCHEMA = 'observations/s1';
 
@@ -233,12 +235,14 @@ export class Recorder {
    *                     dispatched this invocation (epoch seconds), seconds past
    *                     the minute and not the cron minute itself
    * @param startedAtMs  when the invocation started, before any fetch
+   * @param trigger      what started the invocation (written into the tick)
    * @param failWrite    the tick's write-failure counter (archive/health/)
    */
   constructor(
     private readonly bucket: R2Bucket,
     readonly scheduledAt: number,
     readonly startedAtMs: number,
+    readonly trigger: Trigger,
     private readonly failWrite: (kind: string) => void,
   ) {}
 
@@ -422,6 +426,7 @@ export class Recorder {
       collector: { code_sha: CODE_SHA, code_dirty: CODE_DIRTY },
       planned_sources: [...this.planned],
       fetches: this.recorded.map((r) => r.fetch),
+      trigger: this.trigger,
     };
     const key = tickKey(this.scheduledAt, this.startedAtMs);
     try {

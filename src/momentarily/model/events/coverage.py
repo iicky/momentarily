@@ -89,11 +89,11 @@ from momentarily.model.events.trip_ids import parse_realtime
 from momentarily.model.observations.columns import from_row
 from momentarily.model.observations.contracts import (
     GTFSRT_SOURCES,
-    CollectorTick,
     FeedFetch,
     FeedHeaderObservation,
     GtfsRtSource,
     LegacyFetchOutcome,
+    parse_collector_tick,
 )
 from momentarily.model.observations.derive.bundle import RawObjectError, read_bundle
 from momentarily.model.observations.derive.run import InputProblem
@@ -511,7 +511,7 @@ def _invocations(
         data = None if tick_key is None else inputs.get(tick_key)
         if tick_key is not None and data is not None:
             try:
-                tick = CollectorTick.model_validate_json(data)
+                tick = parse_collector_tick(data)
             except ValidationError as err:
                 inputs.inconsistent(tick_key, f"not a CollectorTick: {err}")
             else:

@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from momentarily.model.conventions import Interval
 from momentarily.model.observations.contracts import (
@@ -34,11 +34,13 @@ from momentarily.model.observations.contracts import (
     EquipmentObservation,
     FeedFetch,
     FeedHeaderObservation,
+    PreTriggerCollectorTick,
     RawLineage,
     TickBundleIndex,
     TripUpdateObservation,
     VehicleObservation,
     alert_content_digest,
+    parse_collector_tick,
 )
 from momentarily.model.observations.decode import DECODER_VERSION
 from momentarily.model.observations.derive import run as derive_run
@@ -197,7 +199,7 @@ def test_overlapping_invocations_of_one_minute_are_both_kept(
     out = derived[1]
     by_minute: dict[int, set[str]] = {}
     for tick_path in RECORDED.rglob("ticks/**/*.json"):
-        tick = CollectorTick.model_validate_json(tick_path.read_bytes())
+        tick = parse_collector_tick(tick_path.read_bytes())
         by_minute.setdefault(tick.scheduled_at // 60, set()).add(tick.tick_id)
     (minute,) = [m for m, ids in by_minute.items() if len(ids) == 2]
     si = [
@@ -343,6 +345,57 @@ def test_a_decode_failure_is_reported_per_fetch_and_the_rest_derives(
     assert main([*args, "--day", DAY, "--hours", "16-16"]) == 1
 
 
+# --- the tick's trigger -------------------------------------------------------
+
+
+def test_a_tick_stored_before_the_trigger_field_reads_as_a_cron_run() -> None:
+    """Every tick of the replay hour predates ``trigger``: it is no
+    ``CollectorTick`` as stored, and reads as one run by the cron."""
+    for path in RECORDED.rglob("ticks/**/*.json"):
+        data = path.read_bytes()
+        assert b'"trigger"' not in data
+        with pytest.raises(ValidationError):
+            CollectorTick.model_validate_json(data)
+        tick = parse_collector_tick(data)
+        assert tick.trigger == "cron"
+        assert tick.model_dump(by_alias=True) == (
+            PreTriggerCollectorTick.model_validate_json(data).model_dump(by_alias=True)
+            | {"trigger": "cron"}
+        )
+
+
+def test_a_tick_missing_more_than_its_trigger_is_still_rejected() -> None:
+    data = json.loads(next(RECORDED.rglob("ticks/**/*.json")).read_bytes())
+    del data["collector"]
+    with pytest.raises(ValidationError) as err:
+        parse_collector_tick(json.dumps(data))
+    assert {e["loc"] for e in err.value.errors()} == {("collector",), ("trigger",)}
+
+
+def test_an_alarm_run_tick_derives_the_records_its_cron_twin_does(
+    tmp_path: Path,
+) -> None:
+    tick, _ = _recorder_store(tmp_path / "cron")
+    _recorder_store(tmp_path / "alarm")
+    assert tick.trigger == "cron"
+    alarm = CollectorTick.model_validate(
+        tick.model_dump(by_alias=True) | {"trigger": "alarm"}
+    )
+    key = TickKey(tick.scheduled_at, tick.started_at_ms).key
+    (tmp_path / "alarm" / key).write_bytes(compact_json(alarm))
+    assert parse_collector_tick((tmp_path / "alarm" / key).read_bytes()) == alarm
+    reports = {
+        run: _derive(tmp_path / f"out-{run}", tmp_path / run, hours=(16, 16))
+        for run in ("cron", "alarm")
+    }
+    assert reports["alarm"].from_tick_record == 1
+    assert reports["alarm"].missing_inputs == reports["alarm"].inconsistent_inputs == []
+    for record in MODELS:
+        assert _records(tmp_path / "out-alarm", record) == _records(
+            tmp_path / "out-cron", record
+        ), record
+
+
 # --- missing inputs and empty days --------------------------------------------
 
 
@@ -351,7 +404,7 @@ def test_missing_and_corrupt_inputs_are_reported_and_the_rest_derives(
 ) -> None:
     store = tmp_path / "store"
     shutil.copytree(RECORDED, store)
-    first_tick = CollectorTick.model_validate_json(
+    first_tick = parse_collector_tick(
         sorted(store.rglob("ticks/**/*.json"))[0].read_bytes()
     )
     (alerts,) = [f for f in first_tick.fetches if f.source == "alerts"]
@@ -682,9 +735,7 @@ def test_at_the_real_cutover_a_fetch_one_second_early_is_dropped(
 ) -> None:
     """A static GTFS HEAD (no layer-2 record, so nothing is read) observed at
     03:59:59 and at 04:00:00 on the cutover day."""
-    tick = CollectorTick.model_validate_json(
-        next(RECORDED.rglob("ticks/**/*.json")).read_bytes()
-    )
+    tick = parse_collector_tick(next(RECORDED.rglob("ticks/**/*.json")).read_bytes())
     (head,) = [f for f in tick.fetches if f.source == "gtfs_static"]
     report = Report(
         utc_day(RECORDER_CUTOVER), (0, 23), DECODER_VERSION, RECORDER_CUTOVER
@@ -974,7 +1025,7 @@ def test_a_listed_key_r2_cannot_return_is_a_missing_input(
     }
     # The alerts blob of the first tick: the run decodes it, so it must read it.
     # (A blob the run never decodes, such as ene_equipments, is never fetched.)
-    first_tick = CollectorTick.model_validate_json(
+    first_tick = parse_collector_tick(
         objects[min(k for k in objects if "/ticks/" in k)]
     )
     (alerts,) = [f for f in first_tick.fetches if f.source == "alerts"]

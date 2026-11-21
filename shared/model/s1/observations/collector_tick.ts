@@ -45,6 +45,10 @@ export interface CollectorTick {
    * f'{scheduled_at}-{started_at_ms}'; retries keep both.
    */
   tick_id: string;
+  /**
+   * What started the run: 'cron' (the Cron Trigger) or 'alarm' (the Durable Object watchdog, for a minute no cron run recorded; its scheduled_at is the minute plus the cron's 19 s dispatch offset).
+   */
+  trigger: 'cron' | 'alarm';
 }
 export interface CollectorBuild {
   /**

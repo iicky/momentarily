@@ -66,6 +66,7 @@ import type {
 } from './state';
 import type { TripLite } from './gtfsrt';
 import type { TrainPosition } from './vehicles';
+import { conditionalPut } from './r2';
 
 // Above this, the geometric dwell estimate is uninformative — a trained
 // self-loop ≈ 1 means the model has no evidence the regime ever ends (typical
@@ -2218,6 +2219,15 @@ export function buildArrivals(
 }
 
 /**
+ * R2 custom metadata on arrivals.json: the `observed_at` of the run that
+ * published it, readable with a `head`. Metadata, so the object's bytes are
+ * the published document alone.
+ */
+const ARRIVALS_OBSERVED_AT_METADATA = 'observed_at';
+/** Publish attempts when a concurrent run's write lands between head and put. */
+const ARRIVALS_PUBLISH_ATTEMPTS = 2;
+
+/**
  * Publish arrivals.json alongside (never gating, never gated on) snapshot.json,
  * on the 1-minute cron. index.ts owns the fail-soft contract and its two
  * failure shapes, identical to publishTrains:
@@ -2229,17 +2239,33 @@ export function buildArrivals(
  *   - SOME feeds decoded (a strict subset): publish normally, flagged partial
  *     via fresh_feeds/expected_feeds — a partial countdown is still useful, as
  *     long as it says which groups are missing.
+ *
+ * An older observation never replaces a newer one: the write is an etag CAS,
+ * skipped when the stored copy's `observed_at` is at or after this one's (a
+ * run that fetched earlier but finished later, such as a cron that stalled
+ * past a takeover). Returns false when skipped. A stored copy without the
+ * stamp (published before it existed) counts as older.
  */
 export async function publishArrivals(
   bucket: R2Bucket,
   arrivals: PublishedArrivals,
-): Promise<void> {
-  await bucket.put(ARRIVALS_KEY, JSON.stringify(arrivals), {
-    httpMetadata: {
-      contentType: "application/json",
-      cacheControl: ARRIVALS_CACHE_CONTROL,
-    },
-  });
+): Promise<boolean> {
+  const body = JSON.stringify(arrivals);
+  for (let attempt = 0; attempt < ARRIVALS_PUBLISH_ATTEMPTS; attempt++) {
+    const stored = await bucket.head(ARRIVALS_KEY);
+    const storedAt = Number(stored?.customMetadata?.[ARRIVALS_OBSERVED_AT_METADATA]);
+    if (Number.isSafeInteger(storedAt) && storedAt >= arrivals.observed_at) return false;
+    const written = await conditionalPut(
+      bucket,
+      ARRIVALS_KEY,
+      body,
+      stored?.etag ?? null,
+      { contentType: "application/json", cacheControl: ARRIVALS_CACHE_CONTROL },
+      { [ARRIVALS_OBSERVED_AT_METADATA]: String(arrivals.observed_at) },
+    );
+    if (written) return true;
+  }
+  return false;
 }
 
 // Re-export for the entrypoint to use, no need to import N_STATES directly.

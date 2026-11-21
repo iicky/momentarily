@@ -32,11 +32,29 @@ function trip(over: Partial<TripLite>): TripLite {
 }
 
 function fakeBucket() {
-  const store = new Map<string, { body: string; httpMetadata?: R2HTTPMetadata }>();
+  const store = new Map<string, { body: string; etag: string; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }>();
+  let seq = 0;
   return {
     bucket: {
-      async put(key: string, body: string, opts?: { httpMetadata?: R2HTTPMetadata }) {
-        store.set(key, { body, ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}) });
+      async head(key: string) {
+        const rec = store.get(key);
+        return rec ? { etag: rec.etag, customMetadata: rec.customMetadata ?? {} } : null;
+      },
+      async put(
+        key: string,
+        body: string,
+        opts?: { httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string>; onlyIf?: R2Conditional | Headers },
+      ) {
+        const existing = store.get(key);
+        const onlyIf = opts?.onlyIf;
+        if (onlyIf instanceof Headers && onlyIf.get('If-None-Match') === '*' && existing) return null;
+        if (onlyIf !== undefined && !(onlyIf instanceof Headers) && onlyIf.etagMatches !== existing?.etag) return null;
+        store.set(key, {
+          body,
+          etag: `etag-${++seq}`,
+          ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}),
+          ...(opts?.customMetadata ? { customMetadata: opts.customMetadata } : {}),
+        });
         return {} as unknown;
       },
     } as unknown as R2Bucket,
@@ -87,6 +105,21 @@ describe('publishArrivals', () => {
     expect(rec!.httpMetadata?.contentType).toBe('application/json');
     // Deliberately shorter than snapshot.json/trains.json (max-age=60,s-maxage=300).
     expect(rec!.httpMetadata?.cacheControl).toBe('public, max-age=30, s-maxage=30');
+  });
+
+  test('an older observation never replaces a newer one', async () => {
+    // A run that fetched earlier but writes later (a cron that stalled past a
+    // takeover) must leave the newer countdown in place.
+    const { bucket, store } = fakeBucket();
+    const newer = buildArrivals(NOW + 26, SAMPLE_TRIPS, ['nqrw'], ['nqrw']);
+    const older = buildArrivals(NOW, SAMPLE_TRIPS, [], ['nqrw']);
+    expect(await publishArrivals(bucket, newer)).toBe(true);
+    expect(await publishArrivals(bucket, older)).toBe(false);
+    expect(JSON.parse(store.get('v1/arrivals.json')!.body)).toEqual(newer);
+    // A later observation still publishes.
+    const later = buildArrivals(NOW + 60, SAMPLE_TRIPS, ['nqrw'], ['nqrw']);
+    expect(await publishArrivals(bucket, later)).toBe(true);
+    expect(JSON.parse(store.get('v1/arrivals.json')!.body)).toEqual(later);
   });
 });
 

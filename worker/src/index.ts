@@ -192,6 +192,8 @@ const PUBLIC_PREFIX = 'v1/';
 // Mirrors collector.py's ENE_POLL_INTERVAL (env ENE_POLL_INTERVAL_SECONDS): the upstream ENE feed refreshes ~hourly, so archive and poll share that cadence.
 const ENE_INTERVAL_SECONDS = 3600;
 const STATIONS_INTERVAL_SECONDS = 86_400;
+/** station_wait.json fold attempts when a concurrent run's write wins the CAS. */
+const STATION_WAIT_WRITE_ATTEMPTS = 3;
 
 async function handlePublicRead(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -442,13 +444,32 @@ export async function runMinute(
     // though it were current. Leaving the prior doc untouched lets the gate
     // age the surface out on its own. Zero rows means a total vehicle-feed
     // outage or a throw above, never a real empty system.
+    //
+    // An older observation is never folded after a newer one: a run whose
+    // stored doc is already at or past this run's observedAt (a cron that
+    // stalled while a later run wrote) keeps the stored doc, and the write is
+    // an etag CAS that refolds on a lost race.
     await fence('0-state');
     let stationWaitDoc: StationWaitDoc | null = null;
     if (rows.length > 0) {
       try {
-        const prevStationWait = await readStationWait(env.MOMENTARILY);
-        stationWaitDoc = updateStationWait(rows, prevStationWait, observedAt);
-        await writeStationWait(env.MOMENTARILY, stationWaitDoc);
+        for (let attempt = 0; attempt < STATION_WAIT_WRITE_ATTEMPTS; attempt++) {
+          const read = await readStationWait(env.MOMENTARILY);
+          stationWaitDoc = read.state;
+          if (read.state !== null && read.state.observed_at >= observedAt) {
+            console.warn(
+              `station wait: a newer observation (${read.state.observed_at}) is stored; `
+              + `this run's (${observedAt}) is not folded`,
+            );
+            break;
+          }
+          const next = updateStationWait(rows, read.state, observedAt);
+          if (await writeStationWait(env.MOMENTARILY, next, read.etag)) {
+            stationWaitDoc = next;
+            break;
+          }
+          console.warn(`station wait: write lost to a concurrent run (attempt ${attempt + 1}); re-reading`);
+        }
       } catch (err) {
         console.error('station wait update failed; publishing without platform crowding:', err);
       }
@@ -460,7 +481,7 @@ export async function runMinute(
       // grow. Same posture as stationFlow: degrade honestly, don't vanish.
       console.log('trace produced no rows; station wait carried forward untouched');
       try {
-        stationWaitDoc = await readStationWait(env.MOMENTARILY);
+        stationWaitDoc = (await readStationWait(env.MOMENTARILY)).state;
       } catch (err) {
         console.error('station wait read failed; publishing without platform crowding:', err);
       }
@@ -589,10 +610,13 @@ export async function runMinute(
       const arrivalsRecord = buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES);
 
       try {
-        await publishArrivals(
+        const published = await publishArrivals(
           env.MOMENTARILY,
           arrivalsRecord,
         );
+        if (!published) {
+          console.warn('arrivals: v1/arrivals.json already holds a newer or concurrent observation; left as it is');
+        }
       } catch (err) {
         console.error(
           'arrivals publish failed; leaving v1/arrivals.json unrewritten this tick:',
@@ -653,12 +677,14 @@ export async function runMinute(
     // the next minute's diff. The cadence gate (segmentCadenceOk) skips judging
     // entirely until the trainer republishes segment_params.json fitted at this
     // cadence: `lam` and `p0` are both per-tick, so an old 5-minute fit read
-    // here would call every cell a collapse. Writes are plain puts, same posture
-    // as station_wait — a lost race drops one minute's update, and the next
-    // minute re-decays from the slightly older base. A minute the accumulator
-    // already holds (another run of this minute, an alarm takeover or a late
-    // cron, folded it first) is not folded again: a second fold would decay the
-    // sums twice and add the minute's expected traversals twice.
+    // here would call every cell a collapse. A minute the accumulator already
+    // holds (another run of this minute, an alarm takeover or a late cron,
+    // folded it first) is not folded again: a second fold would decay the sums
+    // twice and add the minute's expected traversals twice. The fold is an
+    // etag CAS on the accumulator read here, so two overlapping runs that both
+    // read it before either wrote cannot both fold either: the run that loses
+    // skips its station_flow and transitions writes, as a losing alpha run
+    // skips its outputs.
     await fence('0c-segments');
     try {
       const segParams = await readSegmentParams(env.MOMENTARILY);
@@ -672,8 +698,9 @@ export async function runMinute(
       const segmentTick =
         Math.floor(scheduledAt / SEGMENT_CADENCE_SECONDS) * SEGMENT_CADENCE_SECONDS;
       if (segParams && vehicleFreshFeeds.length > 0) {
-        const prevFlow = segmentCadenceOk(segParams) ? await readSegmentFlow(env.MOMENTARILY) : null;
-        if (!segmentCadenceOk(segParams)) {
+        const flowRead = segmentCadenceOk(segParams) ? await readSegmentFlow(env.MOMENTARILY) : null;
+        const prevFlow = flowRead?.state ?? null;
+        if (flowRead === null) {
           console.log(
             `segment judging skipped: params cadence `
             + `${segParams.cadence_seconds ?? 'legacy-300'}s != ${SEGMENT_CADENCE_SECONDS}s `
@@ -731,17 +758,23 @@ export async function runMinute(
             segmentTick,
           );
           flow.regimes = pruneSegmentRegimes(entries, segParams.cells);
-          await writeSegmentFlow(env.MOMENTARILY, flow);
-          await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
-          try {
-            await writeMovementTransitions(
-              env.MOMENTARILY,
-              segmentTick,
-              movementTransitions(changes, 'segment', segmentTick),
+          if (!(await writeSegmentFlow(env.MOMENTARILY, flow, flowRead.etag))) {
+            console.warn(
+              'segment judging: segment_flow was written by an overlapping run since it was read; '
+              + `this run's fold of minute ${segmentTick} is dropped`,
             );
-          } catch (err) {
-            console.error('segment movement transitions write failed:', err);
-            failWrite('segment_movement_transitions_write');
+          } else {
+            await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
+            try {
+              await writeMovementTransitions(
+                env.MOMENTARILY,
+                segmentTick,
+                movementTransitions(changes, 'segment', segmentTick),
+              );
+            } catch (err) {
+              console.error('segment movement transitions write failed:', err);
+              failWrite('segment_movement_transitions_write');
+            }
           }
         }
       }
@@ -1128,7 +1161,7 @@ export async function runMinute(
       let scheduledHeadway: ScheduledHeadwayDoc | null = null;
       try {
         [segmentFlow, segmentParams, scheduledHeadway] = await Promise.all([
-          readSegmentFlow(env.MOMENTARILY),
+          readSegmentFlow(env.MOMENTARILY).then((read) => read.state),
           readSegmentParams(env.MOMENTARILY),
           readScheduledHeadway(env.MOMENTARILY),
         ]);

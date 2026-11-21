@@ -153,6 +153,7 @@ interface StoredClaim {
   done: boolean;
   run?: string;
   leaseUntil?: number;
+  missed?: string;
 }
 
 interface ClockState {
@@ -161,18 +162,30 @@ interface ClockState {
   claims: Record<string, StoredClaim>;
 }
 
-/** Who holds each claimed slot, and whether its run ended, oldest first. */
-async function claims(m: Miniflare): Promise<{ trigger: string; done: boolean }[]> {
+/** A claim as the tests compare it: `missed` is undefined unless marked. */
+interface ClaimView {
+  trigger: string;
+  done: boolean;
+  missed?: string | undefined;
+}
+
+const view = (held: StoredClaim): ClaimView => ({ trigger: held.trigger, done: held.done, missed: held.missed });
+
+/** Who holds each claimed slot, whether its run ended, and why it was missed, oldest first. */
+async function claims(m: Miniflare): Promise<ClaimView[]> {
   const state = await harness<ClockState>(m, 'state');
   return Object.keys(state.claims)
     .sort()
-    .map((key) => ({ trigger: state.claims[key]!.trigger, done: state.claims[key]!.done }));
+    .map((key) => view(state.claims[key]!));
 }
 
-async function claimOf(m: Miniflare, slot: number): Promise<{ trigger: string; done: boolean } | undefined> {
+async function claimOf(m: Miniflare, slot: number): Promise<ClaimView | undefined> {
   const held = (await harness<ClockState>(m, 'state')).claims[`slot:${String(slot).padStart(12, '0')}`];
-  return held === undefined ? undefined : { trigger: held.trigger, done: held.done };
+  return held === undefined ? undefined : view(held);
 }
+
+const MISSED_NO_CLAIM: ClaimView = { trigger: 'alarm', done: true, missed: 'no_claim' };
+const MISSED_LEASE_EXPIRED: ClaimView = { trigger: 'alarm', done: true, missed: 'lease_expired' };
 
 /**
  * A 5-minute boundary slot 6-10 minutes ahead of the real clock, so the whole
@@ -304,7 +317,7 @@ describe('watchdog: one run per minute', () => {
     expect(await triggers(m, slot)).toEqual(['alarm']);
   }, 30_000);
 
-  test('a cron that claims and dies before storing anything: its lease runs out and the next deadline runs the minute once', async () => {
+  test('a cron that claims and dies before storing anything: its lease runs out and the next wake marks the minute missed, never running it', async () => {
     const m = start();
     const slot = boundarySlot();
     await clockAt(m, slot, CRON_OFFSET_MS + 2_000);
@@ -314,18 +327,20 @@ describe('watchdog: one run per minute', () => {
     await harness(m, 'alarm');
     expect(await triggers(m, slot)).toEqual([]);
     expect(await claimOf(m, slot)).toEqual({ trigger: 'cron', done: false });
-    // At the next deadline it has expired: taken over 84 s after the death.
+    // At the next deadline it has expired: the minute is past, so it is
+    // marked missed (which fences the dead run), not run with the present feeds.
     await clockAt(m, slot + 1, DEADLINE_MS + 5);
     await harness(m, 'alarm');
     await harness(m, 'alarm');
-    expect(await triggers(m, slot)).toEqual(['alarm']);
-    expect(await claimOf(m, slot)).toEqual({ trigger: 'alarm', done: true });
-    // That wake also ran its own minute, which nobody claimed.
+    expect(await triggers(m, slot)).toEqual([]);
+    expect(await claimOf(m, slot)).toEqual(MISSED_LEASE_EXPIRED);
+    expect(await keys(m, 'v1/snapshot.json')).toEqual([]);
+    // That wake ran its own minute, which nobody claimed.
     expect(await triggers(m, slot + 1)).toEqual(['alarm']);
   }, 30_000);
 });
 
-describe('watchdog: a slow cron is never taken over; a stopped one is, and is fenced', () => {
+describe('watchdog: a slow cron is never taken over; a stopped one is fenced', () => {
   /**
    * Move the object's clock from :21 of `slot` to `seconds` later, 20 s of
    * object time per step plus every :45 deadline on the way, giving the
@@ -379,7 +394,7 @@ describe('watchdog: a slow cron is never taken over; a stopped one is, and is fe
     60_000,
   );
 
-  test('a cron that stops renewing after storing its raw feeds: taken over once at the next deadline; when it returns it writes nothing', async () => {
+  test('a cron that stops renewing after storing its raw feeds: its minute is marked missed at the next deadline, not run again; when it returns it writes nothing', async () => {
     const m = start();
     const slot = boundarySlot();
     await harness(m, 'heartbeat?ms=50');
@@ -399,21 +414,22 @@ describe('watchdog: a slow cron is never taken over; a stopped one is, and is fe
     await clockAt(m, slot + 1, DEADLINE_MS + 5);
     await harness(m, 'alarm');
     await harness(m, 'alarm');
-    expect(await triggers(m, slot)).toEqual(['alarm']);
-    expect(await claimOf(m, slot)).toEqual({ trigger: 'alarm', done: true });
-    expect(await keys(m, 'v1/snapshot.json')).toEqual(['v1/snapshot.json']);
-    expect(await keys(m, `${OBSERVATIONS_PREFIX}raw/gtfsrt/`)).toHaveLength(3); // cron, alarm (slot), alarm (slot + 1)
+    expect(await triggers(m, slot)).toEqual([]);
+    expect(await claimOf(m, slot)).toEqual(MISSED_LEASE_EXPIRED);
+    expect(await keys(m, 'v1/snapshot.json')).toEqual([]);
+    expect(await triggers(m, slot + 1)).toEqual(['alarm']);
+    expect(await keys(m, `${OBSERVATIONS_PREFIX}raw/gtfsrt/`)).toHaveLength(2); // cron (slot), alarm (slot + 1)
 
     const before = await bucketState(m);
     await harness(m, 'fail?mode=none'); // its next renewal reaches the object: fenced
     held.release();
     await stalled;
     expect(await writtenSince(m, before)).toEqual([]);
-    expect(await triggers(m, slot)).toEqual(['alarm']);
-    expect(await claimOf(m, slot)).toEqual({ trigger: 'alarm', done: true });
+    expect(await triggers(m, slot)).toEqual([]);
+    expect(await claimOf(m, slot)).toEqual(MISSED_LEASE_EXPIRED);
   }, 60_000);
 
-  test('a cron that stops renewing after committing alpha, during publish: the takeover does not advance alpha again; the cron, back, writes nothing', async () => {
+  test('a cron that stops renewing after committing alpha, during publish: the next wake does not advance alpha for its minute; the cron, back, writes nothing', async () => {
     const m = start();
     const slot = boundarySlot();
     await harness(m, 'heartbeat?ms=50');
@@ -430,7 +446,8 @@ describe('watchdog: a slow cron is never taken over; a stopped one is, and is fe
 
     await clockAt(m, slot + 1, DEADLINE_MS + 5);
     await harness(m, 'alarm');
-    expect(await triggers(m, slot)).toEqual(['alarm']);
+    expect(await claimOf(m, slot)).toEqual(MISSED_LEASE_EXPIRED);
+    expect(await triggers(m, slot)).toEqual([]);
     expect((await r2.head('state/alpha.json'))!.etag).toBe(alpha);
     expect((await r2.head('v1/snapshot.json'))!.etag).toBe(snapshot);
     expect(await text(m, traceKey(slot))).toBe(trace);
@@ -443,10 +460,10 @@ describe('watchdog: a slow cron is never taken over; a stopped one is, and is fe
     expect(await keys(m, 'state/stations.json')).toEqual([]);
   }, 60_000);
 
-  test('the fence is not trusted alone: a cron whose ownership check passed after the takeover cannot replace the minute\'s trace, alpha or snapshot', async () => {
+  test('the fence is not trusted alone: a cron whose ownership check passes after its minute was marked missed cannot replace a newer run\'s alpha, snapshot, arrivals or platform waits', async () => {
     // The 'renew-lie' fault answers every renewal "held" without extending
-    // the lease: the old run believes it owns the minute after the alarm took
-    // it over, as a run does whose check passed just before the takeover.
+    // the lease: the old run believes it owns its minute after the alarm
+    // marked it missed, as a run does whose check passed just before the mark.
     const m = start();
     const slot = boundarySlot();
     await harness(m, 'heartbeat?ms=50');
@@ -456,26 +473,58 @@ describe('watchdog: a slow cron is never taken over; a stopped one is, and is fe
     const held = holdFirst(firstFeed);
     const late = cronInBackground(m, slot);
     await held.entered;
+    await clockAt(m, slot, DEADLINE_MS + 5);
+    await harness(m, 'alarm'); // its lease still holds
 
-    await clockAt(m, slot + 1, DEADLINE_MS + 5);
+    // Five minutes on, the next 5-minute tick's wake marks the cron's minute
+    // missed and runs its own, fetched after the cron's.
+    await clockAt(m, slot + 5, DEADLINE_MS + 5);
     await harness(m, 'alarm');
-    expect(await triggers(m, slot)).toEqual(['alarm']);
+    expect(await claimOf(m, slot)).toEqual(MISSED_LEASE_EXPIRED);
+    expect(await triggers(m, slot + 5)).toEqual(['alarm']);
     const r2 = await m.getR2Bucket('MOMENTARILY');
-    const trace = (await text(m, traceKey(slot)))!;
     const alpha = (await r2.head('state/alpha.json'))!;
-    const snapshot = (await r2.head('v1/snapshot.json'))!.etag;
-    const lastSeen = (await r2.head('state/last_seen.json'))!.etag;
-    expect(JSON.parse(trace).fresh_feeds).toHaveLength(TRIP_UPDATE_FEEDS.length);
+    expect(alpha.customMetadata).toEqual({ tick: String((slot + 5) * 60 + 19) });
+    const guarded = ['v1/snapshot.json', 'state/last_seen.json', 'v1/arrivals.json', 'state/station_wait.json'];
+    const etags = new Map<string, string>();
+    for (const key of guarded) etags.set(key, (await r2.head(key))!.etag);
 
     // The late cron gets a failed feed and runs its whole minute.
     held.release(new Response('late upstream failure', { status: 503 }));
     await late;
-    expect(await triggers(m, slot)).toEqual(['alarm', 'cron']);
-    expect(await text(m, traceKey(slot))).toBe(trace);
+    expect(await triggers(m, slot)).toEqual(['cron']);
     expect((await r2.head('state/alpha.json'))!.etag).toBe(alpha.etag);
-    expect((await r2.head('state/alpha.json'))!.customMetadata).toEqual(alpha.customMetadata);
-    expect((await r2.head('v1/snapshot.json'))!.etag).toBe(snapshot);
-    expect((await r2.head('state/last_seen.json'))!.etag).toBe(lastSeen);
+    for (const key of guarded) expect((await r2.head(key))!.etag, key).toBe(etags.get(key));
+    expect(JSON.parse((await text(m, 'v1/arrivals.json'))!).fresh_feeds).toHaveLength(TRIP_UPDATE_FEEDS.length);
+  }, 60_000);
+
+  test('a cron taken over after its renewals failed for 60 s: when it finishes, its older observation does not replace the alarm\'s arrivals or platform waits', async () => {
+    // A late wake (the alarm fires 45 s after the minute's deadline) finds
+    // the current minute's cron lease expired and runs the minute itself.
+    const m = start();
+    const slot = boundarySlot();
+    await harness(m, 'heartbeat?ms=50');
+    await clockAt(m, slot, CRON_OFFSET_MS + 2_000);
+    const held = holdFirst(TRIP_UPDATE_FEEDS[0]![1]);
+    const late = cronInBackground(m, slot);
+    await held.entered;
+    await harness(m, 'fail?mode=renew-500');
+    await clockAt(m, slot + 1, 30_000);
+    await sleep(300);
+    await harness(m, 'alarm');
+    expect(await triggers(m, slot)).toEqual(['alarm']);
+    const r2 = await m.getR2Bucket('MOMENTARILY');
+    const guarded = ['v1/arrivals.json', 'state/station_wait.json', 'state/alpha.json'];
+    const etags = new Map<string, string>();
+    for (const key of guarded) etags.set(key, (await r2.head(key))!.etag);
+
+    // Its renewals still fail, so it runs on to the end, one feed short.
+    held.release(new Response('late upstream failure', { status: 503 }));
+    await late;
+    await harness(m, 'fail?mode=none');
+    expect(await triggers(m, slot)).toEqual(['alarm', 'cron']);
+    for (const key of guarded) expect((await r2.head(key))!.etag, key).toBe(etags.get(key));
+    expect(JSON.parse((await text(m, 'v1/arrivals.json'))!).fresh_feeds).toHaveLength(TRIP_UPDATE_FEEDS.length);
   }, 60_000);
 });
 
@@ -551,7 +600,7 @@ describe('watchdog: the alarm loop', () => {
     void first;
   }, 30_000);
 
-  test('a minute whose deadline passed while the alarm was running another is run by the next wake', async () => {
+  test('a minute whose deadline passed while the alarm was running another is marked missed by the next wake, which runs only its own', async () => {
     const m = start();
     const slot = boundarySlot();
     await clockAt(m, slot, DEADLINE_MS + 5);
@@ -565,14 +614,15 @@ describe('watchdog: the alarm loop', () => {
     held.release();
     await long;
     expect(await triggers(m, slot)).toEqual(['alarm']);
-    // The runtime fires the next alarm at once: its wake runs both.
+    // The runtime fires the next alarm at once. The feeds now show the
+    // present, so `slot + 1` cannot be recorded any more: it is marked missed.
     await harness(m, 'alarm');
-    expect(await triggers(m, slot + 1)).toEqual(['alarm']);
+    expect(await triggers(m, slot + 1)).toEqual([]);
+    expect(await claimOf(m, slot + 1)).toEqual(MISSED_NO_CLAIM);
     expect(await triggers(m, slot + 2)).toEqual(['alarm']);
   }, 30_000);
 
-  test('a minute whose deadline passed while no alarm ran (the object unreachable) is not run late', async () => {
-    // A cron whose claim failed open may have run it, unrecorded.
+  test('minutes whose deadlines passed while no alarm ran (the object unreachable) are marked missed, not run late; a late cron for one does nothing', async () => {
     const m = start();
     const slot = boundarySlot();
     await clockAt(m, slot, DEADLINE_MS + 5);
@@ -582,6 +632,89 @@ describe('watchdog: the alarm loop', () => {
     expect(await triggers(m, slot + 1)).toEqual([]);
     expect(await triggers(m, slot + 2)).toEqual([]);
     expect(await triggers(m, slot + 3)).toEqual(['alarm']);
+    expect(await claims(m)).toEqual([
+      { trigger: 'alarm', done: true },
+      MISSED_NO_CLAIM,
+      MISSED_NO_CLAIM,
+      { trigger: 'alarm', done: true },
+    ]);
+    await cron(m, slot + 1);
+    expect(await triggers(m, slot + 1)).toEqual([]);
+  }, 30_000);
+});
+
+describe('watchdog: a wake runs the current minute only, never a past one', () => {
+  /**
+   * Run the alarm of `slot` and hold it on the alerts feed while the object's
+   * clock moves to :50 of `until` (no cron runs meanwhile), then release it.
+   * The runtime fires the next alarm at once; the caller fires it. The hold
+   * lasts over a second of real time, so the next wake's run observes in a
+   * later second than this one's, as it would minutes later in production.
+   */
+  async function longRun(m: Miniflare, slot: number, until: number): Promise<void> {
+    await clockAt(m, slot, DEADLINE_MS + 5);
+    const held = holdFirst(FEEDS.alerts);
+    const long = m.dispatchFetch('http://worker/harness/alarm');
+    await held.entered;
+    await clockAt(m, until, DEADLINE_MS + 5);
+    await sleep(1_100);
+    held.release();
+    await long;
+    expect(await triggers(m, slot)).toEqual(['alarm']);
+  }
+
+  test('a wake after a 6-minute outage runs one minute, the current one, and marks the other 5 missed: one of each per-run record, no alpha commit', async () => {
+    const m = start();
+    const slot = boundarySlot();
+    await longRun(m, slot, slot + 6);
+    const r2 = await m.getR2Bucket('MOMENTARILY');
+    const alpha = (await r2.head('state/alpha.json'))!.etag;
+    const before = await bucketState(m);
+
+    await harness(m, 'alarm');
+    for (let s = slot + 1; s <= slot + 5; s += 1) {
+      expect(await triggers(m, s), `minute +${s - slot}`).toEqual([]);
+      expect(await claimOf(m, s), `minute +${s - slot}`).toEqual(MISSED_NO_CLAIM);
+    }
+    expect(await triggers(m, slot + 6)).toEqual(['alarm']);
+    const written = await writtenSince(m, before);
+    for (const prefix of [`${OBSERVATIONS_PREFIX}ticks/`, `${OBSERVATIONS_PREFIX}raw/gtfsrt/`, 'archive/arrivals/', 'archive/health/']) {
+      expect(written.filter((k) => k.startsWith(prefix)), prefix).toHaveLength(1);
+    }
+    // `slot + 5` was a 5-minute boundary, now past: its pipeline never ran.
+    expect((await r2.head('state/alpha.json'))!.etag).toBe(alpha);
+    const fiveMinute = ['archive/movement_census/', 'archive/vehicles/', 'archive/trip_updates/', 'v1/predictions/', 'v1/snapshot.json'];
+    expect(written.filter((k) => fiveMinute.some((p) => k.startsWith(p)))).toEqual([]);
+  }, 30_000);
+
+  test('a wake spanning two 5-minute boundaries applies the pipeline once, for the current boundary; each census diffs over the real interval between applied ticks', async () => {
+    const m = start();
+    const slot = boundarySlot();
+    await longRun(m, slot, slot + 10);
+    const r2 = await m.getR2Bucket('MOMENTARILY');
+    const before = await bucketState(m);
+
+    await harness(m, 'alarm');
+    expect(await triggers(m, slot + 5)).toEqual([]);
+    expect(await claimOf(m, slot + 5)).toEqual(MISSED_NO_CLAIM);
+    const [tick, ...rest] = await ticks(m, slot + 10);
+    expect(rest).toEqual([]);
+    expect(tick!.trigger).toBe('alarm');
+    // One alpha advance in the wake, for the current boundary only.
+    expect((await r2.head('state/alpha.json'))!.customMetadata).toEqual({ tick: String((slot + 10) * 60 + 19) });
+    const written = await writtenSince(m, before);
+    for (const prefix of ['archive/movement_census/', 'archive/vehicles/', 'archive/trip_updates/', 'v1/predictions/']) {
+      expect(written.filter((k) => k.startsWith(prefix)), prefix).toHaveLength(1);
+    }
+    // One census per applied tick, each stamped with its own run's
+    // observation: the second diffs against the first over the real time
+    // between the two runs, never over a replay a second later.
+    const [first] = await ticks(m, slot);
+    const census: number[] = [];
+    for (const key of await keys(m, 'archive/movement_census/')) {
+      census.push(JSON.parse((await text(m, key))!).observed_at);
+    }
+    expect(census.sort((a, b) => a - b)).toEqual([first!, tick!].map((t) => Math.floor(t.started_at_ms / 1000)));
   }, 30_000);
 });
 
@@ -617,7 +750,7 @@ describe('watchdog: the cron fails open', () => {
   }, 30_000);
 });
 
-describe.runIf(process.env.MEASURE_WAKE_CPU === '1')('watchdog: idle wake cost', () => {
+describe.runIf(process.env.MEASURE_WAKE_CPU === '1')('watchdog: wake cost', () => {
   /** CPU seconds of each workerd process, by pid. */
   function workerdCpu(): Map<string, number> {
     const out = new Map<string, number>();
@@ -656,5 +789,24 @@ describe.runIf(process.env.MEASURE_WAKE_CPU === '1')('watchdog: idle wake cost',
     };
     console.log('idle wake cost', result);
     expect(await triggers(m, slot)).toEqual(['cron']);
+  }, 300_000);
+
+  test('CPU per wake that runs a whole 5-minute minute (no cron)', async () => {
+    const before = new Set(workerdCpu().keys());
+    const m = start();
+    const slot = boundarySlot();
+    await clockAt(m, slot, DEADLINE_MS + 5);
+    await harness(m, 'alarm'); // warm-up, and the first wake's one-time setup
+    const pids = [...workerdCpu().keys()].filter((p) => !before.has(p));
+    const cpu = () => pids.reduce((acc, p) => acc + (workerdCpu().get(p) ?? 0), 0);
+    const n = 30;
+    const c0 = cpu();
+    for (let i = 1; i <= n; i += 1) {
+      await clockAt(m, slot + 5 * i, DEADLINE_MS + 5);
+      await harness(m, 'alarm');
+    }
+    const wakes = cpu() - c0;
+    console.log('full-minute wake cost', { wakes: n, cpu_s: wakes, cpu_ms_per_wake: (wakes * 1000) / n });
+    expect(await triggers(m, slot + 5 * n)).toEqual(['alarm']);
   }, 300_000);
 });

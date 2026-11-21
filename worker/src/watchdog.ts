@@ -23,23 +23,30 @@
  *     end (`reportCronDone`). A renewal that finds the slot held by another
  *     run answers "fenced", and the cron stops writing for that minute;
  *   - at :45 the alarm re-arms itself for the next minute before anything
- *     else, then looks at the last `BACKLOG_SLOTS` + 1 slots, oldest first. It
- *     takes a slot that nobody claimed (the slot whose deadline just passed,
- *     or one whose deadline passed while the previous alarm was still running
- *     a minute), or a cron claim that was never marked done and whose lease
- *     has expired (a cron that died or stopped renewing). A live cron, however
- *     slow, keeps renewing and is never taken over. A takeover replaces the
- *     run id, which fences the old run. The alarm runs the whole minute
- *     (`runMinute`, the cron's own body) with `scheduledTime` = slot + 19 s,
- *     the cron's dispatch offset, so the tick's `scheduled_at`, the 5-minute
- *     gate and coverage's slot grid read as for a cron run. It never takes
- *     over an alarm claim and catches every error, so Cloudflare's alarm
- *     retries never run a minute twice.
+ *     else. It then marks missed every earlier slot of the last
+ *     `BACKLOG_SLOTS` that nobody ran and nobody is still running: a slot
+ *     nobody claimed whose deadline passed after the last wake's, or a cron
+ *     claim never marked done whose lease has expired (a cron that died or
+ *     stopped renewing). It never runs them.
+ *     The feeds only show the present, so a run for a past minute would
+ *     record the present under that minute's key, and two such runs in one
+ *     wake would overwrite each other's per-second archives and advance the
+ *     filter twice on one observation. A missed mark replaces the run id,
+ *     which fences a stopped cron. Last, it runs the current slot (the one
+ *     whose deadline just passed), at most once: if nobody claimed it, or if
+ *     its cron claim was never marked done and its lease has expired. A live
+ *     cron, however slow, keeps renewing and is never taken over. The alarm
+ *     runs the whole minute (`runMinute`, the cron's own body) with
+ *     `scheduledTime` = slot + 19 s, the cron's dispatch offset, so the
+ *     tick's `scheduled_at`, the 5-minute gate and coverage's slot grid read
+ *     as for a cron run. It never takes over an alarm claim and catches every
+ *     error, so Cloudflare's alarm retries never run a minute twice.
  *
  * The fence is a check, not a lock: a write already past its check can still
- * land after a takeover. Every object two runs of one minute can both write is
- * therefore also protected at the write itself (a conditional put, or a key
- * per run); §4.1 lists them.
+ * land after a takeover or a missed mark. Every object two overlapping runs
+ * can both write is therefore also protected at the write itself (a
+ * conditional put, a key per run, or a newer-observation guard); §4.1 lists
+ * them.
  *
  * Each claim, renewal and done mark is a `get` then a `put` with no other I/O
  * between them; the input gate makes the pair atomic against every other
@@ -80,16 +87,16 @@ export const HEARTBEAT_MS = 10_000;
  */
 export const LEASE_MS = 60_000;
 /**
- * How many slots before the current one the alarm still looks at. Five
- * minutes is longer than the longest recorded run (237 s), so a cron that dies
- * late in a long run, or a minute missed while an alarm run was still going,
- * is still inside the window when the alarm next looks.
+ * How many slots before the current one the alarm marks missed when nobody
+ * ran them. Five minutes is longer than the longest recorded run (237 s), so
+ * a cron that dies late in a long run, or a minute that passed while an alarm
+ * run was still going, is still inside the window when the alarm next looks.
  */
 export const BACKLOG_SLOTS = 5;
 /** Claims kept, in minutes: one day, also a per-minute log of who ran it. */
 const KEEP_MINUTES = 24 * 60;
-/** Storage key of the slots whose deadline passed during the last alarm run. */
-const MISSED_KEY = 'missed';
+/** Storage key of the current slot of the last alarm wake. */
+const LAST_WAKE_KEY = 'last_wake';
 /** A run id: what `crypto.randomUUID` returns, or a short test name. */
 const RUN_ID = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -108,23 +115,34 @@ export function nextDeadline(now: number): number {
   return (alarmSlot(now) + 1) * MINUTE_MS + DEADLINE_MS;
 }
 
+/**
+ * Why the alarm marked a slot missed:
+ *   - `no_claim`: nobody claimed it before a later deadline (the cron did not
+ *     run, and the alarm was busy running another minute or did not fire). A
+ *     cron whose claim failed open may still have run it; its tick record
+ *     then shows it, and its done mark replaces this one;
+ *   - `lease_expired`: a cron claimed it and stopped renewing. Its run is
+ *     fenced: it writes nothing more for the minute.
+ */
+export type MissedReason = 'no_claim' | 'lease_expired';
+
 /** One slot's claim: who holds it, whether its run has ended, and its lease. */
 export interface Claim {
   trigger: Trigger;
   done: boolean;
-  /** The run holding the slot. Absent on a claim stored before leases. */
+  /** The run holding the slot. Absent on a missed mark and on a claim stored before leases. */
   run?: string;
   /**
    * Epoch ms until which a cron claim is held. Absent on an alarm claim
    * (never taken over) and on a claim stored before leases (expired).
    */
   leaseUntil?: number;
-}
-
-/** The slots whose deadline passed while an alarm run was still going. */
-interface Missed {
-  from: number;
-  to: number;
+  /**
+   * Set when the alarm recorded the slot as missed instead of running it
+   * (stored as `trigger: 'alarm'`, `done: true`, no run): the recorder wrote
+   * nothing for the minute and coverage reads it as `no_invocation`.
+   */
+  missed?: MissedReason;
 }
 
 export function slotKey(slot: number): string {
@@ -173,42 +191,42 @@ export class MinuteClock implements DurableObject {
       console.error('watchdog: re-arm failed; the next cron claim re-arms:', err);
     }
     const current = alarmSlot(now);
-    let missed: Missed | undefined;
+    let lastWake: number | undefined;
     try {
-      missed = await this.state.storage.get<Missed>(MISSED_KEY);
+      lastWake = await this.state.storage.get<number>(LAST_WAKE_KEY);
+      if (lastWake === undefined || current > lastWake) await this.state.storage.put(LAST_WAKE_KEY, current);
     } catch (err) {
-      console.error('watchdog: read of missed slots failed:', err);
+      console.error('watchdog: read or write of the last wake failed:', err);
     }
-    // Oldest first, so a minute never runs after a later one it skipped.
-    for (let slot = current - BACKLOG_SLOTS; slot <= current; slot += 1) {
-      // An unclaimed slot is run only when its deadline is this wake's, or
-      // passed while the previous wake was busy running a minute. Not one
-      // that passed while the object was unreachable: a cron whose claim
-      // failed open may have run it, unrecorded.
-      const due = slot === current || (missed !== undefined && slot >= missed.from && slot <= missed.to);
-      let run: string | null = null;
+    // Earlier slots are marked, never run, and before the run below, so a
+    // stopped cron is fenced before this wake writes anything. An unclaimed
+    // slot is marked only when its deadline passed after the last wake's: one
+    // before it, or any on the first wake after a deploy, was the previous
+    // wake's business or ran on a Worker that did not claim.
+    for (let slot = current - BACKLOG_SLOTS; slot < current; slot += 1) {
       try {
-        run = await this.claimForAlarm(slot, due);
+        await this.markMissed(slot, lastWake !== undefined && slot > lastWake);
       } catch (err) {
-        console.error(`watchdog: claim of minute ${slot} failed:`, err);
-      }
-      if (run === null) continue;
-      try {
-        await runMinute(slot * MINUTE_MS + CRON_OFFSET_MS, this.env, this.state, 'alarm', ALWAYS_HELD);
-      } catch (err) {
-        console.error(`watchdog: alarm run of minute ${slot} failed (not retried):`, err);
-      }
-      try {
-        await this.markAlarmDone(slot, run);
-      } catch (err) {
-        console.error(`watchdog: done mark of minute ${slot} failed:`, err);
+        console.error(`watchdog: missed mark of minute ${slot} failed:`, err);
       }
     }
+    let run: string | null = null;
     try {
-      const next: Missed = { from: current + 1, to: alarmSlot(this.now()) };
-      await this.state.storage.put(MISSED_KEY, next);
+      run = await this.claimForAlarm(current);
     } catch (err) {
-      console.error('watchdog: write of missed slots failed:', err);
+      console.error(`watchdog: claim of minute ${current} failed:`, err);
+    }
+    if (run !== null) {
+      try {
+        await runMinute(current * MINUTE_MS + CRON_OFFSET_MS, this.env, this.state, 'alarm', ALWAYS_HELD);
+      } catch (err) {
+        console.error(`watchdog: alarm run of minute ${current} failed (not retried):`, err);
+      }
+      try {
+        await this.markAlarmDone(current, run);
+      } catch (err) {
+        console.error(`watchdog: done mark of minute ${current} failed:`, err);
+      }
     }
     try {
       await this.prune(current);
@@ -227,15 +245,17 @@ export class MinuteClock implements DurableObject {
   }
 
   /**
-   * Extend `run`'s lease on `slot`. False when another run holds the slot:
-   * the alarm took it over, and `run` must stop writing. A slot nobody holds
-   * is claimed for `run`, the case of a claim whose answer was lost.
+   * Extend `run`'s lease on `slot`. False when another run holds the slot (the
+   * alarm took it over) or the alarm marked it missed after `run`'s lease ran
+   * out: `run` must stop writing. A slot nobody holds is claimed for `run`,
+   * the case of a claim whose answer was lost; so is a `no_claim` mark, which
+   * no run holds.
    */
   private async renew(slot: number, run: string): Promise<boolean> {
     const key = slotKey(slot);
     const held = await this.state.storage.get<Claim>(key);
-    if (held !== undefined && held.run !== run) return false;
-    if (held?.done === true) return true;
+    if (held !== undefined && held.run !== run && held.missed !== 'no_claim') return false;
+    if (held?.done === true && held.missed === undefined) return true;
     const claim: Claim = { trigger: 'cron', done: false, run, leaseUntil: this.now() + LEASE_MS };
     await this.state.storage.put(key, claim);
     return true;
@@ -243,26 +263,47 @@ export class MinuteClock implements DurableObject {
 
   /**
    * Mark the cron run `run` of `slot` ended. A cron whose claim failed open
-   * marks a slot nobody holds, so the alarm does not run that minute a second
-   * time; a fenced run marks nothing.
+   * marks a slot nobody holds, or one the alarm marked `no_claim`, so the log
+   * names the run that happened; a fenced run marks nothing.
    */
   private async markCronDone(slot: number, run: string): Promise<void> {
     const key = slotKey(slot);
     const held = await this.state.storage.get<Claim>(key);
-    if (held !== undefined && held.run !== run) return;
+    if (held !== undefined && held.run !== run && held.missed !== 'no_claim') return;
     const claim: Claim = { trigger: 'cron', done: true, run };
     await this.state.storage.put(key, claim);
   }
 
   /**
-   * Take `slot` for an alarm run, returning its run id, or null. Wins a slot
-   * nobody holds when `due`, and a not-done cron claim whose lease expired.
+   * Record an earlier `slot` that nobody ran as missed: a slot nobody claimed
+   * (only when `unclaimedCounts`), or a cron claim never marked done whose
+   * lease expired. A done slot, an alarm claim and a live cron are left alone.
    */
-  private async claimForAlarm(slot: number, due: boolean): Promise<string | null> {
+  private async markMissed(slot: number, unclaimedCounts: boolean): Promise<void> {
+    const key = slotKey(slot);
+    const held = await this.state.storage.get<Claim>(key);
+    let missed: MissedReason;
+    if (held === undefined) {
+      if (!unclaimedCounts) return;
+      missed = 'no_claim';
+    } else {
+      if (held.done || held.trigger === 'alarm') return;
+      if ((held.leaseUntil ?? 0) > this.now()) return; // a live cron
+      missed = 'lease_expired';
+    }
+    console.log(`watchdog: minute ${slot} missed (${missed}); the alarm does not run a past minute`);
+    const claim: Claim = { trigger: 'alarm', done: true, missed };
+    await this.state.storage.put(key, claim);
+  }
+
+  /**
+   * Take the current `slot` for an alarm run, returning its run id, or null.
+   * Wins a slot nobody holds, and a not-done cron claim whose lease expired.
+   */
+  private async claimForAlarm(slot: number): Promise<string | null> {
     const key = slotKey(slot);
     const held = await this.state.storage.get<Claim>(key);
     if (held === undefined) {
-      if (!due) return null;
       console.log(`watchdog: minute ${slot} not claimed by the cron; the alarm runs it`);
     } else {
       if (held.done || held.trigger === 'alarm') return null;

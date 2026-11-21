@@ -817,26 +817,87 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   minute ("slot", `floor(ms / 60 s)`) in the object before they run it, and
   the first claim wins. Both triggers run the same minute body, `runMinute` in
   `index.ts`, the former `scheduled` body moved unchanged.
-- **Cron.** The cron claims its slot first. A lost claim returns at once. A
-  claim that errors or gets no answer in 3 s runs the minute anyway. When the
-  minute has run to its end (record and publish, also when it ended in an
-  error), the cron marks the slot done. The claim also re-arms the alarm when
-  there is none, or when the stored one is more than a minute overdue (local
-  workerd keeps a stored alarm across a restart but does not fire it).
+- **Cron.** The cron claims its slot first, under a random run id. A lost
+  claim returns at once. A claim that errors or gets no answer in 3 s runs
+  the minute anyway. The claim is a 60 s lease. The cron renews it before
+  each write stage of the minute and every 10 s from a timer, and marks the
+  slot done when the minute has run to its end (record and publish, also
+  when it ended in an error). A renewal that fails counts as held: the cron
+  runs on. The claim also re-arms the alarm when there is none, or when the
+  stored one is more than a minute overdue (local workerd keeps a stored
+  alarm across a restart but does not fire it).
+- **Lease length.** A live cron renews at least every 43 s: the 10 s timer,
+  plus a renewal's 3 s call budget, plus the longest synchronous stretch that
+  can hold the timer back, which the Worker's 30 s CPU limit bounds. 60 s is
+  above that. The length does not depend on how long the minute runs (p50
+  7.6 s, p99 42 s, max 237 s over the 18,317 recorded ticks): a slow cron
+  keeps renewing. A lease longer than the longest run (about 5 minutes)
+  would also have been safe, but it would run a dead cron's minute only
+  after the next 5-minute tick had already run.
 - **Alarm.** The alarm sets the next alarm before it does anything else. Then
-  it claims the slot whose 45 s deadline has just passed: the current slot,
-  never a backlog. It wins a slot that has no claim, or a cron claim that was
-  never marked done (a cron killed or stuck after it claimed, including one
-  that stored its raw feeds but did not publish). It runs the whole minute,
-  publish and record, then marks the slot done. It never takes over an alarm
-  claim and catches every error, so Cloudflare's alarm retries never run a
-  minute twice. It deletes claims older than a day.
+  it looks at the current slot (the one whose 45 s deadline has just passed)
+  and the 5 before it, oldest first. It wins:
+  - a slot that has no claim, if it is the current slot or its deadline passed
+    while the previous wake was still running a minute (so a long alarm run
+    cannot make the next missed minute go unhandled). A slot whose deadline
+    passed while no alarm ran is left alone: a cron whose claim failed open
+    may have run it without a record;
+  - a cron claim that was never marked done and whose lease has expired: a
+    cron that died, or has not renewed for 60 s.
+
+  A live cron, however slow, is never taken over. A cron that stops
+  renewing is taken over at the first deadline after its lease ends: 60-120 s
+  after its last renewal, while its slot is still among the last 6 (any death
+  within 264 s of the start, above the longest recorded run). The alarm runs
+  the whole minute, publish and record, then marks the slot done. It never
+  takes over an alarm claim and catches every error, so Cloudflare's alarm
+  retries never run a minute twice. It deletes claims older than a day.
+- **Fencing.** A takeover gives the slot a new run id. The old cron's next
+  renewal answers that the slot is taken, and the cron stops: it writes
+  nothing more for that minute, its tick record included. The check is not
+  atomic with the R2 write after it, so every object that two runs of one
+  minute can both write is also protected at the write itself:
+
+  | Object | Shared by two runs of one minute? | Protection at the write |
+  |---|---|---|
+  | `archive/trace/<day>/<scheduled_at>.json` | yes (scheduled-second key) | create-once (`If-None-Match: *`): the first run's trace is kept |
+  | `v1/movement_transitions/<day>/<minute>-segment.jsonl` | yes (scheduled-minute key) | create-once |
+  | `archive/alerts/<day>/<updated_at>-<id>.json` | yes (alert-version key) | create-once: the version's first observation is kept |
+  | `state/alpha.json` | yes | etag CAS, and the tick that wrote it (R2 custom metadata `tick`); a run whose tick is not newer skips the write |
+  | `v1/snapshot.json`, `v1/trains.json`, `v1/predictions/`, `v1/regime_transitions/`, `v1/movement_transitions/…-route`, `archive/movement_census/`, `archive/trip_updates/`, `archive/vehicles/`, `archive/ene/`, `state/vehicle_stops.json`, `state/movement_metric.json`, `state/service_metric.json`, `state/movement_state.json`, `state/stations.json`, `v1/entrances.json` | yes | written only by the run that won the alpha CAS for the tick, so one run per tick |
+  | `state/last_seen.json`, `state/headway.json` | yes | etag CAS (as before) |
+  | `state/segment_flow.json`, `state/station_flow.json`, `state/segment_vehicle_stops.json` | yes | a run whose minute `segment_flow` already holds skips segment judging |
+  | `state/station_wait.json`, `v1/arrivals.json` | yes | none beyond the fence: each run's write is a real later observation of the platforms and the countdown |
+  | tick records, GTFS-RT bundles, `archive/health/`, `archive/alerts_liveness/`, `archive/arrivals/` | no: keyed by the run's start | none needed |
+  | `raw/blob/`, `archive/gtfs/` | content-addressed | none needed: both runs write the same bytes |
+
 - **Duplicates and late runs.** A cron that arrives after its minute was
   claimed does nothing: a duplicated dispatch, or a cron that is later than
-  the alarm. A duplicate run happens only when the claim fails open, or when
-  the alarm takes over a cron that is slow but alive (more than 26 s from its
-  dispatch to the end of the minute). Each run writes its own keys, and §4 and
-  coverage already treat two runs of one minute as two observations.
+  the alarm. Two runs of one minute happen only when the cron's claim fails
+  open while the alarm claims the minute, or when a cron stops renewing for
+  60 s and comes back (the object unreachable from the cron, or the cron
+  stalled) after the takeover. In the recorded ticks, 1,106 of 17,378 cron
+  runs (6.4 %; 909 of 3,471 5-minute ticks) were still running at :45; with
+  the lease each of those keeps renewing and runs alone. How often claims
+  fail or renewals stop cannot be read from the ticks; it is unmeasured.
+  When two runs do happen, the tick record and raw bundle of each are kept
+  (§4 and coverage read them as two observations of the minute), the trace,
+  alerts versions and segment transitions are the first run's, the filter
+  advances once and one snapshot is published per tick. The second run's
+  `station_wait.json`, `headway.json` passings and `arrivals.json` are a
+  later poll of the same feeds. A late run of an older tick never advances
+  the filter after a newer one. A takeover of a cron that died after it
+  committed alpha publishes no snapshot for that tick: the next 5-minute
+  tick publishes.
+- **Residual windows.** A write that passed its stage's check can land after
+  a takeover; so can the remainder of a stage that was waiting on R2 when
+  the lease ran out. After a renewal that got no answer in 3 s, the cron skips
+  renewals at stage checks for one 10 s heartbeat period. In those windows
+  only the unprotected rows of the table can be written twice, and each such
+  write is a valid observation stamped with its own `observed_at`. A run that
+  stalls more than a minute can still overwrite a newer minute's
+  `station_wait.json`, `segment_flow.json` or `arrivals.json` (one minute's
+  update lost; the next minute repairs it), as on `main`.
 - **`trigger`.** `CollectorTick.trigger` is `cron` or `alarm`: what started
   the run. An alarm run uses `scheduled_at` = minute + 19 s, the cron's
   dispatch offset in 18,317 of 18,317 recorded ticks, so the 5-minute gate,
@@ -853,21 +914,31 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   share the Workers runtime, the network, the deploy plane and the Durable
   Object storage layer, so a Cloudflare-wide event stops both. A Durable
   Object outage costs only the backup: the cron fails open.
-- **Cost.** $0 extra a month on Workers Paid: about 130,000 Durable Object
-  requests, 170,000 rows written and well under 400,000 GB-s of duration a
-  month, all inside the included allotments (about $0.28 a month at list
-  price). That the account is on Workers Paid is inferred from the repository
-  (the trainer Container needs it); it is not confirmed, because no
-  credentials were used.
+- **Cost.** $0 extra a month on Workers Paid [inferred]. The lease adds a
+  renewal per write stage: about 6 calls off the 5-minute boundary and 13 on
+  it, plus one per 10 s of a long run. With the claim, done mark and alarm
+  wake that is about 11 Durable Object requests and rows written a minute,
+  about 500,000 of each a month, inside the included 1 M requests and
+  50 M rows; the object active all month would be about 324,000 GB-s, inside
+  the included 400,000. That the account is on Workers Paid is inferred from
+  the repository (the trainer Container needs it); it is not confirmed,
+  because no credentials were used. Production renewal latency was not
+  measured; each one is a round trip to the object before a write stage.
 - **Measured.** In local workerd (Miniflare 3.20241230), an idle wake (the
   minute already run by the cron) took about 0.06 ms of CPU above the cost of
   dispatching a request to the object, and 0.18 ms with it, over 2,000 wakes.
   Production storage latency was not measured.
 - **Tests.** `worker/test/watchdog.test.ts` runs the bundled Worker and
   object in workerd through Miniflare, with test hooks in
-  `worker/test/watchdog_harness.ts` (an offset clock, a direct alarm call and
-  fault injection). One test waits for the runtime to fire a real alarm, up
-  to a minute. `MEASURE_WAKE_CPU=1` adds the idle-wake measurement.
+  `worker/test/watchdog_harness.ts` (an offset clock, a direct alarm call, a
+  shorter lease heartbeat and fault injection, including renewals that fail
+  or answer "held" falsely). Slow crons (50, 120 and 240 s) are real runs
+  held on one upstream answer while the object's clock moves through the
+  deadlines; stopped crons are released after the takeover. One test waits
+  for the runtime to fire a real alarm, up to a minute. `MEASURE_WAKE_CPU=1`
+  adds the idle-wake measurement. `worker/test/index.test.ts` runs one tick
+  twice and checks one alpha advance, one publish, one segment fold and the
+  first trace kept.
 
 ### 4.2 As built (slice 5)
 

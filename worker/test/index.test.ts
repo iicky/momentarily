@@ -118,6 +118,7 @@ interface StoredObject {
   body: string;
   etag: string;
   httpMetadata?: R2HTTPMetadata;
+  customMetadata?: Record<string, string>;
 }
 
 function fakeBucket() {
@@ -135,6 +136,7 @@ function fakeBucket() {
       return {
         etag: rec.etag,
         httpEtag: rec.etag,
+        customMetadata: rec.customMetadata ?? {},
         json: async () => JSON.parse(rec.body) as unknown,
         text: async () => rec.body,
         body: rec.body,
@@ -146,7 +148,7 @@ function fakeBucket() {
     async put(
       key: string,
       body: string,
-      opts?: { httpMetadata?: R2HTTPMetadata; onlyIf?: R2Conditional | Headers },
+      opts?: { httpMetadata?: R2HTTPMetadata; onlyIf?: R2Conditional | Headers; customMetadata?: Record<string, string> },
     ) {
       const existing = store.get(key);
       const onlyIf = opts?.onlyIf;
@@ -159,7 +161,12 @@ function fakeBucket() {
       }
       const etag = `etag-${++seq}`;
       putCounts.set(key, (putCounts.get(key) ?? 0) + 1);
-      store.set(key, { body, etag, ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}) });
+      store.set(key, {
+        body,
+        etag,
+        ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}),
+        ...(opts?.customMetadata ? { customMetadata: opts.customMetadata } : {}),
+      });
       return { etag };
     },
     async head(key: string) {
@@ -372,24 +379,27 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     expect(keysWithPrefix(store, 'archive/vehicles/')).toHaveLength(1);
   });
 
-  test('REGRESSION: a retry of the same cron minute overwrites its trace object, never duplicates it', async () => {
+  test('REGRESSION: a second run of the same cron minute neither duplicates nor replaces its trace object', async () => {
     // The trace step runs BEFORE any compare-and-swap winner check, so a retried
     // or overlapping invocation for the same scheduled minute reaches the archive
     // writer twice. Keyed on execution time those two runs land on different
     // seconds and write TWO objects holding the same rows — double-counted
     // arrivals, and no history in a fresh archive to notice it. Keyed on the
-    // scheduled second, the retry overwrites.
+    // scheduled second, the second run lands on the same key, and the put is
+    // create-once: a later run (an alarm takeover, a late cron) that saw
+    // different feeds cannot replace the first run's trace.
     const { bucket, store } = fakeBucket();
     const env: Env = { MOMENTARILY: bucket };
     fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
     fetchState.jsonByUrl.set(STATIONS_FEED, []);
-    fetchState.protobufByUrl.set(
-      TRIP_UPDATE_FEEDS[0]![1],
-      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
-    );
 
-    // Same scheduled minute, two different execution instants.
-    for (const executedAt of [NON_BOUNDARY_AT, NON_BOUNDARY_AT + 7]) {
+    // Same scheduled minute, two different execution instants; the train has
+    // moved on by the second.
+    for (const [executedAt, stopId] of [[NON_BOUNDARY_AT, 'A01N'], [NON_BOUNDARY_AT + 26, 'A02N']] as const) {
+      fetchState.protobufByUrl.set(
+        TRIP_UPDATE_FEEDS[0]![1],
+        vehicleFeed({ tripId: 'a', routeId: 'A', stopId }),
+      );
       const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(executedAt * 1000);
       try {
         await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx);
@@ -399,14 +409,52 @@ describe('scheduled: the 5-minute pipeline gate', () => {
     }
 
     // Not just one object — the SAME object, still holding the row it recorded
-    // on the first pass. The old carry-based delta would have seen its own
-    // prior write, computed zero changed rows on the retry, and overwritten
-    // this with an empty array — silently destroying the observation.
+    // on the first pass, written once.
     const traceKeys = keysWithPrefix(store, 'archive/trace/');
     expect(traceKeys).toHaveLength(1);
     expect(traceRowsAt(store, traceKeys[0]!)).toEqual([
       expect.objectContaining({ trip_id: 'a', stop_id: 'A01N', stopped: false }),
     ]);
+  });
+
+  test('a boundary tick run twice advances alpha once and publishes once; a late run of an older tick advances nothing', async () => {
+    // An alarm takeover of a cron that already committed alpha, or a late or
+    // duplicated cron, reads the alpha the first run wrote. Its CAS would
+    // succeed and step the forward filter a second time on the same
+    // observation, then publish again. alpha.json names the tick that last
+    // advanced it, and a run whose tick is not newer skips the write.
+    const { bucket, store, putCounts } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    fetchState.jsonByUrl.set(FEEDS.alerts, { entity: [] });
+    fetchState.jsonByUrl.set(STATIONS_FEED, []);
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    const run = async (tick: number, executedAt: number): Promise<void> => {
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(executedAt * 1000);
+      try {
+        await worker.scheduled(scheduledAt(tick), env, execCtx);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    };
+
+    await run(BOUNDARY_AT, BOUNDARY_AT + 2);
+    const alpha = store.get('state/alpha.json')!;
+    await run(BOUNDARY_AT, BOUNDARY_AT + 26); // the same tick again
+    for (const key of ['state/alpha.json', 'v1/snapshot.json', 'v1/trains.json', 'state/last_seen.json', 'state/vehicle_stops.json']) {
+      expect(putCounts.get(key), key).toBe(1);
+    }
+    expect(store.get('state/alpha.json')!.etag).toBe(alpha.etag);
+    expect(alpha.customMetadata).toEqual({ tick: String(BOUNDARY_AT) });
+    expect(keysWithPrefix(store, 'v1/predictions/')).toHaveLength(1);
+
+    await run(BOUNDARY_AT + 300, BOUNDARY_AT + 302); // the next tick advances
+    await run(BOUNDARY_AT, BOUNDARY_AT + 330); // an older tick, late, does not
+    expect(putCounts.get('state/alpha.json')).toBe(2);
+    expect(putCounts.get('v1/snapshot.json')).toBe(2);
+    expect(store.get('state/alpha.json')!.customMetadata).toEqual({ tick: String(BOUNDARY_AT + 300) });
   });
 
   test('two snapshots five minutes apart both carry the trip, with the differing stop_id/stopped that the offline arrival diff consumes', async () => {
@@ -556,6 +604,38 @@ describe('scheduled: segment judging on the 1-minute clock (step 0c)', () => {
     // misjudge every cell; the guard skips judging entirely until a refit.
     expect(store.has('state/segment_flow.json')).toBe(false);
     expect(store.has('state/segment_vehicle_stops.json')).toBe(false);
+  });
+
+  test('a minute run twice is folded into segment_flow once', async () => {
+    // A second run of one minute (an alarm takeover, a late cron) finds its
+    // minute already in the accumulator. Folding it again would decay the
+    // decayed sums twice and add the minute's expected traversals twice, with
+    // no matched traversals behind the second (its stop carry is this minute's
+    // own), biasing every cell toward a collapse.
+    const { bucket, store, putCounts } = fakeBucket();
+    const env: Env = { MOMENTARILY: bucket };
+    seedSegmentParams(store, { cadence: 60 });
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    for (const executedAt of [NON_BOUNDARY_AT + 2, NON_BOUNDARY_AT + 26]) {
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(executedAt * 1000);
+      try {
+        await worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    }
+    for (const key of ['state/segment_flow.json', 'state/station_flow.json', 'state/segment_vehicle_stops.json']) {
+      expect(putCounts.get(key), key).toBe(1);
+    }
+    const flow = jsonAt(store, 'state/segment_flow.json') as {
+      observed_at: number;
+      cells: Record<string, { e: number }>;
+    };
+    expect(flow.observed_at).toBe(NON_BOUNDARY_AT);
+    expect(flow.cells['A|north|A01N']?.e).toBe(1); // one minute's expectation, not two
   });
 
   test('a train that moves across a skipped minute is NOT booked as a cross-gap jump', async () => {

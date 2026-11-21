@@ -149,30 +149,51 @@ export function reseedForNewParams(roll: RouteRoll): RouteRoll {
   };
 }
 
-export async function readAlphaState(
-  bucket: R2Bucket,
-): Promise<VersionedRead<AlphaState>> {
+/**
+ * R2 custom metadata on alpha.json: the tick (`scheduled_at`, epoch seconds)
+ * whose run wrote it. Metadata rather than a body field, so the object's bytes
+ * are what they were before the field existed.
+ */
+const TICK_METADATA = 'tick';
+
+export interface AlphaRead extends VersionedRead<AlphaState> {
+  /**
+   * The tick that last advanced the filter, or null when unknown (absent,
+   * or written before the metadata existed).
+   */
+  tick: number | null;
+}
+
+export async function readAlphaState(bucket: R2Bucket): Promise<AlphaRead> {
   const obj = await bucket.get(ALPHA_KEY);
-  if (!obj) return { state: emptyAlphaState(), etag: null };
+  if (!obj) return { state: emptyAlphaState(), etag: null, tick: null };
+  const stamp = Number(obj.customMetadata?.[TICK_METADATA]);
+  const tick = Number.isSafeInteger(stamp) ? stamp : null;
   try {
-    return { state: (await obj.json()) as AlphaState, etag: obj.etag };
+    return { state: (await obj.json()) as AlphaState, etag: obj.etag, tick };
   } catch (err) {
     console.error('alpha.json parse failed; resetting:', err);
-    return { state: emptyAlphaState(), etag: obj.etag };
+    return { state: emptyAlphaState(), etag: obj.etag, tick };
   }
 }
 
 /**
- * Write alpha.json with compare-and-swap on `etag` (from readAlphaState).
+ * Write alpha.json with compare-and-swap on `etag` (from readAlphaState),
+ * stamped with `tick`, the `scheduled_at` this write advanced the filter for.
  * Returns false when a concurrent tick already advanced the object.
  */
 export async function writeAlphaState(
   bucket: R2Bucket,
   state: AlphaState,
   etag: string | null,
+  tick: number,
 ): Promise<boolean> {
-  return conditionalPut(bucket, ALPHA_KEY, JSON.stringify(state), etag, {
-    contentType: 'application/json',
-    cacheControl: 'no-store',
-  });
+  return conditionalPut(
+    bucket,
+    ALPHA_KEY,
+    JSON.stringify(state),
+    etag,
+    { contentType: 'application/json', cacheControl: 'no-store' },
+    { [TICK_METADATA]: String(tick) },
+  );
 }

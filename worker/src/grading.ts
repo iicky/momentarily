@@ -32,6 +32,7 @@ import type { RouteRoll } from './alpha';
 import { STATES } from './hmm';
 import type { State } from './hmm';
 import type { RegimeChange, RegimeEntry } from './regime';
+import { createOnce } from './r2';
 import type { Inference } from './snapshot';
 
 export interface PredictionRecord {
@@ -250,6 +251,10 @@ export async function writeTransitions(
  * comment. Grouping here rather than trusting the caller to pass a single
  * scope means no key can be mislabelled and no two puts from one tick can
  * target the same key.
+ *
+ * Create-once (If-None-Match: *): the segment scope is keyed by the scheduled
+ * minute, which two runs of one minute share, so a second run cannot replace
+ * the first run's committed changes.
  */
 export async function writeMovementTransitions(
   bucket: R2Bucket,
@@ -264,10 +269,11 @@ export async function writeMovementTransitions(
   const date = utcDate(observedAt);
   await Promise.all(
     Object.entries(byScope).map(([scope, group]) =>
-      bucket.put(
+      createOnce(
+        bucket,
         `v1/movement_transitions/${date}/${observedAt}-${scope}.jsonl`,
         group.map((r) => JSON.stringify(r)).join('\n'),
-        { httpMetadata: { contentType: 'application/x-ndjson' } },
+        { contentType: 'application/x-ndjson' },
       ),
     ),
   );

@@ -307,7 +307,8 @@ describe('key layout matches keys.py', () => {
 describe('scheduled: an off-boundary tick', () => {
   test('writes its tick record, a bundle byte-identical to the fetched bodies, and the alerts blob', async () => {
     stubUpstream(liveMinute);
-    await runScheduled(r2, SCHEDULED_AT, STARTED_AT_MS);
+    // Through the spy: the trace's create-once put sends a Headers onlyIf.
+    await runScheduled(spyBucket().bucket, SCHEDULED_AT, STARTED_AT_MS);
 
     const day = utcDay(SCHEDULED_AT);
     const alertsKey = blobKey(day, sha256(ALERTS_BODY), 'json');

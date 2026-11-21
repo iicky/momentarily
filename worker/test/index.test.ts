@@ -170,7 +170,8 @@ function fakeBucket() {
       return { etag };
     },
     async head(key: string) {
-      return store.has(key) ? { etag: store.get(key)!.etag } : null;
+      const rec = store.get(key);
+      return rec ? { etag: rec.etag, customMetadata: rec.customMetadata ?? {} } : null;
     },
   };
   return { bucket: bucket as unknown as R2Bucket, store, putCounts };
@@ -636,6 +637,51 @@ describe('scheduled: segment judging on the 1-minute clock (step 0c)', () => {
     };
     expect(flow.observed_at).toBe(NON_BOUNDARY_AT);
     expect(flow.cells['A|north|A01N']?.e).toBe(1); // one minute's expectation, not two
+  });
+
+  test('two overlapping runs of one minute fold segment_flow once', async () => {
+    // Their segment stages interleave: both read the accumulator before
+    // either writes it, so the "already folded" check passes for both. The
+    // CAS lets one fold; the other skips its accumulator and station writes.
+    const { bucket, store, putCounts } = fakeBucket();
+    let reads = 0;
+    let bothRead = (): void => {};
+    const barrier = new Promise<void>((resolve) => {
+      bothRead = resolve;
+    });
+    const interleaved = {
+      ...bucket,
+      async get(key: string) {
+        const obj = await bucket.get(key);
+        if (key === 'state/segment_flow.json') {
+          reads += 1;
+          if (reads === 2) bothRead();
+          await barrier;
+        }
+        return obj;
+      },
+    } as unknown as R2Bucket;
+    const env: Env = { MOMENTARILY: interleaved };
+    seedSegmentParams(store, { cadence: 60 });
+    fetchState.protobufByUrl.set(
+      TRIP_UPDATE_FEEDS[0]![1],
+      vehicleFeed({ tripId: 'a', routeId: 'A', stopId: 'A01N' }),
+    );
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue((NON_BOUNDARY_AT + 2) * 1000);
+    try {
+      await Promise.all([
+        worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx),
+        worker.scheduled(scheduledAt(NON_BOUNDARY_AT), env, execCtx),
+      ]);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    expect(reads).toBe(2);
+    for (const key of ['state/segment_flow.json', 'state/station_flow.json']) {
+      expect(putCounts.get(key), key).toBe(1);
+    }
+    const flow = jsonAt(store, 'state/segment_flow.json') as { cells: Record<string, { e: number }> };
+    expect(flow.cells['A|north|A01N']?.e).toBe(1);
   });
 
   test('a train that moves across a skipped minute is NOT booked as a cross-gap jump', async () => {

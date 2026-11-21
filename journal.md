@@ -11470,3 +11470,21 @@ workflow only turned red.
 - Legacy coverage reads those names: the stretch around an excluded trace
   minute is `Unknown`, not `covered` or `no_invocation`.
 - docs/model-observations.md §5.1 gives the repair procedure.
+
+## 2026-11-03 backup-trigger-investigation
+
+origin: agent
+
+Investigation only: no Worker change. Two findings that are easy to miss:
+
+- The cron's `event.scheduledTime` for this Worker is always 19 s past the
+  minute: 18,317 of 18,317 recorder ticks from 10-21 to 11-02. A start lag
+  measured as started_at - scheduled_at is therefore measured from :19, not
+  from :00. The lag after dispatch was over 26 s in 0.14 % of runs from
+  10-28 to 11-02, and in 9.6 % from 10-21 to 10-27.
+- Local workerd (Miniflare 3.20241230) keeps a Durable Object alarm in
+  storage across a runtime restart but does not fire it, even after the
+  object is loaded. `getAlarm()` returns the past-due time, not null, so
+  0 runs happened in 5 s after the restart. A self-healing alarm loop
+  therefore has to re-arm when the alarm is null or stale. A null check
+  alone is not enough.

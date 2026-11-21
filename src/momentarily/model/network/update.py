@@ -62,7 +62,7 @@ from momentarily.model.network.contracts import (
     NetworkSnapshot,
 )
 from momentarily.model.network.stations import StationsSnapshot, parse_snapshot
-from momentarily.model.observations.contracts import CollectorTick
+from momentarily.model.observations.contracts import parse_collector_tick
 from momentarily.model.observations.derive.storage import Storage
 from momentarily.model.observations.keys import PREFIX as OBSERVATIONS_PREFIX
 
@@ -132,7 +132,7 @@ def read_evidence(store: Storage, day: str) -> DayEvidence:
     unreadable = 0
     for key in keys:
         try:
-            tick = CollectorTick.model_validate_json(store.get(key))
+            tick = parse_collector_tick(store.get(key))
         except ValidationError:
             unreadable += 1
             continue

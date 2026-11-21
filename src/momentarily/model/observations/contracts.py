@@ -3,10 +3,12 @@
 Three groups:
 
   * Collector metadata, written by the Worker and live only: ``CollectorTick``
-    (one per invocation, holding a ``FeedFetch`` per attempt) and
-    ``TickBundleIndex`` (the index member of a GTFS-RT tick bundle). Every
-    field is required and known; the raw payload bytes they point at are the
-    source of truth.
+    (one per invocation, holding a ``FeedFetch`` per attempt and the
+    ``trigger`` that started it) and ``TickBundleIndex`` (the index member of
+    a GTFS-RT tick bundle). Every field is required and known; the raw
+    payload bytes they point at are the source of truth. Ticks stored before
+    ``trigger`` existed are ``PreTriggerCollectorTick``s, cron runs by
+    definition; read stored ticks with ``parse_collector_tick``.
   * Observation records, derived offline: ``VehicleObservation``,
     ``TripUpdateObservation``, ``FeedHeaderObservation``, ``AlertPresence``,
     ``AlertVersion`` and ``EquipmentObservation``, stored as parquet (see
@@ -52,9 +54,9 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date
-from typing import Annotated, Any, ClassVar, Literal, LiteralString, get_args
+from typing import Annotated, Any, ClassVar, Literal, LiteralString, Self, get_args
 
-from pydantic import BaseModel, Field, JsonValue, model_validator
+from pydantic import BaseModel, Field, JsonValue, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
 
 from momentarily.model.conventions import (
@@ -337,9 +339,11 @@ def _check_fetches(
         raise _fail(error_type, "payload_member repeats within a bundle")
 
 
-class CollectorTick(Model):
-    """One Worker invocation. No tick for a minute means the collector did
-    not run; a failed source shows as a fetch with its outcome."""
+Trigger = Literal["cron", "alarm"]
+
+
+class _TickFields(Model):
+    """The fields and rules every stored ``CollectorTick`` shape shares."""
 
     schema_: Literal["observations/s1"] = Field(alias="schema")
     tick_id: str = Field(
@@ -355,7 +359,7 @@ class CollectorTick(Model):
     fetches: list[FeedFetch]
 
     @model_validator(mode="after")
-    def _consistent(self) -> CollectorTick:
+    def _consistent(self) -> Self:
         if self.tick_id != f"{self.scheduled_at}-{self.started_at_ms}":
             raise _fail("tick_identity", "tick_id is not scheduled_at-started_at_ms")
         if self.finished_at_ms < self.started_at_ms:
@@ -374,6 +378,46 @@ class CollectorTick(Model):
                 "tick_fetches", f"fetched sources not planned: {sorted(unplanned)}"
             )
         return self
+
+
+class CollectorTick(_TickFields):
+    """One Worker invocation. No tick for a minute means the collector did
+    not run; a failed source shows as a fetch with its outcome."""
+
+    trigger: Trigger = Field(
+        description=(
+            "What started the run: 'cron' (the Cron Trigger) or 'alarm' (the "
+            "Durable Object watchdog, for a minute no cron run recorded; its "
+            "scheduled_at is the minute plus the cron's 19 s dispatch offset)."
+        )
+    )
+
+
+class PreTriggerCollectorTick(_TickFields):
+    """A ``CollectorTick`` written before the record named its trigger. Only
+    the cron ran the Worker then, so it reads as ``trigger: "cron"``
+    (``as_cron``); ``parse_collector_tick`` accepts both shapes."""
+
+    def as_cron(self) -> CollectorTick:
+        return CollectorTick.model_validate(
+            {**self.model_dump(by_alias=True), "trigger": "cron"}
+        )
+
+
+def parse_collector_tick(data: str | bytes) -> CollectorTick:
+    """A stored tick record, in either shape, as a ``CollectorTick``.
+
+    A record without ``trigger`` is validated as a ``PreTriggerCollectorTick``
+    and read as a cron run; any other failure is the ``CollectorTick``'s own.
+    Raises ``ValidationError``.
+    """
+    try:
+        return CollectorTick.model_validate_json(data)
+    except ValidationError as err:
+        missing = [(e["type"], e["loc"]) for e in err.errors()]
+        if missing != [("missing", ("trigger",))]:
+            raise
+    return PreTriggerCollectorTick.model_validate_json(data).as_cron()
 
 
 class TickBundleIndex(Model):

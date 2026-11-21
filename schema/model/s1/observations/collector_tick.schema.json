@@ -353,6 +353,15 @@
       "description": "f'{scheduled_at}-{started_at_ms}'; retries keep both.",
       "title": "Tick Id",
       "type": "string"
+    },
+    "trigger": {
+      "description": "What started the run: 'cron' (the Cron Trigger) or 'alarm' (the Durable Object watchdog, for a minute no cron run recorded; its scheduled_at is the minute plus the cron's 19 s dispatch offset).",
+      "enum": [
+        "cron",
+        "alarm"
+      ],
+      "title": "Trigger",
+      "type": "string"
     }
   },
   "required": [
@@ -363,7 +372,8 @@
     "finished_at_ms",
     "collector",
     "planned_sources",
-    "fetches"
+    "fetches",
+    "trigger"
   ],
   "title": "CollectorTick",
   "type": "object"

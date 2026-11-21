@@ -804,6 +804,71 @@ where listed here.
   are 142 MB/day, the figure §6 started from. Tick records are about
   9.4 MB/day, not the 3.6 MB first assumed.
 
+#### As built (backup trigger)
+
+Cloudflare's cron path skipped 6–134 minutes a day on bad days in October 2026
+and started some runs hours late. A minute that does not run is lost for good.
+The Worker therefore has a second trigger: a Durable Object alarm watchdog,
+`worker/src/watchdog.ts`. The cron stays the primary trigger.
+
+- **Design.** One SQLite-backed Durable Object, `MinuteClock`
+  (binding `MINUTE_CLOCK`, one object by name, location hint `enam`). Its
+  alarm is always set for 45 s past the next minute. Both triggers claim a
+  minute ("slot", `floor(ms / 60 s)`) in the object before they run it, and
+  the first claim wins. Both triggers run the same minute body, `runMinute` in
+  `index.ts`, the former `scheduled` body moved unchanged.
+- **Cron.** The cron claims its slot first. A lost claim returns at once. A
+  claim that errors or gets no answer in 3 s runs the minute anyway. When the
+  minute has run to its end (record and publish, also when it ended in an
+  error), the cron marks the slot done. The claim also re-arms the alarm when
+  there is none, or when the stored one is more than a minute overdue (local
+  workerd keeps a stored alarm across a restart but does not fire it).
+- **Alarm.** The alarm sets the next alarm before it does anything else. Then
+  it claims the slot whose 45 s deadline has just passed: the current slot,
+  never a backlog. It wins a slot that has no claim, or a cron claim that was
+  never marked done (a cron killed or stuck after it claimed, including one
+  that stored its raw feeds but did not publish). It runs the whole minute,
+  publish and record, then marks the slot done. It never takes over an alarm
+  claim and catches every error, so Cloudflare's alarm retries never run a
+  minute twice. It deletes claims older than a day.
+- **Duplicates and late runs.** A cron that arrives after its minute was
+  claimed does nothing: a duplicated dispatch, or a cron that is later than
+  the alarm. A duplicate run happens only when the claim fails open, or when
+  the alarm takes over a cron that is slow but alive (more than 26 s from its
+  dispatch to the end of the minute). Each run writes its own keys, and §4 and
+  coverage already treat two runs of one minute as two observations.
+- **`trigger`.** `CollectorTick.trigger` is `cron` or `alarm`: what started
+  the run. An alarm run uses `scheduled_at` = minute + 19 s, the cron's
+  dispatch offset in 18,317 of 18,317 recorded ticks, so the 5-minute gate,
+  derive and coverage's slot grid read it as they read a cron run. Its
+  `started_at_ms` is its own, about 26 s later than a cron run's would be. A
+  start-lag metric must therefore be split by `trigger`. Ticks stored before
+  the field existed are `PreTriggerCollectorTick` (exported schema
+  `pre_trigger_collector_tick`), the same record without `trigger`.
+  Only the cron ran the Worker then, so readers parse stored ticks with
+  `parse_collector_tick`, which reads that shape as `trigger: "cron"`. No
+  field has a default, and the replay pin of the recorded hour (ticks without
+  the field) is unchanged.
+- **Residual risk.** The two triggers do not share the scheduler path. They do
+  share the Workers runtime, the network, the deploy plane and the Durable
+  Object storage layer, so a Cloudflare-wide event stops both. A Durable
+  Object outage costs only the backup: the cron fails open.
+- **Cost.** $0 extra a month on Workers Paid: about 130,000 Durable Object
+  requests, 170,000 rows written and well under 400,000 GB-s of duration a
+  month, all inside the included allotments (about $0.28 a month at list
+  price). That the account is on Workers Paid is inferred from the repository
+  (the trainer Container needs it); it is not confirmed, because no
+  credentials were used.
+- **Measured.** In local workerd (Miniflare 3.20241230), an idle wake (the
+  minute already run by the cron) took about 0.06 ms of CPU above the cost of
+  dispatching a request to the object, and 0.18 ms with it, over 2,000 wakes.
+  Production storage latency was not measured.
+- **Tests.** `worker/test/watchdog.test.ts` runs the bundled Worker and
+  object in workerd through Miniflare, with test hooks in
+  `worker/test/watchdog_harness.ts` (an offset clock, a direct alarm call and
+  fault injection). One test waits for the runtime to fire a real alarm, up
+  to a minute. `MEASURE_WAKE_CPU=1` adds the idle-wake measurement.
+
 ### 4.2 As built (slice 5)
 
 The derive job is `momentarily.model.observations.derive`. `storage` is the

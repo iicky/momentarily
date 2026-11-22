@@ -23,7 +23,7 @@ export interface LegacyFetchOutcome {
    */
   observed_at: number;
   /**
-   * Kept by archive/trace only.
+   * Kept by archive/trace, and by the per-run key (<scheduled_at>-<started_at_ms>) of the other archives' newer objects.
    */
   scheduled_at: number | Unknown;
   source:

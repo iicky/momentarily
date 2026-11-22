@@ -872,7 +872,10 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   Its tick record then shows the run, and its done mark, if it reaches the
   object, replaces the missed mark; such a cron's renewals re-claim the
   slot. A cron that arrives after its minute was marked missed loses its
-  claim and does nothing.
+  claim and does nothing. Per-run archive keys (below) recover nothing a
+  missed minute lost: they only keep each run's own records when two runs
+  of adjacent minutes start in the same second, which a late alarm wake or
+  a late cron beside the next minute's cron does.
 - **Fencing.** A takeover gives the slot a new run id, and a missed mark
   removes it. The old cron's next renewal answers that the slot is taken,
   and the cron stops: it writes nothing more for that minute, its tick record
@@ -883,20 +886,43 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   | Object | Shared by two runs of one minute? | Protection at the write |
   |---|---|---|
   | `archive/trace/<day>/<scheduled_at>.json` | yes (scheduled-second key) | create-once (`If-None-Match: *`): the first run's trace is kept |
-  | `v1/movement_transitions/<day>/<minute>-segment.jsonl` | yes (scheduled-minute key) | create-once |
   | `archive/alerts/<day>/<updated_at>-<id>.json` | yes (alert-version key) | create-once: the version's first observation is kept |
   | `state/alpha.json` | yes | etag CAS, and the tick that wrote it (R2 custom metadata `tick`); a run whose tick is not newer skips the write |
-  | `v1/snapshot.json`, `v1/trains.json`, `v1/predictions/`, `v1/regime_transitions/`, `v1/movement_transitions/…-route`, `archive/movement_census/`, `archive/trip_updates/`, `archive/vehicles/`, `archive/ene/`, `state/vehicle_stops.json`, `state/movement_metric.json`, `state/service_metric.json`, `state/movement_state.json`, `state/stations.json`, `v1/entrances.json` | yes | written only by the run that won the alpha CAS for the tick, so one run per tick |
+  | `v1/snapshot.json`, `v1/trains.json`, `archive/ene/`, `state/vehicle_stops.json`, `state/movement_metric.json`, `state/service_metric.json`, `state/movement_state.json`, `state/stations.json`, `v1/entrances.json` | yes | written only by the run that won the alpha CAS for the tick, so one run per tick |
+  | `v1/predictions/`, `v1/regime_transitions/`, `v1/movement_transitions/…-route`, `archive/movement_census/`, `archive/trip_updates/`, `archive/vehicles/` | no: per-run key (below) | create-once, and written only by the run that won the alpha CAS for the tick |
   | `state/last_seen.json`, `state/headway.json` | yes | etag CAS (as before) |
   | `state/segment_flow.json` | yes | a run whose minute `segment_flow` already holds skips segment judging, and the fold is an etag CAS on the copy it read |
-  | `state/station_flow.json` | yes | written only by the run whose `segment_flow` CAS succeeded |
-  | `state/segment_vehicle_stops.json` | yes | none: both runs stamp it with the same minute |
+  | `state/station_flow.json`, `v1/movement_transitions/…-segment` | yes / no: per-run key | written only by the run whose `segment_flow` CAS succeeded; the transitions create-once |
+  | `state/segment_vehicle_stops.json` | yes | written only by the run whose `segment_flow` CAS succeeded, after it, as an etag CAS on the copy that run read: a run whose fold lost never writes the carry, and a newer carry is never replaced |
   | `state/station_wait.json` | yes | etag CAS; a run whose `observed_at` is not newer than the stored doc's does not fold |
   | `v1/arrivals.json` | yes | etag CAS on a `head`, and the `observed_at` that wrote it (R2 custom metadata `observed_at`); a run whose observation is not newer skips the write |
   | tick records, GTFS-RT bundles | no: keyed by the run's start | none needed |
-  | `archive/health/`, `archive/alerts_liveness/`, `archive/arrivals/` | no: keyed by the run's observed second, and one wake runs one minute, so two runs land in one second only if two triggers start in it | none |
+  | `archive/health/`, `archive/alerts_liveness/`, `archive/arrivals/` | no: per-run key (below) | create-once |
   | `raw/blob/`, `archive/gtfs/` | content-addressed | none needed: both runs write the same bytes |
 
+- **Per-run archive keys.** Every archive object a run writes once is named
+  by the run, with the run's tick id, the name of its tick record:
+  `<prefix>/<YYYY-MM-DD>/<scheduled_at>-<started_at_ms><suffix>`. The
+  prefixes are `archive/arrivals/` (`.json.gz`), `archive/health/`,
+  `archive/alerts_liveness/`, `archive/trip_updates/`, `archive/vehicles/`,
+  `archive/movement_census/` (`.json`), `v1/predictions/`,
+  `v1/regime_transitions/` (`.jsonl`) and `v1/movement_transitions/`
+  (`-route.jsonl`, `-segment.jsonl`). The day folder is the UTC day of the
+  run's `observed_at` (for segment transitions, of the minute they hold), as
+  before, so retention and date-prefix listing are unchanged; the bodies are
+  unchanged. Every write is create-once. Two runs therefore never share a
+  key, also when a run for one minute that starts late (an alarm wake 35 s
+  late, or a cron about a minute late) and the on-time run of the next minute
+  start in the same second: each run's arrivals sample, health record and
+  alerts liveness are kept, including a partial outage that only one of them
+  saw. Objects written before were named by the run's execution second,
+  `<observed_at>` (`<observed_at>-<scope>` or, for the segment scope, the
+  minute, in `v1/movement_transitions/`), and such two runs kept one object;
+  the recorded data holds 21 such coincidences. Both names stay readable: the
+  readers that list by date and read the bodies are unchanged, and the
+  readers that parse the name accept both (§5.1, `alert_poll_latency.py`).
+  The per-minute trace stays keyed by the minute, create-once, so a second
+  run of one minute keeps the first run's trace.
 - **Duplicates and late runs.** A cron that arrives after its minute was
   claimed or marked missed does nothing: a duplicated dispatch, or a cron that
   is later than the alarm. Two runs of one minute happen only when the cron's
@@ -906,10 +932,11 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   1,106 of 17,378 cron runs (6.4 %; 909 of 3,471 5-minute ticks) were still
   running at :45; with the lease each of those keeps renewing and runs alone.
   How often claims fail or renewals stop cannot be read from the ticks; it is
-  unmeasured. When two runs do happen, the tick record and raw bundle of each
-  are kept (§4 and coverage read them as two observations of the minute), the
-  trace, alerts versions and segment transitions are the first run's, the
-  filter advances once and one snapshot is published per tick. The run that
+  unmeasured. When two runs do happen, the tick record, raw bundle and
+  per-run archive objects of each are kept (§4 and coverage read them as two
+  observations of the minute), the trace and alerts versions are the first
+  run's, segment transitions and the stop carry are the run's whose fold won,
+  the filter advances once and one snapshot is published per tick. The run that
   fetched later keeps `station_wait.json` and `arrivals.json`, whichever
   writes last: a run that fetched earlier but writes later (a cron that
   stalled past a takeover) does not replace them. Its `headway.json`
@@ -921,9 +948,9 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   a takeover or a missed mark; so can the remainder of a stage that was
   waiting on R2 when the lease ran out. After a renewal that got no answer in
   3 s, the cron skips renewals at stage checks for one 10 s heartbeat period.
-  In those windows only `segment_vehicle_stops.json` and the per-second
-  archives can be written by both runs; the carry is stamped with the same
-  minute either way.
+  In those windows both runs can write their own per-run archive objects,
+  which is what they are for; every shared object is protected at the write
+  as the table above shows.
 - **`trigger`.** `CollectorTick.trigger` is `cron` or `alarm`: what started
   the run. An alarm run uses `scheduled_at` = minute + 19 s, the cron's
   dispatch offset in 18,317 of 18,317 recorded ticks, so the 5-minute gate,
@@ -971,7 +998,12 @@ The Worker therefore has a second trigger: a Durable Object alarm watchdog,
   runtime to fire a real alarm, up to a minute. `MEASURE_WAKE_CPU=1` adds
   the two CPU measurements. `worker/test/index.test.ts` runs one tick twice,
   sequentially and with interleaved segment stages, and checks one alpha
-  advance, one publish, one segment fold and the first trace kept.
+  advance, one publish, one segment fold, the stop carry written only by the
+  fold's winner, and the first trace kept. Three tests start two runs of
+  adjacent minutes in the same second (an alarm 35 s late beside the next
+  minute's cron, the same with one run's `ace` feed failing, and a cron
+  about 62 s late beside the next cron) and check one object per run under
+  every per-run prefix.
 
 ### 4.2 As built (slice 5)
 
@@ -1181,6 +1213,23 @@ row of the table above (`trace`, `fresh_feeds` for `archive/trip_updates` and
 `archive/vehicles`, `alerts`, `alerts_liveness`, `predictions`, `ene`,
 `health`). They need no `pyarrow`. `momentarily.model.observations.parquet`
 writes any record type; the derive job is meant to reuse it.
+
+**Object names.** `archive/trip_updates`, `archive/vehicles`,
+`archive/alerts_liveness`, `archive/health` and `v1/predictions` objects are
+named `<observed_at>` (objects written before per-run keys, §4.1) or by
+their run, `<scheduled_at>-<started_at_ms>`, in the folder of the UTC day of
+`observed_at` either way. The adapters accept both (`common.run_key`). An
+old name must equal the body's `observed_at`, as before; a run's name must
+have started in the second of the body's `observed_at` or the next one
+(`v1/predictions`: the lines' `ts`). Records of old names are byte-identical
+to before: the backfill's files on the committed fixture mirror are
+unchanged. For a run's name, `legacy_fetch_id` and the lineage name the
+object as always, `LegacyFetchOutcome.scheduled_at` is the name's
+`scheduled_at` (an old name keeps it `Unknown`), and
+`LegacyCollectorHealth.legacy_tick_id` is `archive/health@<scheduled_at>-<started_at_ms>`
+(`archive/health@<observed_at>` for an old name), so two runs observed in
+one second are two records. `keys.LegacyPredictionsRunKey` is the run-named
+predictions key.
 
 ```
 python -m momentarily.model.observations.legacy --mirror <mirror-root> \

@@ -114,6 +114,7 @@ describe('movementTransitions', () => {
  */
 describe('writeMovementTransitions: both scopes survive one tick', () => {
   const observedAt = 1_700_000_900;
+  const run = '1700000899-1700000900120';
 
   function change(key: string): RegimeChange {
     return {
@@ -187,33 +188,33 @@ describe('writeMovementTransitions: both scopes survive one tick', () => {
 
   test('the scoped key keeps both writes, in separate objects', async () => {
     const { bucket, store } = fakeBucket();
-    await writeMovementTransitions(bucket, observedAt, routeRecords);
-    await writeMovementTransitions(bucket, observedAt, segmentRecords);
+    await writeMovementTransitions(bucket, observedAt, run, routeRecords);
+    await writeMovementTransitions(bucket, observedAt, run, segmentRecords);
 
     expect([...store.keys()].sort()).toEqual([
-      `v1/movement_transitions/2023-11-14/${observedAt}-route.jsonl`,
-      `v1/movement_transitions/2023-11-14/${observedAt}-segment.jsonl`,
+      `v1/movement_transitions/2023-11-14/${run}-route.jsonl`,
+      `v1/movement_transitions/2023-11-14/${run}-segment.jsonl`,
     ]);
     expect(scopesIn(store).sort()).toEqual(['route', 'segment']);
   });
 
   test('write order does not matter — neither scope can displace the other', async () => {
     const { bucket, store } = fakeBucket();
-    await writeMovementTransitions(bucket, observedAt, segmentRecords);
-    await writeMovementTransitions(bucket, observedAt, routeRecords);
+    await writeMovementTransitions(bucket, observedAt, run, segmentRecords);
+    await writeMovementTransitions(bucket, observedAt, run, routeRecords);
     expect(scopesIn(store).sort()).toEqual(['route', 'segment']);
   });
 
   test('a mixed-scope batch partitions rather than mislabelling one key', async () => {
     const { bucket, store } = fakeBucket();
-    await writeMovementTransitions(bucket, observedAt, [
+    await writeMovementTransitions(bucket, observedAt, run, [
       ...routeRecords,
       ...segmentRecords,
     ]);
 
     expect([...store.keys()].sort()).toEqual([
-      `v1/movement_transitions/2023-11-14/${observedAt}-route.jsonl`,
-      `v1/movement_transitions/2023-11-14/${observedAt}-segment.jsonl`,
+      `v1/movement_transitions/2023-11-14/${run}-route.jsonl`,
+      `v1/movement_transitions/2023-11-14/${run}-segment.jsonl`,
     ]);
     // Each object holds only its own scope, so the key never lies about its
     // contents even though the caller batched.
@@ -225,8 +226,8 @@ describe('writeMovementTransitions: both scopes survive one tick', () => {
 
   test('both keys stay under the date prefix the Python loader lists', async () => {
     const { bucket, store } = fakeBucket();
-    await writeMovementTransitions(bucket, observedAt, routeRecords);
-    await writeMovementTransitions(bucket, observedAt, segmentRecords);
+    await writeMovementTransitions(bucket, observedAt, run, routeRecords);
+    await writeMovementTransitions(bucket, observedAt, run, segmentRecords);
     for (const key of store.keys()) {
       expect(key.startsWith('v1/movement_transitions/2023-11-14/')).toBe(true);
     }
@@ -234,7 +235,7 @@ describe('writeMovementTransitions: both scopes survive one tick', () => {
 
   test('an empty tick still writes nothing', async () => {
     const { bucket, store } = fakeBucket();
-    await writeMovementTransitions(bucket, observedAt, []);
+    await writeMovementTransitions(bucket, observedAt, run, []);
     expect(store.size).toBe(0);
   });
 });
@@ -370,14 +371,14 @@ describe('writeMovementCensus: multi-tick three-state fixture', () => {
 
     const c1 = buildMovementCensus(observed1, feedKeys, entries1, tick1);
     const c2 = buildMovementCensus(observed2, feedKeys, entries2, tick2);
-    await writeMovementCensus(bucket, c1);
-    await writeMovementCensus(bucket, c2);
+    await writeMovementCensus(bucket, c1, '1700000899-1700000900120');
+    await writeMovementCensus(bucket, c2, '1700001199-1700001200007');
 
     expect(store.size).toBe(2);
     const keys = [...store.keys()].sort();
     expect(keys).toEqual([
-      `archive/movement_census/2023-11-14/${tick1}.json`,
-      `archive/movement_census/2023-11-14/${tick2}.json`,
+      'archive/movement_census/2023-11-14/1700000899-1700000900120.json',
+      'archive/movement_census/2023-11-14/1700001199-1700001200007.json',
     ]);
 
     const p1 = JSON.parse(store.get(keys[0]!)!);
@@ -403,7 +404,7 @@ describe('writeMovementCensus: multi-tick three-state fixture', () => {
   test('measured three-route object size', async () => {
     const { bucket, store } = fakeBucket();
     const census = buildMovementCensus(observed1, feedKeys, entries1, tick1);
-    await writeMovementCensus(bucket, census);
+    await writeMovementCensus(bucket, census, '1700000899-1700000900120');
 
     const body = [...store.values()][0]!;
     const parsed = JSON.parse(body);

@@ -17,7 +17,14 @@ falls in that hour.
 
 Two keys outside this prefix are referenced: the static GTFS archive
 (``archive/gtfs/<sha256>.zip``) and the legacy predictions stream
-(``v1/predictions/<YYYY-MM-DD>/<ts>.jsonl``).
+(``v1/predictions/<YYYY-MM-DD>/<name>.jsonl``).
+
+A Worker run names every object it writes once under a dated ``archive/``
+or ``v1/`` prefix (predictions, health, alerts liveness, ...) by its tick id,
+``<scheduled_at>-<started_at_ms>``, the id of its ``CollectorTick``, so two
+runs never share one. Objects written before that are named by the run's
+execution second, ``<observed_at>``. Either way the date folder is the UTC
+day of ``observed_at``. ``RUN_NAME`` matches both names.
 
 Each key type formats with ``.key`` and parses with ``parse_key``;
 ``parse_key(k.key) == k`` for every valid key.
@@ -218,9 +225,16 @@ class GtfsArchiveKey:
         return f"archive/gtfs/{self.sha256}.zip"
 
 
+# The name of an object one Worker run writes under a dated archive prefix:
+# its run's ``<scheduled_at>-<started_at_ms>``, or ``<observed_at>`` before
+# per-run names.
+RUN_NAME = r"(?:(?P<sched>\d+)-(?P<ms>\d+)|(?P<at>\d+))"
+
+
 @dataclass(frozen=True)
 class LegacyPredictionsKey:
-    """One tick of the legacy ``v1/predictions`` stream."""
+    """One tick of the legacy ``v1/predictions`` stream, named by its
+    ``observed_at`` (the name before per-run names)."""
 
     observed_at: int
 
@@ -232,6 +246,33 @@ class LegacyPredictionsKey:
         return f"v1/predictions/{utc_day(self.observed_at)}/{self.observed_at}.jsonl"
 
 
+@dataclass(frozen=True)
+class LegacyPredictionsRunKey:
+    """One tick of the legacy ``v1/predictions`` stream, named by the run that
+    wrote it and filed under the UTC day of its ``observed_at``."""
+
+    day: str
+    scheduled_at: int
+    started_at_ms: int
+
+    def __post_init__(self) -> None:
+        _check_day(self.day)
+        _check_instant("scheduled_at", self.scheduled_at)
+        _check_instant("started_at_ms", self.started_at_ms)
+
+    @classmethod
+    def for_run(
+        cls, observed_at: int, scheduled_at: int, started_at_ms: int
+    ) -> LegacyPredictionsRunKey:
+        return cls(utc_day(observed_at), scheduled_at, started_at_ms)
+
+    @property
+    def key(self) -> str:
+        return (
+            f"v1/predictions/{self.day}/{self.scheduled_at}-{self.started_at_ms}.jsonl"
+        )
+
+
 ObservationKey = (
     TickKey
     | BundleKey
@@ -240,6 +281,7 @@ ObservationKey = (
     | DerivedDayKey
     | GtfsArchiveKey
     | LegacyPredictionsKey
+    | LegacyPredictionsRunKey
 )
 
 _P = re.escape(PREFIX)
@@ -262,6 +304,12 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("daily", re.compile(rf"{_P}derived/(?P<rec>\w+)/(?P<day>{_DAY})\.parquet")),
     ("gtfs", re.compile(r"archive/gtfs/(?P<sha>[0-9a-f]{64})\.zip")),
     ("legacy", re.compile(rf"v1/predictions/(?P<day>{_DAY})/(?P<ts>\d+)\.jsonl")),
+    (
+        "legacy_run",
+        re.compile(
+            rf"v1/predictions/(?P<day>{_DAY})/(?P<sched>\d+)-(?P<ms>\d+)\.jsonl"
+        ),
+    ),
 )
 
 
@@ -296,6 +344,8 @@ def _build(kind: str, m: re.Match[str]) -> ObservationKey:
             return DerivedDayKey(daily, g["day"])
         case "gtfs":
             return GtfsArchiveKey(g["sha"])
+        case "legacy_run":
+            return LegacyPredictionsRunKey(g["day"], int(g["sched"]), int(g["ms"]))
         case _:
             return LegacyPredictionsKey(int(g["ts"]))
 

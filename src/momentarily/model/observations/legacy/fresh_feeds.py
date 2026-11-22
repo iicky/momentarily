@@ -5,13 +5,14 @@ GTFS-RT feeds that decoded that tick (``fresh_feeds``). The aggregates stay
 what they are; only the per-feed success becomes a record. The trace archive
 keeps the same list and shares ``feed_outcomes``.
 
-Object: ``<archive>/<YYYY-MM-DD>/<observed_at>.json`` holding
-``{observed_at, fresh_feeds, rows}``.
+Object: ``<archive>/<YYYY-MM-DD>/<name>.json`` holding
+``{observed_at, fresh_feeds, rows}``. ``name`` is the run's
+``<scheduled_at>-<started_at_ms>``; objects written before per-run names are
+named by ``<observed_at>``, the wall clock, and keep no scheduled minute.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any, cast
 
 from momentarily.model.conventions import Unknown
@@ -33,6 +34,8 @@ from momentarily.model.observations.legacy.common import (
     lineage,
     load_json,
     match_key,
+    run_key,
+    run_scheduled_at,
     unknown,
 )
 
@@ -74,9 +77,7 @@ def feed_outcomes(
     ]
 
 
-_KEY = re.compile(
-    r"(?P<archive>archive/(?:trip_updates|vehicles))/(?P<day>\d{4}-\d{2}-\d{2})/(?P<at>\d+)\.json"
-)
+_KEY = run_key(r"(?P<archive>archive/(?:trip_updates|vehicles))", ".json")
 
 
 def adapt(obj: LegacyObject) -> list[Emitted]:
@@ -88,10 +89,13 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
     )
     doc = as_dict(load_json(obj), obj.key)
     observed_at = get_int(doc, "observed_at", obj.key)
-    if int(m["at"]) != observed_at:
-        raise MalformedObjectError(f"{obj.key} names another observed_at")
+    scheduled_at = run_scheduled_at(m, obj.key, observed_at)
     check_day(obj.key, m["day"], observed_at)
-    scheduled = unknown(f"{archive} keeps the wall clock only")
+    scheduled = (
+        unknown(f"{archive} keeps the wall clock only")
+        if scheduled_at is None
+        else scheduled_at
+    )
     return feed_outcomes(
         archive, obj.source(observed_at), scheduled, fresh_feeds(doc, obj.key)
     )

@@ -9,6 +9,10 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { archiveArrivalsSample } from '../src/archive';
 
+// The run's tick id (`<scheduled_at>-<started_at_ms>`) and the key it names.
+const RUN = '1704067159-1704067200000';
+const KEY = 'archive/arrivals/2024-01-01/1704067159-1704067200000.json.gz';
+
 // Minimal in-memory R2 bucket — just the put this helper touches. Captures
 // httpMetadata too, so the gzip content-type/encoding contract is checkable.
 function fakeBucket() {
@@ -67,12 +71,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1', 'GTFSRT_feed2'],
     );
 
-    const key = 'archive/arrivals/2024-01-01/1704067200.json.gz';
+    const key = KEY;
     expect(store.has(key)).toBe(true);
     expect(metadata.get(key)).toEqual({ contentType: 'application/json', contentEncoding: 'gzip' });
     const body = await readGzippedJson(store.get(key)!);
@@ -102,12 +107,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: Record<string, unknown[]>;
     };
     const arrival = body.stops['Q05S']![0];
@@ -134,12 +140,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: Record<string, Array<{ trip_id: string | null }>>;
     };
     expect(body.stops['Q05S']).toHaveLength(4);
@@ -158,12 +165,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       [],
       [],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: Record<string, Array<{ eta_epoch: number }>>;
     };
     expect(body.stops['Q05S']![0]!.eta_epoch).toBe(100);
@@ -185,12 +193,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: Record<string, unknown[]>;
     };
     expect(Object.keys(body.stops)).toEqual(['Q05N', 'Q05S']);
@@ -203,12 +212,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       {},
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: unknown;
     };
     expect(body.stops).toEqual({});
@@ -225,34 +235,34 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: Record<string, Array<{ trip_id: string | null }>>;
     };
     expect(body.stops['Q05S']![0]!.trip_id).toBeNull();
   });
 
-  test('uses deterministic key based on observedAt', async () => {
-    const { bucket: bucket1, store: store1 } = fakeBucket();
-    const { bucket: bucket2, store: store2 } = fakeBucket();
+  test('keys on the run: two runs that observe in the same second write two objects', async () => {
+    const { bucket, store } = fakeBucket();
     const arrivals = {
       'Q05S': [
         { route: '2', eta_epoch: 100, seconds_away: 50, trip_id: 'trip1' },
       ],
     };
 
-    // Same observedAt generates same key, so a retry overwrites
-    await archiveArrivalsSample(bucket1, 1_704_067_200, arrivals, ['f1'], ['f1']);
-    await archiveArrivalsSample(bucket2, 1_704_067_200, arrivals, ['f1'], ['f1']);
+    // A late run of one minute and the on-time run of the next, same second.
+    await archiveArrivalsSample(bucket, 1_704_067_200, '1704067159-1704067200100', arrivals, ['f1'], ['f1']);
+    await archiveArrivalsSample(bucket, 1_704_067_200, '1704067219-1704067200200', arrivals, ['f2'], ['f1', 'f2']);
 
-    const key1 = Array.from(store1.keys())[0];
-    const key2 = Array.from(store2.keys())[0];
-    expect(key1).toBe(key2);
-    expect(key1).toBe('archive/arrivals/2024-01-01/1704067200.json.gz');
+    expect([...store.keys()].sort()).toEqual([
+      'archive/arrivals/2024-01-01/1704067159-1704067200100.json.gz',
+      'archive/arrivals/2024-01-01/1704067219-1704067200200.json.gz',
+    ]);
   });
 
   test('includes fresh_feeds and expected_feeds arrays in the body', async () => {
@@ -266,12 +276,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1', 'GTFSRT_feed2'],
       ['GTFSRT_feed1', 'GTFSRT_feed2', 'GTFSRT_feed3'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       fresh_feeds: string[];
       expected_feeds: string[];
     };
@@ -296,12 +307,13 @@ describe('archiveArrivalsSample: R2 write shape', () => {
     await archiveArrivalsSample(
       bucket,
       1_704_067_200,
+      RUN,
       arrivals,
       ['GTFSRT_feed1'],
       ['GTFSRT_feed1'],
     );
 
-    const body = (await readGzippedJson(store.get('archive/arrivals/2024-01-01/1704067200.json.gz')!)) as {
+    const body = (await readGzippedJson(store.get(KEY)!)) as {
       stops: Record<string, unknown>;
     };
     const stopIds = Object.keys(body.stops);
@@ -324,7 +336,7 @@ describe('archiveArrivalsSample: R2 write shape', () => {
 
     // bucket.put failure should propagate (not be swallowed internally)
     await expect(
-      archiveArrivalsSample(failingBucket, 1_704_067_200, arrivals, ['f1'], ['f1']),
+      archiveArrivalsSample(failingBucket, 1_704_067_200, RUN, arrivals, ['f1'], ['f1']),
     ).rejects.toThrow('bucket failure: simulated R2 outage');
   });
 });

@@ -151,7 +151,7 @@
           "$ref": "#/$defs/Unknown"
         }
       ],
-      "description": "Kept by archive/trace only.",
+      "description": "Kept by archive/trace, and by the per-run key (<scheduled_at>-<started_at_ms>) of the other archives' newer objects.",
       "title": "Scheduled At"
     },
     "source": {

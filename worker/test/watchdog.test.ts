@@ -718,6 +718,85 @@ describe('watchdog: a wake runs the current minute only, never a past one', () =
   }, 30_000);
 });
 
+describe('watchdog: two runs of adjacent minutes that start in the same second keep a record each', () => {
+  /** Prefixes written once by every run, and once by a 5-minute boundary run. */
+  const EVERY_RUN = [['archive/arrivals/', '.json.gz'], ['archive/health/', '.json']] as const;
+  const BOUNDARY_RUN = [
+    ['archive/alerts_liveness/', '.json'],
+    ['archive/trip_updates/', '.json'],
+    ['archive/vehicles/', '.json'],
+    ['archive/movement_census/', '.json'],
+    ['v1/predictions/', '.jsonl'],
+  ] as const;
+
+  /** Each per-run prefix holds exactly one object per run that writes it, named by that run. */
+  async function expectOnePerRun(m: Miniflare, boundary: CollectorTick, next: CollectorTick): Promise<void> {
+    const runKey = (t: CollectorTick, suffix: string): string => `/${t.scheduled_at}-${t.started_at_ms}${suffix}`;
+    for (const [prefix, suffix] of EVERY_RUN) {
+      const listed = await keys(m, prefix);
+      expect(listed, prefix).toHaveLength(2);
+      for (const t of [boundary, next]) {
+        expect(listed.filter((k) => k.endsWith(runKey(t, suffix))), `${prefix} ${t.trigger}`).toHaveLength(1);
+      }
+    }
+    for (const [prefix, suffix] of BOUNDARY_RUN) {
+      const listed = await keys(m, prefix);
+      expect(listed, prefix).toHaveLength(1);
+      expect(listed[0]!.endsWith(runKey(boundary, suffix)), prefix).toBe(true);
+    }
+  }
+
+  async function runsOf(m: Miniflare, slot: number): Promise<[CollectorTick, CollectorTick]> {
+    const [boundary, ...moreBoundary] = await ticks(m, slot);
+    const [next, ...moreNext] = await ticks(m, slot + 1);
+    expect([moreBoundary, moreNext]).toEqual([[], []]);
+    return [boundary!, next!];
+  }
+
+  test('an alarm 35 s late for a boundary minute beside the next minute\'s on-time cron', async () => {
+    const m = start();
+    const slot = boundarySlot();
+    await clockAt(m, slot, DEADLINE_MS + 35_000);
+    await Promise.all([harness(m, 'alarm'), cron(m, slot + 1)]);
+    const [alarm, next] = await runsOf(m, slot);
+    expect([alarm.trigger, next.trigger]).toEqual(['alarm', 'cron']);
+    await expectOnePerRun(m, alarm, next);
+  }, 30_000);
+
+  test('the same, with one run\'s ace feed failing: both runs\' arrivals samples are kept', async () => {
+    const m = start();
+    const slot = boundarySlot();
+    const ace = TRIP_UPDATE_FEEDS.find(([name]) => name === 'ace')![1];
+    const held = holdFirst(ace);
+    await clockAt(m, slot, DEADLINE_MS + 35_000);
+    const both = Promise.all([harness(m, 'alarm'), cron(m, slot + 1)]);
+    await held.entered;
+    held.release(new Response('partial outage', { status: 503 }));
+    await both;
+    const [alarm, next] = await runsOf(m, slot);
+    await expectOnePerRun(m, alarm, next);
+    const r2 = await m.getR2Bucket('MOMENTARILY');
+    for (const t of [alarm, next]) {
+      const failed = t.fetches.find((f) => f.source === 'ace')!.outcome !== 'ok';
+      const [key] = (await keys(m, 'archive/arrivals/')).filter((k) => k.endsWith(`/${t.scheduled_at}-${t.started_at_ms}.json.gz`));
+      const sample = JSON.parse(gunzipSync(Buffer.from(await (await r2.get(key!))!.arrayBuffer())).toString()) as {
+        fresh_feeds: string[];
+      };
+      expect(sample.fresh_feeds.includes('ace'), t.trigger).toBe(!failed);
+    }
+  }, 30_000);
+
+  test('a cron about 62 s late for a boundary minute beside the next minute\'s on-time cron', async () => {
+    const m = start();
+    const slot = boundarySlot();
+    await clockAt(m, slot + 1, CRON_OFFSET_MS + 2_000);
+    await Promise.all([cron(m, slot), cron(m, slot + 1)]);
+    const [late, next] = await runsOf(m, slot);
+    expect([late.trigger, next.trigger]).toEqual(['cron', 'cron']);
+    await expectOnePerRun(m, late, next);
+  }, 30_000);
+});
+
 describe('watchdog: the cron fails open', () => {
   test.each([
     ['answers 500', 'claim-500'],

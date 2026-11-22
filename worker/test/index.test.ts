@@ -639,12 +639,16 @@ describe('scheduled: segment judging on the 1-minute clock (step 0c)', () => {
     expect(flow.cells['A|north|A01N']?.e).toBe(1); // one minute's expectation, not two
   });
 
-  test('two overlapping runs of one minute fold segment_flow once', async () => {
+  test('two overlapping runs of one minute fold segment_flow once, and only the winner writes the stop carry', async () => {
     // Their segment stages interleave: both read the accumulator before
     // either writes it, so the "already folded" check passes for both. The
-    // CAS lets one fold; the other skips its accumulator and station writes.
+    // CAS lets one fold; the other skips its accumulator, stop carry and
+    // station writes. The loser must not even attempt the carry: written
+    // before the CAS, a loser that lands after the winner leaves a carry the
+    // accumulator never folded.
     const { bucket, store, putCounts } = fakeBucket();
     let reads = 0;
+    let carryWrites = 0;
     let bothRead = (): void => {};
     const barrier = new Promise<void>((resolve) => {
       bothRead = resolve;
@@ -659,6 +663,10 @@ describe('scheduled: segment judging on the 1-minute clock (step 0c)', () => {
           await barrier;
         }
         return obj;
+      },
+      async put(key: string, ...rest: [never, never]) {
+        if (key === 'state/segment_vehicle_stops.json') carryWrites += 1;
+        return bucket.put(key, ...rest);
       },
     } as unknown as R2Bucket;
     const env: Env = { MOMENTARILY: interleaved };
@@ -677,9 +685,10 @@ describe('scheduled: segment judging on the 1-minute clock (step 0c)', () => {
       nowSpy.mockRestore();
     }
     expect(reads).toBe(2);
-    for (const key of ['state/segment_flow.json', 'state/station_flow.json']) {
+    for (const key of ['state/segment_flow.json', 'state/station_flow.json', 'state/segment_vehicle_stops.json']) {
       expect(putCounts.get(key), key).toBe(1);
     }
+    expect(carryWrites).toBe(1);
     const flow = jsonAt(store, 'state/segment_flow.json') as { cells: Record<string, { e: number }> };
     expect(flow.cells['A|north|A01N']?.e).toBe(1);
   });
@@ -900,9 +909,10 @@ describe('scheduled: alert-fetch liveness record (archive/alerts_liveness/)', ()
   const BOUNDARY_AT = 1_704_067_200; // 2024-01-01T00:00:00Z, minute 0
   const NEXT_BOUNDARY_AT = BOUNDARY_AT + 300; // +5 minutes
 
+  /** The run's record: these ticks are scheduled for, and start at, `observedAt`. */
   function livenessKey(observedAt: number): string {
     const date = new Date(observedAt * 1000).toISOString().slice(0, 10);
-    return `archive/alerts_liveness/${date}/${observedAt}.json`;
+    return `archive/alerts_liveness/${date}/${observedAt}-${observedAt * 1000}.json`;
   }
 
   async function runTick(

@@ -629,6 +629,7 @@ export async function runMinute(
         await archiveArrivalsSample(
           env.MOMENTARILY,
           observedAt,
+          recorder.tickId,
           arrivalsRecord.arrivals,
           arrivalsRecord.fresh_feeds,
           arrivalsRecord.expected_feeds,
@@ -672,10 +673,11 @@ export async function runMinute(
     // computed on the per-minute clock, ahead of the gate — but it is bounded
     // (one params read plus a handful of small puts) and immaterial to a
     // 5-minute-cadence publish. It is fail-soft: a throw or slow read degrades
-    // to "no fresh segment surface this minute", never a failed tick, and the
-    // stop carry is advanced first (below) so a partial failure can't corrupt
-    // the next minute's diff. The cadence gate (segmentCadenceOk) skips judging
-    // entirely until the trainer republishes segment_params.json fitted at this
+    // to "no fresh segment surface this minute", never a failed tick; the stop
+    // carry is then not advanced, so the next minute reads a gap and diffs from
+    // {} rather than from a carry its fold never saw. The cadence gate
+    // (segmentCadenceOk) skips judging entirely until the trainer
+    // republishes segment_params.json fitted at this
     // cadence: `lam` and `p0` are both per-tick, so an old 5-minute fit read
     // here would call every cell a collapse. A minute the accumulator already
     // holds (another run of this minute, an alarm takeover or a late cron,
@@ -683,8 +685,8 @@ export async function runMinute(
     // twice and add the minute's expected traversals twice. The fold is an
     // etag CAS on the accumulator read here, so two overlapping runs that both
     // read it before either wrote cannot both fold either: the run that loses
-    // skips its station_flow and transitions writes, as a losing alpha run
-    // skips its outputs.
+    // skips its stop carry, station_flow and transitions writes, as a losing
+    // alpha run skips its outputs.
     await fence('0c-segments');
     try {
       const segParams = await readSegmentParams(env.MOMENTARILY);
@@ -712,7 +714,8 @@ export async function runMinute(
             + `(this run's is ${segmentTick})`,
           );
         } else {
-          const prevCarry = await readSegmentVehicleStops(env.MOMENTARILY);
+          const carryRead = await readSegmentVehicleStops(env.MOMENTARILY);
+          const prevCarry = carryRead.state;
           // Strict adjacency, matching the offline reconstruction: diff only
           // against the carry stamped exactly one minute ago. A carry from
           // further back — a feed-gap minute that skipped judging, a missed
@@ -725,18 +728,6 @@ export async function runMinute(
               ? prevCarry.stops
               : {};
           const moveRows = deriveRouteMovementMetric(vehicles, prevSegStops, null);
-          // Advance the stop carry FIRST, before any surface write, stamped with
-          // THIS minute: it is the input to next minute's diff and must reflect
-          // this minute's positions even if the accumulator/regime work or a
-          // surface write below throws. A pure function of `vehicles`,
-          // independent of the flow state, so writing it up front is always
-          // correct — and the timestamp means a skipped write simply reads as a
-          // gap next minute rather than a stale same-looking carry.
-          await writeSegmentVehicleStops(
-            env.MOMENTARILY,
-            segmentTick,
-            stopPositions(vehicles),
-          );
           // Everything downstream keys on the snapped scheduled minute too, not
           // the wall-clock observedAt. This is a parity requirement: the offline
           // grade that gated this migration snaps trace ticks to the scheduled
@@ -761,14 +752,36 @@ export async function runMinute(
           if (!(await writeSegmentFlow(env.MOMENTARILY, flow, flowRead.etag))) {
             console.warn(
               'segment judging: segment_flow was written by an overlapping run since it was read; '
-              + `this run's fold of minute ${segmentTick} is dropped`,
+              + `this run's fold of minute ${segmentTick} and its stop carry are dropped`,
             );
           } else {
+            // The stop carry advances only with the fold that diffed against it,
+            // stamped with THIS minute, before any surface write so a failed
+            // surface write cannot hold it back. A run whose fold lost never
+            // writes it: the carry must describe the minute the accumulator
+            // holds, or the next minute would diff against positions the
+            // accumulator never folded. The write is itself a CAS on the carry
+            // read above: a later run that won the accumulator after this one
+            // and already advanced the carry keeps its newer carry.
+            if (
+              !(await writeSegmentVehicleStops(
+                env.MOMENTARILY,
+                segmentTick,
+                stopPositions(vehicles),
+                carryRead.etag,
+              ))
+            ) {
+              console.warn(
+                'segment judging: segment_vehicle_stops was written by another run since it was read; '
+                + 'its carry is kept',
+              );
+            }
             await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
             try {
               await writeMovementTransitions(
                 env.MOMENTARILY,
                 segmentTick,
+                recorder.tickId,
                 movementTransitions(changes, 'segment', segmentTick),
               );
             } catch (err) {
@@ -798,7 +811,7 @@ export async function runMinute(
       await fence('10-health');
       await recorder.finish();
       try {
-        await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
+        await archiveHealth(env.MOMENTARILY, writeFailures, observedAt, recorder.tickId);
       } catch (err) {
         console.error('health archive failed:', err);
       }
@@ -874,6 +887,7 @@ export async function runMinute(
         env.MOMENTARILY,
         deriveAlertsLiveness(alertsFetchOk, alertsFeedFresh),
         observedAt,
+        recorder.tickId,
       );
     } catch (err) {
       console.error('alerts liveness archive failed:', err);
@@ -1330,7 +1344,7 @@ export async function runMinute(
           movementCounts,
         });
         try {
-          await writePredictions(env.MOMENTARILY, observedAt, predictions);
+          await writePredictions(env.MOMENTARILY, observedAt, recorder.tickId, predictions);
         } catch (err) {
           console.error('predictions write failed:', err);
           failWrite('predictions_write');
@@ -1344,7 +1358,7 @@ export async function runMinute(
       );
       if (transitions.length > 0) {
         try {
-          await writeTransitions(env.MOMENTARILY, observedAt, transitions);
+          await writeTransitions(env.MOMENTARILY, observedAt, recorder.tickId, transitions);
           console.log(`transitions: ${transitions.length} regime flips this tick`);
         } catch (err) {
           console.error('transitions write failed:', err);
@@ -1415,6 +1429,7 @@ export async function runMinute(
             rows,
             freshFeeds,
             observedAt,
+            recorder.tickId,
           );
           lastSeen.trip_updates_at = observedAt;
 
@@ -1437,6 +1452,7 @@ export async function runMinute(
             moveRows,
             freshFeeds,
             observedAt,
+            recorder.tickId,
           );
           await writeVehicleStops(env.MOMENTARILY, stopPositions(vehicles));
           lastSeen.vehicles_at = observedAt;
@@ -1520,6 +1536,7 @@ export async function runMinute(
               await writeMovementTransitions(
                 env.MOMENTARILY,
                 observedAt,
+                recorder.tickId,
                 movementTransitions(changes, 'route', observedAt),
               );
               if (changes.length > 0) {
@@ -1532,7 +1549,7 @@ export async function runMinute(
             try {
               const feedKeys = new Set([...moveRows.keys(), ...rows.keys()]);
               const census = buildMovementCensus(observed, feedKeys, entries, observedAt);
-              await writeMovementCensus(env.MOMENTARILY, census);
+              await writeMovementCensus(env.MOMENTARILY, census, recorder.tickId);
             } catch (err) {
               console.error('movement census write failed:', err);
               failWrite('movement_census_write');
@@ -1664,7 +1681,7 @@ export async function runMinute(
     await fence('10-health');
     await recorder.finish();
     try {
-      await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
+      await archiveHealth(env.MOMENTARILY, writeFailures, observedAt, recorder.tickId);
     } catch (err) {
       console.error('health archive failed:', err);
     }

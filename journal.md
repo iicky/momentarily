@@ -11560,3 +11560,46 @@ Those streams are back on their documented names; only the private
 - The index sits outside the day folder on purpose: every date-prefix reader
   (the grader, viz, the legacy backfill, older deployed readers) parses each
   object in the folder as records.
+
+## 2026-11-21 events-trip-matching
+
+origin: agent
+
+Layer 3 slice 4 (runs, pattern fit, trip matching, supply) is built. The
+next goal is the minimal gap detector, so the plan now says which later
+slices it needs. Easy to miss:
+
+- The prototype's retained-tail rule looked ahead: it removed old rows only
+  from the trailing block. The built rule keeps an old row only when it opens
+  a stop block. That gives the same stop sequence, and a prefix of the input
+  keeps exactly the rows the whole input keeps up to the prefix end.
+- Test rows from different trains can share a poll and an entity position.
+  Deduplicating on (poll, entity) alone merged them, so the key now includes
+  the row's content.
+- A greedy per-pair continuity split let one train overtake a standing one,
+  because the total hop counts tied. The split now prefers even moves.
+- Gate days pass: 95.09% on 09-15 and 92.35% on 10-19. With withheld inputs
+  the matcher picks the labelled trip for 84.8% (10-21) and 83.9% (10-22) of
+  labelled runs. scipy is not a dependency, so the assignment is a small
+  Hungarian solver per connected component; a full day takes 3–4 s.
+
+## 2026-11-21 events-trip-matching-review
+
+origin: agent
+
+An independent review of the trip matcher found these problems; each is now
+fixed and has a test:
+
+- Legacy supply counted vehicles per poll. A legacy poll is one trace object
+  that holds the rows of every feed, so each feed's records also counted
+  other feeds' vehicles. Counts are now keyed by feed and poll.
+- Track numbers were ordered by pattern position first. A train that
+  appeared later under the same trip id, at an earlier stop, renumbered the
+  first train. The first instant now comes first in the order.
+- On the fall-back night, NYCT gives trips in the repeated 01:00 hour their
+  origin plus one hundredth of a minute. The matcher did not read that
+  marker, so 87 of 115 runs in that hour stayed unmatched; now 38 do.
+- An id hit with no common stop was accepted without a time check.
+
+The match rates are now 95.04% on 09-15 and 92.32% on 10-19, so the gates
+still pass.

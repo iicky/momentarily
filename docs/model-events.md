@@ -1,10 +1,11 @@
 # Data model, layer 3: events (`events/s1`) — scoping proposal
 
 Status: decided on 2026-10-21 (§9). Slice 1, the match index, slice 2, the
-contracts, and slice 3, coverage with the event file writer, are built
-(§10, "As built (slice 1)" to "As built (slice 3)"); nothing else is. The
-build plan (§10) starts with the match index and two data gates; deferred
-items are listed under Deferred.
+contracts, slice 3, coverage with the event file writer, and slice 4, runs,
+pattern fitting, trip matching and supply, are built (§10, "As built
+(slice 1)" to "As built (slice 4)"); nothing else is. The build plan (§10)
+now follows the minimal-detector path (§10, owner decision 2026-11-16);
+deferred items are listed under Deferred and in that paragraph.
 
 Layer 3 turns layer-2 observations into facts about trains. It answers
 questions such as these: which scheduled trip a realtime train is, which
@@ -276,10 +277,13 @@ The proposal changes the holdup matcher in four places:
 **Identity.**
 - `run_id = f"{lineage}:{source}:{trip_id}@{first_observed_at}#{track}"`.
 - `track` is 0 for an unsplit run. For split tracks it is the ordinal of
-  the tracks sorted by (first observed stop's pattern index, first stop
-  id, first observation instant, then the track's full observed sequence
+  the tracks sorted by (first observation instant, first observed stop's
+  pattern index, first stop id, then the track's full observed sequence
   of (observed_at, stop_id, vehicle_timestamp) compared lexicographically).
-  The last key breaks the tie between two trains that appear at the same
+  The first instant leads (review fix, 2026-11-21; it came third), so a
+  train that appears later under the same trip id never renumbers an
+  earlier one and a live run id stays the nightly one. The last key
+  breaks the tie between two trains that appear at the same
   stop in the same poll and then diverge. It depends only on content,
   never on entity order in a payload. Identical sampled positions do not
   prove one physical train. Two tracks with identical full sequences are
@@ -371,14 +375,21 @@ service day is the previous one.
     05:14) and 01:30 is 05:30 UTC (06:30); a trip departing 01:59 reaches a
     stop scheduled 02:01 at 06:01 UTC. On 10-31, 25:30 is 05:30 UTC
     (unchanged) and a trip departing 26:30 is 02:30 EST, 07:30 UTC (06:30).
-  - **Spring forward.** A trip whose first departure does not exist on the
-    wall clock (02:00–02:59 on the spring-forward date, including 26:xx of
-    the service date before) is **unresolved**, never clamped: clamping
-    would collapse ordering and headways. It has no instants, so tier-5
-    matching, lateness and scheduled supply leave it out; the id tiers
-    still match it. A trip that departs before the gap runs on by elapsed
-    time. The rule is provisional until a spring-forward night is measured
-    (2027-03-14; 2026-03-08 is outside the recorded data).
+    On 2026-11-01 NYCT ids trips running in the repeated (second) 01:00
+    hour with their origin + 1 hundredth of a minute (`006001` for
+    `006000`); the matcher reads such an id as origin − 1 at the second
+    occurrence (§10, "As built (slice 4)"). 77 of the 115 runs first seen
+    in that hour match; the residual 38 are mostly unmarked ids.
+  - **Spring forward (decided-provisional, owner 2026-11-16).** A trip
+    whose first departure does not exist on the wall clock (02:00–02:59 on
+    the spring-forward date, including 26:xx of the service date before)
+    is **unresolved**, never clamped: clamping would collapse ordering and
+    headways. It has no instants, so tier-5 matching, lateness and
+    scheduled supply leave it out; the id tiers still match it, untimed. A
+    trip that departs before the gap runs on by elapsed time. The rule
+    stands until a spring-forward night is measured (2027-03-14;
+    2026-03-08 is outside the recorded data), and is then confirmed or
+    replaced (§9, decision 11).
   - Every trip whose UTC offset differs between its first departure and
     last arrival is flagged `spans_dst_transition`, so that measurement can
     check them. A new rule bumps `WALL_CLOCK_VERSION` and `INDEX_VERSION`.
@@ -1354,6 +1365,7 @@ both (§6), so a run that crosses the cutover is split there.
 
 The owner accepted all ten recommendations on 2026-10-21. Each is marked
 **decided**, with the owner's scoping changes recorded where they apply.
+Decision 11 was added on 2026-11-16.
 
 1. **Where the live part runs. Decided:** §7, A now. Nightly Python is the
    source of truth. The narrow TS incremental in the Worker (B) is
@@ -1427,6 +1439,12 @@ The owner accepted all ten recommendations on 2026-10-21. Each is marked
       work, delay). It is never "no data";
     - the `suspect_producer_outage` annotation is deferred (see Deferred).
       Nothing suppresses a gap without transport evidence.
+11. **Spring forward. Decided-provisional (owner, 2026-11-16).** The §2.4
+    rule stays: a trip departing before the skipped hour runs on by elapsed
+    time, and a trip departing in it is unresolved (id tiers only, no
+    instants, no supply). It is provisional until the 2027-03-14 night is
+    measured; a changed rule bumps `WALL_CLOCK_VERSION` and
+    `INDEX_VERSION`.
 
 ## 10. Step 3 build plan
 
@@ -1435,6 +1453,51 @@ come first: Gate A before the contracts slice, and Gate B before the
 headways slice. The identity (§2.3), censoring (§3.2) and open-gap
 bootstrap (§4) rules were accepted with the decisions on 2026-10-21, and
 Gate A is the last check before the schema is generated from them.
+
+**Minimal-detector path (owner decision, 2026-11-16).** The next goal is
+the simplest honest rider signal: per stopping pattern, flag when the gap
+between trains runs far above normal, graded against the closed gaps the
+train data itself shows (truth), with MTA alerts as the competitor. The
+slices are built in the order that signal needs, and each is cut to what it
+reads. Nothing below is deleted from the plan; what waits is marked.
+
+1. **Slice 4, in full** (built, "As built (slice 4)"): runs, pattern fit,
+   one-to-one matching, service day and SupplyObservation. The detector
+   needs every run's pattern attribution (matched, unique fit or
+   ambiguous), its service date and the supply evidence that tells "no
+   trains" from "no data".
+2. **Slice 5, arrival bounds plus the "next"-family departure**:
+   `StopEvent` with `arrival` for the two service values (`stopped`,
+   `reported_planned`), and for `stopped` ("next" family) its `departure`
+   from the vehicle row, because the Headway contract times a `stopped`
+   passing by its departure (`EVIDENCE_BASIS`; owner-approved technical
+   call, 2026-11-21, so the contract is unchanged). Also `pattern_id`,
+   `pattern_index`, `pattern_attribution`, the flags `first_of_run` and
+   `liveness_uncertain`, and `uncovered_s` / `suspect_s` from slice 3. The
+   "last"-family departure is `Unknown` (it is only the next arrival), and
+   every `dwell` is `Unknown`. **Waits:** dwell, the "last"-family
+   `next_arrival` departure, `SegmentTraversal` (run time, stop-to-stop),
+   passage events (`reported_not_stopped`, `inferred_passage`),
+   `plan_dropped`, the `reported` widening tests beyond arrivals, and the
+   §3.5 holdout gate beyond arrival containment.
+3. **Slice 6, the pattern-scope service series**: `Headway` at
+   `scope = "pattern"`, `evidence = "service"`, both ambiguity series, and
+   `OpenState` open headways with `current_gap` across outages and
+   `scheduled_no_observation` from the match index's schedule. **Waits:**
+   route scope, the physical level, open runs, the D−1 checkpoint carry-in
+   (a gap across midnight longer than 2 h gives `leader_unknown`), and
+   `spans_no_service` beyond the first train after a closure.
+4. **Minimal layer 4**: a normal headway per (pattern, stop, day type, time
+   band), fitted interval-censored from the service series, beside the
+   scheduled headway.
+5. **Minimal layer 5**: flag an open gap far above its normal, suppressed
+   only by transport coverage (decision 10), graded against the closed
+   gaps, with MTA alerts as the competitor.
+
+**Waits until the detector proves itself:** the rest of slices 5 and 6
+above, slice 7's legacy backfill beyond the days the grading needs, and
+the items already under Deferred (ScheduledTripOutcome, the live Worker
+slice, `suspect_producer_outage`).
 
 1. **Match index.** It does not wait for Gate A. A per-service-day index
    built from a network build:
@@ -2016,6 +2079,256 @@ its metadata are `momentarily.model.events.files`.
        spring-forward gap), and are
        matched on the right day;
    - a rebuild is byte-identical.
+
+#### As built (slice 4)
+
+Runs are `momentarily.model.events.runs`, matching and TripMatch records
+`matching`, SupplyObservation `supply`, and the layer-2 reading, windows and
+file writing `match_build`. Files go through the slice-3 writer
+(`files.resolve_write`, now filing `trip_match` by service date and
+`supply` by UTC day) with `builder_version` `MATCH_VERSION = 1`. No
+contract, key or parquet layout changed.
+
+- **Commands.** `python -m momentarily.model.events trip-match --root
+  <layer-2 store> --network <layer-1 dir> --out <dir> --service-date D
+  [--lineage raw|legacy] [--build-id ID] [--partial] [--overwrite]
+  [--report PATH]` reads the day's window (D 00:00 local − 2 h to D + 1
+  08:00 local, cut at the recorder cutover per lineage), matches every run
+  in it, and writes the runs whose service date is D. `supply … --day D`
+  writes the UTC day's SupplyObservations from runs and matches of the day
+  ± 6 h. Match indexes are built in memory from the layer-1 directory
+  (`select_build` per date, or `--build-id` for all) and named in the
+  file's provenance by their index key and network digest. An hour of the
+  window without its layer-2 `vehicle` (raw also `feed_header`) file is a
+  missing input (exit 1, nothing written) unless `--partial`, which builds
+  from what there is and reports `hours_left_out`; the legacy trace days
+  have no neighbouring UTC days, so they build only with `--partial`.
+  `scripts/trip_match_probe.py` runs the withheld-input evaluation below.
+- **Rows.** Raw: a fetch is used when its header is at most 120 s old
+  (coverage's rule), so the 03:22 freeze adds no rows; placeholders by the
+  raw rule. Legacy: the feed of a row is `RouteFeed`'s for its trip-id
+  field, a poll is a trace object, and only polls `fresh_feeds` lists are
+  read; placeholders by the legacy rule (now one function,
+  `runs.is_legacy_placeholder`, which coverage also calls). A row without
+  a stop is not a position (none on the gate days). A row delivered twice
+  (one poll, entity and content) is one row.
+- **Old timestamps, as built.** An old row (more than 300 s) is kept only
+  when it opens a stop block, so a trailing block keeps its arrival and
+  adds nothing more, and a held block followed by movement keeps its
+  arrival too. This is the prototype's retained-tail rule written so that
+  it never looks ahead: the stop sequence and first-visit times are the
+  prototype's, and a prefix of the input keeps the same rows as the whole
+  input up to the prefix end. `end_state`: `stale_tail` when the last row
+  is old, `window_end` when the run is in its feed's last good poll of the
+  input, else `left_feed`.
+- **Tracks.** Only a run with a poll holding two rows of its trip id is
+  split (raw: by `train_id`, then continuity). The continuity rule assigns
+  each poll's rows to open tracks by forward pattern hops: most rows
+  assigned, then fewest hops, then the smallest largest hop (two trains
+  move evenly rather than one overtaking a standing one), then content
+  order. A row continuing nothing opens a track; when that opens more
+  tracks than the widest poll, the run is unsplittable
+  (`duplicate_trip_id`, its shared polls give no stops). Track ordinals
+  sort by first instant first (§2.3, review fix 2026-11-21), so a train
+  that appears later under the same trip id never renumbers an earlier
+  one; `supersedes_run_ids` stays `[]` until a live store exists. Two
+  legacy trains identical up to a prefix end are one merged run there and
+  two runs once they diverge.
+  On 10-21 the 17 runs with a trip id at two stops in one poll all split
+  by `train_id`; on 09-15 the 18 split by continuity. No run was
+  unsplittable, merged or `identity_uncertain_with` on any gate day.
+- **Split-run join.** As §2.3, for track-0 runs: same feed, origin, route
+  field and direction, the second starting 1–120 s after the first ends at
+  the same stop or the next stop of a pattern of the route, and (raw) not
+  both carrying disjoint train ids. Joined: 115 runs on 09-15, 73 on 10-19,
+  118 on 10-21, 106 on 10-22. The prototype did not join, so the run
+  counts below are lower than §2.3's (8,956 against 9,053 on 09-15).
+- **Matching, deviations from the prototype.** The tie between a tier-5
+  candidate at exactly 900 s and leaving the run unassigned goes to the
+  candidate; equal total costs go to the assignment whose trips come first
+  in (trip id, day) order (a secondary cost, so the result never depends
+  on input order). The assignment is a pure-Python Hungarian per connected
+  component (scipy is not a dependency; on all nine days below it agrees
+  with scipy's, per the independent review); a weekday takes 3–4 s for
+  loading, runs and matching together. Tier 5's anchor is the first common
+  stop after the pattern origin, falling back to the origin when the run's
+  first blocks hold no later stop of that pattern: that is the rule decision
+  5 was measured with (the prototype's 83.4%), so a run seen only at its
+  terminal can still be drift-matched there. An id-tier hit with no common
+  stop among the first blocks is timed by its first departure against the
+  run's first row (same tolerances; review fix, it was untimed: 6 runs on
+  10-21 had been accepted 2.4–2.8 h off). **Repeated fall-back hour**: on
+  2026-11-01 NYCT ids trips in the second 01:00–01:59 with origin + 1
+  hundredth (`006001_A..N43R` for static `006000_A..N43R`); this residue
+  appears on no other recorded day. A realtime origin ≡ 1 (mod 50) in
+  01:00–01:59 also looks up origin − 1, with the scheduled times shifted
+  by 3,600 s (the second occurrence). Of the 115 runs first seen in that
+  hour, 77 now match (28 before); 49 of the 52 marked ids match, at a
+  median offset of 8 s. The residual 38 are mostly unmarked ids (34),
+  unmatched as before. Miss classes add `drift_unassigned` (a run
+  with tier-5 candidates that holds none). The index holds active trips
+  only, so `service_day_mismatch` means "the id names trips only more than
+  6 h away"; the prototype's "id inactive on every candidate day" cannot
+  be seen. `deviation` takes `consistent`, `off_pattern` or
+  `order_violation`; skips and extras need traversal hop counts (slice 5).
+  `start_date_mismatch` compares the run's first published `start_date`
+  with the local date of the trip's first departure; an unresolved trip is
+  never flagged. An unmatched raw run's route is its published route
+  (`route_basis = "published"`).
+- **Pattern fit** uses the patterns of the window's service date's build
+  (one build per window), for every run including matched ones.
+- **Supply.** Counts are keyed by (feed, poll): a legacy poll is one trace
+  object holding every feed's rows (review fix; before it, 237,619 of
+  272,009 legacy records on 09-15 carried another feed's routes). Routes fold 6X, 7X and FX like the scheduled supply. A row
+  counts as `vehicles_stale_tail` when it is old, so the count at a fetch
+  never depends on later fetches. `route_basis` is `scheduled_trip` when a
+  counted vehicle's route came from its match. `listed_trips` counts the
+  fetch's trip updates by published route (folded). Two good fetches of one
+  feed in one second share the natural key; the later fetch id is kept.
+  On 10-22, `jz` Z: 606 vehicles against 605 scheduled train-minutes
+  (counted as Z, not J).
+- **Filing.** A service-day file holds the runs of the window matched to
+  that day. Runs near the window's edges are matched again in the
+  neighbouring day's build with other neighbours, so a run can, rarely, be
+  filed under both days with different trips. Not measured.
+
+**Match rates** (accepted decision-5 matcher, retained tails, every run of
+one UTC-day window, stationary and stale-only runs included):
+
+| Day | Lineage | Runs | Match rate | Prototype | Gate | T1 / T2 / T3 / T4 / T5 | Unmatched: `unscheduled` / `drift_unassigned` / other |
+|---|---|---|---|---|---|---|---|
+| 2026-09-15 | legacy | 8,956 | **95.04%** | 95.19% (max. cardinality) | 95.2 ± 0.5: pass | 6,086 / 1,584 / 98 / 79 / 665 | 200 / 236 / 8 |
+| 2026-10-19 | legacy | 8,776 | **92.32%** | 92.37% (max. cardinality) | 92.4 ± 0.5: pass | 5,485 / 1,479 / 126 / 103 / 909 | 247 / 399 / 28 |
+| 2026-08-12 (partial) | legacy | 3,752 | 94.64% | — | — | 2,545 / 514 / 21 / 20 / 451 | 136 / 64 / 1 |
+| 2026-10-21 | raw | 7,443 | 94.41% | 94.37% | — | 4,618 / 1,238 / 159 / 142 / 870 | 206 / 198 / 12 |
+| 2026-10-22 | raw | 8,759 | 94.27% | 94.21% | — | 5,194 / 1,569 / 217 / 186 / 1,091 | 333 / 159 / 10 |
+| 2026-10-24 | raw | 6,751 | 90.58% | 90.64% | — | 2,807 / 981 / 461 / 207 / 1,659 | 285 / 333 / 18 |
+| 2026-10-25 | raw | 6,164 | 87.72% | 87.78% | — | 1,953 / 978 / 437 / 221 / 1,818 | 359 / 379 / 19 |
+| 2026-11-01 | raw | 5,498 | 93.63% | 92.69% | — | 3,371 / 496 / 392 / 64 / 825 | 272 / 69 / 9 |
+| 2026-11-02 | raw (`--build-id 2c06219240445181`) | 8,146 | 96.39% | 96.38% | — | 5,737 / 1,012 / 106 / 27 / 970 | 139 / 135 / 20 |
+
+- The two gate days pass: 95.04% and 92.32% are 0.16 and 0.08 pt below
+  the targets, which were measured with maximum cardinality; decision 5's
+  leave-unassigned cost moves raw days by about 0.1 pt the same way. 11-01
+  is above the prototype by the repeated-hour alias.
+- **No scheduled trip is held by two tier-5 runs** on any of the nine days.
+  Id-tier runs that share a trip carry `shares_scheduled_trip`: 84 runs on
+  09-15, 120 on 10-19, 171 on 10-21, 163 on 10-22.
+- Stale-only runs: 14 (09-15) and 152 (10-19), as §2.2. `end_state` on
+  09-15: 7,700 `left_feed`, 844 `stale_tail`, 412 `window_end`.
+- Pattern attribution of unmatched runs on 10-21: 116 unique fit, 169
+  ambiguous, 125 off pattern (before the review fixes). `start_date_mismatch`: 14 (10-21), 4
+  (10-22), 77 (11-01, the misdated 6 trains of the Gate A/B results).
+
+**Withheld-input evaluation** (`scripts/trip_match_probe.py`; runs built
+once with full raw inputs, then matched again with the trip id's origin and
+path, `start_time`, `start_date` and `train_id` withheld; label = the full
+id-tier match, kept when the run's single `start_date` agrees). The
+matcher keeps the route field and the direction. The withholding covers
+the matcher only: runs were split by `train_id` and joined by id origin
+with the full inputs. The figure is therefore **assignment accuracy given
+runs built from full descriptors**, not legacy-equivalent end-to-end
+accuracy. Per class:
+
+| Day | Labelled | Assignment accuracy given runs built from full descriptors | Given a trip | Precision | Service day right | correct | no candidate | chain shift | extra train | sustained lateness | fragmentation | label not a candidate | nearer trip preferred | overtaking | competing service dates | equal costs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10-21 Wed | 6,153 | **84.9%** | 91.1% | 93.2% | 5,593 / 5,602 | 5,223 | 423 | 241 | 67 | 49 | 44 | 37 | 36 | 24 | 9 | 0 |
+| 10-22 Thu | 7,164 | **83.9%** | 90.8% | 92.4% | 6,508 / 6,508 | 6,012 | 546 | 358 | 76 | 21 | 43 | 55 | 35 | 18 | 0 | 0 |
+| 10-24 Sat | 4,455 | **85.7%** | 90.1% | 95.2% | 4,013 / 4,013 | 3,820 | 398 | 80 | 45 | 54 | 10 | 8 | 19 | 20 | 0 | 1 |
+| 10-25 Sun | 3,589 | **85.4%** | 90.0% | 94.9% | 3,229 / 3,231 | 3,066 | 299 | 35 | 46 | 99 | 16 | 1 | 19 | 6 | 2 | 0 |
+
+- **End to end on reduced inputs (10-21 only)**: with the runs rebuilt from
+  rows stripped of `train_id`, published route and `start_date`, and no
+  split-run join, then matched with the same withheld inputs, the pick
+  equals the label for **83.7%** of 6,221 labelled reduced runs (7,561
+  runs against 7,443; a reduced run is labelled when all its rows lie in
+  one labelled full run, so fragments of one train each count). Measured
+  with a throwaway script; the other days are not measured.
+- The prototype measured 83.4% (10-21) and 83.1% (10-22) for the same
+  rule. The largest class is still "no candidate": W trains with `N` in the
+  id, Z trains with `J`, and runs whose stops fit no pattern of the field.
+- By feed on 10-22: `si` 151/151, `l` 542/561, `g` 258/273, `jz` 198/216,
+  `ace` 895/995, `bdfm` 900/1,054, `numbered` 2,632/3,175, `nqrw`
+  436/739. The owner sets the threshold (§10 acceptance).
+
+**Hard cases for the owner's spot-check** (from the probe's disagreements,
+spread over the classes; times ET; L = label, the full raw match; P = the
+withheld matcher's pick):
+
+| # | Run (feed), seen | Train id | L | P | Class, why hard |
+|---|---|---|---|---|---|
+| 1 | `007900_2..S08X027` (numbered), 10-21 01:20–02:21 | `02 0119  241/FLA` | `…_007900_2..S08R`, −63 s, T3 | unassigned, 0 candidates | no candidate: an express-variant path whose observed stops (204S…227S) fit no route-2 pattern |
+| 2 | `043750_7..N` (numbered), 10-21 07:15–07:55 | `07 0717+ 34H/MST` | `…_043750_7..N35R`, −161 s, T2 | `…_043250_7..N35R`, +194 s | chain shift: first seen waiting at 726N; the label (106 s off at the anchor) went to another labelled run |
+| 3 | `044250_7..N` (numbered), 10-21 07:20–07:52 | `07 0722+ 34H/111` | `…_044250_7..N35R`, −177 s, T2 | `…_044000_7..N35R`, −51 s | extra train: a run without a label took its trip at rush hour |
+| 4 | `134700_F..N69X300` (bdfm), 10-21 00:37–00:39 | `1F 2227 STL/179` | `…_134700_F..N20R` (10-20), +1,250 s, T4 | unassigned | sustained lateness: seen once at F01N when the freeze ended, 21 min behind |
+| 5 | `056850_6..N` (numbered), 10-21 10:35–10:49 | `06 0928+ BBR/PEL` | `…_056850_6..N01R`, +462 s, T2 | unassigned | fragmentation: seen only at the terminal 601N; another run of the same train holds the trip |
+| 6 | `047100_2..S` (numbered), 10-21 07:48–09:43 | `02 0751  241/NLT` | `…_047100_2..S05R`, −175 s, T2 | `…_047750_2..S06R`, −435 s | label not a candidate: its stops fit only the S06R pattern |
+| 7 | `055250_4..N43X004` (numbered), 10-21 09:10–09:59 | `04 0912+ UTI/MOT` | `…_055250_4..N43X004`, −143 s, T1 | `…_054950_4..N06R`, +3 s | nearer trip preferred: a 4 express variant; the local 3 s away wins |
+| 8 | `061350_5..N66R` (numbered), 10-21 10:13–11:59 | `05 1013+ FLA/DYR` | `…_061350_5..N66R`, −143 s, T1 | `…_060900_5..N66R`, +127 s | overtaking: swapped with the train ahead |
+| 9 | `138150_M..S25R` (bdfm), 10-21 00:37–00:41 | `1M 2301+ ESX/MET` | `…_138150_M..S25R` (10-20), +4,220 s, T1 | `…_003000_M..S30R` (10-21), −340 s | competing service dates: seen only at M01S after the freeze, 70 min late; the next day's trip is nearer |
+| 10 | `069250_N..S34R` (nqrw), 10-21 11:36–13:27 | `1N 1132+ DIT/STL` | `…_069250_N..S34R`, +149 s, T1 | unassigned, 0 candidates | no candidate: R03S…D43S fits no N pattern in the order seen |
+| 11 | `125600_E..N` (ace), 10-21 21:46–21:52 | `=E 2140+ VWY/179` | `…_125600_E..N72R`, untimed, T2 | unassigned, 0 candidates | no candidate: seen only at F03N and F01N, which its own trip does not serve (so the label is untimed); no trip of the E patterns that fit lies within 15 min |
+| 12 | `042550_J..S13R` (jz), 10-22 07:07–08:02 | `1J 0705+ P-A/BRD` | `…_042550_J..S13R`, +81 s, T1 | unassigned | extra train: its trip went to an unlabelled run though only 81 s off |
+| 13 | `049400_1..S17R` (numbered), 10-22 08:22–08:28 | `/1 0814  137/SFT` | `…_049400_1..S17R`, +393 s, T1 | `…_048150_1..S16R`, +33 s | fragmentation: a 6-minute fragment seen at 116S only |
+| 14 | `064650_L..S` (l), 10-22 10:43–11:06 | `0L 1046+8AV/MYR`, `…/RPY` | `…_064650_L..S01R`, −202 s, T2 | `…_064300_L..S05R`, +218 s | overtaking: the label is 8 s off at the anchor, yet the swap wins on total cost; the run carries two train ids |
+| 15 | `048450_N..S72R` (nqrw), 10-22 08:04–08:43 | `1W 0804+ DIT/WHL` | `…_048450_N..S72R`, −42 s, T1 | unassigned, 0 candidates | no candidate: a W train (`1W`) with `N` in its id; the one N pattern its stops fit has no trip within 15 min, and the W patterns its published route reaches are withheld |
+
+**Replay, identity and synthetic tests** (`tests/test_trip_match.py`):
+
+- **Prefix replay.** Every prefix of the derived `recorded_hour` fixture,
+  and of the same polls reduced to legacy fields (no route, `start_date`
+  or train id; the repo holds no legacy hour with vehicle rows), delivered
+  as a first batch up to mid-prefix plus a restarted second batch that
+  repeats its last two minutes, all rows shuffled, gives the same runs,
+  rows, kept rows and tail state as the full input up to the prefix end.
+  A run cut by the prefix end is `window_end` or `stale_tail`. Two
+  invocations in one second are both kept, in the same order whatever
+  the delivery order.
+- **Identity**: two trains sharing a trip id and first poll get two run
+  ids (tracks 0 and 1); a joined run lists its member and keeps the
+  earliest id; different train ids never join. **Tie**: two legacy trains
+  at one stop in one poll that then diverge get the same pair of run ids
+  and stop sequences under 40 shuffled entity and delivery orders.
+  **Merge**: identical tracks with equal train ids merge
+  (`deduplicated_by_position`); with different ones both stay, each
+  `identity_uncertain_with` the other. An unsplittable run is flagged and
+  its shared polls give no stops. **Late second train**: a train that
+  appears 4 minutes later under the same trip id, at an earlier pattern
+  stop, never renumbers the first (`…#0` in every prefix and in full).
+  Distinct `(run_id, seq)` keys for a revisited stop belong to the
+  StopEvent slice.
+- **Pattern fit**: one pattern, none (backwards) and two patterns give
+  `unique_fit`, `off_pattern` and `ambiguous` with the right ids.
+- **Fresh-feed suspension**: with every fetch good for 50 minutes, route 1
+  on `numbered` (route 2 running) and the whole `g` feed at zero stay
+  `covered`, and every fetch in a scheduled minute records the route at 0
+  vehicles against its schedule. Z trains count toward Z. A legacy trace
+  object holding two feeds' rows gives each feed only its own routes (on
+  the mirror, 0 of 34,390 legacy supply records on 09-15 hold another
+  feed's vehicles).
+- **Synthetic cases**: wrapped `000100` at 00:01–00:09 takes the previous
+  service date; a 24:10 trip with `start_date` = service date + 1 is not
+  flagged (and is with the service date); placeholders never form a run; a
+  frozen trailing block keeps its fresh rows and arrival and ends
+  `stale_tail`; a held old block followed by movement stays a stop; a
+  run cut by the input gives `window_end`; an unmatched run at 00:30 gets
+  its `id_origin` date with `service_date_ambiguous`; an unparseable id
+  takes the clock rule. **DST**: on 2026-11-01 a trip departing 00:14
+  matches at 04:14 UTC, a 26:30 trip of 10-31 (wrapped `015000`) at
+  07:30 UTC, 03:00 at 08:00 UTC, and a drifted id at 01:35 EDT the first
+  01:30; on 2027-03-14 the 02:30 trip matches by id, untimed, and never by
+  tier 5, 25:30 of 03-13 (wrapped) at 06:30 UTC and 03:00 at 07:00 UTC;
+  the days before match at ordinary hours. The repeated-hour marker
+  `009001` at 06:30 UTC on 11-01 matches the 01:30 trip at the second
+  occurrence (offset 0), and the same residue at 06:00 local is no
+  marker. An id hit with no common stop matches 1 h after its first
+  departure and not 3 h after.
+- **Rebuild**: `trip-match` and `supply` on the derived fixture with
+  `--partial` write, report `unchanged` on a rerun, and give identical bytes
+  in two separate output directories; without `--partial` the missing
+  hours of the window exit 1. On the mirror, service day 10-21 (raw)
+  rebuilds to the same bytes (`e9b185af…`, 8,394 runs, 94.39% matched).
+
 5. **Stop events, traversals and dwell** (per-family rules, service
    evidence, left-censored first stops, `uncovered_s` from slice 3).
    Acceptance:

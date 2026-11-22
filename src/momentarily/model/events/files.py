@@ -44,7 +44,12 @@ from pydantic_core import PydanticCustomError
 
 from momentarily.model.conventions import Model, Provenance
 from momentarily.model.events.columns import LAYOUT_VERSION, RECORDS
-from momentarily.model.events.contracts import SCHEMA_ID, CoverageInterval
+from momentarily.model.events.contracts import (
+    SCHEMA_ID,
+    CoverageInterval,
+    SupplyObservation,
+    TripMatch,
+)
 from momentarily.model.events.keys import (
     ServiceDayKey,
     UtcDayKey,
@@ -134,6 +139,28 @@ def _coverage_belongs(record: BaseModel, key: UtcDayKey | ServiceDayKey) -> bool
     return record.lineage == key.lineage and utc_day(record.interval.start) == key.day
 
 
+def _trip_match_key(record: BaseModel) -> NaturalKey:
+    assert isinstance(record, TripMatch)
+    return (record.run_id,)
+
+
+def _trip_match_belongs(record: BaseModel, key: UtcDayKey | ServiceDayKey) -> bool:
+    assert isinstance(record, TripMatch)
+    assert isinstance(key, ServiceDayKey)
+    return record.lineage == key.lineage and record.service_date == key.service_date
+
+
+def _supply_key(record: BaseModel) -> NaturalKey:
+    assert isinstance(record, SupplyObservation)
+    return (record.source, record.route_id, record.observed_at)
+
+
+def _supply_belongs(record: BaseModel, key: UtcDayKey | ServiceDayKey) -> bool:
+    assert isinstance(record, SupplyObservation)
+    assert isinstance(key, UtcDayKey)
+    return record.lineage == key.lineage and utc_day(record.observed_at) == key.day
+
+
 # Record kinds the writer can file so far: natural key and partition rule.
 # Later slices add theirs as they start writing files.
 _FILING: dict[
@@ -144,6 +171,8 @@ _FILING: dict[
     ],
 ] = {
     "coverage": (_coverage_key, _coverage_belongs),
+    "trip_match": (_trip_match_key, _trip_match_belongs),
+    "supply": (_supply_key, _supply_belongs),
 }
 
 

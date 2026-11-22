@@ -6,6 +6,14 @@
     python -m momentarily.model.events coverage --root <layer-2 store> \\
         --out <dir> --day YYYY-MM-DD [--lineage raw|legacy] [--overwrite] \\
         [--report PATH]
+    python -m momentarily.model.events trip-match --root <layer-2 store> \\
+        --network <layer-1 dir> --out <dir> --service-date YYYY-MM-DD \\
+        [--lineage raw|legacy] [--build-id ID] [--partial] [--overwrite] \\
+        [--report PATH]
+    python -m momentarily.model.events supply --root <layer-2 store> \\
+        --network <layer-1 dir> --out <dir> --day YYYY-MM-DD \\
+        [--lineage raw|legacy] [--build-id ID] [--partial] [--overwrite] \\
+        [--report PATH]
 
 ``match-index``: ``--network`` is a layer-1 output directory (``index.json``,
 ``<build_id>.json.gz``, and by default ``day_feed_map.json``). The build of
@@ -26,6 +34,18 @@ lineage that holds the day, both on the cutover day) is written to
 (and written to ``--report``). Exit status 1 means an input was missing or
 inconsistent (nothing is written then) or a stored file conflicts; 2 a bad
 day or a lineage that does not hold it.
+
+``trip-match``: the service day's runs and TripMatch records
+(``match_build.build_trip_match``), from the layer-2 files of the day's
+window (local midnight − 2 h to the next day's 08:00) and match indexes
+built in memory from ``--network`` (each date's build per the day map, or
+``--build-id`` for every date). ``supply``: the UTC day's
+SupplyObservations (``match_build.build_supply``). Both print a JSON report
+(match rate, tiers, miss classes, flags, end states, rows read). Exit status
+1 means a missing or inconsistent input (an hour of the window without its
+layer-2 file, unless ``--partial`` builds from what there is and lists the
+hours left out; nothing is written then) or a conflicting stored file; 2 a
+bad date or a lineage that does not hold the window.
 """
 
 from __future__ import annotations
@@ -35,8 +55,9 @@ import gzip
 import json
 import sys
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from momentarily.model.events.contracts import Lineage
 from momentarily.model.events.coverage import (
@@ -44,6 +65,13 @@ from momentarily.model.events.coverage import (
     CoverageWindowError,
     build_coverage,
     coverage_window,
+)
+from momentarily.model.events.match_build import (
+    TZ,
+    Indexes,
+    build_supply,
+    build_trip_match,
+    lineage_window,
 )
 from momentarily.model.events.match_index import (
     IndexInputs,
@@ -56,6 +84,7 @@ from momentarily.model.events.match_index import (
     select_build,
     serialize,
 )
+from momentarily.model.events.matching import service_day_window
 from momentarily.model.events.route_feed import load_route_feed
 from momentarily.model.network.contracts import DayFeedMap, NetworkSnapshot
 from momentarily.model.observations.derive.run import check_day
@@ -205,6 +234,74 @@ def _cmd_coverage(args: argparse.Namespace) -> int:
     return status
 
 
+def _cmd_matching(args: argparse.Namespace) -> int:
+    try:
+        check_day(args.period)
+    except ValueError as err:
+        print(err, file=sys.stderr)
+        return 2
+    if args.record == "trip-match":
+        start, end = service_day_window(args.period, TZ)
+    else:
+        start = int(datetime.fromisoformat(args.period).replace(tzinfo=UTC).timestamp())
+        end = start + 86400
+    lineages: list[Lineage] = (
+        [cast(Lineage, args.lineage)] if args.lineage else ["legacy", "raw"]
+    )
+    held: list[Lineage] = [
+        lin
+        for lin in lineages
+        if lineage_window(lin, start, end)[0] < lineage_window(lin, start, end)[1]
+    ]
+    if not held:
+        print(
+            f"{args.period}: no {args.lineage} lineage in the window", file=sys.stderr
+        )
+        return 2
+    try:
+        indexes = Indexes(args.network, args.build_id)
+    except MatchIndexBuildError as err:
+        print(err, file=sys.stderr)
+        return 1
+    code = code_provenance()
+    build = build_trip_match if args.record == "trip-match" else build_supply
+    reports = [
+        build(
+            LocalStorage(args.root),
+            LocalStorage(args.out),
+            indexes,
+            args.period,
+            lineage,
+            code["code_sha"],
+            code["dirty"],
+            overwrite=args.overwrite,
+            partial=args.partial,
+        )
+        for lineage in held
+    ]
+    docs: list[dict[str, Any]] = []
+    for r in reports:
+        doc = asdict(r)
+        doc["match_rate"] = r.match_rate
+        doc["failed"] = r.failed
+        docs.append(doc)
+    text = json.dumps({"period": args.period, "reports": docs}, indent=2) + "\n"
+    sys.stdout.write(text)
+    if args.report is not None:
+        args.report.write_text(text)
+    status = 0
+    for r in reports:
+        if r.failed:
+            print(
+                f"{r.key}: {len(r.missing_inputs)} missing and "
+                f"{len(r.inconsistent_inputs)} inconsistent inputs, "
+                f"{len(r.conflicts)} conflicting files",
+                file=sys.stderr,
+            )
+            status = 1
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m momentarily.model.events")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -224,6 +321,21 @@ def main(argv: list[str] | None = None) -> int:
     cov.add_argument("--overwrite", action="store_true")
     cov.add_argument("--report", type=Path, help="also write the JSON report here")
     cov.set_defaults(func=_cmd_coverage)
+    for name, period, helptext in (
+        ("trip-match", "--service-date", "build a service day's TripMatch file"),
+        ("supply", "--day", "build a UTC day's SupplyObservation file"),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("--root", type=Path, required=True)
+        p.add_argument("--network", type=Path, required=True)
+        p.add_argument("--out", type=Path, required=True)
+        p.add_argument(period, required=True, dest="period")
+        p.add_argument("--lineage", choices=("raw", "legacy"))
+        p.add_argument("--build-id")
+        p.add_argument("--partial", action="store_true")
+        p.add_argument("--overwrite", action="store_true")
+        p.add_argument("--report", type=Path, help="also write the JSON report here")
+        p.set_defaults(func=_cmd_matching, record=name)
     args = parser.parse_args(argv)
     return int(args.func(args))
 

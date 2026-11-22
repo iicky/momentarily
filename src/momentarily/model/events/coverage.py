@@ -72,7 +72,6 @@ from pydantic import BaseModel, ValidationError
 
 from momentarily.model.conventions import Interval, Unknown
 from momentarily.model.events.contracts import (
-    FEED_FAMILY,
     CoverageInterval,
     CoverageState,
     Lineage,
@@ -85,6 +84,7 @@ from momentarily.model.events.files import (
 )
 from momentarily.model.events.keys import UtcDayKey
 from momentarily.model.events.route_feed import RouteFeedTable, load_route_feed
+from momentarily.model.events.runs import is_legacy_placeholder
 from momentarily.model.events.trip_ids import parse_realtime
 from momentarily.model.observations.columns import from_row
 from momentarily.model.observations.contracts import (
@@ -625,18 +625,6 @@ def raw_evidence(
     return Evidence("raw", window, sorted(set(slots)), polls), inputs.read
 
 
-def _is_placeholder(
-    feed: GtfsRtSource, stopped: bool, vts: int | None, at: int
-) -> bool:
-    """§2.2 legacy rule: a row that is not stopped and reports from the
-    future; on the B division (not SIR) any row that is not stopped."""
-    if stopped:
-        return False
-    if FEED_FAMILY[feed] == "last" and feed != "si":
-        return True
-    return vts is not None and vts > at
-
-
 @dataclass
 class _TraceObject:
     observed_at: int
@@ -799,7 +787,7 @@ def _legacy_rows(
         if feed is None:
             inputs.report.unattributed_rows += 1
             continue
-        if _is_placeholder(feed, st == _STOPPED_AT, ts, at):
+        if is_legacy_placeholder(feed, st == _STOPPED_AT, ts, at):
             continue
         obj.rows.setdefault(feed, set()).add((trip_id, stop, ts))
 

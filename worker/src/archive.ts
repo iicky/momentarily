@@ -47,6 +47,12 @@ import type { MovementRow, TraceRow } from './vehicles';
 
 const RUN_ID = /^\d+-\d+$/;
 
+/** `runId` itself, after checking it has the tick id's form. */
+export function checkRunId(runId: string): string {
+  if (!RUN_ID.test(runId)) throw new RangeError(`not a run id: ${runId}`);
+  return runId;
+}
+
 /**
  * Key of an object one run writes once: `<prefix>/<UTC day of observedAt>/
  * <runId><suffix>`. `runId` is the run's tick id (`Recorder.tickId`,
@@ -58,8 +64,7 @@ export function runArchiveKey(
   runId: string,
   suffix: string,
 ): string {
-  if (!RUN_ID.test(runId)) throw new RangeError(`not a run id: ${runId}`);
-  return `${prefix}/${utcDate(observedAt)}/${runId}${suffix}`;
+  return `${prefix}/${utcDate(observedAt)}/${checkRunId(runId)}${suffix}`;
 }
 
 /**

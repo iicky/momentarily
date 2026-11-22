@@ -111,6 +111,7 @@ v1/
   calibration.json                    compact public calibration aggregate
   predictions/YYYY-MM-DD/<ts>.jsonl   one line per route per tick
   regime_transitions/YYYY-MM-DD/<ts>.jsonl  one line per regime flip
+  <stream>/index/YYYY-MM-DD.json      records moved to <ts>-<run>.jsonl because <ts> was taken (rare; see worker/README.md)
 ```
 
 Private — Worker/trainer/eval only, never served:

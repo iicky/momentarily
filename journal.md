@@ -11537,3 +11537,26 @@ boundaries committed alpha twice on one observation. Easy to miss:
 - Two test harness runs in one real second share every per-second archive
   key. The tests that hold an alarm run across deadlines hold it for over a
   second of real time, as production would for minutes.
+
+## 2026-11-21 public-grading-stream-names
+
+origin: agent
+
+Naming every once-written object by its run also renamed the three public
+grading streams (`v1/predictions`, `v1/regime_transitions`,
+`v1/movement_transitions`) to `<scheduled_at>-<started_at_ms>`. The public
+Worker serves exact keys and lists nothing, and the start millisecond is
+private, so no public client could find a record written after that change.
+Those streams are back on their documented names; only the private
+`archive/` objects keep per-run names. Easy to miss:
+
+- The names are keyed by an execution second, and two alpha winners of
+  different boundaries can start in one second (a run five minutes late
+  beside the next boundary's on-time run; a backlog harness run produced
+  exactly that). The writes are create-once, and the second run writes
+  `<name>-<run>.jsonl` in the same day folder and appends it to
+  `v1/<stream>/index/<day>.json` by etag CAS. Segment-scope names have one
+  writer, since the `segment_flow` minute only increases.
+- The index sits outside the day folder on purpose: every date-prefix reader
+  (the grader, viz, the legacy backfill, older deployed readers) parses each
+  object in the folder as records.

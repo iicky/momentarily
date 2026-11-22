@@ -326,7 +326,6 @@ def _run_named(
         ("archive/health", health.adapt, ".json"),
         ("archive/trip_updates", fresh_feeds.adapt, ".json"),
         ("archive/vehicles", fresh_feeds.adapt, ".json"),
-        ("v1/predictions", predictions.adapt, ".jsonl"),
     ],
 )
 def test_a_run_named_object_reads_as_its_observed_at_named_twin(
@@ -360,6 +359,39 @@ def test_a_run_name_must_match_the_object_s_observed_at() -> None:
     observed_at = json.loads(obj.body)["observed_at"]
     with pytest.raises(MalformedObjectError, match="another time"):
         health.adapt(_run_named(obj, ".json", observed_at, (observed_at - 60) * 1000))
+
+
+def test_a_prediction_object_s_run_suffixed_fallback_reads_as_its_twin() -> None:
+    """A run that found ``<ts>.jsonl`` taken wrote ``<ts>-<run>.jsonl``; the
+    same bytes read as the same records, naming the fallback object."""
+    for obj in _objects("v1/predictions"):
+        old = predictions.adapt(obj)
+        observed_at = old[0].inputs[0].observed_at
+        stem = obj.key.removesuffix(".jsonl")
+        moved = LegacyObject(
+            f"{stem}-{observed_at - 319}-{observed_at * 1000 + 7}.jsonl", obj.body
+        )
+        new = predictions.adapt(moved)
+        assert len(new) == len(old)
+        for was, now in zip(old, new, strict=True):
+            want = was.record.model_dump()
+            want["lineage"]["source_key"] = moved.key
+            assert now.record.model_dump() == want
+            assert now.inputs == tuple(
+                SourceObject(moved.key, s.sha256, s.observed_at) for s in was.inputs
+            )
+    obj = _objects("v1/predictions")[0]
+    observed_at = predictions.adapt(obj)[0].inputs[0].observed_at
+    stem = obj.key.removesuffix(".jsonl")
+    late = LegacyObject(
+        f"{stem}-{observed_at - 319}-{(observed_at + 2) * 1000}.jsonl", obj.body
+    )
+    with pytest.raises(MalformedObjectError, match="another time"):
+        predictions.adapt(late)
+    folder = obj.key.rsplit("/", 1)[0]
+    run_named = f"{folder}/{observed_at - 41}-{observed_at * 1000}.jsonl"
+    with pytest.raises(MalformedObjectError):
+        predictions.adapt(LegacyObject(run_named, obj.body))
 
 
 def test_runs_observed_in_one_second_each_keep_their_health_record(

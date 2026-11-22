@@ -106,12 +106,19 @@ def test_trip_update_and_vehicle_metrics_read_both_names() -> None:
         )
 
 
-def test_predictions_read_both_names() -> None:
+def test_predictions_read_a_run_suffixed_fallback_beside_its_tick() -> None:
     old = _mirror("v1/predictions")
     window = (date(2026, 7, 21), date(2026, 7, 21))
     got = load_predictions(_client(old), "bucket", *window)
     assert len(got) == sum(len(v.splitlines()) for v in old.values())
-    assert load_predictions(_client(_renamed(old)), "bucket", *window) == got
+
+    def fallback(key: str) -> str:
+        at = int(key.rsplit("/", 1)[1].removesuffix(".jsonl"))
+        return key.removesuffix(".jsonl") + f"-{at - 319}-{at * 1000 + 7}.jsonl"
+
+    moved = {fallback(k): v for k, v in old.items()}
+    both = load_predictions(_client(old | moved), "bucket", *window)
+    assert sorted(both, key=repr) == sorted(got + got, key=repr)
 
 
 def test_alerts_liveness_keys_select_both_names_by_day() -> None:
@@ -162,10 +169,8 @@ def test_runs_observed_in_one_second_each_load() -> None:
     folder = "v1/movement_transitions/2023-11-14"
     transitions = {
         f"{folder}/{at}-route.jsonl": line("route", "A"),
-        f"{folder}/{at - 41}-{at * 1000 + 7}-route.jsonl": line("route", "B"),
-        f"{folder}/{at - 101}-{at * 1000 + 9}-segment.jsonl": line(
-            "segment", "C|north|C01N"
-        ),
+        f"{folder}/{at}-route-{at - 341}-{at * 1000 + 7}.jsonl": line("route", "B"),
+        f"{folder}/{at}-segment.jsonl": line("segment", "C|north|C01N"),
     }
     loaded_t = load_movement_transitions(
         _client(transitions), "bucket", date(2023, 11, 14), date(2023, 11, 14)

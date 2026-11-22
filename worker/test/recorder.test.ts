@@ -216,8 +216,9 @@ async function indexAt(scheduledAt: number, startedAtMs: number): Promise<{ inde
   return { index: index as TickBundleIndex, members };
 }
 
-async function expectHealth(observedAt: number, writeFailures: Record<string, number>): Promise<void> {
-  const key = `archive/health/${utcDay(observedAt)}/${observedAt}.json`;
+async function expectHealth(scheduledAt: number, startedAtMs: number, writeFailures: Record<string, number>): Promise<void> {
+  const observedAt = Math.floor(startedAtMs / 1000);
+  const key = `archive/health/${utcDay(observedAt)}/${scheduledAt}-${startedAtMs}.json`;
   expect(JSON.parse(text(await bytesAt(key)))).toEqual({ observed_at: observedAt, write_failures: writeFailures });
 }
 
@@ -317,7 +318,7 @@ describe('scheduled: an off-boundary tick', () => {
     );
     // The pipeline beside it ran as usual.
     expect(await keysUnder('archive/trace/')).toHaveLength(1);
-    await expectHealth(SCHEDULED_AT, {});
+    await expectHealth(SCHEDULED_AT, STARTED_AT_MS, {});
 
     const tick = await tickAt(SCHEDULED_AT, STARTED_AT_MS);
     expect(tick.tick_id).toBe(`${SCHEDULED_AT}-${STARTED_AT_MS}`);
@@ -365,7 +366,7 @@ describe('scheduled: an off-boundary tick', () => {
       expect(fetchOf(tick, name)).toMatchObject({ payload_key: null, payload_member: null });
       expect(fetchOf(tick, name).store_error).toMatch(/injected put failure/);
     }
-    await expectHealth(SCHEDULED_AT, { observations_bundle: 1 });
+    await expectHealth(SCHEDULED_AT, STARTED_AT_MS, { observations_bundle: 1 });
   });
 
   test('a failed tick PUT is counted in archive/health/', async () => {
@@ -376,7 +377,7 @@ describe('scheduled: an off-boundary tick', () => {
 
     expect(await keysUnder(`${OBSERVATIONS_PREFIX}ticks/`)).toEqual([]);
     expect(await keysUnder(`${OBSERVATIONS_PREFIX}raw/gtfsrt/`)).toHaveLength(1);
-    await expectHealth(SCHEDULED_AT, { observations_tick: 1 });
+    await expectHealth(SCHEDULED_AT, STARTED_AT_MS, { observations_tick: 1 });
   });
 
   test('a failed blob HEAD is a miss: the blob is still written and nothing is counted', async () => {
@@ -390,7 +391,7 @@ describe('scheduled: an off-boundary tick', () => {
       payload_key: alertsKey, store_error: null,
     });
     expect(new Uint8Array(gunzipSync(await bytesAt(alertsKey)))).toEqual(ALERTS_BODY);
-    await expectHealth(SCHEDULED_AT, {});
+    await expectHealth(SCHEDULED_AT, STARTED_AT_MS, {});
   });
 
   test('overlapping invocations for one cron minute write separate keys', async () => {
@@ -451,7 +452,7 @@ describe('scheduled: a boundary tick', () => {
       emptyKey,
     ].sort());
     expect(new Uint8Array(gunzipSync(await bytesAt(fetchOf(tick, 'ene_current').payload_key!)))).toEqual(ENE_BODY);
-    await expectHealth(BOUNDARY_AT, {});
+    await expectHealth(BOUNDARY_AT, STARTED, {});
   });
 
   test('a throw mid-tick still records the alerts fetch that was in flight, then rethrows', async () => {
@@ -548,7 +549,7 @@ describe('fetch outcomes', () => {
     expect(fetchOf(tick, 'alerts')).toMatchObject({ payload_key: null, payload_sha256: sha256(ALERTS_BODY) });
     expect(fetchOf(tick, 'alerts').store_error).toMatch(/injected put failure/);
     expect(fetchOf(tick, 'ace').payload_key).toBe(bundleKey(SCHEDULED_AT, STARTED_AT_MS));
-    await expectHealth(SCHEDULED_AT, { observations_blob: 1 });
+    await expectHealth(SCHEDULED_AT, STARTED_AT_MS, { observations_blob: 1 });
   });
 });
 

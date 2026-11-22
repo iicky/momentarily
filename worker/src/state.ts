@@ -176,31 +176,40 @@ const SegmentVehicleStopsSchema = z.object({
 });
 export type SegmentVehicleStops = z.infer<typeof SegmentVehicleStopsSchema>;
 
-/** Read the segment stop carry with the minute it was stamped. observed_at 0
- * (absent or corrupt) never equals a real preceding minute, so the caller
- * diffs from {} — the safe no-transition start. */
+/** Read the segment stop carry with the minute it was stamped, and its etag
+ * for writeSegmentVehicleStops' compare-and-swap. observed_at 0 (absent or
+ * corrupt) never equals a real preceding minute, so the caller diffs from {}
+ * — the safe no-transition start. */
 export async function readSegmentVehicleStops(
   bucket: R2Bucket,
-): Promise<SegmentVehicleStops> {
+): Promise<VersionedRead<SegmentVehicleStops>> {
   const obj = await bucket.get(SEGMENT_VEHICLE_STOPS_KEY);
-  if (!obj) return { observed_at: 0, stops: {} };
+  if (!obj) return { state: { observed_at: 0, stops: {} }, etag: null };
   try {
-    return SegmentVehicleStopsSchema.parse(await obj.json());
+    return { state: SegmentVehicleStopsSchema.parse(await obj.json()), etag: obj.etag };
   } catch (err) {
     console.error("segment_vehicle_stops.json corrupt; resetting:", err);
-    return { observed_at: 0, stops: {} };
+    return { state: { observed_at: 0, stops: {} }, etag: obj.etag };
   }
 }
 
+/**
+ * Write the segment stop carry with compare-and-swap on `etag` (from
+ * readSegmentVehicleStops). Returns false when another run wrote the carry
+ * since it was read.
+ */
 export async function writeSegmentVehicleStops(
   bucket: R2Bucket,
   observedAt: number,
   stops: Record<string, string>,
-): Promise<void> {
-  await bucket.put(
+  etag: string | null,
+): Promise<boolean> {
+  return conditionalPut(
+    bucket,
     SEGMENT_VEHICLE_STOPS_KEY,
     JSON.stringify({ observed_at: observedAt, stops }),
-    { httpMetadata: { contentType: "application/json", cacheControl: "no-store" } },
+    etag,
+    { contentType: "application/json", cacheControl: "no-store" },
   );
 }
 

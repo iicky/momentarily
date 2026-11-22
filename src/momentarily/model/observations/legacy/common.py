@@ -28,6 +28,7 @@ from momentarily.model.observations.contracts import (
 from momentarily.model.observations.keys import (
     RECORDER_CUTOVER,
     REPLACED_PERIOD_END,
+    RUN_NAME,
     utc_day,
 )
 
@@ -139,6 +140,30 @@ def check_day(key: str, folder: str, at: int) -> None:
     """The archive files every object under the UTC day of ``at``."""
     if folder != utc_day(at):
         raise MalformedObjectError(f"{key} is filed under another day than {at}")
+
+
+def run_key(archive: str, ext: str) -> re.Pattern[str]:
+    """The keys of an archive whose objects are written once per Worker run:
+    ``<archive>/<day>/<name><ext>``, ``name`` the run's
+    ``<scheduled_at>-<started_at_ms>`` or, for older objects, the
+    ``<observed_at>`` they were named by (``keys.RUN_NAME``)."""
+    return re.compile(
+        rf"{archive}/(?P<day>\d{{4}}-\d{{2}}-\d{{2}})/(?P<name>{RUN_NAME}){re.escape(ext)}"
+    )
+
+
+def run_scheduled_at(m: re.Match[str], key: str, observed_at: int) -> int | None:
+    """The ``scheduled_at`` a per-run name carries, after checking the name
+    against the object's ``observed_at``; None for a name that is the
+    ``observed_at`` itself. The run observes in the second it starts, or the
+    one before when that second ends between the two clock reads."""
+    if m["at"] is not None:
+        if int(m["at"]) != observed_at:
+            raise MalformedObjectError(f"{key} names another observed_at")
+        return None
+    if not 0 <= int(m["ms"]) // 1000 - observed_at <= 1:
+        raise MalformedObjectError(f"{key} names a run that started at another time")
+    return int(m["sched"])
 
 
 def load_json(obj: LegacyObject) -> Any:

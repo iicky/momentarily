@@ -199,7 +199,7 @@ describe('published snapshot withholds fitted recovery, grading stream keeps it'
         puts.push({ key, body });
       },
     } as unknown as R2Bucket;
-    await writePredictions(bucket, NOW, rows);
+    await writePredictions(bucket, NOW, `${NOW}-${NOW * 1000}`, rows);
 
     expect(puts).toHaveLength(1);
     const written = puts[0]!.body

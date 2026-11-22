@@ -113,9 +113,10 @@ function jsonAt(store: Map<string, StoredObject>, key: string): unknown {
   return rec ? JSON.parse(rec.body) : undefined;
 }
 
+/** The run's record: these ticks are scheduled for, and start at, `observedAt`. */
 function healthKey(observedAt: number): string {
   const date = new Date(observedAt * 1000).toISOString().slice(0, 10);
-  return `archive/health/${date}/${observedAt}.json`;
+  return `archive/health/${date}/${observedAt}-${observedAt * 1000}.json`;
 }
 
 function scheduledAt(epochSec: number): ScheduledController {

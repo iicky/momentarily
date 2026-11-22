@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from momentarily.model.observations.contracts import (
     AlertVersion,
     DerivedFileMetadata,
     EquipmentObservation,
+    LegacyCollectorHealth,
     LegacyFetchOutcome,
     LegacyLineage,
     LegacyRouteAlertState,
@@ -53,7 +55,10 @@ from momentarily.model.observations.legacy import (
 from momentarily.model.observations.legacy.__main__ import main
 from momentarily.model.observations.legacy.common import (
     PERIODS,
+    Emitted,
     LegacyObject,
+    MalformedObjectError,
+    SourceObject,
 )
 from momentarily.model.observations.legacy.run import run
 from momentarily.model.observations.parquet import (
@@ -300,6 +305,87 @@ def test_prediction_rows_name_their_object_and_line() -> None:
                 line["route"],
                 line["primary_alert_type"],
             )
+
+
+# --- per-run object names ------------------------------------------------------
+
+
+def _run_named(
+    obj: LegacyObject, ext: str, scheduled_at: int, started_ms: int
+) -> LegacyObject:
+    """The fixture object's bytes under the name the Worker now gives it: its
+    run's tick id, in the same day folder."""
+    folder = obj.key.rsplit("/", 1)[0]
+    return LegacyObject(f"{folder}/{scheduled_at}-{started_ms}{ext}", obj.body)
+
+
+@pytest.mark.parametrize(
+    ("archive", "adapt", "ext"),
+    [
+        ("archive/alerts_liveness", alerts_liveness.adapt, ".json"),
+        ("archive/health", health.adapt, ".json"),
+        ("archive/trip_updates", fresh_feeds.adapt, ".json"),
+        ("archive/vehicles", fresh_feeds.adapt, ".json"),
+        ("v1/predictions", predictions.adapt, ".jsonl"),
+    ],
+)
+def test_a_run_named_object_reads_as_its_observed_at_named_twin(
+    archive: str, adapt: Callable[[LegacyObject], list[Emitted]], ext: str
+) -> None:
+    """Same bytes, new name: the records differ only where they name their
+    object, and in the scheduled minute the run's name now carries."""
+    for obj in _objects(archive):
+        old = adapt(obj)
+        observed_at = old[0].inputs[0].observed_at
+        sched, started_ms = observed_at - 41, observed_at * 1000 + 7
+        renamed = _run_named(obj, ext, sched, started_ms)
+        new = adapt(renamed)
+        assert len(new) == len(old)
+        for was, now in zip(old, new, strict=True):
+            want = was.record.model_dump()
+            want["lineage"]["source_key"] = renamed.key
+            if isinstance(was.record, LegacyFetchOutcome):
+                want["legacy_fetch_id"] = f"{renamed.key}#{was.record.source}"
+                want["scheduled_at"] = sched
+            if isinstance(was.record, LegacyCollectorHealth):
+                want["legacy_tick_id"] = f"archive/health@{sched}-{started_ms}"
+            assert now.record.model_dump() == want
+            assert now.inputs == tuple(
+                SourceObject(renamed.key, s.sha256, s.observed_at) for s in was.inputs
+            )
+
+
+def test_a_run_name_must_match_the_object_s_observed_at() -> None:
+    (obj,) = [o for o in _objects("archive/health") if "2026-09-11" in o.key]
+    observed_at = json.loads(obj.body)["observed_at"]
+    with pytest.raises(MalformedObjectError, match="another time"):
+        health.adapt(_run_named(obj, ".json", observed_at, (observed_at - 60) * 1000))
+
+
+def test_runs_observed_in_one_second_each_keep_their_health_record(
+    tmp_path: Path,
+) -> None:
+    """A late run of one minute and the next minute's on-time run that start
+    in the same second: under observed_at names one object survived, under
+    run names each is kept and backfilled."""
+    mirror = tmp_path / "mirror"
+    shutil.copytree(MIRROR, mirror)
+    (obj,) = [o for o in _objects("archive/health") if "2026-09-11" in o.key]
+    at = json.loads(obj.body)["observed_at"]
+    names = [f"{at - 101}-{at * 1000 + 9}", f"{at - 41}-{at * 1000 + 5}"]
+    for i, name in enumerate(names):
+        body = {"observed_at": at, "write_failures": {"arrivals_archive": i}}
+        key = f"{obj.key.rsplit('/', 1)[0]}/{name}.json"
+        (mirror / key).write_text(json.dumps(body))
+    run(LocalStorage(mirror), LocalStorage(tmp_path / "out"), "f" * 40, False)
+    rows = [
+        r
+        for r in _read(tmp_path / "out", "legacy_collector_health")
+        if isinstance(r, LegacyCollectorHealth) and r.observed_at == at
+    ]
+    assert sorted(r.legacy_tick_id for r in rows) == sorted(
+        [f"archive/health@{at}", *(f"archive/health@{n}" for n in names)]
+    )
 
 
 # --- counts --------------------------------------------------------------------

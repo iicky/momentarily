@@ -22,17 +22,46 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics as st
 from collections import Counter, defaultdict
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from typing import Any, cast
 
 from momentarily.mapping import CANONICAL_SEVERITY_FLOOR, severity_tier
+from momentarily.model.observations.keys import RUN_NAME
 from training.load_r2 import fetch_objects, list_alert_keys, list_keys
 from training.r2_client import load_config, make_client
 
 TICK_SECONDS = 300  # the gated alerts-fetch cadence (index.ts isFiveMinuteBoundary)
+
+_LIVENESS_KEY = re.compile(
+    rf"archive/alerts_liveness/(?P<day>\d{{4}}-\d{{2}}-\d{{2}})/{RUN_NAME}\.json"
+)
+
+
+def liveness_keys(keys: Iterable[str], start: date, end: date) -> list[str]:
+    """The archive/alerts_liveness/ keys of attempts observed in [start, end].
+
+    An object is named by its run's ``<scheduled_at>-<started_at_ms>``, and
+    filed under the UTC day of its observed_at; older objects are named by
+    that observed_at itself, which dates them as before."""
+    out: list[str] = []
+    for k in keys:
+        m = _LIVENESS_KEY.fullmatch(k)
+        if m is None:
+            continue
+        day = (
+            date.fromisoformat(m["day"])
+            if m["at"] is None
+            else datetime.fromtimestamp(int(m["at"]), UTC).date()
+        )
+        if start <= day <= end:
+            out.append(k)
+    return out
+
 
 # One archived alert version: (id, updated_at, observed_at, tier, active_period_start)
 Rec = tuple[str, int, int, int, "int | None"]
@@ -144,8 +173,8 @@ def measure(days: int) -> dict[str, Any]:
                 lat_severe_update.append(lat)
 
     # Successful-fetch cadence -> the clear-DISCOVERY floor. archiveAlertsLiveness
-    # writes one record per fetch ATTEMPT (success AND fail), keyed on execution
-    # wall-clock, so raw key spacing mixes retries and failed fetches into the
+    # writes one record per fetch ATTEMPT (success AND fail), one key per run,
+    # so raw key spacing mixes retries and failed fetches into the
     # gap. Fetch the bodies, keep outcome == "success", and collapse each to its
     # 5-min scheduled boundary (floor to 300; boundary jitter is < 60s) so a
     # boundary whose fetch only failed shows up as a widened gap, not a fetch.
@@ -153,15 +182,9 @@ def measure(days: int) -> dict[str, Any]:
     # archiveAlertsLiveness writes `{observed_at: observedAt, ...liveness}`), so
     # observed_at is the attempt's execution wall-clock and is always present —
     # use it, NOT fetched_at, which on failure carries the last-good time.
-    lv_keys: list[str] = []
-    for k in list_keys(client, cfg.bucket, "archive/alerts_liveness/"):
-        base = k.rsplit("/", 1)[-1].removesuffix(".json")
-        try:
-            t = int(base)
-        except ValueError:
-            continue
-        if start <= datetime.fromtimestamp(t, UTC).date() <= end:
-            lv_keys.append(k)
+    lv_keys = liveness_keys(
+        list_keys(client, cfg.bucket, "archive/alerts_liveness/"), start, end
+    )
     lv_attempts = 0
     lv_success = 0
     success_boundaries: set[int] = set()

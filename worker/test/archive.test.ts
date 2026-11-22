@@ -56,14 +56,15 @@ describe('deriveAlertsLiveness: outcome mapping', () => {
 });
 
 describe('archiveAlertsLiveness: R2 write shape', () => {
-  test('writes a date-partitioned, tick-keyed object with the full record', async () => {
+  test('writes a date-partitioned, run-keyed object with the full record', async () => {
     const { bucket, store } = fakeBucket();
     await archiveAlertsLiveness(
       bucket,
       { outcome: 'success', fetched_at: 1_704_067_200 },
       1_704_067_200,
+      '1704067199-1704067200123',
     );
-    const key = 'archive/alerts_liveness/2024-01-01/1704067200.json';
+    const key = 'archive/alerts_liveness/2024-01-01/1704067199-1704067200123.json';
     expect(store.has(key)).toBe(true);
     expect(JSON.parse(store.get(key)!)).toEqual({
       observed_at: 1_704_067_200,
@@ -78,8 +79,9 @@ describe('archiveAlertsLiveness: R2 write shape', () => {
       bucket,
       { outcome: 'fail', fetched_at: 1_704_060_000 },
       1_704_067_500,
+      '1704067499-1704067500004',
     );
-    const key = 'archive/alerts_liveness/2024-01-01/1704067500.json';
+    const key = 'archive/alerts_liveness/2024-01-01/1704067499-1704067500004.json';
     expect(JSON.parse(store.get(key)!)).toEqual({
       observed_at: 1_704_067_500,
       outcome: 'fail',
@@ -87,27 +89,28 @@ describe('archiveAlertsLiveness: R2 write shape', () => {
     });
   });
 
-  test('a retried scheduled minute keeps BOTH attempts, because the key is execution wall-clock', async () => {
-    // observedAt is Date.now()-derived, not the cron's scheduled minute, and
-    // this call is not gated on the alpha CAS winner. So a failed attempt and a
-    // succeeding retry a few seconds later land under two keys and both survive
-    // — that retained evidence is the whole point of the prefix. A reader takes
-    // the attempts in a scheduled minute as a set, not as a single record.
+  test('every run keeps its own record: a retry of one minute, and a late run beside the next minute\'s run in the same second', async () => {
+    // This call is not gated on the alpha CAS winner. A failed attempt and a
+    // succeeding retry land under two keys and both survive — that retained
+    // evidence is the whole point of the prefix. So do a late run of one
+    // minute and the on-time run of the next that observe in the same
+    // second: the key names the run, not the execution second.
     const { bucket, store } = fakeBucket();
-    const firstAttempt = 1_704_067_201;
-    const retry = 1_704_067_204; // same scheduled minute, 3s later
-    await archiveAlertsLiveness(bucket, { outcome: 'fail', fetched_at: 0 }, firstAttempt);
-    await archiveAlertsLiveness(bucket, { outcome: 'success', fetched_at: retry }, retry);
+    await archiveAlertsLiveness(bucket, { outcome: 'fail', fetched_at: 0 }, 1_704_067_201, '1704067199-1704067201000');
+    await archiveAlertsLiveness(bucket, { outcome: 'success', fetched_at: 1_704_067_204 }, 1_704_067_204, '1704067199-1704067204000');
+    await archiveAlertsLiveness(bucket, { outcome: 'fail', fetched_at: 0 }, 1_704_067_260, '1704067199-1704067260400');
+    await archiveAlertsLiveness(bucket, { outcome: 'success', fetched_at: 1_704_067_260 }, 1_704_067_260, '1704067259-1704067260300');
 
     const keys = [...store.keys()]
       .filter((k) => k.startsWith('archive/alerts_liveness/'))
       .sort();
     expect(keys).toEqual([
-      'archive/alerts_liveness/2024-01-01/1704067201.json',
-      'archive/alerts_liveness/2024-01-01/1704067204.json',
+      'archive/alerts_liveness/2024-01-01/1704067199-1704067201000.json',
+      'archive/alerts_liveness/2024-01-01/1704067199-1704067204000.json',
+      'archive/alerts_liveness/2024-01-01/1704067199-1704067260400.json',
+      'archive/alerts_liveness/2024-01-01/1704067259-1704067260300.json',
     ]);
-    expect(JSON.parse(store.get(keys[0]!)!).outcome).toBe('fail');
-    expect(JSON.parse(store.get(keys[1]!)!).outcome).toBe('success');
+    expect(keys.map((k) => JSON.parse(store.get(k)!).outcome)).toEqual(['fail', 'success', 'fail', 'success']);
   });
 });
 

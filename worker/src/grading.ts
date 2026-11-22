@@ -3,36 +3,45 @@
  *
  * Each cron tick appends two append-only JSONL files to R2:
  *
- *   v1/predictions/YYYY-MM-DD/<ts>.jsonl
+ *   v1/predictions/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.jsonl
  *     One line per route — the inference fields the snapshot publishes,
  *     timestamped so a grader can align prediction-at-T to outcome-at-T+k.
  *
- *   v1/regime_transitions/YYYY-MM-DD/<ts>.jsonl
+ *   v1/regime_transitions/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.jsonl
  *     One line per route whose filter argmax flipped this tick. Empty ticks
  *     write no file. Provides ground-truth dwell times for recovery_minutes
  *     calibration.
  *
- *   v1/movement_transitions/YYYY-MM-DD/<ts>-<scope>.jsonl
+ *   v1/movement_transitions/YYYY-MM-DD/<scheduled_at>-<started_at_ms>-<scope>.jsonl
  *     The same, for the movement arm's debounced regimes, at both route and
  *     segment scope. This is the stream the movement dwell curves are fitted
  *     from — the filter's argmax flips describe a different signal.
  *
  *     The `-<scope>` suffix is load-bearing: index.ts commits the route clock
  *     and the segment clock in two separate puts on the same tick, so a key of
- *     `<ts>.jsonl` alone made the second put overwrite the first. It did —
+ *     the tick alone made the second put overwrite the first. It did —
  *     route scope has been empty since 2026-08-27 and stays empty until this
  *     file is deployed, see journal.md 2026-09-03. Readers list by date prefix
  *     and filter on the record's own `scope` field, so the unscoped keys the
  *     archive already holds still load beside the new ones.
  *
+ * Every key names the run that wrote it (archive.ts `runArchiveKey`), and
+ * every write is create-once, so two runs never share an object, not even
+ * two runs of different minutes that start in the same second. Objects
+ * written before that are named by a second: `<ts>.jsonl` or
+ * `<ts>-<scope>.jsonl`, where `ts` is the run's execution second or, for the
+ * segment scope, its scheduled minute. Readers list by date prefix and read
+ * the records' own `ts`, so both names load. The date folder is the UTC day
+ * of the records' `ts`, as before.
+ *
  * All three prefixes are listable by date for the Python grader.
  */
 
 import type { RouteRoll } from './alpha';
+import { putRunObject, runArchiveKey } from './archive';
 import { STATES } from './hmm';
 import type { State } from './hmm';
 import type { RegimeChange, RegimeEntry } from './regime';
-import { createOnce } from './r2';
 import type { Inference } from './snapshot';
 
 export interface PredictionRecord {
@@ -211,54 +220,55 @@ export interface MovementTransitionRecord {
   dwell_sec: number;
 }
 
-function utcDate(epoch: number): string {
-  return new Date(epoch * 1000).toISOString().slice(0, 10);
-}
-
 export async function writePredictions(
   bucket: R2Bucket,
   observedAt: number,
+  runId: string,
   records: PredictionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
-  const key = `v1/predictions/${utcDate(observedAt)}/${observedAt}.jsonl`;
-  const body = records.map((r) => JSON.stringify(r)).join('\n');
-  await bucket.put(key, body, {
-    httpMetadata: { contentType: 'application/x-ndjson' },
-  });
+  await putRunObject(
+    bucket,
+    runArchiveKey('v1/predictions', observedAt, runId, '.jsonl'),
+    records.map((r) => JSON.stringify(r)).join('\n'),
+    { contentType: 'application/x-ndjson' },
+  );
 }
 
 export async function writeTransitions(
   bucket: R2Bucket,
   observedAt: number,
+  runId: string,
   records: TransitionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
-  const key = `v1/regime_transitions/${utcDate(observedAt)}/${observedAt}.jsonl`;
-  const body = records.map((r) => JSON.stringify(r)).join('\n');
-  await bucket.put(key, body, {
-    httpMetadata: { contentType: 'application/x-ndjson' },
-  });
+  await putRunObject(
+    bucket,
+    runArchiveKey('v1/regime_transitions', observedAt, runId, '.jsonl'),
+    records.map((r) => JSON.stringify(r)).join('\n'),
+    { contentType: 'application/x-ndjson' },
+  );
 }
 
 /**
  * Commit this tick's movement-regime changes, one R2 object per scope present.
  *
  * Partitioning by scope is the whole point: index.ts calls this twice on the
- * same tick with the same observedAt, once per clock, and an R2 put replaces
- * rather than appends. Keying on observedAt alone therefore made the segment
- * write delete the route write, which it did for eight days — see the module
- * comment. Grouping here rather than trusting the caller to pass a single
- * scope means no key can be mislabelled and no two puts from one tick can
- * target the same key.
+ * same tick, once per clock, and an R2 put replaces rather than appends.
+ * Keying on the tick alone therefore made the segment write delete the route
+ * write, which it did for eight days — see the module comment. Grouping here
+ * rather than trusting the caller to pass a single scope means no key can be
+ * mislabelled and no two puts from one tick can target the same key.
  *
- * Create-once (If-None-Match: *): the segment scope is keyed by the scheduled
- * minute, which two runs of one minute share, so a second run cannot replace
- * the first run's committed changes.
+ * `at` is the records' `ts` (the run's observedAt at route scope, its snapped
+ * scheduled minute at segment scope) and picks the date folder; the key names
+ * the run. Create-once. Only the alpha CAS winner (route) or the segment_flow
+ * CAS winner (segment) of a minute calls this.
  */
 export async function writeMovementTransitions(
   bucket: R2Bucket,
-  observedAt: number,
+  at: number,
+  runId: string,
   records: MovementTransitionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
@@ -266,12 +276,11 @@ export async function writeMovementTransitions(
   for (const r of records) {
     (byScope[r.scope] ??= []).push(r);
   }
-  const date = utcDate(observedAt);
   await Promise.all(
     Object.entries(byScope).map(([scope, group]) =>
-      createOnce(
+      putRunObject(
         bucket,
-        `v1/movement_transitions/${date}/${observedAt}-${scope}.jsonl`,
+        runArchiveKey('v1/movement_transitions', at, runId, `-${scope}.jsonl`),
         group.map((r) => JSON.stringify(r)).join('\n'),
         { contentType: 'application/x-ndjson' },
       ),
@@ -308,7 +317,8 @@ export async function writeMovementTransitions(
  * is visible because `state !== open_state`, so a downstream reader can
  * distinguish a confirmed regime from an in-flight flip.
  *
- * Prefix: archive/movement_census/YYYY-MM-DD/<observed_at>.json
+ * Prefix: archive/movement_census/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json
+ * (one per run, create-once; older objects are named `<observed_at>.json`)
  */
 export interface MovementCensusRow {
   state: string;
@@ -358,12 +368,14 @@ export function buildMovementCensus(
 export async function writeMovementCensus(
   bucket: R2Bucket,
   census: MovementCensusRecord,
+  runId: string,
 ): Promise<void> {
-  const date = utcDate(census.observed_at);
-  const key = `archive/movement_census/${date}/${census.observed_at}.json`;
-  await bucket.put(key, JSON.stringify(census), {
-    httpMetadata: { contentType: 'application/json' },
-  });
+  await putRunObject(
+    bucket,
+    runArchiveKey('archive/movement_census', census.observed_at, runId, '.json'),
+    JSON.stringify(census),
+    { contentType: 'application/json' },
+  );
 }
 
 /**

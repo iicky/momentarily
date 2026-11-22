@@ -1,12 +1,14 @@
 """Self-grading job: reliability + dwell accuracy from R2 streams.
 
 Reads:
-    v1/predictions/<date>/<name>.jsonl
-    v1/regime_transitions/<date>/<name>.jsonl
+    v1/predictions/<date>/<ts>.jsonl
+    v1/regime_transitions/<date>/<ts>.jsonl
 
-    <name> is the writing run's <scheduled_at>-<started_at_ms>, or <ts> for
-    objects written before per-run names; listing is by date and the records
-    carry their own ts, so both load.
+    A run that found <ts>.jsonl taken by another run wrote
+    <ts>-<scheduled_at>-<started_at_ms>.jsonl beside it; listing is by date
+    and the records carry their own ts, so both load. (The stream's day
+    index, v1/<stream>/index/<date>.json, lists those names for public
+    clients; it is outside the date folder, so the listing never reads it.)
 
 Computes:
     Calibration  — Brier score + 10-bin reliability table for
@@ -340,9 +342,10 @@ def load_movement_transitions(
     Unscoped `<ts>.jsonl` objects hold one scope each — whichever of the
     Worker's two per-tick writes landed last, since they collided on the key
     (journal.md 2026-09-03). Scoped `<ts>-<scope>.jsonl` objects are one per
-    scope, so both survive. Per-run `<scheduled_at>-<started_at_ms>-<scope>.jsonl`
-    objects are one per scope and run, so two runs observed in one second both
-    survive too. Which shape a given day holds depends on what the
+    scope, so both survive. `<ts>-<scope>-<scheduled_at>-<started_at_ms>.jsonl`
+    objects hold a second run's records when it found `<ts>-<scope>.jsonl`
+    already written, so two runs observed in one second both survive too.
+    Which shape a given day holds depends on what the
     deployed Worker was writing that day, so treat none as current and do
     not infer a cutover date from here. Nothing in this function parses the
     key: listing is by date prefix and the filter below reads each record's own

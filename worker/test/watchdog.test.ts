@@ -726,10 +726,13 @@ describe('watchdog: two runs of adjacent minutes that start in the same second k
     ['archive/trip_updates/', '.json'],
     ['archive/vehicles/', '.json'],
     ['archive/movement_census/', '.json'],
-    ['v1/predictions/', '.jsonl'],
   ] as const;
 
-  /** Each per-run prefix holds exactly one object per run that writes it, named by that run. */
+  /**
+   * Each per-run prefix holds exactly one object per run that writes it, named
+   * by that run; the boundary run's predictions keep their documented public
+   * name, `<ts>.jsonl`, and the public route serves them there.
+   */
   async function expectOnePerRun(m: Miniflare, boundary: CollectorTick, next: CollectorTick): Promise<void> {
     const runKey = (t: CollectorTick, suffix: string): string => `/${t.scheduled_at}-${t.started_at_ms}${suffix}`;
     for (const [prefix, suffix] of EVERY_RUN) {
@@ -744,6 +747,17 @@ describe('watchdog: two runs of adjacent minutes that start in the same second k
       expect(listed, prefix).toHaveLength(1);
       expect(listed[0]!.endsWith(runKey(boundary, suffix)), prefix).toBe(true);
     }
+    const [predictions, ...more] = await keys(m, 'v1/predictions/');
+    expect(more).toEqual([]);
+    const body = (await text(m, predictions!))!;
+    const ts = (JSON.parse(body.split('\n')[0]!) as { ts: number }).ts;
+    expect(ts - Math.floor(boundary.started_at_ms / 1000)).toBeGreaterThanOrEqual(0);
+    expect(ts - Math.floor(boundary.started_at_ms / 1000)).toBeLessThanOrEqual(1);
+    const documented = `v1/predictions/${new Date(ts * 1000).toISOString().slice(0, 10)}/${ts}.jsonl`;
+    expect(predictions).toBe(documented);
+    const served = await m.dispatchFetch(`http://worker/${documented}`);
+    expect(served.status).toBe(200);
+    expect(await served.text()).toBe(body);
   }
 
   async function runsOf(m: Miniflare, slot: number): Promise<[CollectorTick, CollectorTick]> {

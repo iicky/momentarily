@@ -381,14 +381,14 @@ def test_legacy_route_alert_state_must_name_the_object_holding_its_tick() -> Non
     assert "legacy_period" in _error_types(LegacyRouteAlertState, early)
 
 
-def test_legacy_route_alert_state_may_name_a_run_s_object_of_its_day() -> None:
+def test_legacy_route_alert_state_may_name_its_tick_s_run_suffixed_object() -> None:
     record = _record("legacy_route_alert_state")
     at = record["observed_at"]
-    run = LegacyPredictionsRunKey.for_run(at, at - 41, at * 1000 + 7)
+    run = LegacyPredictionsRunKey(at, at - 319, at * 1000 + 7)
     named = {**record, "lineage": {**record["lineage"], "source_key": run.key}}
     LegacyRouteAlertState.model_validate(named)
-    next_day = {**record, "observed_at": at + 86_400, "lineage": named["lineage"]}
-    assert "legacy_key" in _error_types(LegacyRouteAlertState, next_day)
+    other_tick = {**record, "observed_at": at + 300, "lineage": named["lineage"]}
+    assert "legacy_key" in _error_types(LegacyRouteAlertState, other_tick)
 
 
 def test_legacy_fetch_outcome_ids_and_archives() -> None:
@@ -647,8 +647,8 @@ KEYS: list[tuple[ObservationKey, str]] = [
     (GtfsArchiveKey(SHA), f"archive/gtfs/{SHA}.zip"),
     (LegacyPredictionsKey(1792514400), "v1/predictions/2026-10-20/1792514400.jsonl"),
     (
-        LegacyPredictionsRunKey("2026-10-20", 1792514359, 1792514400123),
-        "v1/predictions/2026-10-20/1792514359-1792514400123.jsonl",
+        LegacyPredictionsRunKey(1792514400, 1792514081, 1792514400123),
+        "v1/predictions/2026-10-20/1792514400-1792514081-1792514400123.jsonl",
     ),
 ]
 
@@ -686,6 +686,8 @@ def test_blob_day_is_the_utc_day_of_the_fetch() -> None:
         "model/observations/s1/derived/alert_version/2026-10-20/16.parquet",
         "model/observations/s1/derived/trip_update/2026-10-20/24.parquet",
         "v1/predictions/2026-10-21/1792514400.jsonl",
+        "v1/predictions/2026-10-21/1792514400-1792514081-1792514400123.jsonl",
+        "v1/predictions/2026-10-20/1792514081-1792514400123.jsonl",
         "archive/trace/2026-10-20/1792514520.json",
     ],
 )

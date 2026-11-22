@@ -192,8 +192,8 @@ describe('writeMovementTransitions: both scopes survive one tick', () => {
     await writeMovementTransitions(bucket, observedAt, run, segmentRecords);
 
     expect([...store.keys()].sort()).toEqual([
-      `v1/movement_transitions/2023-11-14/${run}-route.jsonl`,
-      `v1/movement_transitions/2023-11-14/${run}-segment.jsonl`,
+      `v1/movement_transitions/2023-11-14/${observedAt}-route.jsonl`,
+      `v1/movement_transitions/2023-11-14/${observedAt}-segment.jsonl`,
     ]);
     expect(scopesIn(store).sort()).toEqual(['route', 'segment']);
   });
@@ -213,8 +213,8 @@ describe('writeMovementTransitions: both scopes survive one tick', () => {
     ]);
 
     expect([...store.keys()].sort()).toEqual([
-      `v1/movement_transitions/2023-11-14/${run}-route.jsonl`,
-      `v1/movement_transitions/2023-11-14/${run}-segment.jsonl`,
+      `v1/movement_transitions/2023-11-14/${observedAt}-route.jsonl`,
+      `v1/movement_transitions/2023-11-14/${observedAt}-segment.jsonl`,
     ]);
     // Each object holds only its own scope, so the key never lies about its
     // contents even though the caller batched.

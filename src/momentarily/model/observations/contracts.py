@@ -1055,16 +1055,17 @@ class LegacyRouteAlertState(Model):
         except KeyLayoutError:
             key = None
         match key:
-            case LegacyPredictionsKey(observed_at=at) if at == self.observed_at:
-                pass
-            case LegacyPredictionsRunKey(day=day) if day == utc_day(self.observed_at):
+            case (
+                LegacyPredictionsKey(observed_at=at)
+                | LegacyPredictionsRunKey(observed_at=at)
+            ) if at == self.observed_at:
                 pass
             case _:
                 raise _fail(
                     "legacy_key",
                     f"the record at {self.observed_at} lives in "
-                    f"{LegacyPredictionsKey(self.observed_at).key} or a run's key "
-                    "of its day",
+                    f"{LegacyPredictionsKey(self.observed_at).key} or a run-suffixed"
+                    " name of it",
                 )
         if self.lineage.row_index is None:
             raise _fail("lineage", "a predictions row needs its line index")

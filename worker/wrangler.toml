@@ -13,6 +13,19 @@ compatibility_date = "2026-05-13"
 [triggers]
 crons = ["* * * * *"]
 
+# Backup trigger (src/watchdog.ts): one SQLite-backed Durable Object whose
+# alarm fires 45 s into every minute and runs any minute the cron above did not
+# run and is no longer running (its lease on the minute expired). The cron
+# claims each minute in it first, so one of the two runs it. See
+# docs/model-observations.md §4.1, "As built (backup trigger)".
+[[durable_objects.bindings]]
+name = "MINUTE_CLOCK"
+class_name = "MinuteClock"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MinuteClock"]
+
 # feed.momentarily.nyc is served BY the Worker, not bound directly to R2.
 # The Worker's fetch handler gates reads to the v1/ prefix; state/ and archive/
 # stay private. Provisioning this requires the R2 bucket's direct custom-domain

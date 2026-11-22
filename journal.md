@@ -11470,3 +11470,93 @@ workflow only turned red.
 - Legacy coverage reads those names: the stretch around an excluded trace
   minute is `Unknown`, not `covered` or `no_invocation`.
 - docs/model-observations.md §5.1 gives the repair procedure.
+
+## 2026-11-03 backup-trigger-investigation
+
+origin: agent
+
+Investigation only: no Worker change. Two findings that are easy to miss:
+
+- The cron's `event.scheduledTime` for this Worker is always 19 s past the
+  minute: 18,317 of 18,317 recorder ticks from 10-21 to 11-02. A start lag
+  measured as started_at - scheduled_at is therefore measured from :19, not
+  from :00. The lag after dispatch was over 26 s in 0.14 % of runs from
+  10-28 to 11-02, and in 9.6 % from 10-21 to 10-27.
+- Local workerd (Miniflare 3.20241230) keeps a Durable Object alarm in
+  storage across a runtime restart but does not fire it, even after the
+  object is loaded. `getAlarm()` returns the past-due time, not null, so
+  0 runs happened in 5 s after the restart. A self-healing alarm loop
+  therefore has to re-arm when the alarm is null or stale. A null check
+  alone is not enough.
+
+## 2026-11-21 watchdog-lease-and-fencing
+
+origin: agent
+
+The alarm watchdog took over every cron still running at :45: 6.4 % of
+recorded minutes and 26 % of 5-minute ticks. The second run advanced the
+forward filter again on the same observation and could replace a complete
+trace with a late, incomplete one. Easy to miss:
+
+- An ownership check before an R2 write is not a lock: a run can pass it and
+  write after a takeover. Every object two runs of one minute share needs its
+  own protection at the write (create-once, etag CAS, or a key per run).
+  §4.1 lists each object and its protection.
+- The lease is short (60 s, renewed every 10 s and at each write stage)
+  rather than longer than the longest run (237 s). A 5-minute lease would run
+  a dead cron's minute only after the next 5-minute tick, under the dead
+  minute's key, with feeds from later.
+- alpha.json records the tick that wrote it in R2 custom metadata, not in the
+  body, so the published and archived bytes of a normal minute stay as they
+  were (211 of 211 objects identical to `main`).
+
+## 2026-11-21 watchdog-current-minute-only
+
+origin: agent
+
+The watchdog's alarm looked back 5 minutes and ran every unclaimed or
+expired minute in one wake, oldest first. Each run fetched the live feeds,
+so six "past" minutes recorded the present within about a second: the
+per-second archives (`archive/arrivals`, `archive/health` and the 5-minute
+ones) collapsed into one object, and a wake spanning two 5-minute
+boundaries committed alpha twice on one observation. Easy to miss:
+
+- A missed minute cannot be recovered: the MTA feeds only show the present.
+  A wake now runs at most one minute, the current one. Earlier minutes that
+  nobody ran are marked missed in the object (`no_claim` or
+  `lease_expired`), which also fences a stopped cron, and coverage reads
+  them as `no_invocation`.
+- Unclaimed minutes are marked only when their deadline passed after the
+  last wake's, so the first wake after a deploy does not mark minutes that a
+  Worker without claims ran.
+- A cron that stalls past a takeover fetched earlier but writes later.
+  `v1/arrivals.json` (R2 custom metadata `observed_at`) and
+  `state/station_wait.json` are now written with an etag CAS that skips an
+  observation older than the stored one. `segment_flow.json` folds with an
+  etag CAS too, so two overlapping runs of a minute fold it once.
+- Two test harness runs in one real second share every per-second archive
+  key. The tests that hold an alarm run across deadlines hold it for over a
+  second of real time, as production would for minutes.
+
+## 2026-11-21 public-grading-stream-names
+
+origin: agent
+
+Naming every once-written object by its run also renamed the three public
+grading streams (`v1/predictions`, `v1/regime_transitions`,
+`v1/movement_transitions`) to `<scheduled_at>-<started_at_ms>`. The public
+Worker serves exact keys and lists nothing, and the start millisecond is
+private, so no public client could find a record written after that change.
+Those streams are back on their documented names; only the private
+`archive/` objects keep per-run names. Easy to miss:
+
+- The names are keyed by an execution second, and two alpha winners of
+  different boundaries can start in one second (a run five minutes late
+  beside the next boundary's on-time run; a backlog harness run produced
+  exactly that). The writes are create-once, and the second run writes
+  `<name>-<run>.jsonl` in the same day folder and appends it to
+  `v1/<stream>/index/<day>.json` by etag CAS. Segment-scope names have one
+  writer, since the `segment_flow` minute only increases.
+- The index sits outside the day folder on purpose: every date-prefix reader
+  (the grader, viz, the legacy backfill, older deployed readers) parses each
+  object in the folder as records.

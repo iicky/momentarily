@@ -1,7 +1,10 @@
 """``v1/predictions`` -> ``LegacyRouteAlertState``.
 
-Object: ``v1/predictions/<YYYY-MM-DD>/<ts>.jsonl``, one JSON line per route
-with an inference row at that 5-minute tick. Only ``route`` and
+Object: ``v1/predictions/<YYYY-MM-DD>/<ts>.jsonl``, its documented public
+name, one JSON line per route with an inference row at that 5-minute tick.
+A run that found that name taken by another run wrote
+``<ts>-<scheduled_at>-<started_at_ms>.jsonl`` in the same folder instead
+(listed in the stream's day index); it reads the same way. Only ``route`` and
 ``primary_alert_type`` (the highest-``sort_order`` active alert, planned
 work included) are alert state; the inference itself is not layer 2.
 """
@@ -31,7 +34,9 @@ from momentarily.model.observations.legacy.common import (
 
 ARCHIVE: LegacyArchive = "v1/predictions"
 
-_KEY = re.compile(r"v1/predictions/(?P<day>\d{4}-\d{2}-\d{2})/(?P<at>\d+)\.jsonl")
+_KEY = re.compile(
+    r"v1/predictions/(?P<day>\d{4}-\d{2}-\d{2})/(?P<at>\d+)(?:-\d+-(?P<ms>\d+))?\.jsonl"
+)
 _GRANULARITY = RouteAlertGranularity(
     scope="route", tick_seconds=300, content="primary_alert_type_presence"
 )
@@ -41,6 +46,12 @@ def adapt(obj: LegacyObject) -> list[Emitted]:
     m = match_key(_KEY, obj.key)
     observed_at = int(m["at"])
     check_day(obj.key, m["day"], observed_at)
+    # The run observes in the second it starts, or the one before when that
+    # second ends between the two clock reads.
+    if m["ms"] is not None and not 0 <= int(m["ms"]) // 1000 - observed_at <= 1:
+        raise MalformedObjectError(
+            f"{obj.key} names a run that started at another time"
+        )
     try:
         lines = obj.body.decode().split("\n")
     except UnicodeDecodeError as err:

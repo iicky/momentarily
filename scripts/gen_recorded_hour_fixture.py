@@ -9,8 +9,10 @@ time, sha256). The output, ``tests/fixtures/model/observations/recorded_hour``,
 is a store root holding the keys the recorder writes
 (``worker/src/recorder.ts``) for ten cron minutes of hour 14 UTC:
 
-* ``ticks/.../<scheduled_at>-<started_at_ms>.json``: the ``CollectorTick``,
-  serialized like ``JSON.stringify`` (compact, contract field order);
+* ``ticks/.../<scheduled_at>-<started_at_ms>.json``: the tick record as the
+  recorder wrote it on 2026-10-20, before ticks named their trigger (a
+  ``PreTriggerCollectorTick``), serialized like ``JSON.stringify`` (compact,
+  contract field order);
 * ``raw/gtfsrt/....bin``: gzip member 0 the ``TickBundleIndex``, then one
   gzip member per GTFS-RT body, numbered in index order;
 * ``raw/blob/<day>/<sha256>.json.gz``: one gzip member per JSON body,
@@ -51,8 +53,8 @@ from pydantic import BaseModel
 
 from momentarily.model.observations.contracts import (
     GTFSRT_SOURCES,
-    CollectorTick,
     FeedFetch,
+    PreTriggerCollectorTick,
     SourceId,
     TickBundleIndex,
 )
@@ -300,7 +302,7 @@ def invocation(
     writer.put(bundle_key, bundle_bytes(index, bodies))
     if not write_tick:
         return
-    tick = CollectorTick.model_validate(
+    tick = PreTriggerCollectorTick.model_validate(
         {
             "schema": "observations/s1",
             "tick_id": f"{sched}-{started_ms}",

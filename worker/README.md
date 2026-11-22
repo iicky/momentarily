@@ -16,7 +16,9 @@ The cron fires every minute ([`wrangler.toml`](wrangler.toml)); the full
 derivation pipeline runs only when the minute is a 5-minute boundary, while the
 1-minute trace, platform-wait, and headway carries run every fire. "Cadence"
 below is the write rate, not the object count — the dated `archive/` and `v1/`
-streams accumulate one object per write.
+streams accumulate one object per write. `<run>` in a key is the writing run's
+tick id, `<scheduled_at>-<started_at_ms>`: private `archive/` objects are named
+by it, public grading-stream objects only in a collision fallback (below).
 
 ### `v1/` — public
 
@@ -27,10 +29,35 @@ streams accumulate one object per write.
 | `v1/arrivals.json` | [`snapshot.ts`](src/snapshot.ts) `publishArrivals` | every minute |
 | `v1/predictions/<date>/<observed_at>.jsonl` | [`grading.ts`](src/grading.ts) `writePredictions` | every 5-min tick (skipped when no records) |
 | `v1/regime_transitions/<date>/<observed_at>.jsonl` | [`grading.ts`](src/grading.ts) `writeTransitions` | every 5-min tick (only on a regime change) |
-| `v1/movement_transitions/<date>/<observed_at>-<scope>.jsonl` | [`grading.ts`](src/grading.ts) `writeMovementTransitions` | every 5-min tick (only on a movement-regime change) |
+| `v1/movement_transitions/<date>/<ts>-<scope>.jsonl` | [`grading.ts`](src/grading.ts) `writeMovementTransitions` | every 5-min tick at route scope (`ts` = `observed_at`), every minute at segment scope (`ts` = the scheduled minute); only on a movement-regime change |
+| `v1/<stream>/index/<date>.json` | [`grading.ts`](src/grading.ts) `publishCreateOnce` | only on a day a grading-stream name was taken (see below) |
 | `v1/entrances.json` | [`entrances_static.ts`](src/entrances_static.ts) `publishEntrances` | daily |
 | `v1/route_shapes.json` | weekly Python trainer ([`publish_params.py`](../training/publish_params.py) `write_route_shapes`) | weekly (on GTFS timetable change) |
 | `v1/route_shapes/<feed_version>.json` | weekly Python trainer (immutable per feed_version) | once per feed_version |
+
+The three dated grading streams keep their documented names: a public client
+can only fetch an exact key (the Worker lists nothing), so the name must be
+computable from the record's `ts`. Each write is create-once
+(`If-None-Match: *`). Normally one run writes each name — the alpha CAS winner
+of the 5-minute boundary, or for segment scope the `segment_flow` CAS winner of
+the minute (segment names are unique outright, since that minute only
+increases). Two alpha winners of different boundaries can still start in the
+same second (a run five minutes late beside the next boundary's on-time run).
+The second then finds the name taken and writes
+`<date>/<name stem>-<run>.jsonl` in the same folder (e.g.
+`v1/predictions/<date>/<observed_at>-<run>.jsonl`,
+`v1/movement_transitions/<date>/<ts>-route-<run>.jsonl`), and appends it, by
+etag compare-and-swap, to that stream's day index
+`v1/<stream>/index/<date>.json`:
+
+```json
+{"day": "<date>", "objects": [{"key": "<fallback key>", "documented_key": "<name it found taken>"}]}
+```
+
+**Finding every record of a day:** fetch the documented names, then
+`v1/<stream>/index/<date>.json`; a 404 means no record of that day moved, and
+otherwise each listed `key` is fetchable. The index sits outside the date
+folder, so a date-prefix listing (the Python grader) reads only records.
 
 For a disrupted/suspended route **with a known onset (`condition_entered_at`) and
 a primary alert type**, `v1/snapshot.json` publishes the **causal
@@ -117,18 +144,23 @@ read by the Worker.
 ### `archive/` — private, append-only corpus
 
 The held-out record the offline HMM validation is graded against
-([`archive.ts`](src/archive.ts)). Dated by UTC day; keyed by version or
-observation time so an overlapping/retried run overwrites the same object rather
-than duplicating it.
+([`archive.ts`](src/archive.ts)). Dated by UTC day. Alert versions, E&E hours
+and trace minutes are keyed so an overlapping/retried run lands on the same
+object; an object a run writes once is keyed by the run, `<run>` =
+`<scheduled_at>-<started_at_ms>` (its tick id), so two runs never share one.
+All are create-once except E&E. Objects written before per-run keys are named
+`<observed_at>`; readers accept both.
 
 | Key | Producer | Cadence |
 | --- | --- | --- |
 | `archive/alerts/<date>/<updated_at>-<alert_id>.json` | [`archive.ts`](src/archive.ts) `archiveNewAlerts` | every 5-min tick, one object per new `(alert_id, updated_at)` version |
-| `archive/alerts_liveness/<date>/<observed_at>.json` | [`archive.ts`](src/archive.ts) `archiveAlertsLiveness` | every 5-min tick |
+| `archive/alerts_liveness/<date>/<run>.json` | [`archive.ts`](src/archive.ts) `archiveAlertsLiveness` | every 5-min tick |
 | `archive/ene/<date>/HH0000-<source>.json` | [`archive.ts`](src/archive.ts) `archiveEneSnapshot` | hourly |
-| `archive/trip_updates/<date>/<observed_at>.json` | [`archive.ts`](src/archive.ts) `archiveTripUpdateMetric` | every 5-min tick |
-| `archive/vehicles/<date>/<observed_at>.json` | [`archive.ts`](src/archive.ts) `archiveVehicleMetric` | every 5-min tick |
-| `archive/arrivals/<date>/<observed_at>.json.gz` | [`archive.ts`](src/archive.ts) `archiveArrivalsSample` | every minute, gzipped, first 4 upcoming trains per stop — grades the feed's own countdown ETAs against realized arrivals |
+| `archive/trip_updates/<date>/<run>.json` | [`archive.ts`](src/archive.ts) `archiveTripUpdateMetric` | every 5-min tick |
+| `archive/vehicles/<date>/<run>.json` | [`archive.ts`](src/archive.ts) `archiveVehicleMetric` | every 5-min tick |
+| `archive/movement_census/<date>/<run>.json` | [`grading.ts`](src/grading.ts) `writeMovementCensus` | every 5-min tick |
+| `archive/health/<date>/<run>.json` | [`archive.ts`](src/archive.ts) `archiveHealth` | every minute |
+| `archive/arrivals/<date>/<run>.json.gz` | [`archive.ts`](src/archive.ts) `archiveArrivalsSample` | every minute, gzipped, first 4 upcoming trains per stop — grades the feed's own countdown ETAs against realized arrivals |
 | `archive/trace/<date>/<scheduled_at>.json` | [`archive.ts`](src/archive.ts) `archiveTraceRows` | every minute |
 
 ### `model/observations/s1/` — private, raw observations

@@ -77,6 +77,7 @@ from momentarily.model.observations.contracts import (
     TripUpdateObservation,
     VehicleObservation,
     alert_content_digest,
+    parse_collector_tick,
 )
 from momentarily.model.observations.decode import (
     DECODER_VERSION,
@@ -291,7 +292,7 @@ class _Reader:
         data = None if tick_key is None else self._get(tick_key)
         if tick_key is not None and data is not None:
             try:
-                tick = CollectorTick.model_validate_json(data)
+                tick = parse_collector_tick(data)
             except ValidationError as err:
                 self.inconsistent(tick_key, f"not a CollectorTick: {err}")
             else:

@@ -48,6 +48,7 @@ interface StoredObject {
   body: string;
   etag: string;
   httpMetadata?: R2HTTPMetadata;
+  customMetadata?: Record<string, string>;
 }
 
 function fakeBucket() {
@@ -72,7 +73,7 @@ function fakeBucket() {
     async put(
       key: string,
       body: string,
-      opts?: { httpMetadata?: R2HTTPMetadata; onlyIf?: R2Conditional | Headers },
+      opts?: { httpMetadata?: R2HTTPMetadata; onlyIf?: R2Conditional | Headers; customMetadata?: Record<string, string> },
     ) {
       for (const prefix of failPrefixes) {
         if (key.startsWith(prefix)) throw new Error(`forced put failure: ${key}`);
@@ -87,8 +88,17 @@ function fakeBucket() {
         }
       }
       const etag = `etag-${++seq}`;
-      store.set(key, { body, etag, ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}) });
+      store.set(key, {
+        body,
+        etag,
+        ...(opts?.httpMetadata ? { httpMetadata: opts.httpMetadata } : {}),
+        ...(opts?.customMetadata ? { customMetadata: opts.customMetadata } : {}),
+      });
       return { etag };
+    },
+    async head(key: string) {
+      const rec = store.get(key);
+      return rec ? { etag: rec.etag, customMetadata: rec.customMetadata ?? {} } : null;
     },
   };
   return { bucket: bucket as unknown as R2Bucket, store, failPrefixes };
@@ -103,9 +113,10 @@ function jsonAt(store: Map<string, StoredObject>, key: string): unknown {
   return rec ? JSON.parse(rec.body) : undefined;
 }
 
+/** The run's record: these ticks are scheduled for, and start at, `observedAt`. */
 function healthKey(observedAt: number): string {
   const date = new Date(observedAt * 1000).toISOString().slice(0, 10);
-  return `archive/health/${date}/${observedAt}.json`;
+  return `archive/health/${date}/${observedAt}-${observedAt * 1000}.json`;
 }
 
 function scheduledAt(epochSec: number): ScheduledController {

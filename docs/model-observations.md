@@ -804,6 +804,219 @@ where listed here.
   are 142 MB/day, the figure §6 started from. Tick records are about
   9.4 MB/day, not the 3.6 MB first assumed.
 
+#### As built (backup trigger)
+
+Cloudflare's cron path skipped 6–134 minutes a day on bad days in October 2026
+and started some runs hours late. A minute that does not run is lost for good.
+The Worker therefore has a second trigger: a Durable Object alarm watchdog,
+`worker/src/watchdog.ts`. The cron stays the primary trigger.
+
+- **Design.** One SQLite-backed Durable Object, `MinuteClock`
+  (binding `MINUTE_CLOCK`, one object by name, location hint `enam`). Its
+  alarm is always set for 45 s past the next minute. Both triggers claim a
+  minute ("slot", `floor(ms / 60 s)`) in the object before they run it, and
+  the first claim wins. Both triggers run the same minute body, `runMinute` in
+  `index.ts`, the former `scheduled` body moved unchanged.
+- **Cron.** The cron claims its slot first, under a random run id. A lost
+  claim returns at once. A claim that errors or gets no answer in 3 s runs
+  the minute anyway. The claim is a 60 s lease. The cron renews it before
+  each write stage of the minute and every 10 s from a timer, and marks the
+  slot done when the minute has run to its end (record and publish, also
+  when it ended in an error). A renewal that fails counts as held: the cron
+  runs on. The claim also re-arms the alarm when there is none, or when the
+  stored one is more than a minute overdue (local workerd keeps a stored
+  alarm across a restart but does not fire it).
+- **Lease length.** A live cron renews at least every 43 s: the 10 s timer,
+  plus a renewal's 3 s call budget, plus the longest synchronous stretch that
+  can hold the timer back, which the Worker's 30 s CPU limit bounds. 60 s is
+  above that. The length does not depend on how long the minute runs (p50
+  7.6 s, p99 42 s, max 237 s over the 18,317 recorded ticks): a slow cron
+  keeps renewing. A lease longer than the longest run (about 5 minutes)
+  would also have been safe; it would only delay the missed mark that fences
+  a dead cron.
+- **Alarm.** The alarm sets the next alarm before it does anything else. It
+  then records the current slot (the one whose 45 s deadline has just passed)
+  as the last wake's, and looks at the 5 slots before it. It never runs one
+  of them: the feeds only show the present, so a run for a past minute would
+  record the present under that minute's key. It marks missed (claim
+  `trigger: "alarm"`, `done: true`, `missed: <reason>`, no run id):
+  - `no_claim`: a slot nobody claimed whose deadline passed after the last
+    wake's (the cron did not run, and the alarm was busy running a minute or
+    did not fire). On the first wake after a deploy, unclaimed slots are left
+    alone: an older Worker that did not claim ran them;
+  - `lease_expired`: a cron claim that was never marked done and whose lease
+    has expired, a cron that died or has not renewed for 60 s.
+
+  A done slot, an alarm claim and a live cron are left alone. Last, the alarm
+  runs the current slot, once, if nobody claimed it or its cron claim was
+  never marked done and its lease has expired; it runs the whole minute,
+  publish and record, then marks the slot done. So one wake runs at most one
+  minute, and the 5-minute pipeline only for the current slot's boundary: a
+  boundary that passed while the alarm was busy or did not fire is not
+  applied late, and its filter step is lost with the minute. A live cron,
+  however slow, is never taken over. A cron that stops renewing is marked
+  missed at the first deadline after its lease ends (60-120 s after its last
+  renewal), while its slot is still among the last 6 (any death within 264 s
+  of the start, above the longest recorded run); a lease can expire on the
+  current slot only on a wake that fires late. The alarm never takes over an
+  alarm claim and catches every error, so Cloudflare's alarm retries never
+  run a minute twice. It deletes claims older than a day.
+- **What the alarm can and cannot recover.** It recovers a minute whose cron
+  did not run by its 45 s deadline, by polling the feeds about 26 s later than
+  the cron would have. It cannot recover any minute whose deadline has
+  passed: a cron that died after its deadline, or minutes that passed while
+  an alarm run was still going or the object was unreachable. Those are
+  marked missed in the object, the recorder writes nothing for them, and
+  layer-3 coverage reads them as `no_invocation`. A `no_claim` mark can be
+  wrong in one case: a cron whose claim failed open may have run the minute.
+  Its tick record then shows the run, and its done mark, if it reaches the
+  object, replaces the missed mark; such a cron's renewals re-claim the
+  slot. A cron that arrives after its minute was marked missed loses its
+  claim and does nothing. Per-run archive keys (below) recover nothing a
+  missed minute lost: they only keep each run's own records when two runs
+  of adjacent minutes start in the same second, which a late alarm wake or
+  a late cron beside the next minute's cron does.
+- **Fencing.** A takeover gives the slot a new run id, and a missed mark
+  removes it. The old cron's next renewal answers that the slot is taken,
+  and the cron stops: it writes nothing more for that minute, its tick record
+  included. The check is not atomic with the R2 write after it, so every
+  object that two overlapping runs can both write is also protected at the
+  write itself:
+
+  | Object | Shared by two runs of one minute? | Protection at the write |
+  |---|---|---|
+  | `archive/trace/<day>/<scheduled_at>.json` | yes (scheduled-second key) | create-once (`If-None-Match: *`): the first run's trace is kept |
+  | `archive/alerts/<day>/<updated_at>-<id>.json` | yes (alert-version key) | create-once: the version's first observation is kept |
+  | `state/alpha.json` | yes | etag CAS, and the tick that wrote it (R2 custom metadata `tick`); a run whose tick is not newer skips the write |
+  | `v1/snapshot.json`, `v1/trains.json`, `archive/ene/`, `state/vehicle_stops.json`, `state/movement_metric.json`, `state/service_metric.json`, `state/movement_state.json`, `state/stations.json`, `v1/entrances.json` | yes | written only by the run that won the alpha CAS for the tick, so one run per tick |
+  | `archive/movement_census/`, `archive/trip_updates/`, `archive/vehicles/` | no: per-run key (below) | create-once, and written only by the run that won the alpha CAS for the tick |
+  | `v1/predictions/`, `v1/regime_transitions/`, `v1/movement_transitions/…-route` | only by two alpha winners of different boundaries that start in one second | documented public name `<observed_at>`, create-once, written only by the run that won the alpha CAS for the tick; a run that finds the name taken uses the run-suffixed fallback (below) |
+  | `state/last_seen.json`, `state/headway.json` | yes | etag CAS (as before) |
+  | `state/segment_flow.json` | yes | a run whose minute `segment_flow` already holds skips segment judging, and the fold is an etag CAS on the copy it read |
+  | `state/station_flow.json`, `v1/movement_transitions/…-segment` | yes / no: the minute's `segment_flow` winner is its only writer | written only by the run whose `segment_flow` CAS succeeded; the transitions create-once at their documented name (minute `-segment`) |
+  | `state/segment_vehicle_stops.json` | yes | written only by the run whose `segment_flow` CAS succeeded, after it, as an etag CAS on the copy that run read: a run whose fold lost never writes the carry, and a newer carry is never replaced |
+  | `state/station_wait.json` | yes | etag CAS; a run whose `observed_at` is not newer than the stored doc's does not fold |
+  | `v1/arrivals.json` | yes | etag CAS on a `head`, and the `observed_at` that wrote it (R2 custom metadata `observed_at`); a run whose observation is not newer skips the write |
+  | tick records, GTFS-RT bundles | no: keyed by the run's start | none needed |
+  | `archive/health/`, `archive/alerts_liveness/`, `archive/arrivals/` | no: per-run key (below) | create-once |
+  | `raw/blob/`, `archive/gtfs/` | content-addressed | none needed: both runs write the same bytes |
+
+- **Per-run archive keys.** Every private archive object a run writes once
+  is named by the run, with the run's tick id, the name of its tick record:
+  `<prefix>/<YYYY-MM-DD>/<scheduled_at>-<started_at_ms><suffix>`. The
+  prefixes are `archive/arrivals/` (`.json.gz`), `archive/health/`,
+  `archive/alerts_liveness/`, `archive/trip_updates/`, `archive/vehicles/`
+  and `archive/movement_census/` (`.json`). The day folder is the UTC day of
+  the run's `observed_at`, as before, so retention and date-prefix listing
+  are unchanged; the bodies are unchanged. Every write is create-once. Two
+  runs therefore never share a key, also when a run for one minute that
+  starts late (an alarm wake 35 s late, or a cron about a minute late) and
+  the on-time run of the next minute start in the same second: each run's
+  arrivals sample, health record and alerts liveness are kept, including a
+  partial outage that only one of them saw. Objects written before were
+  named by the run's execution second, `<observed_at>`, and such two runs
+  kept one object; the recorded data holds 21 such coincidences. Both names
+  stay readable: the readers that list by date and read the bodies are
+  unchanged, and the readers that parse the name accept both (§5.1,
+  `alert_poll_latency.py`). The per-minute trace stays keyed by the minute,
+  create-once, so a second run of one minute keeps the first run's trace.
+- **Public grading streams keep their documented names.** `v1/predictions/`,
+  `v1/regime_transitions/` and `v1/movement_transitions/` are public
+  (ADR 0001), and the public Worker serves exact keys only, so their objects
+  keep the names a client can compute: `<observed_at>.jsonl`, and
+  `<ts>-<scope>.jsonl` for movement transitions (`ts` the minute at segment
+  scope). Writes are create-once. Segment names have one writer (the
+  `segment_flow` minute only increases). The others are keyed by an
+  execution second, which two alpha winners of different boundaries can share
+  (a run five minutes late beside the next boundary's on-time run); the second
+  writes `<name>-<scheduled_at>-<started_at_ms>.jsonl` in the same folder and
+  appends that key, by etag CAS, to the public day index
+  `v1/<stream>/index/<YYYY-MM-DD>.json` (`{"day", "objects": [{"key",
+  "documented_key"}]}`), outside the date folder, so no record is lost and a
+  public client finds it without listing (worker/README.md). Readers that
+  list by date read the fallback like any record.
+- **Duplicates and late runs.** A cron that arrives after its minute was
+  claimed or marked missed does nothing: a duplicated dispatch, or a cron that
+  is later than the alarm. Two runs of one minute happen only when the cron's
+  claim fails open while the alarm claims the minute, or when a cron stops
+  renewing for 60 s and comes back (the object unreachable from the cron, or
+  the cron stalled) after a takeover or a missed mark. In the recorded ticks,
+  1,106 of 17,378 cron runs (6.4 %; 909 of 3,471 5-minute ticks) were still
+  running at :45; with the lease each of those keeps renewing and runs alone.
+  How often claims fail or renewals stop cannot be read from the ticks; it is
+  unmeasured. When two runs do happen, the tick record, raw bundle and
+  per-run archive objects of each are kept (§4 and coverage read them as two
+  observations of the minute), the trace and alerts versions are the first
+  run's, segment transitions and the stop carry are the run's whose fold won,
+  the filter advances once and one snapshot is published per tick. The run that
+  fetched later keeps `station_wait.json` and `arrivals.json`, whichever
+  writes last: a run that fetched earlier but writes later (a cron that
+  stalled past a takeover) does not replace them. Its `headway.json`
+  passings are merged. A late run of an older tick never advances the filter
+  after a newer one. A cron that died after it committed alpha and was marked
+  missed publishes no snapshot for that tick: the next 5-minute tick
+  publishes.
+- **Residual windows.** A write that passed its stage's check can land after
+  a takeover or a missed mark; so can the remainder of a stage that was
+  waiting on R2 when the lease ran out. After a renewal that got no answer in
+  3 s, the cron skips renewals at stage checks for one 10 s heartbeat period.
+  In those windows both runs can write their own per-run archive objects,
+  which is what they are for; every shared object is protected at the write
+  as the table above shows.
+- **`trigger`.** `CollectorTick.trigger` is `cron` or `alarm`: what started
+  the run. An alarm run uses `scheduled_at` = minute + 19 s, the cron's
+  dispatch offset in 18,317 of 18,317 recorded ticks, so the 5-minute gate,
+  derive and coverage's slot grid read it as they read a cron run. Its
+  `started_at_ms` is its own, about 26 s later than a cron run's would be. A
+  start-lag metric must therefore be split by `trigger`. Ticks stored before
+  the field existed are `PreTriggerCollectorTick` (exported schema
+  `pre_trigger_collector_tick`), the same record without `trigger`.
+  Only the cron ran the Worker then, so readers parse stored ticks with
+  `parse_collector_tick`, which reads that shape as `trigger: "cron"`. No
+  field has a default, and the replay pin of the recorded hour (ticks without
+  the field) is unchanged.
+- **Residual risk.** The two triggers do not share the scheduler path. They do
+  share the Workers runtime, the network, the deploy plane and the Durable
+  Object storage layer, so a Cloudflare-wide event stops both. A Durable
+  Object outage costs only the backup: the cron fails open.
+- **Cost.** $0 extra a month on Workers Paid [inferred]. The lease adds a
+  renewal per write stage: about 6 calls off the 5-minute boundary and 13 on
+  it, plus one per 10 s of a long run. With the claim, done mark and alarm
+  wake that is about 11 Durable Object requests and rows written a minute,
+  about 500,000 of each a month, inside the included 1 M requests and
+  50 M rows; the object active all month would be about 324,000 GB-s, inside
+  the included 400,000. That the account is on Workers Paid is inferred from
+  the repository (the trainer Container needs it); it is not confirmed,
+  because no credentials were used. Production renewal latency was not
+  measured; each one is a round trip to the object before a write stage.
+- **Measured.** In local workerd (Miniflare 3.20241230), over 2,000 wakes, an
+  idle wake (the minute already run by the cron) took about 0.03 ms of CPU
+  above the cost of dispatching a request to the object, and 0.14 ms with it.
+  A wake that runs a whole 5-minute minute on the captured 2026-10-20 feeds
+  took 45 ms of CPU (1.34 s over 30 wakes, each also marking the 4 minutes
+  since the last wake missed). Both figures are the workerd process's CPU,
+  which includes Miniflare's local R2 and object storage. Production storage
+  latency was not measured.
+- **Tests.** `worker/test/watchdog.test.ts` runs the bundled Worker and
+  object in workerd through Miniflare, with test hooks in
+  `worker/test/watchdog_harness.ts` (an offset clock, a direct alarm call, a
+  shorter lease heartbeat and fault injection, including renewals that fail
+  or answer "held" falsely). Slow crons (50, 120 and 240 s) are real runs
+  held on one upstream answer while the object's clock moves through the
+  deadlines; stopped crons are released after the missed mark or takeover.
+  An alarm run held through 6 or 10 deadlines checks that the next wake runs
+  only the current minute, marks the others missed, writes one record of
+  each kind and applies at most the current boundary. One test waits for the
+  runtime to fire a real alarm, up to a minute. `MEASURE_WAKE_CPU=1` adds
+  the two CPU measurements. `worker/test/index.test.ts` runs one tick twice,
+  sequentially and with interleaved segment stages, and checks one alpha
+  advance, one publish, one segment fold, the stop carry written only by the
+  fold's winner, and the first trace kept. Three tests start two runs of
+  adjacent minutes in the same second (an alarm 35 s late beside the next
+  minute's cron, the same with one run's `ace` feed failing, and a cron
+  about 62 s late beside the next cron) and check one object per run under
+  every per-run prefix.
+
 ### 4.2 As built (slice 5)
 
 The derive job is `momentarily.model.observations.derive`. `storage` is the
@@ -1012,6 +1225,33 @@ row of the table above (`trace`, `fresh_feeds` for `archive/trip_updates` and
 `archive/vehicles`, `alerts`, `alerts_liveness`, `predictions`, `ene`,
 `health`). They need no `pyarrow`. `momentarily.model.observations.parquet`
 writes any record type; the derive job is meant to reuse it.
+
+**Object names.** `archive/trip_updates`, `archive/vehicles`,
+`archive/alerts_liveness` and `archive/health` objects are named
+`<observed_at>` (objects written before per-run keys, §4.1) or by their run,
+`<scheduled_at>-<started_at_ms>`, in the folder of the UTC day of
+`observed_at` either way. The adapters accept both (`common.run_key`). An
+old name must equal the body's `observed_at`, as before; a run's name must
+have started in the second of the body's `observed_at` or the next one.
+Records of old names are byte-identical to before: the backfill's files on
+the committed fixture mirror are unchanged. For a run's name,
+`legacy_fetch_id` and the lineage name the object as always,
+`LegacyFetchOutcome.scheduled_at` is the name's `scheduled_at` (an old name
+keeps it `Unknown`), and `LegacyCollectorHealth.legacy_tick_id` is
+`archive/health@<scheduled_at>-<started_at_ms>`
+(`archive/health@<observed_at>` for an old name), so two runs observed in
+one second are two records.
+
+`v1/predictions` objects keep their documented public name,
+`<observed_at>.jsonl` (`keys.LegacyPredictionsKey`), as before per-run keys.
+A run that found that name taken wrote
+`<observed_at>-<scheduled_at>-<started_at_ms>.jsonl` beside it
+(`keys.LegacyPredictionsRunKey`, also listed in the public day index
+`v1/predictions/index/<day>.json`, which lies outside the day folder the
+backfill lists). The adapter reads both: `observed_at` comes from the name and
+must equal every line's `ts`, and the suffixed run must have started in that
+second or the next one. The lineage names the object, so such a tick's two
+objects give two records per route.
 
 ```
 python -m momentarily.model.observations.legacy --mirror <mirror-root> \

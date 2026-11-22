@@ -3,10 +3,12 @@
 Three groups:
 
   * Collector metadata, written by the Worker and live only: ``CollectorTick``
-    (one per invocation, holding a ``FeedFetch`` per attempt) and
-    ``TickBundleIndex`` (the index member of a GTFS-RT tick bundle). Every
-    field is required and known; the raw payload bytes they point at are the
-    source of truth.
+    (one per invocation, holding a ``FeedFetch`` per attempt and the
+    ``trigger`` that started it) and ``TickBundleIndex`` (the index member of
+    a GTFS-RT tick bundle). Every field is required and known; the raw
+    payload bytes they point at are the source of truth. Ticks stored before
+    ``trigger`` existed are ``PreTriggerCollectorTick``s, cron runs by
+    definition; read stored ticks with ``parse_collector_tick``.
   * Observation records, derived offline: ``VehicleObservation``,
     ``TripUpdateObservation``, ``FeedHeaderObservation``, ``AlertPresence``,
     ``AlertVersion`` and ``EquipmentObservation``, stored as parquet (see
@@ -51,10 +53,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date
-from typing import Annotated, Any, ClassVar, Literal, LiteralString, get_args
+from typing import Annotated, Any, ClassVar, Literal, LiteralString, Self, get_args
 
-from pydantic import BaseModel, Field, JsonValue, model_validator
+from pydantic import BaseModel, Field, JsonValue, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
 
 from momentarily.model.conventions import (
@@ -68,6 +71,7 @@ from momentarily.model.conventions import (
 from momentarily.model.observations.keys import (
     RECORDER_CUTOVER,
     REPLACED_PERIOD_END,
+    RUN_NAME,
     BlobKey,
     BundleKey,
     DerivedDayKey,
@@ -75,6 +79,7 @@ from momentarily.model.observations.keys import (
     GtfsArchiveKey,
     KeyLayoutError,
     LegacyPredictionsKey,
+    LegacyPredictionsRunKey,
     ObservationKey,
     parse_key,
     utc_day,
@@ -337,9 +342,11 @@ def _check_fetches(
         raise _fail(error_type, "payload_member repeats within a bundle")
 
 
-class CollectorTick(Model):
-    """One Worker invocation. No tick for a minute means the collector did
-    not run; a failed source shows as a fetch with its outcome."""
+Trigger = Literal["cron", "alarm"]
+
+
+class _TickFields(Model):
+    """The fields and rules every stored ``CollectorTick`` shape shares."""
 
     schema_: Literal["observations/s1"] = Field(alias="schema")
     tick_id: str = Field(
@@ -355,7 +362,7 @@ class CollectorTick(Model):
     fetches: list[FeedFetch]
 
     @model_validator(mode="after")
-    def _consistent(self) -> CollectorTick:
+    def _consistent(self) -> Self:
         if self.tick_id != f"{self.scheduled_at}-{self.started_at_ms}":
             raise _fail("tick_identity", "tick_id is not scheduled_at-started_at_ms")
         if self.finished_at_ms < self.started_at_ms:
@@ -374,6 +381,46 @@ class CollectorTick(Model):
                 "tick_fetches", f"fetched sources not planned: {sorted(unplanned)}"
             )
         return self
+
+
+class CollectorTick(_TickFields):
+    """One Worker invocation. No tick for a minute means the collector did
+    not run; a failed source shows as a fetch with its outcome."""
+
+    trigger: Trigger = Field(
+        description=(
+            "What started the run: 'cron' (the Cron Trigger) or 'alarm' (the "
+            "Durable Object watchdog, for a minute no cron run recorded; its "
+            "scheduled_at is the minute plus the cron's 19 s dispatch offset)."
+        )
+    )
+
+
+class PreTriggerCollectorTick(_TickFields):
+    """A ``CollectorTick`` written before the record named its trigger. Only
+    the cron ran the Worker then, so it reads as ``trigger: "cron"``
+    (``as_cron``); ``parse_collector_tick`` accepts both shapes."""
+
+    def as_cron(self) -> CollectorTick:
+        return CollectorTick.model_validate(
+            {**self.model_dump(by_alias=True), "trigger": "cron"}
+        )
+
+
+def parse_collector_tick(data: str | bytes) -> CollectorTick:
+    """A stored tick record, in either shape, as a ``CollectorTick``.
+
+    A record without ``trigger`` is validated as a ``PreTriggerCollectorTick``
+    and read as a cron run; any other failure is the ``CollectorTick``'s own.
+    Raises ``ValidationError``.
+    """
+    try:
+        return CollectorTick.model_validate_json(data)
+    except ValidationError as err:
+        missing = [(e["type"], e["loc"]) for e in err.errors()]
+        if missing != [("missing", ("trigger",))]:
+            raise
+    return PreTriggerCollectorTick.model_validate_json(data).as_cron()
 
 
 class TickBundleIndex(Model):
@@ -1002,8 +1049,24 @@ class LegacyRouteAlertState(Model):
 
     @model_validator(mode="after")
     def _consistent(self) -> LegacyRouteAlertState:
-        key = LegacyPredictionsKey(self.observed_at).key
-        _check_legacy(self.lineage, ("v1/predictions",), self.observed_at, key)
+        _check_legacy(self.lineage, ("v1/predictions",), self.observed_at, None)
+        try:
+            key = parse_key(self.lineage.source_key)
+        except KeyLayoutError:
+            key = None
+        match key:
+            case (
+                LegacyPredictionsKey(observed_at=at)
+                | LegacyPredictionsRunKey(observed_at=at)
+            ) if at == self.observed_at:
+                pass
+            case _:
+                raise _fail(
+                    "legacy_key",
+                    f"the record at {self.observed_at} lives in "
+                    f"{LegacyPredictionsKey(self.observed_at).key} or a run-suffixed"
+                    " name of it",
+                )
         if self.lineage.row_index is None:
             raise _fail("lineage", "a predictions row needs its line index")
         return self
@@ -1029,7 +1092,10 @@ class LegacyFetchOutcome(Model):
     lineage: LegacyLineage
     source: SourceId
     observed_at: Instant = Field(description="The legacy record's observed_at.")
-    scheduled_at: Instant | Unknown = Field(description="Kept by archive/trace only.")
+    scheduled_at: Instant | Unknown = Field(
+        description="Kept by archive/trace, and by the per-run key"
+        " (<scheduled_at>-<started_at_ms>) of the other archives' newer objects."
+    )
     succeeded: bool = Field(
         description="false: failed or stale; the archive kept no cause."
     )
@@ -1047,11 +1113,19 @@ class LegacyFetchOutcome(Model):
         return self
 
 
+_HEALTH_KEY = re.compile(
+    rf"archive/health/(?P<day>\d{{4}}-\d{{2}}-\d{{2}})/(?P<name>{RUN_NAME})\.json"
+)
+
+
 class LegacyCollectorHealth(Model):
     """One ``archive/health`` object: the write failures of one Worker
     invocation. Planned sources and fetch timing were not kept."""
 
-    legacy_tick_id: str = Field(description="f'archive/health@{observed_at}'.")
+    legacy_tick_id: str = Field(
+        description="f'archive/health@{name}': the object's name, its observed_at"
+        " or, for newer objects, its run's <scheduled_at>-<started_at_ms>."
+    )
     lineage: LegacyLineage
     observed_at: Instant = Field(
         description="The invocation's wall clock (not the cron minute)."
@@ -1062,12 +1136,21 @@ class LegacyCollectorHealth(Model):
 
     @model_validator(mode="after")
     def _consistent(self) -> LegacyCollectorHealth:
-        key = f"archive/health/{utc_day(self.observed_at)}/{self.observed_at}.json"
-        _check_legacy(self.lineage, ("archive/health",), self.observed_at, key)
-        if self.legacy_tick_id != f"archive/health@{self.observed_at}":
+        _check_legacy(self.lineage, ("archive/health",), self.observed_at, None)
+        m = _HEALTH_KEY.fullmatch(self.lineage.source_key)
+        if (
+            m is None
+            or m["day"] != utc_day(self.observed_at)
+            or (m["at"] is not None and int(m["at"]) != self.observed_at)
+        ):
             raise _fail(
-                "legacy_key", "legacy_tick_id is not archive/health@observed_at"
+                "legacy_key",
+                f"the record at {self.observed_at} lives in "
+                f"archive/health/{utc_day(self.observed_at)}/{self.observed_at}.json"
+                " or a run's key of its day",
             )
+        if self.legacy_tick_id != f"archive/health@{m['name']}":
+            raise _fail("legacy_key", "legacy_tick_id is not archive/health@<name>")
         return self
 
 

@@ -36,9 +36,9 @@ from momentarily.model.observations.columns import parquet_metadata
 from momentarily.model.observations.contracts import (
     GTFSRT_SOURCES,
     CollectorBuild,
-    CollectorTick,
     FeedFetch,
     FeedHeaderObservation,
+    PreTriggerCollectorTick,
     RawLineage,
     TickBundleIndex,
 )
@@ -200,7 +200,7 @@ def _scripted_store(root: Path) -> None:
         (root / bundle_key).parent.mkdir(parents=True, exist_ok=True)
         (root / bundle_key).write_bytes(bundle_bytes(index, bodies))
         if k != BUNDLE_ONLY:
-            tick = CollectorTick(
+            tick = PreTriggerCollectorTick(
                 schema="observations/s1",
                 tick_id=f"{SLOTS[k]}-{started}",
                 scheduled_at=SLOTS[k],

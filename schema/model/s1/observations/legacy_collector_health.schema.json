@@ -92,7 +92,7 @@
   "description": "One ``archive/health`` object: the write failures of one Worker\ninvocation. Planned sources and fetch timing were not kept.",
   "properties": {
     "legacy_tick_id": {
-      "description": "f'archive/health@{observed_at}'.",
+      "description": "f'archive/health@{name}': the object's name, its observed_at or, for newer objects, its run's <scheduled_at>-<started_at_ms>.",
       "title": "Legacy Tick Id",
       "type": "string"
     },

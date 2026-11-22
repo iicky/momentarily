@@ -7,7 +7,7 @@
  */
 export interface LegacyCollectorHealth {
   /**
-   * f'archive/health@{observed_at}'.
+   * f'archive/health@{name}': the object's name, its observed_at or, for newer objects, its run's <scheduled_at>-<started_at_ms>.
    */
   legacy_tick_id: string;
   lineage: LegacyLineage;

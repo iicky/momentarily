@@ -25,12 +25,37 @@
  *     and filter on the record's own `scope` field, so the unscoped keys the
  *     archive already holds still load beside the new ones.
  *
+ * `ts` is the records' own `ts`: the run's execution second (observedAt), or
+ * for the segment scope its snapped scheduled minute. The date folder is its
+ * UTC day. These names are the public contract (ADR 0001, worker/README.md):
+ * the public Worker serves exact keys and lists nothing, so a client can only
+ * find a record whose name it can compute.
+ *
+ * Every write is create-once (`publishCreateOnce`). A name normally has one
+ * writer: only the alpha CAS winner of a 5-minute boundary writes predictions,
+ * regime transitions and route movement transitions, and only the
+ * segment_flow CAS winner of a minute writes segment movement transitions.
+ * Segment names are therefore unique outright (segment_flow's minute only
+ * increases). The other names are keyed by an execution second, and two
+ * winners of different boundaries can start in the same second (a run five
+ * minutes late beside the next boundary's on-time run). The second of those
+ * finds its name taken; it writes its records under
+ * `<ts>[-<scope>]-<run>.jsonl` (`<run>` its tick id,
+ * `<scheduled_at>-<started_at_ms>`) in the same day folder and lists that key
+ * in the stream's public day index, `<stream>/index/YYYY-MM-DD.json`. The
+ * index sits outside the day folder so a date-prefix listing reads records
+ * only.
+ *
  * All three prefixes are listable by date for the Python grader.
  */
 
+import { z } from 'zod';
+
 import type { RouteRoll } from './alpha';
+import { checkRunId, putRunObject, runArchiveKey } from './archive';
 import { STATES } from './hmm';
 import type { State } from './hmm';
+import { conditionalPut, createOnce } from './r2';
 import type { RegimeChange, RegimeEntry } from './regime';
 import type { Inference } from './snapshot';
 
@@ -214,46 +239,132 @@ function utcDate(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
 }
 
+const NDJSON: R2HTTPMetadata = { contentType: 'application/x-ndjson' };
+
+/** Index writes tried before giving up when concurrent appends keep winning the CAS. */
+const INDEX_WRITE_ATTEMPTS = 5;
+
+const DayIndexSchema = z.object({
+  day: z.string(),
+  objects: z.array(z.object({ key: z.string(), documented_key: z.string() })),
+});
+
+/**
+ * The public per-day index of a grading stream: every record stored under a
+ * run-suffixed name because its documented name was already taken. Absent
+ * (404) on a day with no such record.
+ */
+export type DayIndex = z.infer<typeof DayIndexSchema>;
+
+export function dayIndexKey(stream: string, day: string): string {
+  return `${stream}/index/${day}.json`;
+}
+
+/**
+ * Create-once put of a public grading object at its documented name,
+ * `<stream>/<UTC day of at>/<stem>.jsonl`. When another run already holds
+ * that name, the body goes to `<stem>-<runId>.jsonl` in the same folder and
+ * that key is appended to the stream's day index, so no record is lost and
+ * every one stays reachable over the public Worker.
+ */
+async function publishCreateOnce(
+  bucket: R2Bucket,
+  stream: string,
+  at: number,
+  stem: string,
+  runId: string,
+  body: string,
+): Promise<void> {
+  const day = utcDate(at);
+  const documented = `${stream}/${day}/${stem}.jsonl`;
+  if (await createOnce(bucket, documented, body, NDJSON)) return;
+  const fallback = `${stream}/${day}/${stem}-${checkRunId(runId)}.jsonl`;
+  console.warn(`grading: ${documented} is held by another run; this run's records go to ${fallback}`);
+  await putRunObject(bucket, fallback, body, NDJSON);
+  await listInDayIndex(bucket, dayIndexKey(stream, day), day, {
+    key: fallback,
+    documented_key: documented,
+  });
+}
+
+/** Append `entry` to the day index by etag compare-and-swap; a no-op if listed. */
+async function listInDayIndex(
+  bucket: R2Bucket,
+  key: string,
+  day: string,
+  entry: DayIndex['objects'][number],
+): Promise<void> {
+  for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
+    const obj = await bucket.get(key);
+    const index: DayIndex =
+      obj === null ? { day, objects: [] } : DayIndexSchema.parse(await obj.json());
+    if (index.objects.some((o) => o.key === entry.key)) return;
+    index.objects.push(entry);
+    if (
+      await conditionalPut(bucket, key, JSON.stringify(index), obj?.etag ?? null, {
+        contentType: 'application/json',
+      })
+    ) {
+      return;
+    }
+  }
+  throw new Error(`${key}: could not list ${entry.key} after ${INDEX_WRITE_ATTEMPTS} attempts`);
+}
+
 export async function writePredictions(
   bucket: R2Bucket,
   observedAt: number,
+  runId: string,
   records: PredictionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
-  const key = `v1/predictions/${utcDate(observedAt)}/${observedAt}.jsonl`;
-  const body = records.map((r) => JSON.stringify(r)).join('\n');
-  await bucket.put(key, body, {
-    httpMetadata: { contentType: 'application/x-ndjson' },
-  });
+  await publishCreateOnce(
+    bucket,
+    'v1/predictions',
+    observedAt,
+    `${observedAt}`,
+    runId,
+    records.map((r) => JSON.stringify(r)).join('\n'),
+  );
 }
 
 export async function writeTransitions(
   bucket: R2Bucket,
   observedAt: number,
+  runId: string,
   records: TransitionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
-  const key = `v1/regime_transitions/${utcDate(observedAt)}/${observedAt}.jsonl`;
-  const body = records.map((r) => JSON.stringify(r)).join('\n');
-  await bucket.put(key, body, {
-    httpMetadata: { contentType: 'application/x-ndjson' },
-  });
+  await publishCreateOnce(
+    bucket,
+    'v1/regime_transitions',
+    observedAt,
+    `${observedAt}`,
+    runId,
+    records.map((r) => JSON.stringify(r)).join('\n'),
+  );
 }
 
 /**
  * Commit this tick's movement-regime changes, one R2 object per scope present.
  *
  * Partitioning by scope is the whole point: index.ts calls this twice on the
- * same tick with the same observedAt, once per clock, and an R2 put replaces
- * rather than appends. Keying on observedAt alone therefore made the segment
- * write delete the route write, which it did for eight days — see the module
- * comment. Grouping here rather than trusting the caller to pass a single
- * scope means no key can be mislabelled and no two puts from one tick can
- * target the same key.
+ * same tick, once per clock, and an R2 put replaces rather than appends.
+ * Keying on the tick alone therefore made the segment write delete the route
+ * write, which it did for eight days — see the module comment. Grouping here
+ * rather than trusting the caller to pass a single scope means no key can be
+ * mislabelled and no two puts from one tick can target the same key.
+ *
+ * `at` is the records' `ts` (the run's observedAt at route scope, its snapped
+ * scheduled minute at segment scope); it names the object and picks the date
+ * folder. Create-once, with the run-suffixed fallback of `publishCreateOnce`.
+ * Only the alpha CAS winner (route) or the segment_flow CAS winner (segment)
+ * of a minute calls this.
  */
 export async function writeMovementTransitions(
   bucket: R2Bucket,
-  observedAt: number,
+  at: number,
+  runId: string,
   records: MovementTransitionRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
@@ -261,13 +372,15 @@ export async function writeMovementTransitions(
   for (const r of records) {
     (byScope[r.scope] ??= []).push(r);
   }
-  const date = utcDate(observedAt);
   await Promise.all(
     Object.entries(byScope).map(([scope, group]) =>
-      bucket.put(
-        `v1/movement_transitions/${date}/${observedAt}-${scope}.jsonl`,
+      publishCreateOnce(
+        bucket,
+        'v1/movement_transitions',
+        at,
+        `${at}-${scope}`,
+        runId,
         group.map((r) => JSON.stringify(r)).join('\n'),
-        { httpMetadata: { contentType: 'application/x-ndjson' } },
       ),
     ),
   );
@@ -302,7 +415,8 @@ export async function writeMovementTransitions(
  * is visible because `state !== open_state`, so a downstream reader can
  * distinguish a confirmed regime from an in-flight flip.
  *
- * Prefix: archive/movement_census/YYYY-MM-DD/<observed_at>.json
+ * Prefix: archive/movement_census/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json
+ * (one per run, create-once; older objects are named `<observed_at>.json`)
  */
 export interface MovementCensusRow {
   state: string;
@@ -352,12 +466,14 @@ export function buildMovementCensus(
 export async function writeMovementCensus(
   bucket: R2Bucket,
   census: MovementCensusRecord,
+  runId: string,
 ): Promise<void> {
-  const date = utcDate(census.observed_at);
-  const key = `archive/movement_census/${date}/${census.observed_at}.json`;
-  await bucket.put(key, JSON.stringify(census), {
-    httpMetadata: { contentType: 'application/json' },
-  });
+  await putRunObject(
+    bucket,
+    runArchiveKey('archive/movement_census', census.observed_at, runId, '.json'),
+    JSON.stringify(census),
+    { contentType: 'application/json' },
+  );
 }
 
 /**

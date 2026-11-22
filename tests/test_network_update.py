@@ -119,6 +119,7 @@ def _tick(at: int, etag: str | None) -> tuple[str, bytes]:
                 "store_error": None,
             }
         ],
+        "trigger": "cron",
     }
     data = json.dumps(doc).encode()
     CollectorTick.model_validate_json(data)

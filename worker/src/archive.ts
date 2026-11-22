@@ -5,26 +5,82 @@
  * runs, calibration notebooks) reconstruct the corpus by listing prefixes.
  *
  *   archive/alerts/YYYY-MM-DD/<updated_at>-<alert_id>.json
- *   archive/alerts_liveness/YYYY-MM-DD/<observed_at>.json
+ *   archive/alerts_liveness/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json
+ *   archive/arrivals/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json.gz
  *   archive/ene/YYYY-MM-DD/HH0000-<source>.json
- *   archive/health/YYYY-MM-DD/<observed_at>.json
+ *   archive/health/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json
+ *   archive/trace/YYYY-MM-DD/<scheduled_at>.json
+ *   archive/trip_updates/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json
+ *   archive/vehicles/YYYY-MM-DD/<scheduled_at>-<started_at_ms>.json
  *
  * We dedupe alerts by (alert_id, updated_at) — an alert that persists for hours
  * occupies one R2 object until its `updated_at` changes, not 72 copies of the
  * same payload like the legacy Python collector did.
  *
- * Object keys are deterministic (alert version / hour bucket, not wall-clock
- * tick time) so an overlapping or retried scheduled run overwrites the same key
- * instead of producing a duplicate object. The date folder still tracks the
- * observation date so the Python loader's date-prefix listing keeps working.
+ * Three kinds of key, by what an object stands for:
+ *   - per run (`runArchiveKey`): one object for each invocation that writes
+ *     it, named by the run's tick id, `<scheduled_at>-<started_at_ms>`, the
+ *     same id as the run's CollectorTick. Two runs never share a key, even
+ *     two runs of different minutes that start in the same second (a late
+ *     cron or alarm beside the next minute's on-time cron), so each run's
+ *     record survives. Written create-once.
+ *   - per minute (trace): keyed on the scheduled second, create-once, so a
+ *     second run of the same minute keeps the first run's object.
+ *   - per version or hour (alerts, E&E): deterministic, so a rerun lands on
+ *     the same key.
+ * The date folder of a per-run key is the UTC day of the run's observed_at
+ * (execution wall clock), as it was when these objects were named by
+ * observed_at, so date-prefix listing finds them under the same day.
+ *
+ * Per-run objects written before this layout are named `<observed_at>.json`
+ * (`.json.gz` for arrivals), the run's execution second. Readers accept both
+ * names; the bodies are unchanged and carry observed_at either way.
  *
  * E&E is written as a full snapshot per hourly tick (per feed). Volume is low
  * (~3 PUTs/hour × 24 = 72/day) so no dedupe needed yet.
  */
 
+import { createOnce } from './r2';
 import type { LastSeen } from './state';
 import type { ServiceRow } from './trip_updates';
 import type { MovementRow, TraceRow } from './vehicles';
+
+const RUN_ID = /^\d+-\d+$/;
+
+/** `runId` itself, after checking it has the tick id's form. */
+export function checkRunId(runId: string): string {
+  if (!RUN_ID.test(runId)) throw new RangeError(`not a run id: ${runId}`);
+  return runId;
+}
+
+/**
+ * Key of an object one run writes once: `<prefix>/<UTC day of observedAt>/
+ * <runId><suffix>`. `runId` is the run's tick id (`Recorder.tickId`,
+ * `<scheduled_at>-<started_at_ms>`).
+ */
+export function runArchiveKey(
+  prefix: string,
+  observedAt: number,
+  runId: string,
+  suffix: string,
+): string {
+  return `${prefix}/${utcDate(observedAt)}/${checkRunId(runId)}${suffix}`;
+}
+
+/**
+ * Create-once put of a per-run object. Its key names the run, so it can
+ * exist already only if this run wrote it; the first write is kept.
+ */
+export async function putRunObject(
+  bucket: R2Bucket,
+  key: string,
+  body: string | Uint8Array,
+  httpMetadata: R2HTTPMetadata,
+): Promise<void> {
+  if (!(await createOnce(bucket, key, body, httpMetadata))) {
+    console.warn(`archive: ${key} already exists; kept`);
+  }
+}
 
 function utcDate(epoch: number): string {
   return new Date(epoch * 1000).toISOString().slice(0, 10);
@@ -69,14 +125,17 @@ export async function archiveNewAlerts(
     if (lastSeen.alerts[id] === updatedAt) continue;
 
     // Key on the alert version (updated_at), not the tick wall-clock, so a
-    // retried/overlapping run writes the same object instead of a duplicate.
+    // retried/overlapping run lands on the same object instead of a duplicate.
+    // Create-once: a second run of one minute (or a tick after a lost
+    // last_seen write) keeps the version's first observation.
     const key = `archive/alerts/${datePrefix}/${updatedAt}-${safeKey(id)}.json`;
-    await bucket.put(
+    const created = await createOnce(
+      bucket,
       key,
       JSON.stringify({ observed_at: observedAt, alert: entity }),
-      { httpMetadata: { contentType: 'application/json' } },
+      { contentType: 'application/json' },
     );
-    written += 1;
+    if (created) written += 1;
   }
 
   lastSeen.alerts = seen;
@@ -121,18 +180,17 @@ export function deriveAlertsLiveness(success: boolean, fetchedAt: number): Alert
  * objects and are otherwise indistinguishable to an offline reader — this
  * closes that gap.
  *
- * KEYED ON observedAt, WHICH IS EXECUTION WALL-CLOCK, NOT THE SCHEDULED MINUTE
- * (index.ts: `const observedAt = Math.floor(Date.now() / 1000)`; the cron's
- * scheduled minute is the separate `scheduledAt`, and index.ts explains why the
- * 5-minute gate reads that one instead). Spelled out because it is easy to read
- * this as tick-keyed and conclude a retry overwrites: it does not. Two attempts
- * at the same scheduled minute normally start at least a second apart, so they
- * land under two keys and BOTH are kept.
+ * KEYED BY THE RUN (`runArchiveKey`: `<scheduled_at>-<started_at_ms>`), not by
+ * the scheduled minute and not by the execution second. Every attempt lands
+ * under its own key and BOTH are kept: a failed first attempt and a
+ * succeeding retry of one minute, and equally a late run of one minute and an
+ * on-time run of the next that start in the same second. The body's
+ * observed_at is the execution wall clock (index.ts: `const observedAt =
+ * Math.floor(Date.now() / 1000)`).
  *
- * That is deliberate, and it is why this differs from archiveTripUpdateMetric/
- * archiveVehicleMetric below: those are gated on the alpha CAS winner, so only
- * one invocation per tick ever writes them. This call is never gated, precisely
- * so a failed first attempt and a succeeding retry are both on the record. A
+ * That is deliberate, and it is why this call is never gated on the alpha CAS
+ * winner as archiveTripUpdateMetric/archiveVehicleMetric below are: a failed
+ * first attempt and a succeeding retry should both be on the record. A
  * reader reconstructing liveness should treat the attempts within a scheduled
  * minute as a set (any success means the alerts were fetched for that minute),
  * not assume a single record. Collapsing them here would silently erase
@@ -143,12 +201,13 @@ export async function archiveAlertsLiveness(
   bucket: R2Bucket,
   liveness: AlertsLiveness,
   observedAt: number,
+  runId: string,
 ): Promise<void> {
-  const key = `archive/alerts_liveness/${utcDate(observedAt)}/${observedAt}.json`;
-  await bucket.put(
-    key,
+  await putRunObject(
+    bucket,
+    runArchiveKey('archive/alerts_liveness', observedAt, runId, '.json'),
     JSON.stringify({ observed_at: observedAt, ...liveness }),
-    { httpMetadata: { contentType: 'application/json' } },
+    { contentType: 'application/json' },
   );
 }
 
@@ -175,20 +234,21 @@ export type WriteFailureCounts = Record<string, number>;
  * `write_failures.predictions_write > 0` for consecutive ticks and knows
  * exactly which stream and roughly when it started.
  *
- * Keyed on observedAt exactly like archiveAlertsLiveness — see that
- * function's comment for why an overlapping/retried tick keeps both records
- * rather than overwriting.
+ * Keyed by the run exactly like archiveAlertsLiveness — see that function's
+ * comment for why an overlapping/retried tick keeps both records rather than
+ * overwriting.
  */
 export async function archiveHealth(
   bucket: R2Bucket,
   writeFailures: WriteFailureCounts,
   observedAt: number,
+  runId: string,
 ): Promise<void> {
-  const key = `archive/health/${utcDate(observedAt)}/${observedAt}.json`;
-  await bucket.put(
-    key,
+  await putRunObject(
+    bucket,
+    runArchiveKey('archive/health', observedAt, runId, '.json'),
     JSON.stringify({ observed_at: observedAt, write_failures: writeFailures }),
-    { httpMetadata: { contentType: 'application/json' } },
+    { contentType: 'application/json' },
   );
 }
 
@@ -213,34 +273,35 @@ export async function archiveEneSnapshot(
  * Archive the derived per-route trip-updates service metric — one compact
  * object per tick. Deliberately a tiny derived snapshot (a handful of ints per
  * route), not the raw protobuf: raw would be ~hundreds of MB/day and blow the
- * R2 free tier; this is ~1 KB/tick, on par with the alerts archive. Keyed on
- * the tick wall-clock so an overlapping/retried run overwrites rather than
- * duplicates. `freshFeeds` records which line-group feeds were decoded this
- * tick so the offline loader can tell a real zero from a missing feed.
+ * R2 free tier; this is ~1 KB/tick, on par with the alerts archive. Keyed by
+ * the run (`runArchiveKey`) and written create-once; only the alpha CAS
+ * winner writes it. `freshFeeds` records which line-group feeds were decoded
+ * this tick so the offline loader can tell a real zero from a missing feed.
  */
 export async function archiveTripUpdateMetric(
   bucket: R2Bucket,
   rows: Map<string, ServiceRow>,
   freshFeeds: string[],
   observedAt: number,
+  runId: string,
 ): Promise<void> {
-  const key = `archive/trip_updates/${utcDate(observedAt)}/${observedAt}.json`;
-  await bucket.put(
-    key,
+  await putRunObject(
+    bucket,
+    runArchiveKey('archive/trip_updates', observedAt, runId, '.json'),
     JSON.stringify({
       observed_at: observedAt,
       fresh_feeds: freshFeeds,
       rows: Object.fromEntries(rows),
     }),
-    { httpMetadata: { contentType: 'application/json' } },
+    { contentType: 'application/json' },
   );
 }
 
 /**
  * Archive the derived per-route vehicle-movement metric — one compact object
  * per tick, mirroring archiveTripUpdateMetric. Same rationale: a handful of
- * ints per route (~1 KB/tick), not the raw protobuf. Keyed on the tick
- * wall-clock so an overlapping/retried run overwrites rather than duplicates.
+ * ints per route (~1 KB/tick), not the raw protobuf. Keyed by the run and
+ * written create-once, like archiveTripUpdateMetric.
  * `freshFeeds` records which line-group feeds decoded so the offline loader can
  * tell a real zero from a missing feed.
  */
@@ -249,16 +310,17 @@ export async function archiveVehicleMetric(
   rows: Map<string, MovementRow>,
   freshFeeds: string[],
   observedAt: number,
+  runId: string,
 ): Promise<void> {
-  const key = `archive/vehicles/${utcDate(observedAt)}/${observedAt}.json`;
-  await bucket.put(
-    key,
+  await putRunObject(
+    bucket,
+    runArchiveKey('archive/vehicles', observedAt, runId, '.json'),
     JSON.stringify({
       observed_at: observedAt,
       fresh_feeds: freshFeeds,
       rows: Object.fromEntries(rows),
     }),
-    { httpMetadata: { contentType: 'application/json' } },
+    { contentType: 'application/json' },
   );
 }
 
@@ -266,9 +328,10 @@ export async function archiveVehicleMetric(
  * Archive the per-minute vehicle trace rows — the fine-grained sibling of
  * archiveVehicleMetric above, and deliberately kept apart from it: this feeds
  * the per-minute movement trace (vehicles.ts deriveTrace), never the
- * 5-minute advanced_n/stalled_n signal archiveVehicleMetric feeds. Same key/
- * body-shape convention — one object per poll, keyed on the tick wall-clock
- * so an overlapping/retried run overwrites rather than duplicates — but its
+ * 5-minute advanced_n/stalled_n signal archiveVehicleMetric feeds. Same
+ * body-shape convention, but one object per MINUTE rather than per run: keyed
+ * on the tick's scheduled second so an overlapping/retried run of the same
+ * minute cannot duplicate its rows — and its
  * own archive/trace/ prefix so this additive stream can never collide with,
  * or be mistaken for, archive/vehicles/. `rows` is a full snapshot from
  * deriveTrace (one row per in-service trip, every poll, not a delta), so
@@ -292,8 +355,13 @@ export async function archiveTraceRows(
   // duplicating every row in it. Downstream that is double-counted arrivals and
   // silently wrong traversal times, in a brand-new archive with no history to
   // cross-check against. The scheduled second is stable across retries, so a
-  // rerun overwrites. observed_at stays in the body: it is the real execution
-  // time, and the per-vehicle feed timestamps on each row are finer still.
+  // rerun lands on the same key. The put is create-once (If-None-Match: *): the
+  // first run's trace is kept, and a second run of the same minute (an alarm
+  // takeover, a late or duplicated cron) cannot replace it, whatever it holds.
+  // A takeover runs its minute later than the cron did, so the first trace is
+  // also the one nearer the minute it is keyed by. observed_at stays in the
+  // body: it is the real execution time, and the per-vehicle feed timestamps
+  // on each row are finer still.
   const key = `archive/trace/${utcDate(scheduledAt)}/${scheduledAt}.json`;
   // feed_digest / feed_etag: this tick's GTFS static feed identity from
   // gtfs_feed.resolveFeedIdentity's HEAD+ETag compare against
@@ -313,11 +381,8 @@ export async function archiveTraceRows(
     feed_etag: feedEtag,
     rows,
   };
-  await bucket.put(
-    key,
-    JSON.stringify(body),
-    { httpMetadata: { contentType: 'application/json' } },
-  );
+  const created = await createOnce(bucket, key, JSON.stringify(body), { contentType: 'application/json' });
+  if (!created) console.warn(`trace: ${key} already archived by another run of this minute; kept`);
 }
 
 /**
@@ -337,19 +402,21 @@ export async function archiveTraceRows(
  * 92.3%/69.9% and keep-3's 98.2%/87.5%. It only reaches 80.3% of the 10-20 min
  * bin (vs keep-6's 100%), the trade made for the ~10x size cut off keep-6.
  *
- * Like archiveTraceRows, keys on the scheduled minute (observedAt) so a retry
- * overwrites rather than duplicating the object.
+ * Keyed by the run (`runArchiveKey`) and written create-once: each run's
+ * sample is kept, including two runs of adjacent minutes that start in the
+ * same second.
  */
 const ARRIVALS_SAMPLE_KEEP_N = 4;
 
 export async function archiveArrivalsSample(
   bucket: R2Bucket,
   observedAt: number,
+  runId: string,
   arrivals: Record<string, Array<{ route: string; eta_epoch: number; seconds_away: number; trip_id: string | null }>>,
   freshFeeds: readonly string[],
   expectedFeeds: readonly string[],
 ): Promise<void> {
-  const key = `archive/arrivals/${utcDate(observedAt)}/${observedAt}.json.gz`;
+  const key = runArchiveKey('archive/arrivals', observedAt, runId, '.json.gz');
   const stops: Record<string, Array<{ route: string; eta_epoch: number; trip_id: string | null }>> = {};
 
   // Keep only the first ARRIVALS_SAMPLE_KEEP_N arrivals per stop, already
@@ -374,10 +441,11 @@ export async function archiveArrivalsSample(
     stops,
   };
 
-  await bucket.put(
+  await putRunObject(
+    bucket,
     key,
     await gzip(new TextEncoder().encode(JSON.stringify(body))),
-    { httpMetadata: { contentType: 'application/json', contentEncoding: 'gzip' } },
+    { contentType: 'application/json', contentEncoding: 'gzip' },
   );
 }
 

@@ -9,7 +9,7 @@
  *      and judge segments (step 0c: the segment/station-flow surface moved onto
  *      the 1-minute trace clock — its own stop carry, gated on the params
  *      cadence). These run every tick — see the hazard note at the top of
- *      `scheduled` for why they are the ONLY things off the 5-minute boundary
+ *      `runMinute` for why they are the ONLY things off the 5-minute boundary
  *   1. Read rolling state (last_seen, alpha) + trained params from R2
  *   2. Take this minute's alerts fetch (step 0) for the pipeline
  *   3. Archive new (alert_id, updated_at) versions
@@ -23,12 +23,20 @@
  *
  * Steps 1-9 are the 5-minute pipeline and only run on a 5-minute boundary
  * (minute % 5 === 0) even though the cron itself now fires every minute — see
- * wrangler.toml and the gate at the top of `scheduled`.
+ * wrangler.toml and the gate at the top of `runMinute`.
  *
  * Beside all of it, the observations recorder (recorder.ts) keeps the raw
  * bytes of every upstream fetch and writes one CollectorTick per invocation,
  * in a `finally` so it lands whatever the pipeline does. It changes nothing
  * the pipeline publishes or archives.
+ *
+ * Two triggers run that minute body (`runMinute`): the Cron Trigger
+ * (`scheduled`) and, for a minute the cron did not run and is no longer
+ * running, the watchdog Durable Object's alarm (watchdog.ts). Both claim the
+ * minute in the watchdog first, so one of them runs it; a cron run taken over
+ * stops writing at its next stage, and every object two runs of one minute
+ * could both write is protected at the write (a conditional put or a key per
+ * run).
  */
 
 import type { AlphaState, RouteRoll } from './alpha';
@@ -60,6 +68,9 @@ import {
 } from './fetch';
 import { resolveFeedIdentity } from './gtfs_feed';
 import { Recorder } from './recorder';
+import type { Trigger } from './recorder';
+import { ALWAYS_HELD, CronLease, HEARTBEAT_MS, claimForCron, minuteSlot, reportCronDone } from './watchdog';
+import type { Lease } from './watchdog';
 import type { TripLite, VehicleLite } from './gtfsrt';
 import { decodeTripUpdates, decodeVehicles } from './gtfsrt';
 import {
@@ -164,6 +175,13 @@ import type {
 
 export interface Env {
   MOMENTARILY: R2Bucket;
+  /**
+   * The backup-trigger watchdog (watchdog.ts). Optional only so the pipeline
+   * can run without it (the unit tests that drive `runMinute` through
+   * `scheduled`); an absent binding behaves like an unreachable watchdog: the
+   * cron runs its minute.
+   */
+  MINUTE_CLOCK?: DurableObjectNamespace;
 }
 
 // Only this prefix is served publicly. Everything else in the bucket (state/,
@@ -174,6 +192,8 @@ const PUBLIC_PREFIX = 'v1/';
 // Mirrors collector.py's ENE_POLL_INTERVAL (env ENE_POLL_INTERVAL_SECONDS): the upstream ENE feed refreshes ~hourly, so archive and poll share that cadence.
 const ENE_INTERVAL_SECONDS = 3600;
 const STATIONS_INTERVAL_SECONDS = 86_400;
+/** station_wait.json fold attempts when a concurrent run's write wins the CAS. */
+const STATION_WAIT_WRITE_ATTEMPTS = 3;
 
 async function handlePublicRead(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -209,7 +229,7 @@ const ENE_SOURCES = [
 ] as const;
 
 /** UTC minute-of-hour for a tick's observedAt (POSIX seconds). Broken out as
- * a pure function — rather than reading Date.now() again inside `scheduled`
+ * a pure function — rather than reading Date.now() again inside `runMinute`
  * — so the 5-minute boundary gate is unit-testable against an arbitrary
  * timestamp.
  *
@@ -225,472 +245,543 @@ export function tickMinute(observedAt: number): number {
   return new Date(observedAt * 1000).getUTCMinutes();
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    return handlePublicRead(request, env);
-  },
+/** Thrown at a write stage once the run no longer owns its minute. */
+class Fenced extends Error {}
 
-  async scheduled(
-    event: ScheduledController,
-    env: Env,
-    ctx: ExecutionContext,
-  ): Promise<void> {
-    const observedAt = Math.floor(Date.now() / 1000);
-    const t0 = Date.now();
-    const step = (label: string): void => {
-      console.log(`step ${label} t+${Date.now() - t0}ms`);
-    };
-    console.log(`tick cron=${event.cron} t=${observedAt}`);
+/**
+ * One minute of the pipeline: everything a cron invocation does, whichever
+ * trigger started it. `scheduledTime` is the cron's `event.scheduledTime`, or
+ * for an alarm run the minute plus the cron's dispatch offset (watchdog.ts), so
+ * the 5-minute gate, the recorder's keys and every snapped minute below read
+ * the same instant either way. `trigger` is written into the tick record.
+ *
+ * `lease` is asked before every write stage (`fence`). Once it says the run no
+ * longer owns its minute (the watchdog's alarm took it over), the run stops
+ * and writes nothing more, its tick record included.
+ */
+export async function runMinute(
+  scheduledTime: number,
+  env: Env,
+  ctx: Pick<ExecutionContext, 'waitUntil'>,
+  trigger: Trigger,
+  lease: Lease,
+): Promise<void> {
+  const observedAt = Math.floor(Date.now() / 1000);
+  const t0 = Date.now();
+  const step = (label: string): void => {
+    console.log(`step ${label} t+${Date.now() - t0}ms`);
+  };
+  const fence = async (stage: string): Promise<void> => {
+    if (!(await lease.hold())) throw new Fenced(stage);
+  };
+  console.log(`tick trigger=${trigger} t=${observedAt}`);
 
-    // Per-tick write-failure counts, archived at the very end of the tick
-    // (after step 9) as archive/health/. Every archive/state write below
-    // that only console.error's on failure also calls failWrite(key) here —
-    // see archive.ts's archiveHealth for why: those writes already degrade
-    // fail-soft per tick, which hides a PERSISTENT failure on one prefix
-    // behind an otherwise-fresh live snapshot.
-    const writeFailures: WriteFailureCounts = {};
-    const failWrite = (key: string): void => {
-      writeFailures[key] = (writeFailures[key] ?? 0) + 1;
-    };
+  // Per-tick write-failure counts, archived at the very end of the tick
+  // (after step 9) as archive/health/. Every archive/state write below
+  // that only console.error's on failure also calls failWrite(key) here —
+  // see archive.ts's archiveHealth for why: those writes already degrade
+  // fail-soft per tick, which hides a PERSISTENT failure on one prefix
+  // behind an otherwise-fresh live snapshot.
+  const writeFailures: WriteFailureCounts = {};
+  const failWrite = (key: string): void => {
+    writeFailures[key] = (writeFailures[key] ?? 0) + 1;
+  };
 
-    // --- Step 0: per-minute vehicle trace, and the 5-minute pipeline gate ---
-    //
-    // THE HAZARD THIS GUARDS AGAINST: every step from here through step 9 is
-    // defined per 5-MINUTE TICK. advanced_n/stalled_n (vehicles.ts) mean "did
-    // this trip's stop_id change in 5 minutes"; the trained advance-rate
-    // baseline (params.ts) is fitted on that cadence; the dwell model's
-    // one-tick point mass IS 5 minutes; state/vehicle_stops.json is the
-    // 5-minute carry map. The cron now fires every minute (wrangler.toml) so
-    // that the trace below can poll at 1-minute resolution — but if steps 1-9
-    // ran on every one of those fires, advanced_n/stalled_n etc. would
-    // silently become 1-MINUTE quantities while every trained param still
-    // assumed 5 minutes. Same code, same shape, quietly wrong numbers. So
-    // steps 1-9 are gated to run ONLY on a 5-minute boundary (minute % 5 ===
-    // 0), reading/writing vehicle_stops.json exactly as often as before this
-    // change and seeing exactly the same inputs.
-    //
-    // TWO things now run every minute past the trace: step 0b (arrivals) and
-    // step 0c (segment judging). Both are deliberately kept off the 5-minute
-    // signal. The trace never reads or writes vehicle_stops.json and archives
-    // under its OWN prefix (archive/trace/, see archive.ts) — never
-    // archive/vehicles/. Segment judging reads that same per-minute vehicle
-    // decode but diffs it against its OWN 1-minute carry
-    // (state/segment_vehicle_stops.json), never vehicle_stops.json, and its
-    // per-tick baselines are refit at the 1-minute cadence by the trainer and
-    // cadence-gated (segmentCadenceOk) — so it is the one advanced_n/stalled_n
-    // consumer that legitimately runs per minute, precisely because its params
-    // were fit for it. The 5-minute movement census / advance metric / dwell
-    // model at step 8b are untouched and keep their 5-minute carry and inputs.
-    // See vehicles.ts's deriveTrace for why the trace writes a full snapshot
-    // every poll rather than a delta.
-    // Gate off the cron's SCHEDULED minute, not observedAt. observedAt is the
-    // wall clock at execution and is right for stamping data, but wrong for the
-    // gate: a boundary run that starts a few seconds late would read as minute 6
-    // and skip the whole 5-minute pipeline. See tickMinute.
-    const scheduledAt = Math.floor(event.scheduledTime / 1000);
-    const minute = tickMinute(scheduledAt);
-    const isFiveMinuteBoundary = minute % 5 === 0;
+  // --- Step 0: per-minute vehicle trace, and the 5-minute pipeline gate ---
+  //
+  // THE HAZARD THIS GUARDS AGAINST: every step from here through step 9 is
+  // defined per 5-MINUTE TICK. advanced_n/stalled_n (vehicles.ts) mean "did
+  // this trip's stop_id change in 5 minutes"; the trained advance-rate
+  // baseline (params.ts) is fitted on that cadence; the dwell model's
+  // one-tick point mass IS 5 minutes; state/vehicle_stops.json is the
+  // 5-minute carry map. The cron now fires every minute (wrangler.toml) so
+  // that the trace below can poll at 1-minute resolution — but if steps 1-9
+  // ran on every one of those fires, advanced_n/stalled_n etc. would
+  // silently become 1-MINUTE quantities while every trained param still
+  // assumed 5 minutes. Same code, same shape, quietly wrong numbers. So
+  // steps 1-9 are gated to run ONLY on a 5-minute boundary (minute % 5 ===
+  // 0), reading/writing vehicle_stops.json exactly as often as before this
+  // change and seeing exactly the same inputs.
+  //
+  // TWO things now run every minute past the trace: step 0b (arrivals) and
+  // step 0c (segment judging). Both are deliberately kept off the 5-minute
+  // signal. The trace never reads or writes vehicle_stops.json and archives
+  // under its OWN prefix (archive/trace/, see archive.ts) — never
+  // archive/vehicles/. Segment judging reads that same per-minute vehicle
+  // decode but diffs it against its OWN 1-minute carry
+  // (state/segment_vehicle_stops.json), never vehicle_stops.json, and its
+  // per-tick baselines are refit at the 1-minute cadence by the trainer and
+  // cadence-gated (segmentCadenceOk) — so it is the one advanced_n/stalled_n
+  // consumer that legitimately runs per minute, precisely because its params
+  // were fit for it. The 5-minute movement census / advance metric / dwell
+  // model at step 8b are untouched and keep their 5-minute carry and inputs.
+  // See vehicles.ts's deriveTrace for why the trace writes a full snapshot
+  // every poll rather than a delta.
+  // Gate off the cron's SCHEDULED minute, not observedAt. observedAt is the
+  // wall clock at execution and is right for stamping data, but wrong for the
+  // gate: a boundary run that starts a few seconds late would read as minute 6
+  // and skip the whole 5-minute pipeline. See tickMinute.
+  const scheduledAt = Math.floor(scheduledTime / 1000);
+  const minute = tickMinute(scheduledAt);
+  const isFiveMinuteBoundary = minute % 5 === 0;
 
-    // The raw-observation recorder (recorder.ts). Every upstream fetch below
-    // reports to it; its CollectorTick is written in the `finally` at the end.
-    const recorder = new Recorder(env.MOMENTARILY, scheduledAt, t0, failWrite);
-    try {
-      // The alerts feed is fetched every minute for the recorder, alongside the
-      // protobuf feeds. Only a boundary tick's step 2 hands the payload to the
-      // pipeline, so the 5-minute alerts cadence is unchanged and a boundary
-      // tick never fetches the feed twice. Off the boundary nothing awaits it:
-      // the recorder tracks the attempt and its finish() waits for it.
-      const alertsFetch = recorder.attempt('alerts', (observe) => fetchJson(FEEDS.alerts, observe));
+  // The raw-observation recorder (recorder.ts). Every upstream fetch below
+  // reports to it; its CollectorTick is written in the `finally` at the end.
+  const recorder = new Recorder(env.MOMENTARILY, scheduledAt, t0, trigger, failWrite);
+  let fenced = false;
+  try {
+    // The alerts feed is fetched every minute for the recorder, alongside the
+    // protobuf feeds. Only a boundary tick's step 2 hands the payload to the
+    // pipeline, so the 5-minute alerts cadence is unchanged and a boundary
+    // tick never fetches the feed twice. Off the boundary nothing awaits it:
+    // the recorder tracks the attempt and its finish() waits for it.
+    const alertsFetch = recorder.attempt('alerts', (observe) => fetchJson(FEEDS.alerts, observe));
 
-      // Fetch + decode the vehicle-position side of the protobuf feeds
-      // unconditionally, every tick — the trace needs it every minute, and step
-      // 8b below needs the identical fetch on a boundary tick. Fetching here
-      // once and threading `feedResults`/`vehicles`/`vehicleFreshFeeds` through
-      // means a boundary tick never fetches the feed twice.
-      const feedResults = await Promise.allSettled(
-        TRIP_UPDATE_FEEDS.map(([name, url]) =>
-          recorder.attempt(name, (observe) => fetchProtobuf(url, observe))),
-      );
-      // The raw bytes are stored before a single feed is decoded, so a decode
-      // failure below cannot lose them. Never throws: a failed PUT is recorded.
-      await recorder.storeBundle();
-      step('0-record');
-      const vehicles: VehicleLite[] = [];
-      // Decode the TripUpdate side of the SAME buffers here too, once per tick.
-      // The per-minute arrivals publish (step 0b) needs it every minute, and a
-      // 5-minute boundary's step 8b reuses this exact array — so the feeds are
-      // fetched once (above) and each side decoded once, never twice in a tick.
-      const trips: TripLite[] = [];
-      // Which line groups round-tripped at all (fetch fulfilled) — the vehicle-
-      // side liveness, unchanged: it still gates the movement metrics and dates
-      // freshness.vehicle_positions/vehicle_feeds on a boundary tick.
-      const vehicleFreshFeeds: string[] = [];
-      // Which line groups' TRIP-UPDATE side actually DECODED — the arrivals-side
-      // liveness. A separate list because the trip decode is caught independently:
-      // a malformed protobuf that throws must not abort the whole tick (the
-      // per-minute trace + the 5-minute pipeline both live past this point), and a
-      // group whose trips failed to decode must NOT be advertised fresh in
-      // arrivals just because its bytes arrived. Kept distinct from
-      // vehicleFreshFeeds so this never perturbs the vehicle/movement side.
-      const tripUpdateFreshFeeds: string[] = [];
-      for (let i = 0; i < feedResults.length; i++) {
-        const r = feedResults[i]!;
-        const name = TRIP_UPDATE_FEEDS[i]![0];
-        if (r.status === 'fulfilled') {
-          vehicleFreshFeeds.push(name);
-          vehicles.push(...decodeVehicles(r.value));
-          try {
-            const decoded = decodeTripUpdates(r.value);
-            trips.push(...decoded);
-            tripUpdateFreshFeeds.push(name);
-          } catch (err) {
-            console.error(`trip-updates ${name} decode failed; excluded from arrivals this tick:`, err);
-          }
-        } else {
-          console.error(`trip-updates ${name} failed:`, r.reason);
-        }
-      }
-      let rows: TraceRow[] = [];
-      try {
-        rows = deriveTrace(vehicles);
-        // This tick's GTFS static feed identity, from a HEAD+ETag compare
-        // against archive/gtfs/latest.json (see gtfs_feed.ts). A pointer match
-        // resolves the digest with no download; a mismatch returns the fresh
-        // etag with a null digest for THIS tick and hands back a `capture`
-        // promise that must run detached via ctx.waitUntil — never inline —
-        // so a ~5.6 MB download can never stall the trace tick's own write.
-        // Both fields are null when the HEAD itself failed; older trace
-        // objects (or bodies missing feed_digest) are already tolerated
-        // downstream.
-        const feed = await recorder.attempt(
-          'gtfs_static',
-          (observe) => resolveFeedIdentity(env.MOMENTARILY, observe),
-        );
-        if (feed.capture !== null) {
-          ctx.waitUntil(feed.capture);
-        }
-        await archiveTraceRows(
-          env.MOMENTARILY,
-          rows,
-          vehicleFreshFeeds,
-          observedAt,
-          scheduledAt,
-          feed.identity.digest,
-          feed.identity.etag,
-        );
-        console.log(`trace: ${rows.length} rows from ${vehicles.length} vehicles`);
-      } catch (err) {
-        console.error('trace step failed:', err);
-      }
-
-      // Per-platform train-departure tracking for the live crowding surface
-      // — see crowding.ts's updateStationWait. Runs every minute,
-      // right alongside the trace above, deliberately NOT gated behind the
-      // 5-minute boundary below: the whole point is 1-minute resolution on
-      // when a train cleared a platform, which is exactly the signal a
-      // 5-minute cadence would blur past recognition (see the hazard comment
-      // above — vehicle_stops.json's 5-minute stop_id carry serves a
-      // different, coarser purpose and must stay untouched by this). Reads
-      // and writes ONLY state/station_wait.json, its own R2 object — never
-      // vehicle_stops.json, never archive/vehicles/. A read/write failure
-      // degrades to publishing without the crowding surface this tick, never
-      // a failed tick.
-      //
-      // A tick that produced NO trace rows is skipped entirely rather than
-      // folded in as an empty observation, and that distinction is load-bearing
-      // twice over. updateStationWait prunes trips absent from the rows it is
-      // given, so folding in zero rows would wipe the trip -> stop carry the
-      // departure rule depends on, blinding it for the tick after the feed
-      // returns. And it would stamp a fresh observed_at over frozen platform
-      // timestamps, which is precisely the state buildSnapshot's freshness gate
-      // exists to catch: the surface would keep publishing an ageing crowd as
-      // though it were current. Leaving the prior doc untouched lets the gate
-      // age the surface out on its own. Zero rows means a total vehicle-feed
-      // outage or a throw above, never a real empty system.
-      let stationWaitDoc: StationWaitDoc | null = null;
-      if (rows.length > 0) {
+    // Fetch + decode the vehicle-position side of the protobuf feeds
+    // unconditionally, every tick — the trace needs it every minute, and step
+    // 8b below needs the identical fetch on a boundary tick. Fetching here
+    // once and threading `feedResults`/`vehicles`/`vehicleFreshFeeds` through
+    // means a boundary tick never fetches the feed twice.
+    const feedResults = await Promise.allSettled(
+      TRIP_UPDATE_FEEDS.map(([name, url]) =>
+        recorder.attempt(name, (observe) => fetchProtobuf(url, observe))),
+    );
+    // The raw bytes are stored before a single feed is decoded, so a decode
+    // failure below cannot lose them. Never throws: a failed PUT is recorded.
+    await fence('0-record');
+    await recorder.storeBundle();
+    step('0-record');
+    const vehicles: VehicleLite[] = [];
+    // Decode the TripUpdate side of the SAME buffers here too, once per tick.
+    // The per-minute arrivals publish (step 0b) needs it every minute, and a
+    // 5-minute boundary's step 8b reuses this exact array — so the feeds are
+    // fetched once (above) and each side decoded once, never twice in a tick.
+    const trips: TripLite[] = [];
+    // Which line groups round-tripped at all (fetch fulfilled) — the vehicle-
+    // side liveness, unchanged: it still gates the movement metrics and dates
+    // freshness.vehicle_positions/vehicle_feeds on a boundary tick.
+    const vehicleFreshFeeds: string[] = [];
+    // Which line groups' TRIP-UPDATE side actually DECODED — the arrivals-side
+    // liveness. A separate list because the trip decode is caught independently:
+    // a malformed protobuf that throws must not abort the whole tick (the
+    // per-minute trace + the 5-minute pipeline both live past this point), and a
+    // group whose trips failed to decode must NOT be advertised fresh in
+    // arrivals just because its bytes arrived. Kept distinct from
+    // vehicleFreshFeeds so this never perturbs the vehicle/movement side.
+    const tripUpdateFreshFeeds: string[] = [];
+    for (let i = 0; i < feedResults.length; i++) {
+      const r = feedResults[i]!;
+      const name = TRIP_UPDATE_FEEDS[i]![0];
+      if (r.status === 'fulfilled') {
+        vehicleFreshFeeds.push(name);
+        vehicles.push(...decodeVehicles(r.value));
         try {
-          const prevStationWait = await readStationWait(env.MOMENTARILY);
-          stationWaitDoc = updateStationWait(rows, prevStationWait, observedAt);
-          await writeStationWait(env.MOMENTARILY, stationWaitDoc);
+          const decoded = decodeTripUpdates(r.value);
+          trips.push(...decoded);
+          tripUpdateFreshFeeds.push(name);
         } catch (err) {
-          console.error('station wait update failed; publishing without platform crowding:', err);
+          console.error(`trip-updates ${name} decode failed; excluded from arrivals this tick:`, err);
         }
       } else {
-        // Fall back to whatever is already stored, unmodified. A single missed
-        // minute shouldn't blank the surface outright — published with its own
-        // (now older) observed_at, buildSnapshot's freshness gate ages it out
-        // over ~30 min while the cap retires individual platforms as their gaps
-        // grow. Same posture as stationFlow: degrade honestly, don't vanish.
-        console.log('trace produced no rows; station wait carried forward untouched');
-        try {
-          stationWaitDoc = await readStationWait(env.MOMENTARILY);
-        } catch (err) {
-          console.error('station wait read failed; publishing without platform crowding:', err);
-        }
+        console.error(`trip-updates ${name} failed:`, r.reason);
       }
+    }
+    await fence('0-trace');
+    let rows: TraceRow[] = [];
+    try {
+      rows = deriveTrace(vehicles);
+      // This tick's GTFS static feed identity, from a HEAD+ETag compare
+      // against archive/gtfs/latest.json (see gtfs_feed.ts). A pointer match
+      // resolves the digest with no download; a mismatch returns the fresh
+      // etag with a null digest for THIS tick and hands back a `capture`
+      // promise that must run detached via ctx.waitUntil — never inline —
+      // so a ~5.6 MB download can never stall the trace tick's own write.
+      // Both fields are null when the HEAD itself failed; older trace
+      // objects (or bodies missing feed_digest) are already tolerated
+      // downstream.
+      const feed = await recorder.attempt(
+        'gtfs_static',
+        (observe) => resolveFeedIdentity(env.MOMENTARILY, observe),
+      );
+      if (feed.capture !== null) {
+        ctx.waitUntil(feed.capture);
+      }
+      await archiveTraceRows(
+        env.MOMENTARILY,
+        rows,
+        vehicleFreshFeeds,
+        observedAt,
+        scheduledAt,
+        feed.identity.digest,
+        feed.identity.etag,
+      );
+      console.log(`trace: ${rows.length} rows from ${vehicles.length} vehicles`);
+    } catch (err) {
+      console.error('trace step failed:', err);
+    }
 
-      // Observed headway at each (route, direction)'s canonical reference stop —
-      // see headway.ts. Runs every minute for the same reason the platform-wait
-      // carry above does, only harder: a train clears a stop in well under five
-      // minutes, so on the 5-minute boundary alone most passings would never be
-      // observed at all and the surviving gaps would be multiples of the real
-      // headway. Reads and writes ONLY state/headway.json, plus a
-      // segment_params.json read on the daily reference-stop refresh — never
-      // vehicle_stops.json, never archive/vehicles/, so it cannot perturb the
-      // 5-minute advance signal every trained param assumes.
-      //
-      // A tick with no trace rows is skipped for the same two reasons as
-      // station_wait: folding zero rows in would expire every trip's pending
-      // departure and stamp a fresh observed_at over frozen state, defeating
-      // the freshness gate that is supposed to age the surface out.
-      let headwayDoc: HeadwayStateDoc | null = null;
-      if (rows.length > 0) {
-        try {
-          let read = await readHeadway(env.MOMENTARILY);
-          // The reference-stop map is a pure function of the trainer's scheduled
-          // stopping patterns and changes only when the MTA timetable does, so
-          // segment_params.json is read on a daily cadence, not per minute.
-          // Resolved ONCE, outside the retry below: a concurrent winner carries
-          // the same map, so a refold must not re-read 1.3 MB of trainer doc.
-          const trainerDoc = referenceStopsStale(read.state, observedAt)
-            ? await readSegmentParams(env.MOMENTARILY)
-            : null;
-          const reference = resolveReference(
-            read.state,
-            trainerDoc === null ? null : trainerDoc.route_stops ?? {},
-            trainerDoc?.trained_at ?? 0,
-            observedAt,
+    // Per-platform train-departure tracking for the live crowding surface
+    // — see crowding.ts's updateStationWait. Runs every minute,
+    // right alongside the trace above, deliberately NOT gated behind the
+    // 5-minute boundary below: the whole point is 1-minute resolution on
+    // when a train cleared a platform, which is exactly the signal a
+    // 5-minute cadence would blur past recognition (see the hazard comment
+    // above — vehicle_stops.json's 5-minute stop_id carry serves a
+    // different, coarser purpose and must stay untouched by this). Reads
+    // and writes ONLY state/station_wait.json, its own R2 object — never
+    // vehicle_stops.json, never archive/vehicles/. A read/write failure
+    // degrades to publishing without the crowding surface this tick, never
+    // a failed tick.
+    //
+    // A tick that produced NO trace rows is skipped entirely rather than
+    // folded in as an empty observation, and that distinction is load-bearing
+    // twice over. updateStationWait prunes trips absent from the rows it is
+    // given, so folding in zero rows would wipe the trip -> stop carry the
+    // departure rule depends on, blinding it for the tick after the feed
+    // returns. And it would stamp a fresh observed_at over frozen platform
+    // timestamps, which is precisely the state buildSnapshot's freshness gate
+    // exists to catch: the surface would keep publishing an ageing crowd as
+    // though it were current. Leaving the prior doc untouched lets the gate
+    // age the surface out on its own. Zero rows means a total vehicle-feed
+    // outage or a throw above, never a real empty system.
+    //
+    // An older observation is never folded after a newer one: a run whose
+    // stored doc is already at or past this run's observedAt (a cron that
+    // stalled while a later run wrote) keeps the stored doc, and the write is
+    // an etag CAS that refolds on a lost race.
+    await fence('0-state');
+    let stationWaitDoc: StationWaitDoc | null = null;
+    if (rows.length > 0) {
+      try {
+        for (let attempt = 0; attempt < STATION_WAIT_WRITE_ATTEMPTS; attempt++) {
+          const read = await readStationWait(env.MOMENTARILY);
+          stationWaitDoc = read.state;
+          if (read.state !== null && read.state.observed_at >= observedAt) {
+            console.warn(
+              `station wait: a newer observation (${read.state.observed_at}) is stored; `
+              + `this run's (${observedAt}) is not folded`,
+            );
+            break;
+          }
+          const next = updateStationWait(rows, read.state, observedAt);
+          if (await writeStationWait(env.MOMENTARILY, next, read.etag)) {
+            stationWaitDoc = next;
+            break;
+          }
+          console.warn(`station wait: write lost to a concurrent run (attempt ${attempt + 1}); re-reading`);
+        }
+      } catch (err) {
+        console.error('station wait update failed; publishing without platform crowding:', err);
+      }
+    } else {
+      // Fall back to whatever is already stored, unmodified. A single missed
+      // minute shouldn't blank the surface outright — published with its own
+      // (now older) observed_at, buildSnapshot's freshness gate ages it out
+      // over ~30 min while the cap retires individual platforms as their gaps
+      // grow. Same posture as stationFlow: degrade honestly, don't vanish.
+      console.log('trace produced no rows; station wait carried forward untouched');
+      try {
+        stationWaitDoc = (await readStationWait(env.MOMENTARILY)).state;
+      } catch (err) {
+        console.error('station wait read failed; publishing without platform crowding:', err);
+      }
+    }
+
+    // Observed headway at each (route, direction)'s canonical reference stop —
+    // see headway.ts. Runs every minute for the same reason the platform-wait
+    // carry above does, only harder: a train clears a stop in well under five
+    // minutes, so on the 5-minute boundary alone most passings would never be
+    // observed at all and the surviving gaps would be multiples of the real
+    // headway. Reads and writes ONLY state/headway.json, plus a
+    // segment_params.json read on the daily reference-stop refresh — never
+    // vehicle_stops.json, never archive/vehicles/, so it cannot perturb the
+    // 5-minute advance signal every trained param assumes.
+    //
+    // A tick with no trace rows is skipped for the same two reasons as
+    // station_wait: folding zero rows in would expire every trip's pending
+    // departure and stamp a fresh observed_at over frozen state, defeating
+    // the freshness gate that is supposed to age the surface out.
+    let headwayDoc: HeadwayStateDoc | null = null;
+    if (rows.length > 0) {
+      try {
+        let read = await readHeadway(env.MOMENTARILY);
+        // The reference-stop map is a pure function of the trainer's scheduled
+        // stopping patterns and changes only when the MTA timetable does, so
+        // segment_params.json is read on a daily cadence, not per minute.
+        // Resolved ONCE, outside the retry below: a concurrent winner carries
+        // the same map, so a refold must not re-read 1.3 MB of trainer doc.
+        const trainerDoc = referenceStopsStale(read.state, observedAt)
+          ? await readSegmentParams(env.MOMENTARILY)
+          : null;
+        const reference = resolveReference(
+          read.state,
+          trainerDoc === null ? null : trainerDoc.route_stops ?? {},
+          trainerDoc?.trained_at ?? 0,
+          observedAt,
+        );
+        if (reference.at === observedAt) {
+          console.log(
+            `headway: reference stops refreshed — ${Object.keys(reference.stops).length} `
+            + `cells (${Object.keys(reference.fallbacks ?? {}).length} with reroute fallbacks) `
+            + `from segment_params trained_at=${reference.trained_at}`,
           );
-          if (reference.at === observedAt) {
-            console.log(
-              `headway: reference stops refreshed — ${Object.keys(reference.stops).length} `
-              + `cells (${Object.keys(reference.fallbacks ?? {}).length} with reroute fallbacks) `
-              + `from segment_params trained_at=${reference.trained_at}`,
+        }
+        if (Object.keys(reference.stops).length === 0) {
+          // No trainer stopping patterns to pick a measurement point from (an
+          // observed-adjacency fallback doc carries none). Abstain rather than
+          // measure at an arbitrary stop.
+          console.log('headway: no reference stops available; observations abstain');
+        } else {
+          // Compare-and-swap. A lost race means an overlapping or retried cron
+          // advanced the doc between our read and our write; rewriting our
+          // version would drop the passings it recorded, and a dropped passing
+          // publishes later as one doubled headway. See state.ts HEADWAY_KEY
+          // for why this object cannot take station_wait.json's plain put.
+          //
+          // The passings our rows evidence are computed ONCE, against the base
+          // we read, because they are what we know and a later winner does
+          // not.
+          const ours = detectPassings(rows, reference, read.state, observedAt);
+          for (let attempt = 0; attempt < HEADWAY_WRITE_ATTEMPTS; attempt++) {
+            if (attempt > 0) read = await readHeadway(env.MOMENTARILY);
+            const prev = read.state;
+            const stale = prev !== null && prev.observed_at >= observedAt;
+            // Stale: an invocation for this minute or a later one already
+            // committed. Merge only our passings into its document. Refolding
+            // our whole poll would rebuild ITS trip carry from rows older than
+            // it, re-adding trips it already resolved so a later poll could
+            // fire them twice — see mergePassings.
+            const next = stale
+              ? mergePassings(prev, ours)
+              : updateHeadwayState(rows, reference, prev, observedAt);
+            if (await writeHeadway(env.MOMENTARILY, next, read.etag)) {
+              headwayDoc = next;
+              if (stale) {
+                console.warn(
+                  `headway: a later invocation won; merged ${ours.length} passing(s)`,
+                );
+              }
+              break;
+            }
+            console.warn(
+              `headway: write lost to a concurrent invocation `
+              + `(attempt ${attempt + 1}/${HEADWAY_WRITE_ATTEMPTS}); refolding`,
             );
           }
-          if (Object.keys(reference.stops).length === 0) {
-            // No trainer stopping patterns to pick a measurement point from (an
-            // observed-adjacency fallback doc carries none). Abstain rather than
-            // measure at an arbitrary stop.
-            console.log('headway: no reference stops available; observations abstain');
+          if (headwayDoc === null) {
+            // Exhausted. The last read is still a valid, fresher document, so
+            // publish from it rather than blanking the surface.
+            headwayDoc = read.state;
+            console.error('headway: write lost repeatedly; publishing the last read state');
+          }
+        }
+      } catch (err) {
+        console.error('headway update failed; publishing without observations:', err);
+      }
+    } else {
+      // Same posture as station_wait: carry the stored doc unmodified and let
+      // buildSnapshot's freshness gate age it out over ~30 min.
+      console.log('trace produced no rows; headway state carried forward untouched');
+      try {
+        headwayDoc = (await readHeadway(env.MOMENTARILY)).state;
+      } catch (err) {
+        console.error('headway read failed; publishing without observations:', err);
+      }
+    }
+    step('0-trace');
+
+    // --- Step 0b: publish the per-minute arrivals countdown surface ---
+    // A countdown that can be up to 5 min stale is not a countdown, so
+    // v1/arrivals.json rides THIS 1-minute cron, not the 5-minute pipeline
+    // below. Built from the trip-updates already decoded this tick (`trips`,
+    // step 0), so it costs no extra fetch and no second decode. Self-describing
+    // like trains.json: its own observed_at + provenance + fresh_feeds/
+    // expected_feeds, and a per-row eta_epoch. Fully independent of, and never
+    // gating, the snapshot publish — a failure here is fail-soft and counted in
+    // the health record, exactly like every other publish.
+    //
+    // Same all-feeds-failed gate as trains, but on the arrivals-side liveness:
+    // with NO trip-update feed decoded (tripUpdateFreshFeeds empty) the object
+    // is left un-rewritten rather than publishing an empty countdown as a real
+    // "no trains due" reading; a PARTIAL read (some groups decoded) publishes
+    // flagged via fresh_feeds/expected_feeds.
+    await fence('0b-arrivals');
+    if (tripUpdateFreshFeeds.length > 0) {
+      const arrivalsRecord = buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES);
+
+      try {
+        const published = await publishArrivals(
+          env.MOMENTARILY,
+          arrivalsRecord,
+        );
+        if (!published) {
+          console.warn('arrivals: v1/arrivals.json already holds a newer or concurrent observation; left as it is');
+        }
+      } catch (err) {
+        console.error(
+          'arrivals publish failed; leaving v1/arrivals.json unrewritten this tick:',
+          err,
+        );
+        failWrite('arrivals_publish');
+      }
+
+      try {
+        await archiveArrivalsSample(
+          env.MOMENTARILY,
+          observedAt,
+          recorder.tickId,
+          arrivalsRecord.arrivals,
+          arrivalsRecord.fresh_feeds,
+          arrivalsRecord.expected_feeds,
+        );
+      } catch (err) {
+        console.error(
+          'arrivals archive failed:',
+          err,
+        );
+        failWrite('arrivals_archive');
+      }
+    } else {
+      console.warn(
+        'arrivals: no trip-update feed decoded this tick, leaving v1/arrivals.json unrewritten',
+      );
+    }
+    step('0b-arrivals');
+
+    // --- Step 0c: per-minute segment judging (every tick, off the 5-min gate) ---
+    // Segment judging moved off the 5-minute boundary onto the per-minute trace
+    // clock: a graded offline sweep of both clocks (training/segment_coverage.py
+    // --sweep-decay --clock {5min,1min}) showed the 1-minute clock beats the
+    // 5-minute one it replaced on discrimination AND onset latency at every
+    // window <=125min, because the trace OBSERVES the intermediate hops of a
+    // multi-station move instead of crediting the whole jump to one cell.
+    //
+    // It runs on the SAME `vehicles` decoded once at step 0, diffed against its
+    // OWN 1-minute stop carry (state/segment_vehicle_stops.json) — never
+    // vehicle_stops.json, which is the 5-minute carry the retired movement
+    // census / advance metric still accumulate on (step 8b) and must stay
+    // untouched. throughStops is null on purpose: segment judging reads the
+    // unfiltered `transitions` map (segment_flow.tickCounts), never the
+    // through-filtered counters, so the trainer's stop filter is already baked
+    // into which cells are baselined. deriveStationFlow rolls the same doc up to
+    // stations, so station_flow rides this clock too.
+    //
+    // Cost accepted: segment_params.json (~1.8 MB) is now read every minute
+    // rather than every fifth, and this runs BEFORE the 5-minute boundary gate,
+    // so on a boundary tick the snapshot publish waits on this block's reads and
+    // writes. That is the price of judging every minute — the surface has to be
+    // computed on the per-minute clock, ahead of the gate — but it is bounded
+    // (one params read plus a handful of small puts) and immaterial to a
+    // 5-minute-cadence publish. It is fail-soft: a throw or slow read degrades
+    // to "no fresh segment surface this minute", never a failed tick; the stop
+    // carry is then not advanced, so the next minute reads a gap and diffs from
+    // {} rather than from a carry its fold never saw. The cadence gate
+    // (segmentCadenceOk) skips judging entirely until the trainer
+    // republishes segment_params.json fitted at this
+    // cadence: `lam` and `p0` are both per-tick, so an old 5-minute fit read
+    // here would call every cell a collapse. A minute the accumulator already
+    // holds (another run of this minute, an alarm takeover or a late cron,
+    // folded it first) is not folded again: a second fold would decay the sums
+    // twice and add the minute's expected traversals twice. The fold is an
+    // etag CAS on the accumulator read here, so two overlapping runs that both
+    // read it before either wrote cannot both fold either: the run that loses
+    // skips its stop carry, station_flow and transitions writes, as a losing
+    // alpha run skips its outputs.
+    await fence('0c-segments');
+    try {
+      const segParams = await readSegmentParams(env.MOMENTARILY);
+      // Segment judging keys on the SCHEDULED minute, snapped, not the
+      // wall-clock observedAt. observedAt is Date.now() at execution and
+      // jitters (12:00:03 then 12:01:05), so an observedAt-keyed carry would
+      // almost never satisfy `prev === now - 60` and would drop nearly every
+      // transition. scheduledTime is the minute the cron was meant to fire,
+      // so consecutive minutes are exactly SEGMENT_CADENCE_SECONDS apart —
+      // the same reason the 5-minute gate reads scheduledAt (see tickMinute).
+      const segmentTick =
+        Math.floor(scheduledAt / SEGMENT_CADENCE_SECONDS) * SEGMENT_CADENCE_SECONDS;
+      if (segParams && vehicleFreshFeeds.length > 0) {
+        const flowRead = segmentCadenceOk(segParams) ? await readSegmentFlow(env.MOMENTARILY) : null;
+        const prevFlow = flowRead?.state ?? null;
+        if (flowRead === null) {
+          console.log(
+            `segment judging skipped: params cadence `
+            + `${segParams.cadence_seconds ?? 'legacy-300'}s != ${SEGMENT_CADENCE_SECONDS}s `
+            + '(awaiting a 1-minute refit)',
+          );
+        } else if (prevFlow !== null && segmentFlowCadenceMatches(prevFlow) && prevFlow.observed_at >= segmentTick) {
+          console.log(
+            `segment judging skipped: segment_flow already holds minute ${prevFlow.observed_at} `
+            + `(this run's is ${segmentTick})`,
+          );
+        } else {
+          const carryRead = await readSegmentVehicleStops(env.MOMENTARILY);
+          const prevCarry = carryRead.state;
+          // Strict adjacency, matching the offline reconstruction: diff only
+          // against the carry stamped exactly one minute ago. A carry from
+          // further back — a feed-gap minute that skipped judging, a missed
+          // cron, a prior read/write failure, a fresh deploy — is dropped in
+          // favour of {}, so a train that crossed several stops across the gap
+          // contributes no transition rather than one fabricated multi-station
+          // jump. The un-timestamped carry could not tell those apart.
+          const prevSegStops =
+            prevCarry.observed_at === segmentTick - SEGMENT_CADENCE_SECONDS
+              ? prevCarry.stops
+              : {};
+          const moveRows = deriveRouteMovementMetric(vehicles, prevSegStops, null);
+          // Everything downstream keys on the snapped scheduled minute too, not
+          // the wall-clock observedAt. This is a parity requirement: the offline
+          // grade that gated this migration snaps trace ticks to the scheduled
+          // minute for the schedule_bin `lam` lookup, the accumulator and the
+          // regime clock alike (training/segment_replay), so a run delayed across
+          // an hour/day boundary must not score a 09:59 tick against the 10:00
+          // bin, and the debounce/idle clock must tick in exact minutes, not
+          // jittery wall-clock deltas. The only cost is that segment_flow's
+          // observed_at is the scheduled minute rather than the execution
+          // instant — at most one tick (<=60s) earlier, immaterial to the
+          // snapshot's ~30-minute freshness gate.
+          const flow = updateSegmentFlow(prevFlow, moveRows, segmentTick, segParams);
+          const carriedRegimes = segmentFlowCadenceMatches(prevFlow)
+            ? prevFlow?.regimes
+            : undefined;
+          const { entries, changes } = advanceRegimes(
+            carriedRegimes,
+            deriveSegmentStates(flow, segParams),
+            segmentTick,
+          );
+          flow.regimes = pruneSegmentRegimes(entries, segParams.cells);
+          if (!(await writeSegmentFlow(env.MOMENTARILY, flow, flowRead.etag))) {
+            console.warn(
+              'segment judging: segment_flow was written by an overlapping run since it was read; '
+              + `this run's fold of minute ${segmentTick} and its stop carry are dropped`,
+            );
           } else {
-            // Compare-and-swap. A lost race means an overlapping or retried cron
-            // advanced the doc between our read and our write; rewriting our
-            // version would drop the passings it recorded, and a dropped passing
-            // publishes later as one doubled headway. See state.ts HEADWAY_KEY
-            // for why this object cannot take station_wait.json's plain put.
-            //
-            // The passings our rows evidence are computed ONCE, against the base
-            // we read, because they are what we know and a later winner does
-            // not.
-            const ours = detectPassings(rows, reference, read.state, observedAt);
-            for (let attempt = 0; attempt < HEADWAY_WRITE_ATTEMPTS; attempt++) {
-              if (attempt > 0) read = await readHeadway(env.MOMENTARILY);
-              const prev = read.state;
-              const stale = prev !== null && prev.observed_at >= observedAt;
-              // Stale: an invocation for this minute or a later one already
-              // committed. Merge only our passings into its document. Refolding
-              // our whole poll would rebuild ITS trip carry from rows older than
-              // it, re-adding trips it already resolved so a later poll could
-              // fire them twice — see mergePassings.
-              const next = stale
-                ? mergePassings(prev, ours)
-                : updateHeadwayState(rows, reference, prev, observedAt);
-              if (await writeHeadway(env.MOMENTARILY, next, read.etag)) {
-                headwayDoc = next;
-                if (stale) {
-                  console.warn(
-                    `headway: a later invocation won; merged ${ours.length} passing(s)`,
-                  );
-                }
-                break;
-              }
+            // The stop carry advances only with the fold that diffed against it,
+            // stamped with THIS minute, before any surface write so a failed
+            // surface write cannot hold it back. A run whose fold lost never
+            // writes it: the carry must describe the minute the accumulator
+            // holds, or the next minute would diff against positions the
+            // accumulator never folded. The write is itself a CAS on the carry
+            // read above: a later run that won the accumulator after this one
+            // and already advanced the carry keeps its newer carry.
+            if (
+              !(await writeSegmentVehicleStops(
+                env.MOMENTARILY,
+                segmentTick,
+                stopPositions(vehicles),
+                carryRead.etag,
+              ))
+            ) {
               console.warn(
-                `headway: write lost to a concurrent invocation `
-                + `(attempt ${attempt + 1}/${HEADWAY_WRITE_ATTEMPTS}); refolding`,
+                'segment judging: segment_vehicle_stops was written by another run since it was read; '
+                + 'its carry is kept',
               );
             }
-            if (headwayDoc === null) {
-              // Exhausted. The last read is still a valid, fresher document, so
-              // publish from it rather than blanking the surface.
-              headwayDoc = read.state;
-              console.error('headway: write lost repeatedly; publishing the last read state');
-            }
-          }
-        } catch (err) {
-          console.error('headway update failed; publishing without observations:', err);
-        }
-      } else {
-        // Same posture as station_wait: carry the stored doc unmodified and let
-        // buildSnapshot's freshness gate age it out over ~30 min.
-        console.log('trace produced no rows; headway state carried forward untouched');
-        try {
-          headwayDoc = (await readHeadway(env.MOMENTARILY)).state;
-        } catch (err) {
-          console.error('headway read failed; publishing without observations:', err);
-        }
-      }
-      step('0-trace');
-
-      // --- Step 0b: publish the per-minute arrivals countdown surface ---
-      // A countdown that can be up to 5 min stale is not a countdown, so
-      // v1/arrivals.json rides THIS 1-minute cron, not the 5-minute pipeline
-      // below. Built from the trip-updates already decoded this tick (`trips`,
-      // step 0), so it costs no extra fetch and no second decode. Self-describing
-      // like trains.json: its own observed_at + provenance + fresh_feeds/
-      // expected_feeds, and a per-row eta_epoch. Fully independent of, and never
-      // gating, the snapshot publish — a failure here is fail-soft and counted in
-      // the health record, exactly like every other publish.
-      //
-      // Same all-feeds-failed gate as trains, but on the arrivals-side liveness:
-      // with NO trip-update feed decoded (tripUpdateFreshFeeds empty) the object
-      // is left un-rewritten rather than publishing an empty countdown as a real
-      // "no trains due" reading; a PARTIAL read (some groups decoded) publishes
-      // flagged via fresh_feeds/expected_feeds.
-      if (tripUpdateFreshFeeds.length > 0) {
-        const arrivalsRecord = buildArrivals(observedAt, trips, tripUpdateFreshFeeds, TRIP_UPDATE_FEED_NAMES);
-
-        try {
-          await publishArrivals(
-            env.MOMENTARILY,
-            arrivalsRecord,
-          );
-        } catch (err) {
-          console.error(
-            'arrivals publish failed; leaving v1/arrivals.json unrewritten this tick:',
-            err,
-          );
-          failWrite('arrivals_publish');
-        }
-
-        try {
-          await archiveArrivalsSample(
-            env.MOMENTARILY,
-            observedAt,
-            arrivalsRecord.arrivals,
-            arrivalsRecord.fresh_feeds,
-            arrivalsRecord.expected_feeds,
-          );
-        } catch (err) {
-          console.error(
-            'arrivals archive failed:',
-            err,
-          );
-          failWrite('arrivals_archive');
-        }
-      } else {
-        console.warn(
-          'arrivals: no trip-update feed decoded this tick, leaving v1/arrivals.json unrewritten',
-        );
-      }
-      step('0b-arrivals');
-
-      // --- Step 0c: per-minute segment judging (every tick, off the 5-min gate) ---
-      // Segment judging moved off the 5-minute boundary onto the per-minute trace
-      // clock: a graded offline sweep of both clocks (training/segment_coverage.py
-      // --sweep-decay --clock {5min,1min}) showed the 1-minute clock beats the
-      // 5-minute one it replaced on discrimination AND onset latency at every
-      // window <=125min, because the trace OBSERVES the intermediate hops of a
-      // multi-station move instead of crediting the whole jump to one cell.
-      //
-      // It runs on the SAME `vehicles` decoded once at step 0, diffed against its
-      // OWN 1-minute stop carry (state/segment_vehicle_stops.json) — never
-      // vehicle_stops.json, which is the 5-minute carry the retired movement
-      // census / advance metric still accumulate on (step 8b) and must stay
-      // untouched. throughStops is null on purpose: segment judging reads the
-      // unfiltered `transitions` map (segment_flow.tickCounts), never the
-      // through-filtered counters, so the trainer's stop filter is already baked
-      // into which cells are baselined. deriveStationFlow rolls the same doc up to
-      // stations, so station_flow rides this clock too.
-      //
-      // Cost accepted: segment_params.json (~1.8 MB) is now read every minute
-      // rather than every fifth, and this runs BEFORE the 5-minute boundary gate,
-      // so on a boundary tick the snapshot publish waits on this block's reads and
-      // writes. That is the price of judging every minute — the surface has to be
-      // computed on the per-minute clock, ahead of the gate — but it is bounded
-      // (one params read plus a handful of small puts) and immaterial to a
-      // 5-minute-cadence publish. It is fail-soft: a throw or slow read degrades
-      // to "no fresh segment surface this minute", never a failed tick, and the
-      // stop carry is advanced first (below) so a partial failure can't corrupt
-      // the next minute's diff. The cadence gate (segmentCadenceOk) skips judging
-      // entirely until the trainer republishes segment_params.json fitted at this
-      // cadence: `lam` and `p0` are both per-tick, so an old 5-minute fit read
-      // here would call every cell a collapse. Writes are plain puts, same posture
-      // as station_wait — a lost race drops one minute's update, and the next
-      // minute re-decays from the slightly older base.
-      try {
-        const segParams = await readSegmentParams(env.MOMENTARILY);
-        if (segParams && vehicleFreshFeeds.length > 0) {
-          if (!segmentCadenceOk(segParams)) {
-            console.log(
-              `segment judging skipped: params cadence `
-              + `${segParams.cadence_seconds ?? 'legacy-300'}s != ${SEGMENT_CADENCE_SECONDS}s `
-              + '(awaiting a 1-minute refit)',
-            );
-          } else {
-            // Segment judging keys on the SCHEDULED minute, snapped, not the
-            // wall-clock observedAt. observedAt is Date.now() at execution and
-            // jitters (12:00:03 then 12:01:05), so an observedAt-keyed carry would
-            // almost never satisfy `prev === now - 60` and would drop nearly every
-            // transition. scheduledTime is the minute the cron was meant to fire,
-            // so consecutive minutes are exactly SEGMENT_CADENCE_SECONDS apart —
-            // the same reason the 5-minute gate reads scheduledAt (see tickMinute).
-            const segmentTick =
-              Math.floor(scheduledAt / SEGMENT_CADENCE_SECONDS) * SEGMENT_CADENCE_SECONDS;
-            const prevCarry = await readSegmentVehicleStops(env.MOMENTARILY);
-            // Strict adjacency, matching the offline reconstruction: diff only
-            // against the carry stamped exactly one minute ago. A carry from
-            // further back — a feed-gap minute that skipped judging, a missed
-            // cron, a prior read/write failure, a fresh deploy — is dropped in
-            // favour of {}, so a train that crossed several stops across the gap
-            // contributes no transition rather than one fabricated multi-station
-            // jump. The un-timestamped carry could not tell those apart.
-            const prevSegStops =
-              prevCarry.observed_at === segmentTick - SEGMENT_CADENCE_SECONDS
-                ? prevCarry.stops
-                : {};
-            const moveRows = deriveRouteMovementMetric(vehicles, prevSegStops, null);
-            // Advance the stop carry FIRST, before any surface write, stamped with
-            // THIS minute: it is the input to next minute's diff and must reflect
-            // this minute's positions even if the accumulator/regime work or a
-            // surface write below throws. A pure function of `vehicles`,
-            // independent of the flow state, so writing it up front is always
-            // correct — and the timestamp means a skipped write simply reads as a
-            // gap next minute rather than a stale same-looking carry.
-            await writeSegmentVehicleStops(
-              env.MOMENTARILY,
-              segmentTick,
-              stopPositions(vehicles),
-            );
-            const prevFlow = await readSegmentFlow(env.MOMENTARILY);
-            // Everything downstream keys on the snapped scheduled minute too, not
-            // the wall-clock observedAt. This is a parity requirement: the offline
-            // grade that gated this migration snaps trace ticks to the scheduled
-            // minute for the schedule_bin `lam` lookup, the accumulator and the
-            // regime clock alike (training/segment_replay), so a run delayed across
-            // an hour/day boundary must not score a 09:59 tick against the 10:00
-            // bin, and the debounce/idle clock must tick in exact minutes, not
-            // jittery wall-clock deltas. The only cost is that segment_flow's
-            // observed_at is the scheduled minute rather than the execution
-            // instant — at most one tick (<=60s) earlier, immaterial to the
-            // snapshot's ~30-minute freshness gate.
-            const flow = updateSegmentFlow(prevFlow, moveRows, segmentTick, segParams);
-            const carriedRegimes = segmentFlowCadenceMatches(prevFlow)
-              ? prevFlow?.regimes
-              : undefined;
-            const { entries, changes } = advanceRegimes(
-              carriedRegimes,
-              deriveSegmentStates(flow, segParams),
-              segmentTick,
-            );
-            flow.regimes = pruneSegmentRegimes(entries, segParams.cells);
-            await writeSegmentFlow(env.MOMENTARILY, flow);
             await writeStationFlow(env.MOMENTARILY, deriveStationFlow(flow, segParams));
             try {
               await writeMovementTransitions(
                 env.MOMENTARILY,
                 segmentTick,
+                recorder.tickId,
                 movementTransitions(changes, 'segment', segmentTick),
               );
             } catch (err) {
@@ -699,315 +790,335 @@ export default {
             }
           }
         }
-      } catch (err) {
-        console.error('segment judging failed; skipping this minute:', err);
       }
-      step('0c-segments');
+    } catch (err) {
+      console.error('segment judging failed; skipping this minute:', err);
+    }
+    step('0c-segments');
 
-      if (!isFiveMinuteBoundary) {
-        console.log(
-          `tick ${observedAt}: minute=${minute}, off the 5-minute boundary — `
-          + '5-minute pipeline skipped, trace + arrivals only',
-        );
-        // Archive this tick's write-failure counts before returning: the arrivals
-        // publish above is a fail-soft write on EVERY tick, so its failures must
-        // be recorded even on the 4-of-5 ticks that skip the pipeline below — the
-        // same unconditional health record step 10 writes on a boundary tick.
-        // Otherwise a persistent 1-minute publish failure would be invisible here.
-        // The recorder finishes first (its finally call is then a no-op) so its
-        // own write failures land in this record too.
-        await recorder.finish();
-        try {
-          await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
-        } catch (err) {
-          console.error('health archive failed:', err);
-        }
-        step('10-health');
-        return;
-      }
-
-      // --- Step 1: read state ---
-      // Capture etags so the write-back is a compare-and-swap — overlapping or
-      // retried cron runs can't silently clobber each other.
-      const [
-        lastSeenRead,
-        alphaRead,
-        paramsLoad,
-        prevMovementMetric,
-        prevServiceMetric,
-        ridershipBaseline,
-        serviceWeightBaseline,
-        recoveryBaseline,
-      ] = await Promise.all([
-        readLastSeen(env.MOMENTARILY),
-        readAlphaState(env.MOMENTARILY),
-        loadParams(env.MOMENTARILY),
-        readMovementMetric(env.MOMENTARILY),
-        readServiceMetric(env.MOMENTARILY),
-        loadRidershipBaseline(env.MOMENTARILY),
-        loadServiceWeightBaseline(env.MOMENTARILY),
-        loadRecoveryBaseline(env.MOMENTARILY),
-      ]);
-      const lastSeen = lastSeenRead.state;
-      const alphaState = alphaRead.state;
-      const trainedParams = paramsLoad.params;
-      step('1-read-state');
-
-      // --- Step 2: this minute's alerts fetch (started at step 0) ---
-      let alertsPayload: unknown = null;
-      // On failure, fall back to the last successful alerts fetch so the
-      // snapshot reports the feed gap honestly.
-      let alertsFeedFresh = lastSeen.alerts_at;
-      // Whether the fetch itself round-tripped, independent of alertsPayload's
-      // truthiness — fetchJson resolves (never throws) even for a literal
-      // JSON `null` body, which would otherwise be misread as a fetch failure
-      // by the liveness record below. Feeds step 2b only; every existing gate
-      // in this function still keys off alertsPayload, unchanged.
-      let alertsFetchOk = false;
+    if (!isFiveMinuteBoundary) {
+      console.log(
+        `tick ${observedAt}: minute=${minute}, off the 5-minute boundary — `
+        + '5-minute pipeline skipped, trace + arrivals only',
+      );
+      // Archive this tick's write-failure counts before returning: the arrivals
+      // publish above is a fail-soft write on EVERY tick, so its failures must
+      // be recorded even on the 4-of-5 ticks that skip the pipeline below — the
+      // same unconditional health record step 10 writes on a boundary tick.
+      // Otherwise a persistent 1-minute publish failure would be invisible here.
+      // The recorder finishes first (its finally call is then a no-op) so its
+      // own write failures land in this record too.
+      await fence('10-health');
+      await recorder.finish();
       try {
-        alertsPayload = await alertsFetch;
-        alertsFetchOk = true;
-        alertsFeedFresh = observedAt;
-        lastSeen.alerts_at = observedAt;
+        await archiveHealth(env.MOMENTARILY, writeFailures, observedAt, recorder.tickId);
       } catch (err) {
-        console.error('alerts fetch failed; feed gap this tick:', err);
+        console.error('health archive failed:', err);
       }
-      step('2-fetch-alerts');
+      step('10-health');
+      return;
+    }
 
-      // --- Step 2b: archive this tick's alert-fetch liveness ---
-      // Unconditional, in its own try/catch, and placed BEFORE step 3's
-      // `alertsPayload !== null` gate so a failed fetch — which skips step 3
-      // entirely — still gets a record, and nothing in the fetch's own catch
-      // block above can suppress it. See archive.ts's archiveAlertsLiveness
-      // for why this record exists.
+    // --- Step 1: read state ---
+    // Capture etags so the write-back is a compare-and-swap — overlapping or
+    // retried cron runs can't silently clobber each other.
+    const [
+      lastSeenRead,
+      alphaRead,
+      paramsLoad,
+      prevMovementMetric,
+      prevServiceMetric,
+      ridershipBaseline,
+      serviceWeightBaseline,
+      recoveryBaseline,
+    ] = await Promise.all([
+      readLastSeen(env.MOMENTARILY),
+      readAlphaState(env.MOMENTARILY),
+      loadParams(env.MOMENTARILY),
+      readMovementMetric(env.MOMENTARILY),
+      readServiceMetric(env.MOMENTARILY),
+      loadRidershipBaseline(env.MOMENTARILY),
+      loadServiceWeightBaseline(env.MOMENTARILY),
+      loadRecoveryBaseline(env.MOMENTARILY),
+    ]);
+    const lastSeen = lastSeenRead.state;
+    const alphaState = alphaRead.state;
+    const trainedParams = paramsLoad.params;
+    // The 5-minute pipeline applies each tick to the filter at most once, and
+    // never after a later tick. alpha.json carries the `scheduled_at` of the
+    // tick that last advanced it; a run whose tick is not newer (another run
+    // of this minute got there first, or a late run of an older one) skips
+    // the alpha write and so every output gated on it. The write itself is an
+    // etag CAS on the object read here, so two runs that both read an older
+    // tick cannot both advance it either.
+    const tickApplied = alphaRead.tick !== null && alphaRead.tick >= scheduledAt;
+    step('1-read-state');
+
+    // --- Step 2: this minute's alerts fetch (started at step 0) ---
+    let alertsPayload: unknown = null;
+    // On failure, fall back to the last successful alerts fetch so the
+    // snapshot reports the feed gap honestly.
+    let alertsFeedFresh = lastSeen.alerts_at;
+    // Whether the fetch itself round-tripped, independent of alertsPayload's
+    // truthiness — fetchJson resolves (never throws) even for a literal
+    // JSON `null` body, which would otherwise be misread as a fetch failure
+    // by the liveness record below. Feeds step 2b only; every existing gate
+    // in this function still keys off alertsPayload, unchanged.
+    let alertsFetchOk = false;
+    try {
+      alertsPayload = await alertsFetch;
+      alertsFetchOk = true;
+      alertsFeedFresh = observedAt;
+      lastSeen.alerts_at = observedAt;
+    } catch (err) {
+      console.error('alerts fetch failed; feed gap this tick:', err);
+    }
+    step('2-fetch-alerts');
+
+    await fence('2b-alerts-archive');
+    // --- Step 2b: archive this tick's alert-fetch liveness ---
+    // Unconditional, in its own try/catch, and placed BEFORE step 3's
+    // `alertsPayload !== null` gate so a failed fetch — which skips step 3
+    // entirely — still gets a record, and nothing in the fetch's own catch
+    // block above can suppress it. See archive.ts's archiveAlertsLiveness
+    // for why this record exists.
+    try {
+      await archiveAlertsLiveness(
+        env.MOMENTARILY,
+        deriveAlertsLiveness(alertsFetchOk, alertsFeedFresh),
+        observedAt,
+        recorder.tickId,
+      );
+    } catch (err) {
+      console.error('alerts liveness archive failed:', err);
+      failWrite('alerts_liveness');
+    }
+    step('2b-alerts-liveness');
+
+    // --- Step 3: archive new versions ---
+    if (alertsPayload !== null) {
       try {
-        await archiveAlertsLiveness(
+        const written = await archiveNewAlerts(
           env.MOMENTARILY,
-          deriveAlertsLiveness(alertsFetchOk, alertsFeedFresh),
+          alertsPayload,
+          lastSeen,
           observedAt,
         );
+        console.log(`archive: ${written} new alert versions`);
       } catch (err) {
-        console.error('alerts liveness archive failed:', err);
-        failWrite('alerts_liveness');
+        console.error('archive failed:', err);
+        failWrite('alerts_archive');
       }
-      step('2b-alerts-liveness');
+    }
+    step('3-archive');
 
-      // --- Step 3: archive new versions ---
-      if (alertsPayload !== null) {
-        try {
-          const written = await archiveNewAlerts(
-            env.MOMENTARILY,
-            alertsPayload,
-            lastSeen,
-            observedAt,
-          );
-          console.log(`archive: ${written} new alert versions`);
-        } catch (err) {
-          console.error('archive failed:', err);
-          failWrite('alerts_archive');
-        }
-      }
-      step('3-archive');
+    // --- Step 4: derive per-route observations + advance filter ---
+    // A params change (retrain or rollback) invalidates the accumulated
+    // posteriors in alpha.json — they were filtered under the old emission/
+    // transition params, so carrying the raw numbers forward can pin routes
+    // to stale regimes. Reseed each roll instead of dropping it: posterior
+    // softened onto the old argmax, regime clock and cause preserved (the
+    // nightly retrain must not zero every regime's age).
+    const paramsVersion = trainedParams?.trained_at ?? 0;
+    const paramsChanged = alphaState.params_version !== paramsVersion;
+    if (paramsChanged) {
+      console.log(
+        `params version ${alphaState.params_version} -> ${paramsVersion}; reseeding alpha filter state`,
+      );
+    }
+    const carriedRoutes = paramsChanged
+      ? Object.fromEntries(
+          Object.entries(alphaState.routes).map(([r, roll]) => [
+            r,
+            reseedForNewParams(roll),
+          ]),
+        )
+      : alphaState.routes;
 
-      // --- Step 4: derive per-route observations + advance filter ---
-      // A params change (retrain or rollback) invalidates the accumulated
-      // posteriors in alpha.json — they were filtered under the old emission/
-      // transition params, so carrying the raw numbers forward can pin routes
-      // to stale regimes. Reseed each roll instead of dropping it: posterior
-      // softened onto the old argmax, regime clock and cause preserved (the
-      // nightly retrain must not zero every regime's age).
-      const paramsVersion = trainedParams?.trained_at ?? 0;
-      const paramsChanged = alphaState.params_version !== paramsVersion;
-      if (paramsChanged) {
-        console.log(
-          `params version ${alphaState.params_version} -> ${paramsVersion}; reseeding alpha filter state`,
+    const newAlphaState: AlphaState = {
+      params_version: paramsVersion,
+      updated_at: observedAt,
+      routes: { ...carriedRoutes },
+    };
+
+    let routeSnapshots = new Map<string, RouteSnapshot>();
+    if (alertsPayload !== null) {
+      routeSnapshots = deriveRouteSnapshots(alertsPayload, observedAt);
+    }
+    // System-wide sanity floor. A soft-parse drift — an MTA alerts-schema change
+    // that structurally breaks the alert shape without throwing — would otherwise
+    // let every route fall through to quietObs (good service) and buildAlertList
+    // yield [], asserting a calm system during a real disruption with generated_at
+    // fresh. Trip when the fetch round-tripped and the payload carried entities
+    // but NOT ONE is structurally recognizable as an MTA alert (id + an alert
+    // object with a header_text or the mercury alert_type) — nothing in the
+    // payload looks like an MTA alert at all.
+    //
+    // Keyed on structural recognizability, NOT on how many routes derived: a
+    // valid GTFS-RT feed routinely carries only station-scoped notices (an
+    // elevator/escalator alert names a stop, not a subway route) or only planned
+    // work whose active_period is future/expired. Those are recognizable alerts
+    // that simply produce no active subway route, so the feed reads quiet — never
+    // a false system-wide degradation. Also DISTINCT from a genuinely empty feed
+    // (no entities = a real quiet system), which leaves the normal path untouched.
+    let alertsParseDegraded = false;
+    if (alertsPayload !== null) {
+      const health = classifyAlertsPayload(alertsPayload);
+      alertsParseDegraded = alertsPayloadDegraded(health);
+      if (alertsParseDegraded) {
+        console.error(
+          `alerts payload carried ${health.entities} entities ` +
+            `(in-scope ${health.recognizedInScope}, in-scope-unparseable ` +
+            `${health.inScopeUnparseable}, out-of-scope ${health.recognizedOutOfScope}, ` +
+            `unrecognizable ${health.unrecognizable}); abstaining every route and ` +
+            'flagging freshness.alerts_parse_degraded',
         );
       }
-      const carriedRoutes = paramsChanged
-        ? Object.fromEntries(
-            Object.entries(alphaState.routes).map(([r, roll]) => [
-              r,
-              reseedForNewParams(roll),
-            ]),
-          )
-        : alphaState.routes;
+    }
+    step('4a-derive');
 
-      const newAlphaState: AlphaState = {
-        params_version: paramsVersion,
-        updated_at: observedAt,
-        routes: { ...carriedRoutes },
+    // Routes to run inference for: union of (observed this tick, previously
+    // known via alpha, canonical subway list when we have a payload).
+    //   - alertsPayload present + route in routeSnapshots → use that observation
+    //   - alertsPayload present + route not in routeSnapshots → quiet obs (good service)
+    //   - alertsPayload null → obs=null for every route (true feed gap)
+    const observedRouteIds = new Set(routeSnapshots.keys());
+    const knownRouteIds = new Set(Object.keys(carriedRoutes));
+    const allRoutes = new Set<string>([
+      ...observedRouteIds,
+      ...knownRouteIds,
+      ...(alertsPayload !== null ? SUBWAY_ROUTES : []),
+    ]);
+    // On a parse-degraded tick every route falls here (routeSnapshots is empty),
+    // so quietObs is forced null — routes take the feed-gap path (obs=null →
+    // published condition 'unknown') instead of asserting good service.
+    const quietObs: Observation | null =
+      alertsPayload !== null && !alertsParseDegraded
+        ? quietObservation(observedAt)
+        : null;
+    // The trip counts the binomial movement channel was actually evaluated at
+    // this tick, for the grading stream. The posterior saturates (journal
+    // 2026-08-23) and this is the only channel whose log-likelihood scales with
+    // the tick's trip count, so attributing that saturation needs the count,
+    // not just the posterior it produced. Populated only when the channel
+    // really fired, per movementChannelActive — the one definition of the gate.
+    // Tick-local: never folded into AlphaState, which is persisted.
+    const movementCounts = new Map<string, { matched_n: number; advanced_n: number }>();
+
+    // Whether the alert feed can decide a condition this tick: false only on a
+    // fetch gap (no payload) or a parse-degraded feed — the only routes to
+    // 'unknown' under alerts-primary publishing. Threaded into buildSnapshot and
+    // used here to clock each route's alert-graded condition.
+    const alertsFeedUsable = alertsPayload !== null && !alertsParseDegraded;
+
+    for (const routeId of allRoutes) {
+      const prevRoll: RouteRoll | undefined = carriedRoutes[routeId];
+      const params = paramsForRoute(trainedParams, routeId);
+
+      // Fresh-reset seed: the trained params.initial often collapses to a
+      // one-hot vector (training corpus starts in normal). Use the stationary
+      // distribution of the transition matrix instead — a single tick of
+      // evidence then settles smoothly rather than snapping to one-hot.
+      const baseFilter: FilterState = prevRoll?.filter ?? {
+        probabilities: stationaryDistribution(params),
+        regime_entered_at: observedAt,
+        last_updated_at: observedAt,
       };
+      const basePublished: PublishedState =
+        prevRoll?.published ?? initialPublishedState(baseFilter);
 
-      let routeSnapshots = new Map<string, RouteSnapshot>();
-      if (alertsPayload !== null) {
-        routeSnapshots = deriveRouteSnapshots(alertsPayload, observedAt);
-      }
-      // System-wide sanity floor. A soft-parse drift — an MTA alerts-schema change
-      // that structurally breaks the alert shape without throwing — would otherwise
-      // let every route fall through to quietObs (good service) and buildAlertList
-      // yield [], asserting a calm system during a real disruption with generated_at
-      // fresh. Trip when the fetch round-tripped and the payload carried entities
-      // but NOT ONE is structurally recognizable as an MTA alert (id + an alert
-      // object with a header_text or the mercury alert_type) — nothing in the
-      // payload looks like an MTA alert at all.
-      //
-      // Keyed on structural recognizability, NOT on how many routes derived: a
-      // valid GTFS-RT feed routinely carries only station-scoped notices (an
-      // elevator/escalator alert names a stop, not a subway route) or only planned
-      // work whose active_period is future/expired. Those are recognizable alerts
-      // that simply produce no active subway route, so the feed reads quiet — never
-      // a false system-wide degradation. Also DISTINCT from a genuinely empty feed
-      // (no entities = a real quiet system), which leaves the normal path untouched.
-      let alertsParseDegraded = false;
-      if (alertsPayload !== null) {
-        const health = classifyAlertsPayload(alertsPayload);
-        alertsParseDegraded = alertsPayloadDegraded(health);
-        if (alertsParseDegraded) {
-          console.error(
-            `alerts payload carried ${health.entities} entities ` +
-              `(in-scope ${health.recognizedInScope}, in-scope-unparseable ` +
-              `${health.inScopeUnparseable}, out-of-scope ${health.recognizedOutOfScope}, ` +
-              `unrecognizable ${health.unrecognizable}); abstaining every route and ` +
-              'flagging freshness.alerts_parse_degraded',
-          );
-        }
-      }
-      step('4a-derive');
-
-      // Routes to run inference for: union of (observed this tick, previously
-      // known via alpha, canonical subway list when we have a payload).
-      //   - alertsPayload present + route in routeSnapshots → use that observation
-      //   - alertsPayload present + route not in routeSnapshots → quiet obs (good service)
-      //   - alertsPayload null → obs=null for every route (true feed gap)
-      const observedRouteIds = new Set(routeSnapshots.keys());
-      const knownRouteIds = new Set(Object.keys(carriedRoutes));
-      const allRoutes = new Set<string>([
-        ...observedRouteIds,
-        ...knownRouteIds,
-        ...(alertsPayload !== null ? SUBWAY_ROUTES : []),
-      ]);
-      // On a parse-degraded tick every route falls here (routeSnapshots is empty),
-      // so quietObs is forced null — routes take the feed-gap path (obs=null →
-      // published condition 'unknown') instead of asserting good service.
-      const quietObs: Observation | null =
-        alertsPayload !== null && !alertsParseDegraded
-          ? quietObservation(observedAt)
-          : null;
-      // The trip counts the binomial movement channel was actually evaluated at
-      // this tick, for the grading stream. The posterior saturates (journal
-      // 2026-08-23) and this is the only channel whose log-likelihood scales with
-      // the tick's trip count, so attributing that saturation needs the count,
-      // not just the posterior it produced. Populated only when the channel
-      // really fired, per movementChannelActive — the one definition of the gate.
-      // Tick-local: never folded into AlphaState, which is persisted.
-      const movementCounts = new Map<string, { matched_n: number; advanced_n: number }>();
-
-      // Whether the alert feed can decide a condition this tick: false only on a
-      // fetch gap (no payload) or a parse-degraded feed — the only routes to
-      // 'unknown' under alerts-primary publishing. Threaded into buildSnapshot and
-      // used here to clock each route's alert-graded condition.
-      const alertsFeedUsable = alertsPayload !== null && !alertsParseDegraded;
-
-      for (const routeId of allRoutes) {
-        const prevRoll: RouteRoll | undefined = carriedRoutes[routeId];
-        const params = paramsForRoute(trainedParams, routeId);
-
-        // Fresh-reset seed: the trained params.initial often collapses to a
-        // one-hot vector (training corpus starts in normal). Use the stationary
-        // distribution of the transition matrix instead — a single tick of
-        // evidence then settles smoothly rather than snapping to one-hot.
-        const baseFilter: FilterState = prevRoll?.filter ?? {
-          probabilities: stationaryDistribution(params),
-          regime_entered_at: observedAt,
-          last_updated_at: observedAt,
-        };
-        const basePublished: PublishedState =
-          prevRoll?.published ?? initialPublishedState(baseFilter);
-
-        const routeSnap = routeSnapshots.get(routeId);
-        let obs: Observation | null = routeSnap ? routeSnap.observation : quietObs;
-        // Fold in the previous tick's cross-tick movement (option B lag): an
-        // independent "are trains moving" channel the alerts feed can't see. Off
-        // (logEmission drops the channel) when there's no usable signal.
-        if (obs) {
-          const mv = movementObservationFields(
-            prevMovementMetric,
-            trainedParams,
-            routeId,
-            observedAt,
-          );
-          if (mv) obs = { ...obs, ...mv };
-          // Fold in the previous tick's service level (assigned_n / baseline) the
-          // same way — an orthogonal "are trains dispatched" channel.
-          const sv = serviceObservationFields(
-            prevServiceMetric,
-            trainedParams,
-            routeId,
-            observedAt,
-          );
-          if (sv) obs = { ...obs, ...sv };
-        }
-        if (obs && movementChannelActive(obs, emissionsFor(params, obs))) {
-          movementCounts.set(routeId, {
-            matched_n: obs.matched_n ?? 0,
-            advanced_n: obs.advanced_n ?? 0,
-          });
-        }
-        const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
-
-        // Carry alert_type_at_entry forward while the regime persists; refresh it
-        // when the regime just advanced (or on fresh reset).
-        const regimeAdvanced =
-          result.state.regime_entered_at > baseFilter.regime_entered_at;
-        const alertTypeAtEntry =
-          !prevRoll || regimeAdvanced
-            ? (routeSnap?.primary_alert_type ?? null)
-            : (prevRoll.alert_type_at_entry ?? null);
-
-        // The published condition (severity-graded alert read) and its onset —
-        // the alert regime's own clock, back-dated to when this graded state
-        // began (alertConditionOnset), published as route_status.condition_entered_at
-        // on the alerts arm and null on schedule/unknown.
-        const { condition: publishedCondition } = resolveAlertCondition(
-          routeSnap?.disruptive_types ?? [],
-          routeSnap?.is_not_scheduled ?? false,
-          alertsFeedUsable,
-        );
-        const conditionEnteredAt = alertConditionOnset(
-          prevRoll,
-          publishedCondition,
+      const routeSnap = routeSnapshots.get(routeId);
+      let obs: Observation | null = routeSnap ? routeSnap.observation : quietObs;
+      // Fold in the previous tick's cross-tick movement (option B lag): an
+      // independent "are trains moving" channel the alerts feed can't see. Off
+      // (logEmission drops the channel) when there's no usable signal.
+      if (obs) {
+        const mv = movementObservationFields(
+          prevMovementMetric,
+          trainedParams,
+          routeId,
           observedAt,
         );
-        // The primary alert type at that same onset — carried while the condition
-        // holds so the recovery climatology serves on the onset key, not the
-        // current tick's primary (which drifts as alert types change mid-incident).
-        const conditionAlertTypeAtEntry = alertConditionTypeAtOnset(
-          prevRoll,
-          publishedCondition,
-          routeSnap?.primary_alert_type ?? null,
+        if (mv) obs = { ...obs, ...mv };
+        // Fold in the previous tick's service level (assigned_n / baseline) the
+        // same way — an orthogonal "are trains dispatched" channel.
+        const sv = serviceObservationFields(
+          prevServiceMetric,
+          trainedParams,
+          routeId,
+          observedAt,
         );
-
-        newAlphaState.routes[routeId] = {
-          filter: result.state,
-          published: result.published,
-          alert_type_at_entry: alertTypeAtEntry,
-          published_condition: publishedCondition,
-          condition_entered_at: conditionEnteredAt,
-          condition_alert_type_at_entry: conditionAlertTypeAtEntry,
-        };
+        if (sv) obs = { ...obs, ...sv };
       }
-      step(`4b-forward(${allRoutes.size}r)`);
+      if (obs && movementChannelActive(obs, emissionsFor(params, obs))) {
+        movementCounts.set(routeId, {
+          matched_n: obs.matched_n ?? 0,
+          advanced_n: obs.advanced_n ?? 0,
+        });
+      }
+      const result = forwardStep(baseFilter, basePublished, obs, params, observedAt);
 
-      // --- Step 5: persist new alpha state (CAS) ---
-      // Write before publishing so a concurrent tick that loses the etag race
-      // doesn't ship snapshot.json / predictions / transitions derived from
-      // state that never landed in R2.
-      let alphaWritten = false;
+      // Carry alert_type_at_entry forward while the regime persists; refresh it
+      // when the regime just advanced (or on fresh reset).
+      const regimeAdvanced =
+        result.state.regime_entered_at > baseFilter.regime_entered_at;
+      const alertTypeAtEntry =
+        !prevRoll || regimeAdvanced
+          ? (routeSnap?.primary_alert_type ?? null)
+          : (prevRoll.alert_type_at_entry ?? null);
+
+      // The published condition (severity-graded alert read) and its onset —
+      // the alert regime's own clock, back-dated to when this graded state
+      // began (alertConditionOnset), published as route_status.condition_entered_at
+      // on the alerts arm and null on schedule/unknown.
+      const { condition: publishedCondition } = resolveAlertCondition(
+        routeSnap?.disruptive_types ?? [],
+        routeSnap?.is_not_scheduled ?? false,
+        alertsFeedUsable,
+      );
+      const conditionEnteredAt = alertConditionOnset(
+        prevRoll,
+        publishedCondition,
+        observedAt,
+      );
+      // The primary alert type at that same onset — carried while the condition
+      // holds so the recovery climatology serves on the onset key, not the
+      // current tick's primary (which drifts as alert types change mid-incident).
+      const conditionAlertTypeAtEntry = alertConditionTypeAtOnset(
+        prevRoll,
+        publishedCondition,
+        routeSnap?.primary_alert_type ?? null,
+      );
+
+      newAlphaState.routes[routeId] = {
+        filter: result.state,
+        published: result.published,
+        alert_type_at_entry: alertTypeAtEntry,
+        published_condition: publishedCondition,
+        condition_entered_at: conditionEnteredAt,
+        condition_alert_type_at_entry: conditionAlertTypeAtEntry,
+      };
+    }
+    step(`4b-forward(${allRoutes.size}r)`);
+
+    // --- Step 5: persist new alpha state (CAS) ---
+    // Write before publishing so a concurrent tick that loses the etag race
+    // doesn't ship snapshot.json / predictions / transitions derived from
+    // state that never landed in R2.
+    let alphaWritten = false;
+    await fence('5-alpha-write');
+    if (tickApplied) {
+      console.warn(
+        `alpha.json already advanced for tick ${alphaRead.tick} (this run's is ${scheduledAt}); `
+        + 'skipping snapshot/predictions/transitions this tick',
+      );
+    } else {
       try {
         alphaWritten = await writeAlphaState(
           env.MOMENTARILY,
           newAlphaState,
           alphaRead.etag,
+          scheduledAt,
         );
         if (!alphaWritten) {
           console.warn(
@@ -1018,552 +1129,622 @@ export default {
         console.error('alpha write failed; skipping outputs this tick:', err);
         failWrite('alpha_write');
       }
-      step('5-alpha-write');
+    }
+    step('5-alpha-write');
 
-      if (alphaWritten) {
-        // --- Step 6: render + publish snapshot ---
-        // Station metadata lives in its own R2 object (refreshed daily), read here
-        // and embedded. A read failure degrades to an empty stations surface, never
-        // a failed tick.
-        let stationsCache: Awaited<ReturnType<typeof readStationsCache>> = null;
+    if (alphaWritten) {
+      await fence('6-publish');
+      // --- Step 6: render + publish snapshot ---
+      // Station metadata lives in its own R2 object (refreshed daily), read here
+      // and embedded. A read failure degrades to an empty stations surface, never
+      // a failed tick.
+      let stationsCache: Awaited<ReturnType<typeof readStationsCache>> = null;
+      try {
+        stationsCache = await readStationsCache(env.MOMENTARILY);
+      } catch (err) {
+        console.error('stations cache read failed; publishing without stations:', err);
+      }
+      // Last tick's movement-derived states drive the published current-state
+      // condition (lagged ~5 min — written at step 8b, after this publishes).
+      // A read failure degrades to alert/HMM conditions, never a failed tick.
+      let movementStates: Awaited<ReturnType<typeof readMovementState>> = null;
+      try {
+        movementStates = await readMovementState(env.MOMENTARILY);
+      } catch (err) {
+        console.error('movement_state read failed; publishing without it:', err);
+      }
+      // Last tick's per-station service flow, same one-tick lag.
+      let stationFlow: StationFlowDoc | null = null;
+      try {
+        stationFlow = await readStationFlow(env.MOMENTARILY);
+      } catch (err) {
+        console.error('station_flow read failed; publishing without it:', err);
+      }
+      // Last tick's per-segment regimes + the (mostly static) segment
+      // topology, same one-tick lag as stationFlow — the segment_flow
+      // surface and the recovery attached to station_flow's worst_segment
+      // are both built from these. A read failure degrades to publishing
+      // without segment_flow, never a failed tick.
+      let segmentFlow: SegmentFlowDoc | null = null;
+      let segmentParams: SegmentParamsDoc | null = null;
+      // Read fresh each tick beside segment_params, not tick-lagged — the
+      // timetable baseline only changes weekly, and the observations it
+      // normalises are built from this same tick's headway state. Null until
+      // the trainer's first publish; observations then carry observed headway
+      // alone rather than a fabricated ratio.
+      let scheduledHeadway: ScheduledHeadwayDoc | null = null;
+      try {
+        [segmentFlow, segmentParams, scheduledHeadway] = await Promise.all([
+          readSegmentFlow(env.MOMENTARILY).then((read) => read.state),
+          readSegmentParams(env.MOMENTARILY),
+          readScheduledHeadway(env.MOMENTARILY),
+        ]);
+      } catch (err) {
+        console.error('segment_flow/segment_params/scheduled_headway read failed; publishing without them:', err);
+      }
+      // Per-segment dwell curves the segment recovery is conditioned on.
+      // Trainer-published, not tick-lagged; null until it exists in R2 —
+      // segments then publish status without a fabricated recovery.
+      let segmentDwell: SegmentDwellDoc | null = null;
+      try {
+        segmentDwell = await readSegmentDwell(env.MOMENTARILY);
+      } catch (err) {
+        console.error('segment_dwell read failed; publishing without segment recovery:', err);
+      }
+      // buildSnapshot runs AFTER the alpha CAS committed at step 5, so a single
+      // assembly throw here must degrade to "no fresh publish this tick", not
+      // fail the whole tick and skip every step below (predictions, transitions,
+      // E&E, last_seen). Same fail-soft posture as the publish call right after.
+      let snapshot: Snapshot | null = null;
+      // The published route_status[].inference withholds curve-fitted recovery
+      // (snapshot.ts PUBLISH_FITTED_RECOVERY); the grading stream at step 7
+      // must keep seeing the numbers, so buildSnapshot hands back the
+      // unprojected objects here.
+      const fullInferences = new Map<string, Inference>();
+      try {
+        snapshot = buildSnapshot({
+          generatedAt: observedAt,
+          alertsFreshness: alertsFeedFresh,
+          routeSnapshots,
+          rolls: newAlphaState.routes,
+          trainedParams,
+          fullInferences,
+          // Present-but-unreadable params.json (bumped schema_version): the tick
+          // publishes on bootstrap params, and this flag surfaces the skew as
+          // freshness.params_stale so a consumer can see the model is stale.
+          paramsSchemaMismatch: paramsLoad.schemaMismatch,
+          // Entities present but none parsed (alerts-schema drift): routes were
+          // abstained above via the forced-null quietObs; this raises
+          // freshness.alerts_parse_degraded so a consumer can see why.
+          alertsParseDegraded,
+          // A fetch gap (no payload) or parse-degraded feed is the only route to
+          // condition 'unknown' now — everything else grades off the alert read.
+          alertsFeedUsable,
+          tickSeconds: TICK_SECONDS,
+          stationStatuses: lastSeen.station_statuses,
+          eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,
+          alerts:
+            alertsPayload !== null ? buildAlertList(alertsPayload, observedAt) : [],
+          equipment: lastSeen.equipment,
+          stations: stationsCache?.stations ?? {},
+          stationsStaticFreshness: stationsCache?.fetched_at ?? null,
+          movementStates,
+          stationFlow,
+          segmentFlow,
+          segmentParams,
+          segmentDwell,
+          stationWait: stationWaitDoc,
+          ridershipBaseline,
+          serviceWeightBaseline,
+          recoveryBaseline,
+          headway: headwayDoc,
+          scheduledHeadway,
+          // At least one vehicle-position feed round-tripped this poll, else
+          // the last poll where one did (step 8b's own stamp). Null before the
+          // first, so an absent observations surface can be told apart from a
+          // feed that is simply not being polled.
+          vehiclePositionsFreshness:
+            vehicleFreshFeeds.length > 0
+              ? observedAt
+              : lastSeen.vehicles_at > 0
+                ? lastSeen.vehicles_at
+                : null,
+          // Per-line-group trip-update liveness for freshness.vehicle_feeds:
+          // which of the 8 NYCT groups round-tripped this tick against the full
+          // expected set, so a partial outage self-reports in the snapshot.
+          vehicleFreshFeeds,
+          vehicleExpectedFeeds: TRIP_UPDATE_FEED_NAMES,
+        });
+      } catch (err) {
+        console.error('snapshot build failed; tick continues without a fresh publish:', err);
+      }
+      step('6a-build-snapshot');
+      if (snapshot !== null) {
         try {
-          stationsCache = await readStationsCache(env.MOMENTARILY);
-        } catch (err) {
-          console.error('stations cache read failed; publishing without stations:', err);
-        }
-        // Last tick's movement-derived states drive the published current-state
-        // condition (lagged ~5 min — written at step 8b, after this publishes).
-        // A read failure degrades to alert/HMM conditions, never a failed tick.
-        let movementStates: Awaited<ReturnType<typeof readMovementState>> = null;
-        try {
-          movementStates = await readMovementState(env.MOMENTARILY);
-        } catch (err) {
-          console.error('movement_state read failed; publishing without it:', err);
-        }
-        // Last tick's per-station service flow, same one-tick lag.
-        let stationFlow: StationFlowDoc | null = null;
-        try {
-          stationFlow = await readStationFlow(env.MOMENTARILY);
-        } catch (err) {
-          console.error('station_flow read failed; publishing without it:', err);
-        }
-        // Last tick's per-segment regimes + the (mostly static) segment
-        // topology, same one-tick lag as stationFlow — the segment_flow
-        // surface and the recovery attached to station_flow's worst_segment
-        // are both built from these. A read failure degrades to publishing
-        // without segment_flow, never a failed tick.
-        let segmentFlow: SegmentFlowDoc | null = null;
-        let segmentParams: SegmentParamsDoc | null = null;
-        // Read fresh each tick beside segment_params, not tick-lagged — the
-        // timetable baseline only changes weekly, and the observations it
-        // normalises are built from this same tick's headway state. Null until
-        // the trainer's first publish; observations then carry observed headway
-        // alone rather than a fabricated ratio.
-        let scheduledHeadway: ScheduledHeadwayDoc | null = null;
-        try {
-          [segmentFlow, segmentParams, scheduledHeadway] = await Promise.all([
-            readSegmentFlow(env.MOMENTARILY),
-            readSegmentParams(env.MOMENTARILY),
-            readScheduledHeadway(env.MOMENTARILY),
-          ]);
-        } catch (err) {
-          console.error('segment_flow/segment_params/scheduled_headway read failed; publishing without them:', err);
-        }
-        // Per-segment dwell curves the segment recovery is conditioned on.
-        // Trainer-published, not tick-lagged; null until it exists in R2 —
-        // segments then publish status without a fabricated recovery.
-        let segmentDwell: SegmentDwellDoc | null = null;
-        try {
-          segmentDwell = await readSegmentDwell(env.MOMENTARILY);
-        } catch (err) {
-          console.error('segment_dwell read failed; publishing without segment recovery:', err);
-        }
-        // buildSnapshot runs AFTER the alpha CAS committed at step 5, so a single
-        // assembly throw here must degrade to "no fresh publish this tick", not
-        // fail the whole tick and skip every step below (predictions, transitions,
-        // E&E, last_seen). Same fail-soft posture as the publish call right after.
-        let snapshot: Snapshot | null = null;
-        // The published route_status[].inference withholds curve-fitted recovery
-        // (snapshot.ts PUBLISH_FITTED_RECOVERY); the grading stream at step 7
-        // must keep seeing the numbers, so buildSnapshot hands back the
-        // unprojected objects here.
-        const fullInferences = new Map<string, Inference>();
-        try {
-          snapshot = buildSnapshot({
-            generatedAt: observedAt,
-            alertsFreshness: alertsFeedFresh,
-            routeSnapshots,
-            rolls: newAlphaState.routes,
-            trainedParams,
-            fullInferences,
-            // Present-but-unreadable params.json (bumped schema_version): the tick
-            // publishes on bootstrap params, and this flag surfaces the skew as
-            // freshness.params_stale so a consumer can see the model is stale.
-            paramsSchemaMismatch: paramsLoad.schemaMismatch,
-            // Entities present but none parsed (alerts-schema drift): routes were
-            // abstained above via the forced-null quietObs; this raises
-            // freshness.alerts_parse_degraded so a consumer can see why.
-            alertsParseDegraded,
-            // A fetch gap (no payload) or parse-degraded feed is the only route to
-            // condition 'unknown' now — everything else grades off the alert read.
-            alertsFeedUsable,
-            tickSeconds: TICK_SECONDS,
-            stationStatuses: lastSeen.station_statuses,
-            eneFreshness: lastSeen.ene_at > 0 ? lastSeen.ene_at : null,
-            alerts:
-              alertsPayload !== null ? buildAlertList(alertsPayload, observedAt) : [],
-            equipment: lastSeen.equipment,
-            stations: stationsCache?.stations ?? {},
-            stationsStaticFreshness: stationsCache?.fetched_at ?? null,
-            movementStates,
-            stationFlow,
-            segmentFlow,
-            segmentParams,
-            segmentDwell,
-            stationWait: stationWaitDoc,
-            ridershipBaseline,
-            serviceWeightBaseline,
-            recoveryBaseline,
-            headway: headwayDoc,
-            scheduledHeadway,
-            // At least one vehicle-position feed round-tripped this poll, else
-            // the last poll where one did (step 8b's own stamp). Null before the
-            // first, so an absent observations surface can be told apart from a
-            // feed that is simply not being polled.
-            vehiclePositionsFreshness:
-              vehicleFreshFeeds.length > 0
-                ? observedAt
-                : lastSeen.vehicles_at > 0
-                  ? lastSeen.vehicles_at
-                  : null,
-            // Per-line-group trip-update liveness for freshness.vehicle_feeds:
-            // which of the 8 NYCT groups round-tripped this tick against the full
-            // expected set, so a partial outage self-reports in the snapshot.
-            vehicleFreshFeeds,
-            vehicleExpectedFeeds: TRIP_UPDATE_FEED_NAMES,
-          });
-        } catch (err) {
-          console.error('snapshot build failed; tick continues without a fresh publish:', err);
-        }
-        step('6a-build-snapshot');
-        if (snapshot !== null) {
-          try {
-            await publishSnapshot(env.MOMENTARILY, snapshot);
-            console.log(
-              `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
-            );
-          } catch (err) {
-            console.error('snapshot publish failed:', err);
-            failWrite('snapshot_publish');
-          }
-        }
-        step('6b-publish-snapshot');
-
-        // Aggregated live train positions for the /map overlay, published as
-        // its own object (v1/trains.json) rather than embedded in the
-        // snapshot — see snapshot.ts's file header for the size/consumer
-        // rationale. Built from this tick's already-decoded vehicle-position
-        // fetch (step 0 above, `vehicles`/`vehicleFreshFeeds`), so it costs no
-        // extra request, and published on the same tick as snapshot.json,
-        // right after it. Fully independent of the snapshot publish above: a
-        // failure on either side never blocks or fails the other, and never
-        // fails the tick.
-        //
-        // vehicleFreshFeeds can be a STRICT SUBSET of TRIP_UPDATE_FEED_NAMES —
-        // Promise.allSettled above logs and SKIPS a rejected feed rather than
-        // throwing, so a partial vehicle set never reaches this try/catch as
-        // an exception. Two cases, not one:
-        //   - NO feed decoded (vehicleFreshFeeds empty): skip the publish
-        //     entirely. Calling buildTrains/publishTrains here would write
-        //     {positions: []} — indistinguishable from "zero trains in NYC",
-        //     exactly the fabrication this surface exists to avoid. The
-        //     object is left un-rewritten; a consumer sees the last-good read
-        //     with its own observed_at, never a fabricated empty one.
-        //   - SOME feeds decoded: publish normally, flagged partial via
-        //     fresh_feeds/expected_feeds (see PublishedTrains's doc comment)
-        //     rather than withheld — a partial map is still useful, as long
-        //     as it says so.
-        if (vehicleFreshFeeds.length > 0) {
-          try {
-            await publishTrains(
-              env.MOMENTARILY,
-              buildTrains(
-                observedAt,
-                trainPositions(vehicles),
-                vehicleFreshFeeds,
-                TRIP_UPDATE_FEED_NAMES,
-              ),
-            );
-          } catch (err) {
-            console.error(
-              'trains publish failed; leaving v1/trains.json unrewritten this tick:',
-              err,
-            );
-            failWrite('trains_publish');
-          }
-        } else {
-          console.warn(
-            'trains: no vehicle feed decoded this tick, leaving v1/trains.json unrewritten',
+          await publishSnapshot(env.MOMENTARILY, snapshot);
+          console.log(
+            `snapshot: ${Object.keys(snapshot.route_status).length} routes published`,
           );
+        } catch (err) {
+          console.error('snapshot publish failed:', err);
+          failWrite('snapshot_publish');
         }
-        step('6c-publish-trains');
+      }
+      step('6b-publish-snapshot');
 
-        // --- Step 7: grading streams ---
-        // Predictions are derived from the assembled snapshot's route_status, so
-        // they degrade with it: if buildSnapshot threw above, there is nothing to
-        // grade this tick. Transitions/E&E/last_seen below do NOT depend on the
-        // snapshot object and still run — that is the point of catching the throw.
-        //
-        // The numbers come from `fullInferences`, not from rs.inference: the
-        // published block withholds curve-fitted recovery and the grader needs it
-        // whole. Same object, same tick — rs supplies only the published context
-        // (condition, condition_source, primary_alert_type) the row is graded
-        // against.
-        let predictions: PredictionRecord[] = [];
-        if (snapshot !== null) {
-          predictions = buildPredictionRows({
-            ts: observedAt,
-            routeStatuses: snapshot.route_status,
-            inferences: fullInferences,
-            paramsVersion,
-            movementRegimes: movementStates?.regimes,
-            movementCounts,
-          });
-          try {
-            await writePredictions(env.MOMENTARILY, observedAt, predictions);
-          } catch (err) {
-            console.error('predictions write failed:', err);
-            failWrite('predictions_write');
-          }
+      // Aggregated live train positions for the /map overlay, published as
+      // its own object (v1/trains.json) rather than embedded in the
+      // snapshot — see snapshot.ts's file header for the size/consumer
+      // rationale. Built from this tick's already-decoded vehicle-position
+      // fetch (step 0 above, `vehicles`/`vehicleFreshFeeds`), so it costs no
+      // extra request, and published on the same tick as snapshot.json,
+      // right after it. Fully independent of the snapshot publish above: a
+      // failure on either side never blocks or fails the other, and never
+      // fails the tick.
+      //
+      // vehicleFreshFeeds can be a STRICT SUBSET of TRIP_UPDATE_FEED_NAMES —
+      // Promise.allSettled above logs and SKIPS a rejected feed rather than
+      // throwing, so a partial vehicle set never reaches this try/catch as
+      // an exception. Two cases, not one:
+      //   - NO feed decoded (vehicleFreshFeeds empty): skip the publish
+      //     entirely. Calling buildTrains/publishTrains here would write
+      //     {positions: []} — indistinguishable from "zero trains in NYC",
+      //     exactly the fabrication this surface exists to avoid. The
+      //     object is left un-rewritten; a consumer sees the last-good read
+      //     with its own observed_at, never a fabricated empty one.
+      //   - SOME feeds decoded: publish normally, flagged partial via
+      //     fresh_feeds/expected_feeds (see PublishedTrains's doc comment)
+      //     rather than withheld — a partial map is still useful, as long
+      //     as it says so.
+      if (vehicleFreshFeeds.length > 0) {
+        try {
+          await publishTrains(
+            env.MOMENTARILY,
+            buildTrains(
+              observedAt,
+              trainPositions(vehicles),
+              vehicleFreshFeeds,
+              TRIP_UPDATE_FEED_NAMES,
+            ),
+          );
+        } catch (err) {
+          console.error(
+            'trains publish failed; leaving v1/trains.json unrewritten this tick:',
+            err,
+          );
+          failWrite('trains_publish');
         }
-
-        const transitions = detectTransitions(
-          carriedRoutes,
-          newAlphaState.routes,
-          observedAt,
+      } else {
+        console.warn(
+          'trains: no vehicle feed decoded this tick, leaving v1/trains.json unrewritten',
         );
-        if (transitions.length > 0) {
-          try {
-            await writeTransitions(env.MOMENTARILY, observedAt, transitions);
-            console.log(`transitions: ${transitions.length} regime flips this tick`);
-          } catch (err) {
-            console.error('transitions write failed:', err);
-            failWrite('transitions_write');
-          }
-        }
-        step('7-grading-writes');
       }
+      step('6c-publish-trains');
 
-      // --- Step 8: E&E (hourly) ---
-      // Only the alpha CAS winner gets to mutate lastSeen, so losing runs skip
-      // the E&E fetch too.
-      if (alphaWritten && observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
-        let eneOk = 0;
-        const enePayloads: Record<string, unknown> = {};
-        for (const [name, url] of ENE_SOURCES) {
-          try {
-            const payload = await recorder.attempt(name, (observe) => fetchJson(url, observe));
-            enePayloads[name] = payload;
-            await archiveEneSnapshot(env.MOMENTARILY, name, payload, observedAt);
-            eneOk += 1;
-          } catch (err) {
-            console.error(`ene ${name} failed:`, err);
-          }
-        }
-        // ene_at only advances when both station_status inputs landed — the
-        // published freshness has to describe the data actually being served.
-        // An incomplete fetch leaves it alone, so the next tick retries.
-        const catalogPayload = enePayloads.ene_equipments;
-        const outagesPayload = enePayloads.ene_current;
-        if (catalogPayload !== undefined && outagesPayload !== undefined) {
-          const catalog = parseEquipmentFeed(catalogPayload);
-          const outages = parseOutageFeed(outagesPayload);
-          const statuses = deriveStationStatuses(catalog, outages, observedAt);
-          lastSeen.station_statuses = Object.fromEntries(statuses);
-          lastSeen.equipment = buildEquipmentList(catalog, outages, observedAt);
-          lastSeen.ene_at = observedAt;
-          console.log(
-            `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived, `
-            + `${statuses.size} station_status entries derived`,
-          );
-        } else {
-          console.log(
-            `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived; `
-            + 'station_status inputs incomplete, freshness held — retrying next tick',
-          );
-        }
-      }
-
-      // --- Step 8b: trip-updates + vehicle metrics (every 5-minute tick) ---
-      // The protobuf feeds were already fetched AND both their VehiclePosition
-      // and TripUpdate sides decoded at step 0 above (the trip-updates for the
-      // per-minute arrivals publish, shared so a boundary tick decodes each side
-      // once, never twice) — reuse `trips`/`vehicles`/`vehicleFreshFeeds` as-is.
-      // Derive each compact per-route metric and archive both for offline
-      // validation. Gated on the alpha CAS winner like E&E so losing runs don't
-      // double-write. A failed/slow feed is non-fatal — its routes are simply
-      // absent this tick, recorded via fresh_feeds.
-      if (alphaWritten) {
+      await fence('7-grading-writes');
+      // --- Step 7: grading streams ---
+      // Predictions are derived from the assembled snapshot's route_status, so
+      // they degrade with it: if buildSnapshot threw above, there is nothing to
+      // grade this tick. Transitions/E&E/last_seen below do NOT depend on the
+      // snapshot object and still run — that is the point of catching the throw.
+      //
+      // The numbers come from `fullInferences`, not from rs.inference: the
+      // published block withholds curve-fitted recovery and the grader needs it
+      // whole. Same object, same tick — rs supplies only the published context
+      // (condition, condition_source, primary_alert_type) the row is graded
+      // against.
+      let predictions: PredictionRecord[] = [];
+      if (snapshot !== null) {
+        predictions = buildPredictionRows({
+          ts: observedAt,
+          routeStatuses: snapshot.route_status,
+          inferences: fullInferences,
+          paramsVersion,
+          movementRegimes: movementStates?.regimes,
+          movementCounts,
+        });
         try {
-          const freshFeeds = vehicleFreshFeeds;
-          if (freshFeeds.length > 0) {
-            const rows = deriveRouteServiceMetric(trips);
-            await archiveTripUpdateMetric(
-              env.MOMENTARILY,
-              rows,
-              freshFeeds,
+          await writePredictions(env.MOMENTARILY, observedAt, recorder.tickId, predictions);
+        } catch (err) {
+          console.error('predictions write failed:', err);
+          failWrite('predictions_write');
+        }
+      }
+
+      const transitions = detectTransitions(
+        carriedRoutes,
+        newAlphaState.routes,
+        observedAt,
+      );
+      if (transitions.length > 0) {
+        try {
+          await writeTransitions(env.MOMENTARILY, observedAt, recorder.tickId, transitions);
+          console.log(`transitions: ${transitions.length} regime flips this tick`);
+        } catch (err) {
+          console.error('transitions write failed:', err);
+          failWrite('transitions_write');
+        }
+      }
+      step('7-grading-writes');
+    }
+
+    // --- Step 8: E&E (hourly) ---
+    // Only the alpha CAS winner gets to mutate lastSeen, so losing runs skip
+    // the E&E fetch too.
+    if (alphaWritten && observedAt - lastSeen.ene_at >= ENE_INTERVAL_SECONDS) {
+      await fence('8-ene');
+      let eneOk = 0;
+      const enePayloads: Record<string, unknown> = {};
+      for (const [name, url] of ENE_SOURCES) {
+        try {
+          const payload = await recorder.attempt(name, (observe) => fetchJson(url, observe));
+          enePayloads[name] = payload;
+          await archiveEneSnapshot(env.MOMENTARILY, name, payload, observedAt);
+          eneOk += 1;
+        } catch (err) {
+          console.error(`ene ${name} failed:`, err);
+        }
+      }
+      // ene_at only advances when both station_status inputs landed — the
+      // published freshness has to describe the data actually being served.
+      // An incomplete fetch leaves it alone, so the next tick retries.
+      const catalogPayload = enePayloads.ene_equipments;
+      const outagesPayload = enePayloads.ene_current;
+      if (catalogPayload !== undefined && outagesPayload !== undefined) {
+        const catalog = parseEquipmentFeed(catalogPayload);
+        const outages = parseOutageFeed(outagesPayload);
+        const statuses = deriveStationStatuses(catalog, outages, observedAt);
+        lastSeen.station_statuses = Object.fromEntries(statuses);
+        lastSeen.equipment = buildEquipmentList(catalog, outages, observedAt);
+        lastSeen.ene_at = observedAt;
+        console.log(
+          `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived, `
+          + `${statuses.size} station_status entries derived`,
+        );
+      } else {
+        console.log(
+          `ene: ${eneOk}/${ENE_SOURCES.length} feeds archived; `
+          + 'station_status inputs incomplete, freshness held — retrying next tick',
+        );
+      }
+    }
+
+    // --- Step 8b: trip-updates + vehicle metrics (every 5-minute tick) ---
+    // The protobuf feeds were already fetched AND both their VehiclePosition
+    // and TripUpdate sides decoded at step 0 above (the trip-updates for the
+    // per-minute arrivals publish, shared so a boundary tick decodes each side
+    // once, never twice) — reuse `trips`/`vehicles`/`vehicleFreshFeeds` as-is.
+    // Derive each compact per-route metric and archive both for offline
+    // validation. Gated on the alpha CAS winner like E&E so losing runs don't
+    // double-write. A failed/slow feed is non-fatal — its routes are simply
+    // absent this tick, recorded via fresh_feeds.
+    if (alphaWritten) {
+      await fence('8b-trip-updates');
+      try {
+        const freshFeeds = vehicleFreshFeeds;
+        if (freshFeeds.length > 0) {
+          const rows = deriveRouteServiceMetric(trips);
+          await archiveTripUpdateMetric(
+            env.MOMENTARILY,
+            rows,
+            freshFeeds,
+            observedAt,
+            recorder.tickId,
+          );
+          lastSeen.trip_updates_at = observedAt;
+
+          // Cross-tick movement: diff this tick's stop_ids against the carry map
+          // written last tick, then overwrite it. The map is read/written as its
+          // own R2 object, kept out of last_seen.json on purpose.
+          const prevStops = await readVehicleStops(env.MOMENTARILY);
+          // Absent through-stop set (no static topology yet, or a params.json
+          // predating the field) is a real, visible degradation, not a silent
+          // fall-soft — the advance counters keep counting terminal layovers.
+          const throughStops = trainedParams?.throughStops ?? null;
+          if (trainedParams && !throughStops) {
+            console.log(
+              'movement: no through-stop set in params.json; advance counters include terminal layovers',
+            );
+          }
+          const moveRows = deriveRouteMovementMetric(vehicles, prevStops, throughStops);
+          await archiveVehicleMetric(
+            env.MOMENTARILY,
+            moveRows,
+            freshFeeds,
+            observedAt,
+            recorder.tickId,
+          );
+          await writeVehicleStops(env.MOMENTARILY, stopPositions(vehicles));
+          lastSeen.vehicles_at = observedAt;
+          // Carry these counts one tick forward: next tick's derive step folds
+          // them into each route's Observation as the movement emission channel.
+          await writeMovementMetric(env.MOMENTARILY, observedAt, moveRows);
+          // Carry assigned_n forward too, for the service emission channel.
+          await writeServiceMetric(env.MOMENTARILY, observedAt, rows);
+
+          // Movement-derived current state, read by next tick's snapshot build as
+          // the published movement-primary condition (debiased per-direction
+          // classifier; suspended/not_scheduled from the schedule rate).
+          //
+          // The raw per-tick call goes through the regime clock before it is
+          // published: a change commits only after DEBOUNCE_TICKS agreeing ticks
+          // and back-dates to the first of them, so `entered_at` is when the
+          // evidence started rather than when it convinced us. That clock is
+          // what the movement dwell curves are conditioned on, and the committed
+          // changes are the stream those curves are fitted from.
+          if (MOVEMENT_STATE_PUBLISH) {
+            const prevMovement = await readMovementState(env.MOMENTARILY);
+            // Supply-axis baseline: prefer the standalone sidecar object, fall
+            // back to params.json's legacy field. Sourcing it here keeps the axis
+            // decoupled from the frozen HMM artifact.
+            const serviceBaselineDoc = await readServiceBaseline(env.MOMENTARILY);
+            const serviceBaseline =
+              serviceBaselineDoc?.baseline ?? trainedParams?.serviceBaselineHourly ?? null;
+            // Per-cell p10/p90 spread. Sidecar-only — no params.json fallback,
+            // since the legacy field never carried a spread.
+            const serviceQuantiles = serviceBaselineDoc?.quantiles ?? null;
+            const observed = deriveMovementStates(moveRows, rows, trainedParams, observedAt);
+            const { entries, changes } = advanceRegimes(
+              prevMovement?.regimes,
+              observed,
               observedAt,
             );
-            lastSeen.trip_updates_at = observedAt;
-
-            // Cross-tick movement: diff this tick's stop_ids against the carry map
-            // written last tick, then overwrite it. The map is read/written as its
-            // own R2 object, kept out of last_seen.json on purpose.
-            const prevStops = await readVehicleStops(env.MOMENTARILY);
-            // Absent through-stop set (no static topology yet, or a params.json
-            // predating the field) is a real, visible degradation, not a silent
-            // fall-soft — the advance counters keep counting terminal layovers.
-            const throughStops = trainedParams?.throughStops ?? null;
-            if (trainedParams && !throughStops) {
-              console.log(
-                'movement: no through-stop set in params.json; advance counters include terminal layovers',
-              );
-            }
-            const moveRows = deriveRouteMovementMetric(vehicles, prevStops, throughStops);
-            await archiveVehicleMetric(
-              env.MOMENTARILY,
-              moveRows,
-              freshFeeds,
-              observedAt,
-            );
-            await writeVehicleStops(env.MOMENTARILY, stopPositions(vehicles));
-            lastSeen.vehicles_at = observedAt;
-            // Carry these counts one tick forward: next tick's derive step folds
-            // them into each route's Observation as the movement emission channel.
-            await writeMovementMetric(env.MOMENTARILY, observedAt, moveRows);
-            // Carry assigned_n forward too, for the service emission channel.
-            await writeServiceMetric(env.MOMENTARILY, observedAt, rows);
-
-            // Movement-derived current state, read by next tick's snapshot build as
-            // the published movement-primary condition (debiased per-direction
-            // classifier; suspended/not_scheduled from the schedule rate).
+            // Service-level regime, the SUPPLY axis (assigned_n vs its hourly
+            // baseline), advanced on its own clock beside the movement regimes.
+            // The degrade/recover band and the 2-tick debounce match the offline
+            // label (derive_actual_recovery). No transition stream — no service
+            // dwell curves; it exists only to publish the current service_condition.
             //
-            // The raw per-tick call goes through the regime clock before it is
-            // published: a change commits only after DEBOUNCE_TICKS agreeing ticks
-            // and back-dates to the first of them, so `entered_at` is when the
-            // evidence started rather than when it convinced us. That clock is
-            // what the movement dwell curves are conditioned on, and the committed
-            // changes are the stream those curves are fitted from.
-            if (MOVEMENT_STATE_PUBLISH) {
-              const prevMovement = await readMovementState(env.MOMENTARILY);
-              // Supply-axis baseline: prefer the standalone sidecar object, fall
-              // back to params.json's legacy field. Sourcing it here keeps the axis
-              // decoupled from the frozen HMM artifact.
-              const serviceBaselineDoc = await readServiceBaseline(env.MOMENTARILY);
-              const serviceBaseline =
-                serviceBaselineDoc?.baseline ?? trainedParams?.serviceBaselineHourly ?? null;
-              // Per-cell p10/p90 spread. Sidecar-only — no params.json fallback,
-              // since the legacy field never carried a spread.
-              const serviceQuantiles = serviceBaselineDoc?.quantiles ?? null;
-              const observed = deriveMovementStates(moveRows, rows, trainedParams, observedAt);
-              const { entries, changes } = advanceRegimes(
-                prevMovement?.regimes,
-                observed,
-                observedAt,
-              );
-              // Service-level regime, the SUPPLY axis (assigned_n vs its hourly
-              // baseline), advanced on its own clock beside the movement regimes.
-              // The degrade/recover band and the 2-tick debounce match the offline
-              // label (derive_actual_recovery). No transition stream — no service
-              // dwell curves; it exists only to publish the current service_condition.
-              //
-              // Expire stale regimes FIRST: the hysteresis band and the cold-start
-              // seed both read the prior state, so a regime that went blind past
-              // MAX_IDLE_SEC must be gone before they run, or a returning route
-              // would inherit its pre-gap degraded state. This idle reset is an
-              // INTENTIONAL divergence from the offline label, which has no idle
-              // expiry and holds degraded across a gap — MAX_IDLE_SEC freshness (the
-              // same Worker semantic the movement axis uses) takes precedence for a
-              // live feed, where a regime resuming after an hour blind is not
-              // knowably the one that stopped.
-              const liveServiceRegimes = pruneIdleRegimes(
-                prevMovement?.service_regimes,
-                observedAt,
-              );
-              const observedService = deriveServiceStates(
+            // Expire stale regimes FIRST: the hysteresis band and the cold-start
+            // seed both read the prior state, so a regime that went blind past
+            // MAX_IDLE_SEC must be gone before they run, or a returning route
+            // would inherit its pre-gap degraded state. This idle reset is an
+            // INTENTIONAL divergence from the offline label, which has no idle
+            // expiry and holds degraded across a gap — MAX_IDLE_SEC freshness (the
+            // same Worker semantic the movement axis uses) takes precedence for a
+            // live feed, where a regime resuming after an hour blind is not
+            // knowably the one that stopped.
+            const liveServiceRegimes = pruneIdleRegimes(
+              prevMovement?.service_regimes,
+              observedAt,
+            );
+            const observedService = deriveServiceStates(
+              rows,
+              serviceBaseline,
+              observedAt,
+              liveServiceRegimes,
+            );
+            const service = advanceRegimes(
+              seedNormalServiceRegimes(liveServiceRegimes, observedService, observedAt),
+              observedService,
+              observedAt,
+              { debounceTicks: SERVICE_DEBOUNCE_TICKS },
+            );
+            await writeMovementState(env.MOMENTARILY, {
+              observed_at: observedAt,
+              regimes: entries,
+              service_regimes: service.entries,
+              service_ratios: deriveServiceRatios(rows, serviceBaseline, observedAt),
+              service_quantile_ratios: deriveServiceQuantileRatios(
                 rows,
                 serviceBaseline,
+                serviceQuantiles,
                 observedAt,
-                liveServiceRegimes,
-              );
-              const service = advanceRegimes(
-                seedNormalServiceRegimes(liveServiceRegimes, observedService, observedAt),
-                observedService,
-                observedAt,
-                { debounceTicks: SERVICE_DEBOUNCE_TICKS },
-              );
-              await writeMovementState(env.MOMENTARILY, {
-                observed_at: observedAt,
-                regimes: entries,
-                service_regimes: service.entries,
-                service_ratios: deriveServiceRatios(rows, serviceBaseline, observedAt),
-                service_quantile_ratios: deriveServiceQuantileRatios(
-                  rows,
-                  serviceBaseline,
-                  serviceQuantiles,
-                  observedAt,
-                ),
-              });
-              try {
-                await writeMovementTransitions(
-                  env.MOMENTARILY,
-                  observedAt,
-                  movementTransitions(changes, 'route', observedAt),
-                );
-                if (changes.length > 0) {
-                  console.log(`movement: ${changes.length} regime changes this tick`);
-                }
-              } catch (err) {
-                console.error('movement transitions write failed:', err);
-                failWrite('movement_transitions_write');
-              }
-              try {
-                const feedKeys = new Set([...moveRows.keys(), ...rows.keys()]);
-                const census = buildMovementCensus(observed, feedKeys, entries, observedAt);
-                await writeMovementCensus(env.MOMENTARILY, census);
-              } catch (err) {
-                console.error('movement census write failed:', err);
-                failWrite('movement_census_write');
-              }
-            }
-
-            console.log(
-              `trip-updates: ${freshFeeds.length}/${TRIP_UPDATE_FEEDS.length} feeds, `
-              + `${trips.length} trips, ${rows.size} routes; `
-              + `vehicles: ${vehicles.length}, ${moveRows.size} routes`,
-            );
-          }
-        } catch (err) {
-          console.error('trip-updates step failed:', err);
-        }
-        step('8b-trip-updates');
-      }
-
-      // --- Step 8c: stations static (daily) ---
-      // Writes the parsed metadata to its own R2 object; stations_at advances only
-      // on a successful, non-empty fetch so a transient failure retries next tick.
-      // freshStations is hoisted so step 8d (entrances) can resolve against the
-      // just-fetched catalog rather than a potentially stale cache read.
-      let freshStations: Record<string, StationOut> | undefined;
-      if (alphaWritten && observedAt - lastSeen.stations_at >= STATIONS_INTERVAL_SECONDS) {
-        try {
-          const stations = parseStationsFeed(
-            await recorder.attempt('stations', (observe) => fetchJson(STATIONS_FEED, observe)),
-          );
-          if (stations.length > 0) {
+              ),
+            });
             try {
-              await writeStationsCache(env.MOMENTARILY, stations, observedAt);
-              lastSeen.stations_at = observedAt;
-              freshStations = Object.fromEntries(stations.map(s => [s.gtfs_stop_id, s]));
-              console.log(`stations: ${stations.length} static records cached`);
-            } catch (err) {
-              console.error('stations cache write failed:', err);
-              failWrite('stations_cache_write');
-            }
-          } else {
-            console.warn('stations: feed parsed to zero records, freshness held');
-          }
-        } catch (err) {
-          console.error('stations fetch failed; freshness held:', err);
-        }
-        step('8c-stations');
-      }
-
-      // --- Step 8d: entrances static (daily) ---
-      // Resolves each entrance against the stations catalog (direct gtfs_stop_id
-      // then complex_id fallback) and publishes v1/entrances.json. Prefers the
-      // just-fetched stations from step 8c; falls back to the R2 cache. Skips
-      // when no catalog is available (cold deploy before first stations fetch).
-      if (alphaWritten && observedAt - lastSeen.entrances_at >= STATIONS_INTERVAL_SECONDS) {
-        let entranceStations: Record<string, StationOut> | undefined = freshStations;
-        if (!entranceStations) {
-          try {
-            const cached = await readStationsCache(env.MOMENTARILY);
-            if (cached && Object.keys(cached.stations).length > 0) {
-              entranceStations = cached.stations;
-            }
-          } catch (err) {
-            console.error('entrances: stations cache read failed, skipping:', err);
-          }
-        }
-        if (entranceStations) {
-          try {
-            const rawEntrances = parseEntrancesFeed(
-              await recorder.attempt('entrances', (observe) => fetchJson(ENTRANCES_FEED, observe)),
-            );
-            if (rawEntrances.length > 0) {
-              try {
-                const published = buildEntrances(observedAt, rawEntrances, entranceStations);
-                await publishEntrances(env.MOMENTARILY, published);
-                lastSeen.entrances_at = observedAt;
-                console.log(
-                  `entrances: ${published.coverage.row_count} rows, ` +
-                  `${published.coverage.station_keys} station keys ` +
-                  `(${published.coverage.direct_match} direct, ` +
-                  `${published.coverage.complex_fallback} complex fallback, ` +
-                  `${published.coverage.unresolved} unresolved)`,
-                );
-              } catch (err) {
-                console.error('entrances publish failed:', err);
-                failWrite('entrances_publish');
+              await writeMovementTransitions(
+                env.MOMENTARILY,
+                observedAt,
+                recorder.tickId,
+                movementTransitions(changes, 'route', observedAt),
+              );
+              if (changes.length > 0) {
+                console.log(`movement: ${changes.length} regime changes this tick`);
               }
-            } else {
-              console.warn('entrances: feed parsed to zero rows, freshness held');
+            } catch (err) {
+              console.error('movement transitions write failed:', err);
+              failWrite('movement_transitions_write');
             }
+            try {
+              const feedKeys = new Set([...moveRows.keys(), ...rows.keys()]);
+              const census = buildMovementCensus(observed, feedKeys, entries, observedAt);
+              await writeMovementCensus(env.MOMENTARILY, census, recorder.tickId);
+            } catch (err) {
+              console.error('movement census write failed:', err);
+              failWrite('movement_census_write');
+            }
+          }
+
+          console.log(
+            `trip-updates: ${freshFeeds.length}/${TRIP_UPDATE_FEEDS.length} feeds, `
+            + `${trips.length} trips, ${rows.size} routes; `
+            + `vehicles: ${vehicles.length}, ${moveRows.size} routes`,
+          );
+        }
+      } catch (err) {
+        console.error('trip-updates step failed:', err);
+      }
+      step('8b-trip-updates');
+    }
+
+    // --- Step 8c: stations static (daily) ---
+    // Writes the parsed metadata to its own R2 object; stations_at advances only
+    // on a successful, non-empty fetch so a transient failure retries next tick.
+    // freshStations is hoisted so step 8d (entrances) can resolve against the
+    // just-fetched catalog rather than a potentially stale cache read.
+    let freshStations: Record<string, StationOut> | undefined;
+    if (alphaWritten && observedAt - lastSeen.stations_at >= STATIONS_INTERVAL_SECONDS) {
+      try {
+        const stations = parseStationsFeed(
+          await recorder.attempt('stations', (observe) => fetchJson(STATIONS_FEED, observe)),
+        );
+        if (stations.length > 0) {
+          // After the fetch, which can be the slowest wait of the minute.
+          await fence('8c-stations');
+          try {
+            await writeStationsCache(env.MOMENTARILY, stations, observedAt);
+            lastSeen.stations_at = observedAt;
+            freshStations = Object.fromEntries(stations.map(s => [s.gtfs_stop_id, s]));
+            console.log(`stations: ${stations.length} static records cached`);
           } catch (err) {
-            console.error('entrances fetch failed; freshness held:', err);
+            console.error('stations cache write failed:', err);
+            failWrite('stations_cache_write');
           }
         } else {
-          console.log('entrances: stations cache empty, skipping entrances resolution');
+          console.warn('stations: feed parsed to zero records, freshness held');
         }
-        step('8d-entrances');
+      } catch (err) {
+        if (err instanceof Fenced) throw err;
+        console.error('stations fetch failed; freshness held:', err);
       }
+      step('8c-stations');
+    }
 
-      // Only the alpha CAS winner commits last_seen — a losing run's outputs
-      // were all discarded above, so it must not race the winner's state here.
-      if (alphaWritten) {
+    // --- Step 8d: entrances static (daily) ---
+    // Resolves each entrance against the stations catalog (direct gtfs_stop_id
+    // then complex_id fallback) and publishes v1/entrances.json. Prefers the
+    // just-fetched stations from step 8c; falls back to the R2 cache. Skips
+    // when no catalog is available (cold deploy before first stations fetch).
+    if (alphaWritten && observedAt - lastSeen.entrances_at >= STATIONS_INTERVAL_SECONDS) {
+      let entranceStations: Record<string, StationOut> | undefined = freshStations;
+      if (!entranceStations) {
         try {
-          const written = await writeLastSeen(
-            env.MOMENTARILY,
-            lastSeen,
-            lastSeenRead.etag,
-          );
-          if (!written) {
-            console.warn('last_seen.json write conflict; a concurrent run won this tick');
+          const cached = await readStationsCache(env.MOMENTARILY);
+          if (cached && Object.keys(cached.stations).length > 0) {
+            entranceStations = cached.stations;
           }
         } catch (err) {
-          console.error('last_seen write failed:', err);
-          failWrite('last_seen_write');
+          console.error('entrances: stations cache read failed, skipping:', err);
         }
       }
-      step('9-last-seen-write');
-
-      // --- Step 10: archive this tick's write-failure counts ---
-      // Unconditional and its own try/catch, same posture as step 2b's alerts
-      // liveness record: a broken health archive must never mask (or be
-      // masked by) any of the writes it is reporting on. The recorder finishes
-      // first so its write failures are counted here.
-      await recorder.finish();
-      try {
-        await archiveHealth(env.MOMENTARILY, writeFailures, observedAt);
-      } catch (err) {
-        console.error('health archive failed:', err);
+      if (entranceStations) {
+        try {
+          const rawEntrances = parseEntrancesFeed(
+            await recorder.attempt('entrances', (observe) => fetchJson(ENTRANCES_FEED, observe)),
+          );
+          if (rawEntrances.length > 0) {
+            await fence('8d-entrances');
+            try {
+              const published = buildEntrances(observedAt, rawEntrances, entranceStations);
+              await publishEntrances(env.MOMENTARILY, published);
+              lastSeen.entrances_at = observedAt;
+              console.log(
+                `entrances: ${published.coverage.row_count} rows, ` +
+                `${published.coverage.station_keys} station keys ` +
+                `(${published.coverage.direct_match} direct, ` +
+                `${published.coverage.complex_fallback} complex fallback, ` +
+                `${published.coverage.unresolved} unresolved)`,
+              );
+            } catch (err) {
+              console.error('entrances publish failed:', err);
+              failWrite('entrances_publish');
+            }
+          } else {
+            console.warn('entrances: feed parsed to zero rows, freshness held');
+          }
+        } catch (err) {
+          if (err instanceof Fenced) throw err;
+          console.error('entrances fetch failed; freshness held:', err);
+        }
+      } else {
+        console.log('entrances: stations cache empty, skipping entrances resolution');
       }
-      step('10-health');
-    } finally {
-      // The tick record lands however the pipeline ended, alpha CAS included.
-      await recorder.finish();
+      step('8d-entrances');
     }
+
+    // Only the alpha CAS winner commits last_seen — a losing run's outputs
+    // were all discarded above, so it must not race the winner's state here.
+    if (alphaWritten) {
+      await fence('9-last-seen-write');
+      try {
+        const written = await writeLastSeen(
+          env.MOMENTARILY,
+          lastSeen,
+          lastSeenRead.etag,
+        );
+        if (!written) {
+          console.warn('last_seen.json write conflict; a concurrent run won this tick');
+        }
+      } catch (err) {
+        console.error('last_seen write failed:', err);
+        failWrite('last_seen_write');
+      }
+    }
+    step('9-last-seen-write');
+
+    // --- Step 10: archive this tick's write-failure counts ---
+    // Unconditional and its own try/catch, same posture as step 2b's alerts
+    // liveness record: a broken health archive must never mask (or be
+    // masked by) any of the writes it is reporting on. The recorder finishes
+    // first so its write failures are counted here.
+    await fence('10-health');
+    await recorder.finish();
+    try {
+      await archiveHealth(env.MOMENTARILY, writeFailures, observedAt, recorder.tickId);
+    } catch (err) {
+      console.error('health archive failed:', err);
+    }
+    step('10-health');
+  } catch (err) {
+    if (!(err instanceof Fenced)) throw err;
+    fenced = true;
+    console.warn(
+      `tick ${scheduledAt}: the watchdog's alarm took this minute over before stage `
+      + `${err.message}; this run writes nothing more, its tick record included`,
+    );
+  } finally {
+    // The tick record lands however the pipeline ended, alpha CAS included,
+    // unless the run was fenced: the minute is then the alarm run's.
+    if (!fenced) await recorder.finish();
+  }
+}
+
+export { MinuteClock } from './watchdog';
+
+/**
+ * The Cron Trigger's minute: claim it in the watchdog, run it under a lease,
+ * then report it done. A lost claim means the watchdog's alarm already ran
+ * (or is running) this minute, so a late or duplicated cron does nothing. A
+ * claim that errors or times out runs the minute anyway: the claim must never
+ * cost a minute, and every object two runs of one minute share is protected
+ * at the write. The lease is renewed at every write stage and every
+ * `heartbeatMs` (watchdog.ts `CronLease`), so the alarm takes the minute over
+ * only from a cron that stopped renewing; a cron that finds it was taken over
+ * stops writing. The minute is reported done once it has run to its end,
+ * whether it ended in an error or not. Without a watchdog binding the minute
+ * runs with no claim and no lease.
+ */
+export async function runCron(
+  scheduledTime: number,
+  env: Env,
+  ctx: ExecutionContext,
+  heartbeatMs: number = HEARTBEAT_MS,
+): Promise<void> {
+  if (env.MINUTE_CLOCK === undefined) {
+    await runMinute(scheduledTime, env, ctx, 'cron', ALWAYS_HELD);
+    return;
+  }
+  const slot = minuteSlot(scheduledTime);
+  const run = crypto.randomUUID();
+  if (!(await claimForCron(env, slot, run))) return;
+  const lease = new CronLease(env, slot, run, heartbeatMs);
+  lease.start();
+  try {
+    await runMinute(scheduledTime, env, ctx, 'cron', lease);
+  } finally {
+    lease.stop();
+    await reportCronDone(env, slot, run);
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return handlePublicRead(request, env);
+  },
+
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    await runCron(event.scheduledTime, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
 

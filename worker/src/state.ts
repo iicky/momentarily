@@ -176,31 +176,40 @@ const SegmentVehicleStopsSchema = z.object({
 });
 export type SegmentVehicleStops = z.infer<typeof SegmentVehicleStopsSchema>;
 
-/** Read the segment stop carry with the minute it was stamped. observed_at 0
- * (absent or corrupt) never equals a real preceding minute, so the caller
- * diffs from {} — the safe no-transition start. */
+/** Read the segment stop carry with the minute it was stamped, and its etag
+ * for writeSegmentVehicleStops' compare-and-swap. observed_at 0 (absent or
+ * corrupt) never equals a real preceding minute, so the caller diffs from {}
+ * — the safe no-transition start. */
 export async function readSegmentVehicleStops(
   bucket: R2Bucket,
-): Promise<SegmentVehicleStops> {
+): Promise<VersionedRead<SegmentVehicleStops>> {
   const obj = await bucket.get(SEGMENT_VEHICLE_STOPS_KEY);
-  if (!obj) return { observed_at: 0, stops: {} };
+  if (!obj) return { state: { observed_at: 0, stops: {} }, etag: null };
   try {
-    return SegmentVehicleStopsSchema.parse(await obj.json());
+    return { state: SegmentVehicleStopsSchema.parse(await obj.json()), etag: obj.etag };
   } catch (err) {
     console.error("segment_vehicle_stops.json corrupt; resetting:", err);
-    return { observed_at: 0, stops: {} };
+    return { state: { observed_at: 0, stops: {} }, etag: obj.etag };
   }
 }
 
+/**
+ * Write the segment stop carry with compare-and-swap on `etag` (from
+ * readSegmentVehicleStops). Returns false when another run wrote the carry
+ * since it was read.
+ */
 export async function writeSegmentVehicleStops(
   bucket: R2Bucket,
   observedAt: number,
   stops: Record<string, string>,
-): Promise<void> {
-  await bucket.put(
+  etag: string | null,
+): Promise<boolean> {
+  return conditionalPut(
+    bucket,
     SEGMENT_VEHICLE_STOPS_KEY,
     JSON.stringify({ observed_at: observedAt, stops }),
-    { httpMetadata: { contentType: "application/json", cacheControl: "no-store" } },
+    etag,
+    { contentType: "application/json", cacheControl: "no-store" },
   );
 }
 
@@ -663,25 +672,38 @@ const SegmentFlowSchema = z.object({
 });
 export type SegmentFlowDoc = z.infer<typeof SegmentFlowSchema>;
 
+/**
+ * Read the segment accumulator and its etag, for the per-minute fold's
+ * compare-and-swap. `state` is null when absent or corrupt; `etag` is then
+ * the corrupt object's, so the fold replaces it with a CAS too.
+ */
 export async function readSegmentFlow(
   bucket: R2Bucket,
-): Promise<SegmentFlowDoc | null> {
+): Promise<VersionedRead<SegmentFlowDoc | null>> {
   const obj = await bucket.get(SEGMENT_FLOW_KEY);
-  if (!obj) return null;
+  if (!obj) return { state: null, etag: null };
   try {
-    return SegmentFlowSchema.parse(await obj.json());
+    return { state: SegmentFlowSchema.parse(await obj.json()), etag: obj.etag };
   } catch (err) {
     console.error("segment_flow.json corrupt; resetting:", err);
-    return null;
+    return { state: null, etag: obj.etag };
   }
 }
 
+/**
+ * Write the accumulator only if it is unchanged since it was read at `etag`.
+ * False when another run of an overlapping minute folded first: the caller
+ * skips its fold's other writes, so a minute is folded at most once and never
+ * onto a stale base.
+ */
 export async function writeSegmentFlow(
   bucket: R2Bucket,
   doc: SegmentFlowDoc,
-): Promise<void> {
-  await bucket.put(SEGMENT_FLOW_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
+  etag: string | null,
+): Promise<boolean> {
+  return conditionalPut(bucket, SEGMENT_FLOW_KEY, JSON.stringify(doc), etag, {
+    contentType: "application/json",
+    cacheControl: "no-store",
   });
 }
 
@@ -791,11 +813,11 @@ export async function writeStationFlow(
 // (see crowding.ts updateStationWait). Its own R2 object, updated every
 // minute at step 0 — not gated to the 5-minute boundary, because the whole
 // point is 1-minute resolution on when a platform emptied; see the hazard
-// comment in index.ts. Plain put, no CAS: unlike alpha.json/last_seen.json,
-// `platforms` only ever advances via Math.max against the prior value and
-// `trips` is wholly replaced by this tick's own trace, so a retried cron
-// minute recomputes an identical or still-monotonically-correct doc —
-// there's no update to lose a race over.
+// comment in index.ts. Written with an etag CAS, and only by a run whose
+// observation is newer than the stored one's `observed_at`: a run that
+// fetched before the stored run did (a cron that stalled past a takeover)
+// would otherwise fold its older positions after newer ones, and the next
+// minute could count a platform departure twice.
 export const STATION_WAIT_KEY = 'state/station_wait.json';
 
 const StationWaitSchema = z.object({
@@ -805,28 +827,33 @@ const StationWaitSchema = z.object({
 });
 export type StationWaitDoc = z.infer<typeof StationWaitSchema>;
 
-/** Read last tick's per-platform wait state. Null when absent or corrupt —
- * updateStationWait then starts from empty platforms/trips, which only
- * costs the one tick of departure-transition carry, never wrong data. */
+/** Read last tick's per-platform wait state and its etag. `state` is null
+ * when absent or corrupt — updateStationWait then starts from empty
+ * platforms/trips, which only costs the one tick of departure-transition
+ * carry, never wrong data. */
 export async function readStationWait(
   bucket: R2Bucket,
-): Promise<StationWaitDoc | null> {
+): Promise<VersionedRead<StationWaitDoc | null>> {
   const obj = await bucket.get(STATION_WAIT_KEY);
-  if (!obj) return null;
+  if (!obj) return { state: null, etag: null };
   try {
-    return StationWaitSchema.parse(await obj.json());
+    return { state: StationWaitSchema.parse(await obj.json()), etag: obj.etag };
   } catch (err) {
     console.error('station_wait.json corrupt; resetting:', err);
-    return null;
+    return { state: null, etag: obj.etag };
   }
 }
 
+/** Write the wait state only if it is unchanged since it was read at `etag`;
+ * false when another run wrote it first. */
 export async function writeStationWait(
   bucket: R2Bucket,
   doc: StationWaitDoc,
-): Promise<void> {
-  await bucket.put(STATION_WAIT_KEY, JSON.stringify(doc), {
-    httpMetadata: { contentType: 'application/json', cacheControl: 'no-store' },
+  etag: string | null,
+): Promise<boolean> {
+  return conditionalPut(bucket, STATION_WAIT_KEY, JSON.stringify(doc), etag, {
+    contentType: 'application/json',
+    cacheControl: 'no-store',
   });
 }
 
@@ -839,11 +866,10 @@ export async function writeStationWait(
 // cadence would miss most passings outright; see the hazard comment in
 // index.ts.
 //
-// CAS on the etag, unlike station_wait.json's plain put — and the difference
-// is not incidental. station_wait.json survives a stale overwrite because
-// `platforms` only ever advances via Math.max and `trips` is rebuilt from the
-// current poll's rows, so a clobbered write costs at most one tick of
-// staleness and the next poll restamps it. This document has neither
+// CAS on the etag, and with more at stake than station_wait.json. There a
+// lost race costs at most one tick of staleness: `platforms` only ever
+// advances via Math.max and `trips` is rebuilt from the current poll's rows,
+// so the next poll restamps it. This document has neither
 // property: it is a genuine read-modify-write over the PRIOR doc, and a
 // passing dropped by a stale overwrite is not recovered next poll — the train
 // is already past the reference stop, so the following interval spans two real
